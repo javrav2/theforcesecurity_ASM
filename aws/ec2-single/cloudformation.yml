@@ -1,0 +1,364 @@
+# =============================================================================
+# ASM Platform - Single EC2 CloudFormation Template
+# =============================================================================
+# 
+# Quick deploy a single EC2 instance with all dependencies.
+#
+# Deploy with:
+#   aws cloudformation create-stack \
+#     --stack-name asm-platform \
+#     --template-body file://cloudformation.yml \
+#     --parameters ParameterKey=KeyName,ParameterValue=your-key-pair \
+#     --capabilities CAPABILITY_IAM
+#
+# =============================================================================
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ASM Platform - Single EC2 Instance Deployment'
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair for SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.large
+    AllowedValues:
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3a.large
+      - t3a.xlarge
+      - m5.large
+      - m5.xlarge
+    ConstraintDescription: Must be a valid EC2 instance type
+
+  VolumeSize:
+    Description: Size of the EBS volume in GB
+    Type: Number
+    Default: 50
+    MinValue: 30
+    MaxValue: 500
+
+  AllowedSSHCIDR:
+    Description: CIDR block allowed for SSH access (e.g., your IP/32)
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: Must be a valid CIDR block
+
+  Environment:
+    Description: Environment name
+    Type: String
+    Default: production
+    AllowedValues:
+      - production
+      - staging
+      - development
+
+Mappings:
+  RegionAMI:
+    us-east-1:
+      AMI: ami-0c7217cdde317cfec  # Ubuntu 22.04 LTS
+    us-east-2:
+      AMI: ami-0ea3c35c5c3284d82
+    us-west-1:
+      AMI: ami-0ce2cb35386fc22e9
+    us-west-2:
+      AMI: ami-008fe2fc65df48dac
+    eu-west-1:
+      AMI: ami-0905a3c97561e0b69
+    eu-central-1:
+      AMI: ami-0faab6bdbac9486fb
+    ap-southeast-1:
+      AMI: ami-078c1149d8ad719a7
+    ap-northeast-1:
+      AMI: ami-07c589821f2b353aa
+
+Resources:
+  # ===========================================================================
+  # VPC and Networking
+  # ===========================================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-igw'
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-subnet'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ===========================================================================
+  # Security Group
+  # ===========================================================================
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ASM platform
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # SSH
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSSHCIDR
+          Description: SSH access
+        # HTTP
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP access
+        # HTTPS
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS access
+      SecurityGroupEgress:
+        # All outbound (required for scanning)
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-sg'
+
+  # ===========================================================================
+  # IAM Role for EC2
+  # ===========================================================================
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-role'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # ===========================================================================
+  # EC2 Instance
+  # ===========================================================================
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionAMI, !Ref 'AWS::Region', AMI]
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: '0'
+          SubnetId: !Ref PublicSubnet
+          GroupSet:
+            - !Ref SecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref VolumeSize
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          
+          # Update system
+          apt-get update
+          apt-get upgrade -y
+          
+          # Install Docker
+          apt-get install -y ca-certificates curl gnupg lsb-release
+          mkdir -p /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+          
+          # Add ubuntu user to docker group
+          usermod -aG docker ubuntu
+          
+          # Install additional tools
+          apt-get install -y git curl wget jq htop awscli
+          
+          # Create app directory
+          mkdir -p /opt/asm
+          chown ubuntu:ubuntu /opt/asm
+          
+          # Generate secrets
+          DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32)
+          JWT_SECRET=$(openssl rand -hex 32)
+          
+          # Create .env file
+          cat > /opt/asm/.env << EOF
+          POSTGRES_USER=asm_user
+          POSTGRES_PASSWORD=$DB_PASSWORD
+          POSTGRES_DB=asm_db
+          DATABASE_URL=postgresql://asm_user:$DB_PASSWORD@db:5432/asm_db
+          SECRET_KEY=$JWT_SECRET
+          REDIS_URL=redis://redis:6379
+          DEBUG=false
+          ENVIRONMENT=${Environment}
+          CORS_ORIGINS=["http://localhost:3000"]
+          EOF
+          chmod 600 /opt/asm/.env
+          chown ubuntu:ubuntu /opt/asm/.env
+          
+          # Signal completion
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-instance'
+        - Key: Environment
+          Value: !Ref Environment
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+
+  # ===========================================================================
+  # Elastic IP
+  # ===========================================================================
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-eip'
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIP.AllocationId
+      InstanceId: !Ref EC2Instance
+
+  # ===========================================================================
+  # CloudWatch Alarms
+  # ===========================================================================
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-cpu-alarm'
+      AlarmDescription: Alarm if CPU exceeds 80%
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2Instance
+
+  DiskAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-disk-alarm'
+      AlarmDescription: Alarm if disk usage exceeds 80%
+      MetricName: disk_used_percent
+      Namespace: CWAgent
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2Instance
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub '${AWS::StackName}-instance-id'
+
+  PublicIP:
+    Description: Public IP address
+    Value: !Ref ElasticIP
+    Export:
+      Name: !Sub '${AWS::StackName}-public-ip'
+
+  APIURL:
+    Description: API URL
+    Value: !Sub 'http://${ElasticIP}'
+
+  APIDocsURL:
+    Description: API Documentation URL
+    Value: !Sub 'http://${ElasticIP}/docs'
+
+  SSHCommand:
+    Description: SSH command to connect
+    Value: !Sub 'ssh -i ${KeyName}.pem ubuntu@${ElasticIP}'
+
+  SetupCommand:
+    Description: Command to complete setup after SSH
+    Value: 'cd /opt/asm && git clone <your-repo> . && ./aws/ec2-single/setup.sh'
+
+

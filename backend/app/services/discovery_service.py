@@ -1,0 +1,518 @@
+"""
+Discovery orchestration service for attack surface management.
+
+This service coordinates full domain discovery including:
+- DNS enumeration
+- Subdomain discovery
+- HTTP probing
+- Technology fingerprinting
+"""
+
+import asyncio
+import logging
+from datetime import datetime
+from typing import Optional, Callable
+from dataclasses import dataclass, field
+
+from sqlalchemy.orm import Session
+
+from app.models.asset import Asset, AssetType, AssetStatus
+from app.models.technology import Technology
+from app.models.scan import Scan, ScanType, ScanStatus
+from app.services.dns_service import DNSService
+from app.services.subdomain_service import SubdomainService
+from app.services.http_service import HTTPService
+from app.services.wappalyzer_service import WappalyzerService
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DiscoveryProgress:
+    """Progress tracking for discovery operations."""
+    current_step: str = ""
+    total_steps: int = 0
+    completed_steps: int = 0
+    assets_found: int = 0
+    technologies_found: int = 0
+    errors: list[str] = field(default_factory=list)
+    
+    @property
+    def percentage(self) -> int:
+        if self.total_steps == 0:
+            return 0
+        return int((self.completed_steps / self.total_steps) * 100)
+
+
+@dataclass
+class DiscoveryResult:
+    """Result of a discovery operation."""
+    domain: str
+    success: bool
+    assets: list[dict] = field(default_factory=list)
+    technologies: list[dict] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    duration_seconds: float = 0
+
+
+class DiscoveryService:
+    """
+    Orchestration service for full attack surface discovery.
+    
+    Given a seed domain (e.g., rockwellautomation.com), this service will:
+    1. Enumerate DNS records
+    2. Discover subdomains via crt.sh and brute-forcing
+    3. Resolve all discovered hosts to IP addresses
+    4. Probe HTTP/HTTPS endpoints
+    5. Fingerprint technologies using Wappalyzer patterns
+    6. Store all discovered assets in the database
+    """
+    
+    def __init__(
+        self,
+        db: Session,
+        dns_service: Optional[DNSService] = None,
+        subdomain_service: Optional[SubdomainService] = None,
+        http_service: Optional[HTTPService] = None,
+        wappalyzer_service: Optional[WappalyzerService] = None
+    ):
+        """
+        Initialize discovery service.
+        
+        Args:
+            db: Database session
+            dns_service: DNS enumeration service
+            subdomain_service: Subdomain discovery service
+            http_service: HTTP probing service
+            wappalyzer_service: Technology fingerprinting service
+        """
+        self.db = db
+        self.dns = dns_service or DNSService()
+        self.subdomain = subdomain_service or SubdomainService()
+        self.http = http_service or HTTPService()
+        self.wappalyzer = wappalyzer_service or WappalyzerService()
+    
+    async def discover_domain(
+        self,
+        domain: str,
+        organization_id: int,
+        scan_id: Optional[int] = None,
+        progress_callback: Optional[Callable[[DiscoveryProgress], None]] = None,
+        include_technology_scan: bool = True,
+        subdomain_wordlist: Optional[list[str]] = None
+    ) -> DiscoveryResult:
+        """
+        Perform full discovery for a domain.
+        
+        Args:
+            domain: Target domain (e.g., rockwellautomation.com)
+            organization_id: Organization ID to associate assets with
+            scan_id: Optional scan ID for tracking
+            progress_callback: Optional callback for progress updates
+            include_technology_scan: Whether to run Wappalyzer detection
+            subdomain_wordlist: Optional custom subdomain wordlist
+            
+        Returns:
+            DiscoveryResult with all findings
+        """
+        start_time = datetime.utcnow()
+        progress = DiscoveryProgress()
+        result = DiscoveryResult(domain=domain, success=True)
+        
+        # Update scan status if provided
+        if scan_id:
+            self._update_scan_status(scan_id, ScanStatus.RUNNING, "Starting discovery")
+        
+        try:
+            # Define discovery steps
+            steps = [
+                "DNS enumeration",
+                "Subdomain discovery",
+                "IP resolution",
+                "HTTP probing",
+            ]
+            if include_technology_scan:
+                steps.append("Technology fingerprinting")
+            
+            progress.total_steps = len(steps)
+            
+            # Step 1: DNS Enumeration
+            progress.current_step = "DNS enumeration"
+            self._report_progress(progress, progress_callback, scan_id)
+            
+            logger.info(f"Starting DNS enumeration for {domain}")
+            dns_records = self.dns.enumerate_domain(domain)
+            
+            # Create root domain asset
+            root_asset = self._create_or_update_asset(
+                organization_id=organization_id,
+                asset_type=AssetType.DOMAIN,
+                name=domain,
+                value=domain,
+                discovery_source="seed",
+                metadata_={
+                    "dns_records": dns_records.to_dict()
+                }
+            )
+            result.assets.append(self._asset_to_dict(root_asset))
+            progress.assets_found += 1
+            
+            # Create IP assets from A records
+            for ip in dns_records.a_records:
+                ip_asset = self._create_or_update_asset(
+                    organization_id=organization_id,
+                    asset_type=AssetType.IP_ADDRESS,
+                    name=ip,
+                    value=ip,
+                    parent_id=root_asset.id,
+                    discovery_source="dns_enumeration"
+                )
+                result.assets.append(self._asset_to_dict(ip_asset))
+                progress.assets_found += 1
+            
+            progress.completed_steps += 1
+            self._report_progress(progress, progress_callback, scan_id)
+            
+            # Step 2: Subdomain Discovery
+            progress.current_step = "Subdomain discovery"
+            self._report_progress(progress, progress_callback, scan_id)
+            
+            logger.info(f"Starting subdomain enumeration for {domain}")
+            subdomains = await self.subdomain.enumerate_subdomains(
+                domain=domain,
+                wordlist=subdomain_wordlist,
+                use_crtsh=True
+            )
+            
+            subdomain_assets = {}
+            for sub_result in subdomains:
+                if sub_result.subdomain != domain:
+                    sub_asset = self._create_or_update_asset(
+                        organization_id=organization_id,
+                        asset_type=AssetType.SUBDOMAIN,
+                        name=sub_result.subdomain,
+                        value=sub_result.subdomain,
+                        parent_id=root_asset.id,
+                        discovery_source=sub_result.source,
+                        status=AssetStatus.VERIFIED if sub_result.is_alive else AssetStatus.UNVERIFIED
+                    )
+                    subdomain_assets[sub_result.subdomain] = sub_asset
+                    result.assets.append(self._asset_to_dict(sub_asset))
+                    progress.assets_found += 1
+                    
+                    # Create IP assets for this subdomain
+                    for ip in sub_result.ip_addresses:
+                        ip_asset = self._create_or_update_asset(
+                            organization_id=organization_id,
+                            asset_type=AssetType.IP_ADDRESS,
+                            name=ip,
+                            value=ip,
+                            parent_id=sub_asset.id,
+                            discovery_source="subdomain_resolution"
+                        )
+                        # Don't add duplicate IPs to result
+            
+            progress.completed_steps += 1
+            self._report_progress(progress, progress_callback, scan_id)
+            
+            # Step 3: IP Resolution (already done during subdomain discovery)
+            progress.current_step = "IP resolution"
+            progress.completed_steps += 1
+            self._report_progress(progress, progress_callback, scan_id)
+            
+            # Step 4: HTTP Probing
+            progress.current_step = "HTTP probing"
+            self._report_progress(progress, progress_callback, scan_id)
+            
+            logger.info(f"Probing HTTP endpoints for {domain}")
+            
+            # Gather all hosts to probe
+            hosts_to_probe = [domain] + [s.subdomain for s in subdomains if s.is_alive]
+            
+            probe_results = await self.http.probe_hosts(hosts_to_probe)
+            
+            # Update assets with HTTP info
+            for probe in probe_results:
+                host = probe.url.split("://")[1].split("/")[0].split(":")[0]
+                
+                # Find the asset for this host
+                asset = subdomain_assets.get(host)
+                if not asset:
+                    # Check if it's the root domain
+                    if host == domain:
+                        asset = root_asset
+                
+                if asset:
+                    asset.http_status = probe.status_code
+                    asset.http_title = probe.title
+                    asset.http_headers = probe.headers
+                    asset.status = AssetStatus.VERIFIED
+                    
+                    # Create URL asset
+                    url_asset = self._create_or_update_asset(
+                        organization_id=organization_id,
+                        asset_type=AssetType.URL,
+                        name=probe.url,
+                        value=probe.url,
+                        parent_id=asset.id,
+                        discovery_source="http_probe",
+                        metadata_={
+                            "status_code": probe.status_code,
+                            "title": probe.title,
+                            "server": probe.server,
+                            "response_time_ms": probe.response_time_ms
+                        }
+                    )
+                    result.assets.append(self._asset_to_dict(url_asset))
+                    progress.assets_found += 1
+            
+            self.db.commit()
+            progress.completed_steps += 1
+            self._report_progress(progress, progress_callback, scan_id)
+            
+            # Step 5: Technology Fingerprinting
+            if include_technology_scan:
+                progress.current_step = "Technology fingerprinting"
+                self._report_progress(progress, progress_callback, scan_id)
+                
+                logger.info(f"Running technology fingerprinting for {domain}")
+                
+                # Get URLs to scan
+                urls_to_scan = []
+                for probe in probe_results:
+                    urls_to_scan.append(probe.url)
+                
+                # Scan each URL for technologies
+                for url in urls_to_scan[:50]:  # Limit to first 50 URLs
+                    try:
+                        technologies = await self.wappalyzer.analyze_url(url)
+                        
+                        # Find the URL asset
+                        url_asset = self.db.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.asset_type == AssetType.URL,
+                            Asset.value == url
+                        ).first()
+                        
+                        if url_asset:
+                            for tech in technologies:
+                                # Get or create technology record
+                                db_tech = self._get_or_create_technology(tech)
+                                
+                                # Associate with asset if not already
+                                if db_tech not in url_asset.technologies:
+                                    url_asset.technologies.append(db_tech)
+                                    progress.technologies_found += 1
+                                
+                                result.technologies.append({
+                                    "url": url,
+                                    "technology": tech.name,
+                                    "version": tech.version,
+                                    "confidence": tech.confidence,
+                                    "categories": tech.categories
+                                })
+                                
+                                # Add technology as tag to asset
+                                if tech.name not in (url_asset.tags or []):
+                                    url_asset.tags = (url_asset.tags or []) + [tech.name]
+                                
+                                # Also tag parent assets
+                                if url_asset.parent:
+                                    if tech.name not in (url_asset.parent.tags or []):
+                                        url_asset.parent.tags = (url_asset.parent.tags or []) + [tech.name]
+                    
+                    except Exception as e:
+                        logger.warning(f"Technology scan failed for {url}: {e}")
+                        progress.errors.append(f"Tech scan failed for {url}: {str(e)}")
+                
+                self.db.commit()
+                progress.completed_steps += 1
+                self._report_progress(progress, progress_callback, scan_id)
+            
+            # Calculate duration
+            result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
+            result.errors = progress.errors
+            
+            # Update scan with final results
+            if scan_id:
+                self._update_scan_complete(
+                    scan_id,
+                    assets_discovered=progress.assets_found,
+                    technologies_found=progress.technologies_found,
+                    results={
+                        "domain": domain,
+                        "subdomains_found": len(subdomains),
+                        "urls_probed": len(probe_results),
+                        "technologies_detected": progress.technologies_found
+                    }
+                )
+            
+            logger.info(
+                f"Discovery complete for {domain}: "
+                f"{progress.assets_found} assets, "
+                f"{progress.technologies_found} technologies"
+            )
+            
+        except Exception as e:
+            logger.error(f"Discovery failed for {domain}: {e}")
+            result.success = False
+            result.errors.append(str(e))
+            
+            if scan_id:
+                self._update_scan_failed(scan_id, str(e))
+        
+        return result
+    
+    def _create_or_update_asset(
+        self,
+        organization_id: int,
+        asset_type: AssetType,
+        name: str,
+        value: str,
+        parent_id: Optional[int] = None,
+        discovery_source: Optional[str] = None,
+        status: AssetStatus = AssetStatus.DISCOVERED,
+        metadata_: Optional[dict] = None
+    ) -> Asset:
+        """Create or update an asset in the database."""
+        # Check if asset already exists
+        existing = self.db.query(Asset).filter(
+            Asset.organization_id == organization_id,
+            Asset.asset_type == asset_type,
+            Asset.value == value
+        ).first()
+        
+        if existing:
+            existing.last_seen = datetime.utcnow()
+            existing.status = status
+            if metadata_:
+                existing.metadata_ = {**(existing.metadata_ or {}), **metadata_}
+            return existing
+        
+        # Create new asset
+        asset = Asset(
+            organization_id=organization_id,
+            asset_type=asset_type,
+            name=name,
+            value=value,
+            parent_id=parent_id,
+            discovery_source=discovery_source,
+            status=status,
+            metadata_=metadata_ or {}
+        )
+        self.db.add(asset)
+        self.db.flush()  # Get the ID
+        
+        return asset
+    
+    def _get_or_create_technology(self, tech) -> Technology:
+        """Get or create a technology record."""
+        from app.services.wappalyzer_service import slugify
+        
+        existing = self.db.query(Technology).filter(
+            Technology.slug == tech.slug
+        ).first()
+        
+        if existing:
+            return existing
+        
+        db_tech = Technology(
+            name=tech.name,
+            slug=tech.slug,
+            categories=tech.categories,
+            website=tech.website,
+            icon=tech.icon,
+            cpe=tech.cpe
+        )
+        self.db.add(db_tech)
+        self.db.flush()
+        
+        return db_tech
+    
+    def _asset_to_dict(self, asset: Asset) -> dict:
+        """Convert asset to dictionary."""
+        return {
+            "id": asset.id,
+            "type": asset.asset_type.value,
+            "name": asset.name,
+            "value": asset.value,
+            "status": asset.status.value,
+            "discovery_source": asset.discovery_source,
+            "parent_id": asset.parent_id
+        }
+    
+    def _report_progress(
+        self,
+        progress: DiscoveryProgress,
+        callback: Optional[Callable],
+        scan_id: Optional[int]
+    ):
+        """Report progress via callback and update scan."""
+        if callback:
+            callback(progress)
+        
+        if scan_id:
+            scan = self.db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.progress = progress.percentage
+                scan.current_step = progress.current_step
+                scan.assets_discovered = progress.assets_found
+                scan.technologies_found = progress.technologies_found
+                self.db.commit()
+    
+    def _update_scan_status(self, scan_id: int, status: ScanStatus, step: str):
+        """Update scan status."""
+        scan = self.db.query(Scan).filter(Scan.id == scan_id).first()
+        if scan:
+            scan.status = status
+            scan.current_step = step
+            if status == ScanStatus.RUNNING:
+                scan.started_at = datetime.utcnow()
+            self.db.commit()
+    
+    def _update_scan_complete(
+        self,
+        scan_id: int,
+        assets_discovered: int,
+        technologies_found: int,
+        results: dict
+    ):
+        """Mark scan as complete."""
+        scan = self.db.query(Scan).filter(Scan.id == scan_id).first()
+        if scan:
+            scan.status = ScanStatus.COMPLETED
+            scan.progress = 100
+            scan.completed_at = datetime.utcnow()
+            scan.assets_discovered = assets_discovered
+            scan.technologies_found = technologies_found
+            scan.results = results
+            self.db.commit()
+    
+    def _update_scan_failed(self, scan_id: int, error: str):
+        """Mark scan as failed."""
+        scan = self.db.query(Scan).filter(Scan.id == scan_id).first()
+        if scan:
+            scan.status = ScanStatus.FAILED
+            scan.completed_at = datetime.utcnow()
+            scan.error_message = error
+            self.db.commit()
+    
+    def discover_domain_sync(
+        self,
+        domain: str,
+        organization_id: int,
+        scan_id: Optional[int] = None,
+        include_technology_scan: bool = True
+    ) -> DiscoveryResult:
+        """Synchronous wrapper for discover_domain."""
+        return asyncio.run(
+            self.discover_domain(
+                domain=domain,
+                organization_id=organization_id,
+                scan_id=scan_id,
+                include_technology_scan=include_technology_scan
+            )
+        )
+
+
+

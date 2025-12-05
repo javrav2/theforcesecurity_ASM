@@ -1,0 +1,24 @@
+# =============================================================================
+# ASM Platform - Terraform Variables Example
+# =============================================================================
+# Copy this file to terraform.tfvars and fill in your values
+# NEVER commit terraform.tfvars to version control!
+# =============================================================================
+
+# AWS Configuration
+aws_region   = "us-east-1"
+environment  = "prod"
+project_name = "asm"
+
+# Database Configuration
+db_username = "asm_admin"
+db_password = "CHANGE_THIS_TO_A_SECURE_PASSWORD"
+
+# Application Secrets
+jwt_secret = "CHANGE_THIS_TO_A_SECURE_SECRET_KEY"
+
+# Scaling Configuration
+api_desired_count     = 2    # Number of API containers
+scanner_desired_count = 2    # Number of scanner workers
+
+

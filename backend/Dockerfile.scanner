@@ -1,0 +1,102 @@
+# =============================================================================
+# ASM Platform - Scanner Worker Dockerfile
+# =============================================================================
+# This Dockerfile builds a container with all scanning tools installed for
+# running security scans on external targets.
+#
+# Includes:
+# - Nuclei (vulnerability scanner)
+# - Subfinder (subdomain enumeration)
+# - HTTPX (HTTP probing)
+# - DNSX (DNS enumeration)
+# - Naabu (port scanner)
+# - Katana (web crawler)
+# - Nmap (network scanner)
+# - Masscan (fast port scanner)
+# =============================================================================
+
+FROM python:3.11-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go for ProjectDiscovery tools
+ENV GO_VERSION=1.21.5
+RUN wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
+    && rm go${GO_VERSION}.linux-amd64.tar.gz
+
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+ENV GOPATH="/root/go"
+
+# Install ProjectDiscovery tools
+RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
+    && go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest \
+    && go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest \
+    && go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest \
+    && go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest \
+    && go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+
+# =============================================================================
+# Final Image
+# =============================================================================
+FROM python:3.11-slim-bookworm
+
+LABEL maintainer="ASM Platform"
+LABEL description="Scanner worker with security scanning tools"
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nmap \
+    masscan \
+    dnsutils \
+    curl \
+    ca-certificates \
+    libpcap0.8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Go binaries from builder
+COPY --from=builder /root/go/bin/* /usr/local/bin/
+
+# Create app directory
+WORKDIR /app
+
+# Copy Python requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user for security (but keep root for certain scans)
+RUN useradd -m -s /bin/bash scanner \
+    && chown -R scanner:scanner /app
+
+# Update Nuclei templates
+RUN nuclei -update-templates || true
+
+# Create directories for scan outputs
+RUN mkdir -p /app/scans /app/templates \
+    && chown -R scanner:scanner /app/scans /app/templates
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV WORKER_MODE=true
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Run as scanner user (except for privileged scans)
+USER scanner
+
+# Start the scanner worker
+CMD ["python", "-m", "app.workers.scanner_worker"]
+
+
