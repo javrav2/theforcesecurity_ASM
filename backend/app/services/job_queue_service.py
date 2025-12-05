@@ -169,7 +169,7 @@ class JobQueueService:
             organization_id=organization_id,
             priority=priority,
             targets=targets,
-            severity=severity or ["critical", "high", "medium"],
+            severity=severity or ["critical", "high"],
             tags=tags or [],
             exclude_tags=exclude_tags or [],
             profile_id=profile_id

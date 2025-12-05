@@ -17,7 +17,7 @@ class ScanProfileBase(BaseModel):
 class ScanProfileCreate(ScanProfileBase):
     """Schema for creating a new scan profile."""
     # Nuclei settings
-    nuclei_severity: List[str] = ["critical", "high", "medium"]
+    nuclei_severity: List[str] = ["critical", "high"]
     nuclei_tags: List[str] = []
     nuclei_exclude_tags: List[str] = []
     nuclei_templates: List[str] = []

@@ -163,7 +163,7 @@ class ScannerWorker:
         scan_id = job_data.get('scan_id')
         targets = job_data.get('targets', [])
         organization_id = job_data.get('organization_id')
-        severity = job_data.get('severity', ['critical', 'high', 'medium'])
+        severity = job_data.get('severity', ['critical', 'high'])
         tags = job_data.get('tags', [])
         exclude_tags = job_data.get('exclude_tags', [])
         
