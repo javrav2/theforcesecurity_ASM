@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db.database import engine, Base
-from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports
+from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots
 
 # Configure logging
 logging.basicConfig(
@@ -67,6 +67,7 @@ app.include_router(scans.router, prefix=settings.API_PREFIX)
 app.include_router(discovery.router, prefix=settings.API_PREFIX)
 app.include_router(nuclei.router, prefix=settings.API_PREFIX)
 app.include_router(ports.router, prefix=settings.API_PREFIX)
+app.include_router(screenshots.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")
@@ -102,6 +103,7 @@ def api_info():
             "scans": f"{settings.API_PREFIX}/scans",
             "discovery": f"{settings.API_PREFIX}/discovery",
             "nuclei": f"{settings.API_PREFIX}/nuclei",
+            "screenshots": f"{settings.API_PREFIX}/screenshots",
         },
         "port_service_features": {
             "list_ports": "GET /api/v1/ports - List all port services",
@@ -139,6 +141,15 @@ async def startup_event():
             logger.info(f"✓ {tool} is installed")
         else:
             logger.warning(f"✗ {tool} is not installed")
+    
+    # Check EyeWitness installation
+    from app.services.eyewitness_service import get_eyewitness_service
+    eyewitness = get_eyewitness_service()
+    ew_status = eyewitness.check_installation()
+    if ew_status["installed"]:
+        logger.info("✓ EyeWitness is installed")
+    else:
+        logger.warning(f"✗ EyeWitness is not installed - screenshots unavailable: {ew_status.get('error', '')}")
 
 
 @app.on_event("shutdown")

@@ -24,6 +24,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcap-dev \
     # General utilities
     dnsutils \
+    # EyeWitness / Chromium dependencies
+    chromium \
+    chromium-driver \
+    xvfb \
+    libgconf-2-4 \
+    libnss3 \
+    libxss1 \
+    libasound2 \
+    fonts-liberation \
+    libappindicator3-1 \
+    xdg-utils \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Masscan from source (for latest features)
@@ -52,6 +64,19 @@ RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
 # Update nuclei templates
 RUN nuclei -update-templates || true
 
+# Install EyeWitness
+RUN git clone https://github.com/RedSiege/EyeWitness.git /opt/EyeWitness \
+    && cd /opt/EyeWitness \
+    && python3 -m venv eyewitness-venv \
+    && ./eyewitness-venv/bin/pip install --upgrade pip \
+    && ./eyewitness-venv/bin/pip install selenium netaddr rapidfuzz \
+    && chmod +x Python/EyeWitness.py
+
+# Set EyeWitness environment variables
+ENV EYEWITNESS_PATH="/opt/EyeWitness/Python/EyeWitness.py"
+ENV EYEWITNESS_VENV="/opt/EyeWitness/eyewitness-venv/bin/python"
+ENV SCREENSHOTS_DIR="/app/data/screenshots"
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -64,7 +89,10 @@ RUN adduser --disabled-password --gecos '' appuser \
     && chown -R appuser:appuser /app \
     && mkdir -p /home/appuser/.config/nuclei \
     && cp -r /root/.config/nuclei/* /home/appuser/.config/nuclei/ 2>/dev/null || true \
-    && chown -R appuser:appuser /home/appuser
+    && chown -R appuser:appuser /home/appuser \
+    && mkdir -p /app/data/screenshots \
+    && chown -R appuser:appuser /app/data \
+    && chown -R appuser:appuser /opt/EyeWitness
 
 # Copy Go binaries for appuser
 RUN mkdir -p /home/appuser/go/bin \

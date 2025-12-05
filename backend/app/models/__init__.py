@@ -7,6 +7,7 @@ from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.technology import Technology, asset_technologies, WAPPALYZER_CATEGORIES
 from app.models.scan_profile import ScanProfile, ProfileType, DEFAULT_PROFILES
 from app.models.port_service import PortService, Protocol, PortState, RISKY_PORTS, SERVICE_NAMES
+from app.models.screenshot import Screenshot, ScreenshotStatus, ScreenshotSchedule
 
 __all__ = [
     "User",
@@ -32,4 +33,7 @@ __all__ = [
     "PortState",
     "RISKY_PORTS",
     "SERVICE_NAMES",
+    "Screenshot",
+    "ScreenshotStatus",
+    "ScreenshotSchedule",
 ]

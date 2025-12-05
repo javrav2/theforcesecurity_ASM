@@ -83,6 +83,7 @@ class Asset(Base):
         back_populates="assets"
     )
     port_services = relationship("PortService", back_populates="asset", cascade="all, delete-orphan")
+    screenshots = relationship("Screenshot", back_populates="asset", cascade="all, delete-orphan", order_by="desc(Screenshot.captured_at)")
     
     # HTTP info (for web assets)
     http_status = Column(Integer, nullable=True)
