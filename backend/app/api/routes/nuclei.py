@@ -241,7 +241,7 @@ async def run_nuclei_scan(
         targets=request.targets,
         config={
             "profile_id": profile.id if profile else None,
-            "severity": request.severity or (profile.nuclei_severity if profile else ["critical", "high"]),
+            "severity": request.severity or (profile.nuclei_severity if profile else ["critical", "high", "medium"]),
             "tags": request.tags or (profile.nuclei_tags if profile else []),
         },
         started_by=current_user.username,
