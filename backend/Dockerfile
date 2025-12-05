@@ -24,18 +24,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcap-dev \
     # General utilities
     dnsutils \
-    # EyeWitness / Chromium dependencies
+    # EyeWitness / Chromium dependencies (compatible with Debian trixie)
     chromium \
-    chromium-driver \
     xvfb \
-    libgconf-2-4 \
     libnss3 \
     libxss1 \
-    libasound2 \
+    libasound2t64 \
     fonts-liberation \
-    libappindicator3-1 \
     xdg-utils \
     python3-venv \
+    libgbm1 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Masscan from source (for latest features)
