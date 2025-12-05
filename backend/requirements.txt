@@ -49,3 +49,6 @@ pytest-asyncio==0.21.1
 
 # Image processing (for screenshots)
 Pillow==10.1.0
+
+# IP address handling (for CIDR calculations)
+# Note: ipaddress is part of stdlib in Python 3.3+, no extra install needed

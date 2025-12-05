@@ -1,5 +1,5 @@
 # API routes module
-from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots
+from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery
 
 __all__ = [
     "auth",
@@ -11,5 +11,6 @@ __all__ = [
     "discovery",
     "nuclei",
     "ports",
-    "screenshots"
+    "screenshots",
+    "external_discovery"
 ]

@@ -8,6 +8,7 @@ from app.models.technology import Technology, asset_technologies, WAPPALYZER_CAT
 from app.models.scan_profile import ScanProfile, ProfileType, DEFAULT_PROFILES
 from app.models.port_service import PortService, Protocol, PortState, RISKY_PORTS, SERVICE_NAMES
 from app.models.screenshot import Screenshot, ScreenshotStatus, ScreenshotSchedule
+from app.models.api_config import APIConfig, ExternalService, DEFAULT_RATE_LIMITS
 
 __all__ = [
     "User",
@@ -36,4 +37,7 @@ __all__ = [
     "Screenshot",
     "ScreenshotStatus",
     "ScreenshotSchedule",
+    "APIConfig",
+    "ExternalService",
+    "DEFAULT_RATE_LIMITS",
 ]
