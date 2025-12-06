@@ -49,7 +49,7 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-asm_user}:${POSTGRES_PASSWORD:-asm_password}@db:5432/${POSTGRES_DB:-asm_db}
       - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
       - DEBUG=${DEBUG:-false}
-      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:3000","http://localhost:8080"]}
+      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:3000","http://localhost:8000","http://frontend:3000"]}
       - REDIS_URL=redis://redis:6379/0
     ports:
       - "${BACKEND_PORT:-8000}:8000"
@@ -59,10 +59,9 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      # Persist nuclei templates
       - nuclei_templates:/home/appuser/.config/nuclei
-      # Mount for scan outputs (optional)
       - scan_outputs:/app/outputs
+      - screenshots_data:/app/data/screenshots
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -70,9 +69,24 @@ services:
       retries: 3
     networks:
       - asm_network
-    # Required for naabu port scanning
     cap_add:
       - NET_RAW
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: asm_frontend
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+    networks:
+      - asm_network
 
   # Celery Worker for async tasks (optional, for production)
   worker:
@@ -94,6 +108,7 @@ services:
     volumes:
       - nuclei_templates:/home/appuser/.config/nuclei
       - scan_outputs:/app/outputs
+      - screenshots_data:/app/data/screenshots
     networks:
       - asm_network
     cap_add:
@@ -127,4 +142,6 @@ volumes:
   nuclei_templates:
     driver: local
   scan_outputs:
+    driver: local
+  screenshots_data:
     driver: local

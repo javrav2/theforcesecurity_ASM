@@ -38,7 +38,7 @@ lxml==4.9.3
 
 # Async task processing
 celery[redis]==5.3.4
-redis==5.0.1
+redis==4.6.0
 
 # Rate limiting
 slowapi==0.1.9

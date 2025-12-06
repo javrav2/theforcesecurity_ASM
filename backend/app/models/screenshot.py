@@ -138,3 +138,4 @@ class ScreenshotSchedule(Base):
     successful_captures = Column(Integer, default=0)
     failed_captures = Column(Integer, default=0)
 
+

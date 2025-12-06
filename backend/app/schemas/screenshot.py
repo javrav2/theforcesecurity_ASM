@@ -197,3 +197,4 @@ class EyeWitnessStatusResponse(BaseModel):
     venv_path: str
     error: Optional[str] = None
 
+

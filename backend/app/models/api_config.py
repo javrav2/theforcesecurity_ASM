@@ -161,3 +161,4 @@ DEFAULT_RATE_LIMITS = {
     ExternalService.M365: {"per_second": 1, "per_day": None},
 }
 
+
