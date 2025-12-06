@@ -23,6 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Switch } from '@/components/ui/switch';
 import {
   Search,
   Globe,
@@ -37,6 +38,13 @@ import {
   Shield,
   Server,
   Network,
+  Plus,
+  X,
+  Building2,
+  Mail,
+  Settings,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -77,6 +85,21 @@ export default function DiscoveryPage() {
   const [domain, setDomain] = useState('');
   const [results, setResults] = useState<DiscoveryResult | null>(null);
   const [activeTab, setActiveTab] = useState<'subdomains' | 'ips' | 'domains' | 'ranges'>('subdomains');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  
+  // Advanced options
+  const [includePaid, setIncludePaid] = useState(true);
+  const [includeFree, setIncludeFree] = useState(true);
+  const [createAssets, setCreateAssets] = useState(true);
+  
+  // Organization names for WhoisXML
+  const [orgNames, setOrgNames] = useState<string[]>([]);
+  const [newOrgName, setNewOrgName] = useState('');
+  
+  // Registration emails for Whoxy
+  const [regEmails, setRegEmails] = useState<string[]>([]);
+  const [newRegEmail, setNewRegEmail] = useState('');
+  
   const { toast } = useToast();
 
   const fetchData = async () => {
@@ -111,10 +134,12 @@ export default function DiscoveryPage() {
       const result = await api.runExternalDiscovery({
         organization_id: parseInt(selectedOrg),
         domain,
-        include_paid_sources: true,
-        include_free_sources: true,
-        create_assets: true,
+        include_paid_sources: includePaid,
+        include_free_sources: includeFree,
+        create_assets: createAssets,
         skip_existing: true,
+        organization_names: orgNames.length > 0 ? orgNames : undefined,
+        registration_emails: regEmails.length > 0 ? regEmails : undefined,
       });
 
       setResults(result);
@@ -151,6 +176,28 @@ export default function DiscoveryPage() {
     a.href = url;
     a.download = `discovery-${results.domain}-${Date.now()}.json`;
     a.click();
+  };
+
+  const addOrgName = () => {
+    if (newOrgName && !orgNames.includes(newOrgName)) {
+      setOrgNames([...orgNames, newOrgName]);
+      setNewOrgName('');
+    }
+  };
+
+  const removeOrgName = (name: string) => {
+    setOrgNames(orgNames.filter(n => n !== name));
+  };
+
+  const addRegEmail = () => {
+    if (newRegEmail && !regEmails.includes(newRegEmail)) {
+      setRegEmails([...regEmails, newRegEmail]);
+      setNewRegEmail('');
+    }
+  };
+
+  const removeRegEmail = (email: string) => {
+    setRegEmails(regEmails.filter(e => e !== email));
   };
 
   const discoveryMethods = [
@@ -199,7 +246,7 @@ export default function DiscoveryPage() {
     {
       name: 'WhoisXML API',
       key: 'whoisxml',
-      description: 'WHOIS and IP range lookups by org name',
+      description: 'IP ranges & CIDRs by organization name',
       icon: '📋',
       free: false,
     },
@@ -280,6 +327,98 @@ export default function DiscoveryPage() {
                 </Button>
               </div>
             </div>
+
+            {/* Advanced Options Toggle */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="text-muted-foreground"
+            >
+              {showAdvanced ? <ChevronUp className="h-4 w-4 mr-2" /> : <ChevronDown className="h-4 w-4 mr-2" />}
+              Advanced Options
+            </Button>
+
+            {showAdvanced && (
+              <div className="space-y-4 p-4 bg-muted/50 rounded-lg">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="flex items-center gap-2">
+                    <Switch checked={includeFree} onCheckedChange={setIncludeFree} />
+                    <Label>Include Free Sources</Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch checked={includePaid} onCheckedChange={setIncludePaid} />
+                    <Label>Include Paid Sources</Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch checked={createAssets} onCheckedChange={setCreateAssets} />
+                    <Label>Create Assets in Database</Label>
+                  </div>
+                </div>
+
+                {/* Organization Names for WhoisXML */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <Building2 className="h-4 w-4" />
+                    Organization Names (for WhoisXML IP Range Discovery)
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="e.g., Rockwell Automation"
+                      value={newOrgName}
+                      onChange={(e) => setNewOrgName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && addOrgName()}
+                    />
+                    <Button onClick={addOrgName} variant="outline" size="icon">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {orgNames.map((name) => (
+                      <Badge key={name} variant="secondary" className="flex items-center gap-1">
+                        {name}
+                        <button onClick={() => removeOrgName(name)} className="ml-1 hover:text-destructive">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Registration Emails for Whoxy */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <Mail className="h-4 w-4" />
+                    Registration Emails (for Whoxy Reverse WHOIS)
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="e.g., domains@yourcompany.com"
+                      value={newRegEmail}
+                      onChange={(e) => setNewRegEmail(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && addRegEmail()}
+                    />
+                    <Button onClick={addRegEmail} variant="outline" size="icon">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {regEmails.map((email) => (
+                      <Badge key={email} variant="secondary" className="flex items-center gap-1">
+                        {email}
+                        <button onClick={() => removeRegEmail(email)} className="ml-1 hover:text-destructive">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  💡 Configure API keys in <a href="/settings" className="text-primary underline">Settings</a> to enable VirusTotal, WhoisXML, OTX, and Whoxy.
+                </p>
+              </div>
+            )}
 
             {running && (
               <div className="p-4 bg-muted rounded-lg">
@@ -382,6 +521,7 @@ export default function DiscoveryPage() {
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Subdomains</TableHead>
                       <TableHead className="text-right">IPs</TableHead>
+                      <TableHead className="text-right">CIDRs</TableHead>
                       <TableHead className="text-right">Time</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -398,12 +538,13 @@ export default function DiscoveryPage() {
                           ) : (
                             <Badge variant="destructive">
                               <XCircle className="h-3 w-3 mr-1" />
-                              {source.error || 'Failed'}
+                              {source.error?.substring(0, 30) || 'Failed'}
                             </Badge>
                           )}
                         </TableCell>
                         <TableCell className="text-right">{source.subdomains_found}</TableCell>
                         <TableCell className="text-right">{source.ips_found}</TableCell>
+                        <TableCell className="text-right">{source.cidrs_found}</TableCell>
                         <TableCell className="text-right">{source.elapsed_time.toFixed(2)}s</TableCell>
                       </TableRow>
                     ))}
@@ -497,7 +638,7 @@ export default function DiscoveryPage() {
                         </div>
                       ))}
                       {results.ip_ranges.length === 0 && (
-                        <p className="text-muted-foreground">No IP ranges discovered (requires WhoisXML API key)</p>
+                        <p className="text-muted-foreground">No IP ranges discovered (requires WhoisXML API key + organization names)</p>
                       )}
                     </div>
                   )}
@@ -522,7 +663,7 @@ export default function DiscoveryPage() {
                         {status && (
                           status.success ? (
                             <Badge variant="default" className="bg-green-600 text-xs">
-                              ✓ {status.subdomains_found}
+                              ✓ {status.subdomains_found + status.ips_found + status.cidrs_found}
                             </Badge>
                           ) : (
                             <Badge variant="destructive" className="text-xs">✗</Badge>
@@ -560,11 +701,20 @@ export default function DiscoveryPage() {
               <strong>RapidDNS:</strong> Queries DNS databases for subdomain enumeration.
             </p>
             <p>
+              <strong>Microsoft 365:</strong> Discovers federated domains associated with your M365 tenant.
+            </p>
+            <p>
               <strong>AlienVault OTX:</strong> Leverages threat intelligence to find passive DNS records and related domains.
             </p>
+            <p>
+              <strong>WhoisXML API:</strong> Discovers IP ranges (CIDRs) registered to your organization name.
+            </p>
+            <p>
+              <strong>Whoxy:</strong> Finds all domains registered using your company email addresses.
+            </p>
             <p className="pt-2 border-t">
-              <strong>Tip:</strong> Configure API keys in Settings to enable paid sources like VirusTotal and WhoisXML 
-              for more comprehensive discovery.
+              <strong>💡 Tip:</strong> Configure API keys in <a href="/settings" className="text-primary underline">Settings</a> and 
+              add organization names + registration emails in Advanced Options for comprehensive IP range and domain discovery.
             </p>
           </CardContent>
         </Card>

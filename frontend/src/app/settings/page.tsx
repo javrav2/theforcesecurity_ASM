@@ -16,7 +16,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Settings, Key, Bell, Shield, Database, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { 
+  Settings, 
+  Key, 
+  Bell, 
+  Shield, 
+  Database, 
+  Loader2, 
+  CheckCircle, 
+  AlertCircle,
+  Plus,
+  X,
+  Building2,
+  Mail,
+  Globe,
+} from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 
@@ -24,6 +38,8 @@ interface ApiConfig {
   id: number;
   service_name: string;
   api_key_masked: string | null;
+  api_user: string | null;
+  config: Record<string, any>;
   is_active: boolean;
   is_valid: boolean;
   last_used: string | null;
@@ -31,10 +47,40 @@ interface ApiConfig {
 }
 
 const API_SERVICES = [
-  { name: 'virustotal', label: 'VirusTotal', description: 'Subdomain discovery via VT database', free: false },
-  { name: 'whoisxml', label: 'WhoisXML API', description: 'WHOIS and IP range lookups', free: false },
-  { name: 'otx', label: 'AlienVault OTX', description: 'Threat intelligence data (free API key)', free: true },
-  { name: 'whoxy', label: 'Whoxy', description: 'Reverse WHOIS lookups', free: false },
+  { 
+    name: 'virustotal', 
+    label: 'VirusTotal', 
+    description: 'Subdomain discovery via VT database (up to 100 subdomains per domain)',
+    free: false,
+    hasUser: true,
+    link: 'https://www.virustotal.com/gui/join-us'
+  },
+  { 
+    name: 'whoisxml', 
+    label: 'WhoisXML API', 
+    description: 'Discover IP ranges and CIDRs by organization name',
+    free: false,
+    hasUser: false,
+    needsOrgNames: true,
+    link: 'https://whoisxmlapi.com/'
+  },
+  { 
+    name: 'otx', 
+    label: 'AlienVault OTX', 
+    description: 'Threat intelligence passive DNS and URL data (free API key available)',
+    free: true,
+    hasUser: false,
+    link: 'https://otx.alienvault.com/api'
+  },
+  { 
+    name: 'whoxy', 
+    label: 'Whoxy', 
+    description: 'Reverse WHOIS lookup by domain registration email',
+    free: false,
+    hasUser: false,
+    needsEmails: true,
+    link: 'https://www.whoxy.com/'
+  },
 ];
 
 export default function SettingsPage() {
@@ -44,6 +90,16 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [apiUsers, setApiUsers] = useState<Record<string, string>>({});
+  
+  // Organization names for WhoisXML
+  const [orgNames, setOrgNames] = useState<string[]>([]);
+  const [newOrgName, setNewOrgName] = useState('');
+  
+  // Registration emails for Whoxy
+  const [regEmails, setRegEmails] = useState<string[]>([]);
+  const [newRegEmail, setNewRegEmail] = useState('');
+  
   const { toast } = useToast();
 
   const fetchData = async () => {
@@ -65,6 +121,17 @@ export default function SettingsPage() {
     try {
       const data = await api.getApiConfigs(orgId);
       setApiConfigs(data.configs || []);
+      
+      // Load existing organization names and emails from config
+      const whoisxmlConfig = data.configs?.find((c: ApiConfig) => c.service_name === 'whoisxml');
+      if (whoisxmlConfig?.config?.organization_names) {
+        setOrgNames(whoisxmlConfig.config.organization_names);
+      }
+      
+      const whoxyConfig = data.configs?.find((c: ApiConfig) => c.service_name === 'whoxy');
+      if (whoxyConfig?.config?.registration_emails) {
+        setRegEmails(whoxyConfig.config.registration_emails);
+      }
     } catch (error) {
       console.error('Failed to fetch API configs:', error);
     }
@@ -77,6 +144,9 @@ export default function SettingsPage() {
   useEffect(() => {
     if (selectedOrg) {
       fetchApiConfigs(parseInt(selectedOrg));
+      // Reset form state
+      setOrgNames([]);
+      setRegEmails([]);
     }
   }, [selectedOrg]);
 
@@ -97,10 +167,27 @@ export default function SettingsPage() {
 
     setSaving(serviceName);
     try {
-      await api.saveApiConfig(parseInt(selectedOrg), {
+      const payload: any = {
         service_name: serviceName,
         api_key: key,
-      });
+      };
+      
+      // Add user for VirusTotal
+      if (serviceName === 'virustotal' && apiUsers[serviceName]) {
+        payload.api_user = apiUsers[serviceName];
+      }
+      
+      // Add organization names for WhoisXML
+      if (serviceName === 'whoisxml' && orgNames.length > 0) {
+        payload.config = { organization_names: orgNames };
+      }
+      
+      // Add registration emails for Whoxy
+      if (serviceName === 'whoxy' && regEmails.length > 0) {
+        payload.config = { registration_emails: regEmails };
+      }
+      
+      await api.saveApiConfig(parseInt(selectedOrg), payload);
       
       toast({
         title: 'Success',
@@ -108,6 +195,7 @@ export default function SettingsPage() {
       });
       
       setApiKeys({ ...apiKeys, [serviceName]: '' });
+      setApiUsers({ ...apiUsers, [serviceName]: '' });
       fetchApiConfigs(parseInt(selectedOrg));
     } catch (error: any) {
       toast({
@@ -120,9 +208,31 @@ export default function SettingsPage() {
     }
   };
 
+  const addOrgName = () => {
+    if (newOrgName && !orgNames.includes(newOrgName)) {
+      setOrgNames([...orgNames, newOrgName]);
+      setNewOrgName('');
+    }
+  };
+
+  const removeOrgName = (name: string) => {
+    setOrgNames(orgNames.filter(n => n !== name));
+  };
+
+  const addRegEmail = () => {
+    if (newRegEmail && !regEmails.includes(newRegEmail)) {
+      setRegEmails([...regEmails, newRegEmail]);
+      setNewRegEmail('');
+    }
+  };
+
+  const removeRegEmail = (email: string) => {
+    setRegEmails(regEmails.filter(e => e !== email));
+  };
+
   return (
     <MainLayout>
-      <Header title="Settings" subtitle="Configure platform settings and integrations" />
+      <Header title="Settings" subtitle="Configure API keys and platform settings" />
 
       <div className="p-6 space-y-6">
         {/* Organization Selector */}
@@ -133,7 +243,7 @@ export default function SettingsPage() {
               Organization Settings
             </CardTitle>
             <CardDescription>
-              API keys are configured per organization
+              API keys and discovery settings are configured per organization
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -155,6 +265,90 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* Discovery Configuration */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Building2 className="h-5 w-5" />
+              Organization & Email Discovery Settings
+            </CardTitle>
+            <CardDescription>
+              Configure organization names for IP range discovery and registration emails for reverse WHOIS lookups
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/* Organization Names for WhoisXML */}
+            <div className="space-y-3">
+              <Label className="flex items-center gap-2">
+                <Building2 className="h-4 w-4" />
+                Organization Names (for WhoisXML IP Range Discovery)
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                Enter company/organization names to discover IP ranges and CIDRs they own
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="e.g., Rockwell Automation"
+                  value={newOrgName}
+                  onChange={(e) => setNewOrgName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addOrgName()}
+                />
+                <Button onClick={addOrgName} variant="outline">
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {orgNames.map((name) => (
+                  <Badge key={name} variant="secondary" className="flex items-center gap-1 px-3 py-1">
+                    {name}
+                    <button onClick={() => removeOrgName(name)} className="ml-1 hover:text-destructive">
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+                {orgNames.length === 0 && (
+                  <span className="text-sm text-muted-foreground">No organization names configured</span>
+                )}
+              </div>
+            </div>
+
+            {/* Registration Emails for Whoxy */}
+            <div className="space-y-3">
+              <Label className="flex items-center gap-2">
+                <Mail className="h-4 w-4" />
+                Registration Emails (for Whoxy Reverse WHOIS)
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                Enter email addresses used to register domains to discover all domains registered with those emails
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="e.g., domains@yourcompany.com"
+                  value={newRegEmail}
+                  onChange={(e) => setNewRegEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addRegEmail()}
+                />
+                <Button onClick={addRegEmail} variant="outline">
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {regEmails.map((email) => (
+                  <Badge key={email} variant="secondary" className="flex items-center gap-1 px-3 py-1">
+                    {email}
+                    <button onClick={() => removeRegEmail(email)} className="ml-1 hover:text-destructive">
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+                {regEmails.length === 0 && (
+                  <span className="text-sm text-muted-foreground">No registration emails configured</span>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* API Keys */}
         <Card>
           <CardHeader>
@@ -163,7 +357,7 @@ export default function SettingsPage() {
               External Discovery API Keys
             </CardTitle>
             <CardDescription>
-              Configure API keys to enable additional discovery sources. These keys are encrypted at rest.
+              Configure API keys to enable additional discovery sources. Keys are encrypted at rest.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -188,10 +382,18 @@ export default function SettingsPage() {
                           </Badge>
                         )}
                         <Badge variant={service.free ? 'secondary' : 'outline'}>
-                          {service.free ? 'Free Tier' : 'Paid'}
+                          {service.free ? 'Free Tier Available' : 'Paid'}
                         </Badge>
                       </div>
                       <p className="text-sm text-muted-foreground mt-1">{service.description}</p>
+                      <a 
+                        href={service.link} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-xs text-primary hover:underline"
+                      >
+                        Get API Key →
+                      </a>
                     </div>
                   </div>
                   
@@ -204,24 +406,37 @@ export default function SettingsPage() {
                     </div>
                   )}
                   
-                  <div className="flex gap-2">
-                    <Input
-                      type="password"
-                      placeholder={config ? 'Enter new API key to update...' : 'Enter API key...'}
-                      value={apiKeys[service.name] || ''}
-                      onChange={(e) => setApiKeys({ ...apiKeys, [service.name]: e.target.value })}
-                      className="flex-1"
-                    />
-                    <Button
-                      onClick={() => handleSaveApiKey(service.name)}
-                      disabled={saving === service.name || !apiKeys[service.name]}
-                    >
-                      {saving === service.name ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        'Save'
-                      )}
-                    </Button>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <Input
+                        type="password"
+                        placeholder={config ? 'Enter new API key to update...' : 'Enter API key...'}
+                        value={apiKeys[service.name] || ''}
+                        onChange={(e) => setApiKeys({ ...apiKeys, [service.name]: e.target.value })}
+                        className="flex-1"
+                      />
+                      <Button
+                        onClick={() => handleSaveApiKey(service.name)}
+                        disabled={saving === service.name || !apiKeys[service.name]}
+                      >
+                        {saving === service.name ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          'Save'
+                        )}
+                      </Button>
+                    </div>
+                    
+                    {service.hasUser && (
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="API Username (optional)"
+                          value={apiUsers[service.name] || ''}
+                          onChange={(e) => setApiUsers({ ...apiUsers, [service.name]: e.target.value })}
+                          className="flex-1"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -232,26 +447,29 @@ export default function SettingsPage() {
         {/* Free Sources Info */}
         <Card>
           <CardHeader>
-            <CardTitle>Free Discovery Sources</CardTitle>
-            <CardDescription>These sources work without API keys</CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <Globe className="h-5 w-5" />
+              Free Discovery Sources (No API Key Required)
+            </CardTitle>
+            <CardDescription>These sources are automatically used during discovery</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-3 bg-muted rounded-lg">
-                <p className="font-medium">🔐 crt.sh</p>
-                <p className="text-xs text-muted-foreground">Certificate Transparency</p>
+                <p className="font-medium">🔐 Certificate Transparency</p>
+                <p className="text-xs text-muted-foreground">crt.sh - SSL/TLS certificate logs</p>
               </div>
               <div className="p-3 bg-muted rounded-lg">
                 <p className="font-medium">📜 Wayback Machine</p>
-                <p className="text-xs text-muted-foreground">Historical URLs</p>
+                <p className="text-xs text-muted-foreground">Historical URLs and subdomains</p>
               </div>
               <div className="p-3 bg-muted rounded-lg">
                 <p className="font-medium">🌐 RapidDNS</p>
-                <p className="text-xs text-muted-foreground">DNS Enumeration</p>
+                <p className="text-xs text-muted-foreground">DNS enumeration</p>
               </div>
               <div className="p-3 bg-muted rounded-lg">
                 <p className="font-medium">☁️ Microsoft 365</p>
-                <p className="text-xs text-muted-foreground">Federated Domains</p>
+                <p className="text-xs text-muted-foreground">Federated domain discovery</p>
               </div>
             </div>
           </CardContent>
