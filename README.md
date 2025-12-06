@@ -34,6 +34,7 @@
 │              │  • Katana (Web Crawler)     │                               │
 │              │  • Masscan (Mass Scanner)   │                               │
 │              │  • EyeWitness (Screenshots) │                               │
+│              │  • WaybackURLs (Historical) │                               │
 │              └─────────────────────────────┘                               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -50,6 +51,7 @@
 - **Screenshot Gallery**: Visual snapshots of discovered web assets
 - **Scan Management**: Create, monitor, and manage security scans
 - **Port Scanner Results**: View open ports and services across assets
+- **Wayback URLs**: Historical URL discovery with interesting pattern detection
 
 ### Backend Capabilities
 - **Multi-tenant Architecture**: Support for multiple organizations with RBAC
@@ -58,13 +60,28 @@
 - **JWT Authentication**: Secure API with access tokens
 - **Role-Based Access**: Admin, Analyst, and Viewer roles
 
-### Discovery Features
-- **Full Domain Discovery**: Automatically discover:
-  - DNS records (A, AAAA, MX, NS, TXT, CNAME, SOA)
-  - Subdomains via certificate transparency logs (crt.sh)
-  - IP address resolution
-  - HTTP/HTTPS endpoint probing
-- **External Discovery**: Integration with VirusTotal, AlienVault OTX, Wayback Machine, RapidDNS, WhoisXML, Whoxy
+### External Discovery (HISAC Integration)
+Automated discovery from multiple intelligence sources:
+
+| Source | Description | API Key Required |
+|--------|-------------|------------------|
+| **Certificate Transparency (crt.sh)** | SSL/TLS certificate logs | ❌ Free |
+| **Wayback Machine** | Historical URLs and subdomains | ❌ Free |
+| **RapidDNS** | DNS enumeration | ❌ Free |
+| **Microsoft 365** | Federated domain discovery | ❌ Free |
+| **AlienVault OTX** | Threat intelligence passive DNS | ✅ Free tier |
+| **VirusTotal** | Subdomain database | ✅ Paid |
+| **WhoisXML API** | IP ranges by organization name | ✅ Paid |
+| **Whoxy** | Reverse WHOIS by registration email | ✅ Paid |
+
+### Wayback URLs Feature
+Fetch historical URLs from the [Wayback Machine](https://web.archive.org) using [waybackurls](https://github.com/tomnomnom/waybackurls):
+- Discover old/forgotten endpoints
+- Find API endpoints with parameters
+- Detect backup files, configs, and sensitive data
+- Automatic detection of interesting patterns (admin, api, .env, .sql, etc.)
+- File extension analysis
+- Export results to JSON
 
 ### Security Tools Integration
 | Tool | Description | Use Case |
@@ -77,6 +94,7 @@
 | **Katana** | Web crawler | URL discovery |
 | **Masscan** | Mass port scanner | Large-scale scanning |
 | **EyeWitness** | Screenshot capture | Visual reconnaissance |
+| **WaybackURLs** | Historical URL fetcher | Attack surface history |
 
 ## 🛠️ Tech Stack
 
@@ -182,6 +200,21 @@ db.close()
 
 ⚠️ **Change the default password immediately!**
 
+## ⚙️ Configuring API Keys
+
+To enable paid discovery sources, configure API keys in the **Settings** page:
+
+1. Navigate to **Settings** in the sidebar
+2. Select your organization
+3. Enter API keys for:
+   - **VirusTotal** - Get key at [virustotal.com](https://www.virustotal.com/gui/join-us)
+   - **WhoisXML API** - Get key at [whoisxmlapi.com](https://whoisxmlapi.com/)
+   - **AlienVault OTX** - Get key at [otx.alienvault.com](https://otx.alienvault.com/api) (free)
+   - **Whoxy** - Get key at [whoxy.com](https://www.whoxy.com/)
+
+4. For **WhoisXML**: Add organization names (e.g., "Rockwell Automation") to discover IP ranges
+5. For **Whoxy**: Add registration emails to discover domains
+
 ## ☁️ AWS EC2 Deployment
 
 ### 1. Launch EC2 Instance
@@ -241,7 +274,7 @@ http://<your-ec2-public-ip>:3000
 theforcesecurity_ASM/
 ├── frontend/                    # Next.js Frontend
 │   ├── src/
-│   │   ├── app/                # Pages (dashboard, assets, vulns, etc.)
+│   │   ├── app/                # Pages (dashboard, assets, discovery, wayback, etc.)
 │   │   ├── components/         # UI components
 │   │   ├── lib/               # API client, utilities
 │   │   └── store/             # State management
@@ -254,7 +287,7 @@ theforcesecurity_ASM/
 │   │   ├── api/routes/        # API endpoints
 │   │   ├── models/            # Database models
 │   │   ├── schemas/           # Pydantic schemas
-│   │   ├── services/          # Business logic
+│   │   ├── services/          # Business logic (discovery, waybackurls, etc.)
 │   │   └── workers/           # Background workers
 │   ├── Dockerfile             # Includes security tools
 │   └── requirements.txt
@@ -350,7 +383,16 @@ sudo docker system prune -a -f
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/discovery/run` | Run discovery |
-| POST | `/api/external-discovery/run` | External discovery |
+| POST | `/api/external-discovery/run` | External discovery (CT, Wayback, etc.) |
+| GET | `/api/external-discovery/services` | List available sources |
+
+### Wayback URLs
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/waybackurls/status` | Check tool status |
+| POST | `/api/waybackurls/fetch` | Fetch URLs for single domain |
+| POST | `/api/waybackurls/fetch/batch` | Fetch URLs for multiple domains |
+| POST | `/api/waybackurls/fetch/organization` | Fetch URLs for all org assets |
 
 Full API documentation available at `/api/docs`
 
@@ -361,6 +403,8 @@ MIT License - See LICENSE file for details.
 ## 🙏 Acknowledgments
 
 - [ProjectDiscovery](https://github.com/projectdiscovery) for Nuclei and security tools
+- [tomnomnom](https://github.com/tomnomnom/waybackurls) for waybackurls
 - [RedSiege](https://github.com/RedSiege) for EyeWitness
 - [shadcn/ui](https://ui.shadcn.com/) for React components
 - [crt.sh](https://crt.sh) for certificate transparency data
+- HISAC for discovery script inspiration
