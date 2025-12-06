@@ -21,7 +21,8 @@ class ApiClient {
 
   constructor() {
     this.client = axios.create({
-      baseURL: `${API_URL}/api`,
+      // FastAPI is mounted at /api/v1 (see backend/app/core/config.py API_PREFIX)
+      baseURL: `${API_URL}/api/v1`,
       headers: {
         'Content-Type': 'application/json',
       },
