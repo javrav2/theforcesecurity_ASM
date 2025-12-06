@@ -1,6 +1,19 @@
 import axios, { AxiosError, AxiosInstance } from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Determine API URL based on environment
+// In browser: use same host with port 8000
+// In Node.js (SSR): use environment variable or localhost
+const getApiUrl = () => {
+  if (typeof window !== 'undefined') {
+    // Running in browser - use the same hostname but port 8000
+    const hostname = window.location.hostname;
+    return `http://${hostname}:8000`;
+  }
+  // Running on server (SSR) - use env var or default
+  return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+};
+
+const API_URL = getApiUrl();
 
 class ApiClient {
   private client: AxiosInstance;
