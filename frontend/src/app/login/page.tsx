@@ -43,23 +43,24 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background grid-pattern p-4">
+    <div className="min-h-screen flex items-center justify-center bg-[#0a1628] p-4">
       {/* Background decorations */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/20 rounded-full blur-3xl" />
-        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-primary/10 rounded-full blur-3xl" />
+        <div className="absolute -top-40 -right-40 w-80 h-80 bg-blue-600/10 rounded-full blur-3xl" />
+        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-600/5 rounded-full blur-3xl" />
       </div>
 
-      <Card className="w-full max-w-md relative z-10 border-border/50 bg-card/80 backdrop-blur-sm">
+      <Card className="w-full max-w-md relative z-10 border-blue-900/50 bg-[#0f1d32]/90 backdrop-blur-sm">
         <CardHeader className="text-center space-y-4">
-          <div className="mx-auto w-16 h-16 rounded-xl bg-primary/10 flex items-center justify-center glow-green">
-            <Shield className="w-8 h-8 text-primary" />
+          <div className="mx-auto w-20 h-20 flex items-center justify-center">
+            <img src="/logo.svg" alt="The Force Security" className="w-full h-full text-white" style={{ filter: 'invert(1)' }} />
           </div>
           <div>
-            <CardTitle className="text-2xl font-bold">TheForce Security</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Attack Surface Management Platform
+            <CardTitle className="text-2xl font-bold tracking-wide">THE FORCE</CardTitle>
+            <CardDescription className="text-blue-300/80 tracking-widest text-sm">
+              SECURITY
             </CardDescription>
+            <p className="text-xs text-muted-foreground mt-2">Attack Surface Management Platform</p>
           </div>
         </CardHeader>
 

@@ -1,0 +1,43 @@
+<svg viewBox="0 0 200 240" xmlns="http://www.w3.org/2000/svg">
+  <!-- Shield outline -->
+  <path d="M100 10 L180 40 L180 120 C180 170 140 210 100 230 C60 210 20 170 20 120 L20 40 Z" 
+        fill="none" 
+        stroke="currentColor" 
+        stroke-width="6"/>
+  
+  <!-- Left lightsaber -->
+  <g>
+    <!-- Handle -->
+    <rect x="55" y="130" width="12" height="45" rx="2" fill="currentColor"/>
+    <rect x="53" y="135" width="16" height="4" fill="currentColor"/>
+    <rect x="53" y="145" width="16" height="4" fill="currentColor"/>
+    <rect x="53" y="155" width="16" height="4" fill="currentColor"/>
+    <rect x="53" y="165" width="16" height="4" fill="currentColor"/>
+    <!-- Blade -->
+    <rect x="58" y="50" width="6" height="80" rx="3" fill="currentColor"/>
+  </g>
+  
+  <!-- Right lightsaber -->
+  <g>
+    <!-- Handle -->
+    <rect x="133" y="130" width="12" height="45" rx="2" fill="currentColor"/>
+    <rect x="131" y="135" width="16" height="4" fill="currentColor"/>
+    <rect x="131" y="145" width="16" height="4" fill="currentColor"/>
+    <rect x="131" y="155" width="16" height="4" fill="currentColor"/>
+    <rect x="131" y="165" width="16" height="4" fill="currentColor"/>
+    <!-- Blade -->
+    <rect x="136" y="50" width="6" height="80" rx="3" fill="currentColor"/>
+  </g>
+  
+  <!-- Center blade/spike -->
+  <path d="M100 35 L103 130 L100 140 L97 130 Z" fill="currentColor"/>
+  
+  <!-- Star/spark -->
+  <g transform="translate(100, 130)">
+    <line x1="0" y1="-12" x2="0" y2="12" stroke="currentColor" stroke-width="2"/>
+    <line x1="-12" y1="0" x2="12" y2="0" stroke="currentColor" stroke-width="2"/>
+    <line x1="-8" y1="-8" x2="8" y2="8" stroke="currentColor" stroke-width="1.5"/>
+    <line x1="8" y1="-8" x2="-8" y2="8" stroke="currentColor" stroke-width="1.5"/>
+  </g>
+</svg>
+
