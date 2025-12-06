@@ -203,13 +203,49 @@ class ApiClient {
   }
 
   // External Discovery
-  async getExternalDiscoveryServices() {
-    const response = await this.client.get('/external-discovery/services');
+  async getExternalDiscoveryServices(organizationId: number) {
+    const response = await this.client.get('/external-discovery/services', {
+      params: { organization_id: organizationId }
+    });
     return response.data;
   }
 
-  async runExternalDiscovery(data: { organization_id: number; domain: string; services?: string[] }) {
+  async runExternalDiscovery(data: { 
+    organization_id: number; 
+    domain: string; 
+    include_paid_sources?: boolean;
+    include_free_sources?: boolean;
+    organization_names?: string[];
+    registration_emails?: string[];
+    create_assets?: boolean;
+    skip_existing?: boolean;
+  }) {
     const response = await this.client.post('/external-discovery/run', data);
+    return response.data;
+  }
+
+  async runSingleSourceDiscovery(data: {
+    organization_id: number;
+    domain: string;
+    source: string;
+    create_assets?: boolean;
+  }) {
+    const response = await this.client.post('/external-discovery/run/source', data);
+    return response.data;
+  }
+
+  async getApiConfigs(organizationId: number) {
+    const response = await this.client.get(`/external-discovery/configs/${organizationId}`);
+    return response.data;
+  }
+
+  async saveApiConfig(organizationId: number, data: {
+    service_name: string;
+    api_key: string;
+    api_user?: string;
+    api_secret?: string;
+  }) {
+    const response = await this.client.post(`/external-discovery/configs/${organizationId}`, data);
     return response.data;
   }
 
