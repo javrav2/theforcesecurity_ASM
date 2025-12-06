@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Search,
   Users,
+  History,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/store/auth';
@@ -31,6 +32,7 @@ const navigation = [
   { name: 'Scans', href: '/scans', icon: ScanLine },
   { name: 'Ports', href: '/ports', icon: Network },
   { name: 'Discovery', href: '/discovery', icon: Search },
+  { name: 'Wayback URLs', href: '/wayback', icon: History },
 ];
 
 const adminNavigation = [

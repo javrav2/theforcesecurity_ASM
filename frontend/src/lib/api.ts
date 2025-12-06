@@ -271,6 +271,50 @@ class ApiClient {
     return response.data;
   }
 
+  // Wayback URLs
+  async getWaybackStatus() {
+    const response = await this.client.get('/waybackurls/status');
+    return response.data;
+  }
+
+  async fetchWaybackUrls(data: {
+    domain: string;
+    no_subs?: boolean;
+    timeout?: number;
+  }) {
+    const response = await this.client.post('/waybackurls/fetch', data);
+    return response.data;
+  }
+
+  async fetchWaybackUrlsBatch(data: {
+    domains: string[];
+    no_subs?: boolean;
+    timeout?: number;
+    max_concurrent?: number;
+  }) {
+    const response = await this.client.post('/waybackurls/fetch/batch', data);
+    return response.data;
+  }
+
+  async fetchWaybackUrlsForOrganization(data: {
+    organization_id: number;
+    include_subdomains?: boolean;
+    timeout_per_domain?: number;
+    max_concurrent?: number;
+  }) {
+    const response = await this.client.post('/waybackurls/fetch/organization', data);
+    return response.data;
+  }
+
+  // Generic methods for direct API calls
+  async get(url: string, params?: any) {
+    return this.client.get(url, { params });
+  }
+
+  async post(url: string, data?: any) {
+    return this.client.post(url, data);
+  }
+
   // Health check
   async healthCheck() {
     const response = await axios.get(`${API_URL}/health`);

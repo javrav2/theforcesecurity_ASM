@@ -59,13 +59,15 @@ RUN wget -q https://go.dev/dl/go1.21.5.linux-amd64.tar.gz \
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPATH="/root/go"
 
-# Install ProjectDiscovery tools
+# Install ProjectDiscovery tools and other security utilities
 RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
     && go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest \
     && go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest \
     && go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest \
     && go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest \
-    && go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+    && go install -v github.com/projectdiscovery/katana/cmd/katana@latest \
+    # waybackurls - Fetch historical URLs from Wayback Machine
+    && go install -v github.com/tomnomnom/waybackurls@latest
 
 # Update nuclei templates
 RUN nuclei -update-templates || true

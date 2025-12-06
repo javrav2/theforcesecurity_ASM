@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db.database import engine, Base
-from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery
+from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls
 
 # Configure logging
 logging.basicConfig(
@@ -69,6 +69,7 @@ app.include_router(nuclei.router, prefix=settings.API_PREFIX)
 app.include_router(ports.router, prefix=settings.API_PREFIX)
 app.include_router(screenshots.router, prefix=settings.API_PREFIX)
 app.include_router(external_discovery.router, prefix=settings.API_PREFIX)
+app.include_router(waybackurls.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")
