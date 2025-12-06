@@ -58,8 +58,10 @@ def login(
     db: Session = Depends(get_db)
 ):
     """Authenticate user and return JWT tokens."""
-    # Find user by username
-    user = db.query(User).filter(User.username == form_data.username).first()
+    # Find user by username OR email (for flexibility)
+    user = db.query(User).filter(
+        (User.username == form_data.username) | (User.email == form_data.username)
+    ).first()
     
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
