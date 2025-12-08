@@ -75,14 +75,23 @@ def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is disabled"
         )
+
+    # Ensure username is populated for JWT subject; fallback to email if missing
+    if not user.username:
+        # Backfill username with email to keep tokens consistent
+        user.username = user.email
+        db.add(user)
+        db.commit()
+        db.refresh(user)
     
     # Update last login
     user.last_login = datetime.utcnow()
     db.commit()
     
     # Create tokens
-    access_token = create_access_token(data={"sub": user.username})
-    refresh_token = create_refresh_token(data={"sub": user.username})
+    subject = user.username or user.email
+    access_token = create_access_token(data={"sub": subject})
+    refresh_token = create_refresh_token(data={"sub": subject})
     
     return Token(
         access_token=access_token,

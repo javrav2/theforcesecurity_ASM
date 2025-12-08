@@ -38,7 +38,7 @@ def init_db():
         admin_user = User(
             email="admin@theforce.security",
             username="admin",
-            hashed_password=get_password_hash("changeme123"),
+            hashed_password=get_password_hash("admin123"),
             full_name="System Administrator",
             role=UserRole.ADMIN,
             is_superuser=True,
@@ -88,6 +88,8 @@ def init_db():
 if __name__ == "__main__":
     print("Initializing database...")
     init_db()
+
+
 
 
 

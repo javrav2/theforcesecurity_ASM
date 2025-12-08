@@ -31,11 +31,13 @@ def get_current_user(
     if payload.get("type") != "access":
         raise credentials_exception
     
-    username: str = payload.get("sub")
-    if username is None:
+    subject: str = payload.get("sub")
+    if subject is None:
         raise credentials_exception
     
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(
+        (User.username == subject) | (User.email == subject)
+    ).first()
     if user is None:
         raise credentials_exception
     
@@ -87,6 +89,8 @@ class RoleChecker:
 require_admin = RoleChecker([UserRole.ADMIN])
 require_analyst = RoleChecker([UserRole.ADMIN, UserRole.ANALYST])
 require_viewer = RoleChecker([UserRole.ADMIN, UserRole.ANALYST, UserRole.VIEWER])
+
+
 
 
 

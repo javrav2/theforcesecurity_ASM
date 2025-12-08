@@ -72,3 +72,5 @@ export function downloadCSV(data: Record<string, any>[], filename: string) {
   link.click();
 }
 
+
+

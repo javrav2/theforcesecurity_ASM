@@ -242,3 +242,5 @@ async def get_interesting_patterns():
         "description": "URLs matching these patterns are flagged as potentially interesting"
     }
 
+
+

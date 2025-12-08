@@ -174,6 +174,7 @@ if existing:
 else:
     admin = User(
         email='admin@theforce.security',
+        username='admin',  # username is required for JWT subject
         hashed_password=get_password_hash('admin123'),
         full_name='Admin User',
         role='admin',
