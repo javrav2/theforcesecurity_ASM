@@ -245,19 +245,28 @@ class ExternalDiscoveryService:
             return []
 
     # =========================================================================
-    # Whoxy - Reverse WHOIS by Email
+    # Whoxy - Full Domain Reconnaissance (WHOIS + Reverse WHOIS)
     # =========================================================================
     
     async def discover_whoxy(
         self,
-        registration_emails: Optional[List[str]] = None
+        domain: Optional[str] = None,
+        registration_emails: Optional[List[str]] = None,
+        organization_names: Optional[List[str]] = None
     ) -> DiscoveryResult:
         """
-        Discover domains using Whoxy reverse WHOIS by registration email.
+        Discover domains using Whoxy with full reconnaissance workflow:
+        1. WHOIS lookup on target domain (if provided)
+        2. Extract emails and company names from WHOIS
+        3. Reverse WHOIS by emails and companies
         
         Args:
-            registration_emails: List of email addresses used for domain registration
+            domain: Target domain for WHOIS lookup
+            registration_emails: Additional email addresses for reverse WHOIS
+            organization_names: Additional company names for reverse WHOIS
         """
+        from app.services.whoxy_service import get_whoxy_service
+        
         start_time = time.time()
         result = DiscoveryResult(source=ExternalService.WHOXY, success=False)
         
@@ -268,60 +277,42 @@ class ExternalDiscoveryService:
         
         config = self.get_config(ExternalService.WHOXY)
         emails = registration_emails or config.get("registration_emails", [])
+        companies = organization_names or config.get("organization_names", [])
         
-        if not emails:
-            result.error = "No registration emails configured"
+        # If no domain, emails, or companies to search, return error
+        if not domain and not emails and not companies:
+            result.error = "No domain, registration emails, or organization names configured"
             return result
         
-        base_url = "https://api.whoxy.com"
-        all_domains = set()
+        try:
+            whoxy_service = get_whoxy_service(api_key)
+            
+            # Full discovery workflow
+            discovery_data = await whoxy_service.discover_related_domains(
+                domain=domain or "",
+                additional_emails=emails,
+                additional_companies=companies,
+                max_pages_per_query=5  # Limit pages to control API usage
+            )
+            
+            result.success = True
+            result.domains = discovery_data.get("related_domains", [])
+            result.raw_data = {
+                "whois_data": discovery_data.get("whois_data", {}),
+                "discovered_emails": discovery_data.get("discovered_emails", []),
+                "discovered_companies": discovery_data.get("discovered_companies", []),
+                "domains_by_email": discovery_data.get("domains_by_email", {}),
+                "domains_by_company": discovery_data.get("domains_by_company", {}),
+                "total_domains_found": discovery_data.get("total_domains_found", 0)
+            }
+            
+            logger.info(f"Whoxy discovery found {len(result.domains)} domains")
+            
+        except Exception as e:
+            logger.error(f"Whoxy discovery error: {e}")
+            result.error = str(e)
         
-        for email in emails:
-            try:
-                # Get first page to find total pages
-                params = {
-                    "key": api_key,
-                    "reverse": "whois",
-                    "email": email,
-                    "mode": "micro",
-                    "page": 1
-                }
-                
-                success, data = await self._make_request(f"{base_url}/", params=params)
-                
-                if not success:
-                    logger.warning(f"Whoxy error for {email}: {data}")
-                    continue
-                
-                total_pages = data.get("total_pages", 1)
-                
-                # Process first page
-                if "search_result" in data:
-                    for item in data["search_result"]:
-                        domain = item.get("domain_name", "")
-                        if domain:
-                            all_domains.add(domain.lower())
-                
-                # Get remaining pages
-                for page in range(2, min(total_pages + 1, 20)):  # Limit to 20 pages
-                    params["page"] = page
-                    success, page_data = await self._make_request(f"{base_url}/", params=params)
-                    
-                    if success and "search_result" in page_data:
-                        for item in page_data["search_result"]:
-                            domain = item.get("domain_name", "")
-                            if domain:
-                                all_domains.add(domain.lower())
-                    
-                    await asyncio.sleep(0.5)  # Rate limiting
-                
-            except Exception as e:
-                logger.error(f"Whoxy error for {email}: {e}")
-        
-        result.success = True
-        result.domains = list(all_domains)
         result.elapsed_time = time.time() - start_time
-        
         return result
 
     # =========================================================================
@@ -723,8 +714,13 @@ class ExternalDiscoveryService:
             if self.get_api_key(ExternalService.OTX):
                 tasks.append(("otx", self.discover_otx(domain)))
             
-            if self.get_api_key(ExternalService.WHOXY) and registration_emails:
-                tasks.append(("whoxy", self.discover_whoxy(registration_emails)))
+            if self.get_api_key(ExternalService.WHOXY):
+                # Whoxy can work with domain, emails, or company names
+                tasks.append(("whoxy", self.discover_whoxy(
+                    domain=domain,
+                    registration_emails=registration_emails,
+                    organization_names=organization_names
+                )))
             
             if self.get_api_key(ExternalService.WHOISXML) and organization_names:
                 tasks.append(("whoisxml", self.discover_whoisxml(organization_names)))
@@ -796,6 +792,14 @@ class ExternalDiscoveryService:
             aggregated["domains"].add(sub)
         
         return aggregated
+
+
+
+
+
+
+
+
 
 
 

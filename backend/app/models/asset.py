@@ -85,6 +85,9 @@ class Asset(Base):
     port_services = relationship("PortService", back_populates="asset", cascade="all, delete-orphan")
     screenshots = relationship("Screenshot", back_populates="asset", cascade="all, delete-orphan", order_by="desc(Screenshot.captured_at)")
     
+    # Labels (many-to-many relationship)
+    labels = relationship("Label", secondary="asset_labels", back_populates="assets")
+    
     # HTTP info (for web assets)
     http_status = Column(Integer, nullable=True)
     http_title = Column(String(500), nullable=True)
@@ -95,6 +98,21 @@ class Asset(Base):
     
     # SSL/TLS info
     ssl_info = Column(JSON, default=dict)  # Certificate details
+    
+    # Geo-location info (for IP addresses and resolved domains)
+    ip_address = Column(String(45), nullable=True)  # Resolved IP address
+    latitude = Column(String(20), nullable=True)
+    longitude = Column(String(20), nullable=True)
+    city = Column(String(100), nullable=True)
+    country = Column(String(100), nullable=True)
+    country_code = Column(String(10), nullable=True)
+    isp = Column(String(200), nullable=True)
+    asn = Column(String(50), nullable=True)
+    
+    # Scope and ownership tracking
+    in_scope = Column(Boolean, default=True, index=True)  # Is this asset in scope for scanning
+    is_owned = Column(Boolean, default=False, index=True)  # Is this asset confirmed owned by the org
+    netblock_id = Column(Integer, ForeignKey("netblocks.id"), nullable=True)  # Associated netblock if any
     
     @property
     def open_ports_count(self) -> int:

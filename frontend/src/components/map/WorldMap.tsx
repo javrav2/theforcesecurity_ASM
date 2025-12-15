@@ -1,8 +1,11 @@
 'use client';
 
 import React, { useMemo } from 'react';
+import { ComposableMap, Geographies, Geography, Marker } from 'react-simple-maps';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { MapPin, Globe, AlertTriangle } from 'lucide-react';
+
+const geoUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
 interface GeoLocation {
   latitude: number;
@@ -15,7 +18,7 @@ interface GeoLocation {
 interface Asset {
   id: number;
   value: string;
-  type: string;
+  type?: string;
   findingsCount: number;
   geoLocation?: GeoLocation;
 }
@@ -25,80 +28,45 @@ interface WorldMapProps {
   onAssetClick?: (asset: Asset) => void;
 }
 
-// SVG World Map paths - simplified continents
-const worldMapPaths = {
-  // North America
-  northAmerica: "M 80 60 Q 120 40 180 50 Q 220 45 240 80 Q 220 120 180 130 Q 140 140 100 120 Q 60 100 80 60",
-  // South America
-  southAmerica: "M 150 160 Q 180 150 190 180 Q 200 230 180 280 Q 160 300 140 280 Q 130 240 140 200 Q 145 170 150 160",
-  // Europe
-  europe: "M 280 50 Q 320 40 350 55 Q 370 70 360 90 Q 340 100 300 95 Q 270 90 280 50",
-  // Africa
-  africa: "M 280 110 Q 330 100 350 130 Q 360 180 340 230 Q 300 250 270 230 Q 250 180 260 140 Q 270 120 280 110",
-  // Asia
-  asia: "M 360 40 Q 450 30 520 60 Q 550 100 520 140 Q 470 160 420 150 Q 380 140 370 100 Q 360 70 360 40",
-  // Australia
-  australia: "M 480 200 Q 530 190 550 210 Q 560 240 540 260 Q 500 270 480 250 Q 470 220 480 200",
-};
-
 export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
   const geoAssets = useMemo(
     () => assets.filter(asset => asset.geoLocation),
     [assets]
   );
 
-  // Group assets by approximate region
-  const regionData = useMemo(() => {
-    const regions: Record<string, { count: number; findings: number; assets: Asset[] }> = {
-      'North America': { count: 0, findings: 0, assets: [] },
-      'South America': { count: 0, findings: 0, assets: [] },
-      'Europe': { count: 0, findings: 0, assets: [] },
-      'Africa': { count: 0, findings: 0, assets: [] },
-      'Asia': { count: 0, findings: 0, assets: [] },
-      'Australia': { count: 0, findings: 0, assets: [] },
-    };
-
+  // Group assets by country for heatmap effect
+  const countryData = useMemo(() => {
+    const counts: Record<string, number> = {};
     geoAssets.forEach(asset => {
-      const lat = asset.geoLocation!.latitude;
-      const lon = asset.geoLocation!.longitude;
-      
-      let region = 'Asia';
-      if (lon < -30 && lat > 0) region = 'North America';
-      else if (lon < -30 && lat <= 0) region = 'South America';
-      else if (lon >= -30 && lon < 60 && lat > 35) region = 'Europe';
-      else if (lon >= -30 && lon < 60 && lat <= 35) region = 'Africa';
-      else if (lon >= 100 && lat < 0) region = 'Australia';
-      
-      regions[region].count++;
-      regions[region].findings += asset.findingsCount;
-      regions[region].assets.push(asset);
+      const code = asset.geoLocation?.countryCode || 'Unknown';
+      counts[code] = (counts[code] || 0) + 1;
     });
-
-    return regions;
+    return counts;
   }, [geoAssets]);
 
-  const getRegionColor = (region: string) => {
-    const data = regionData[region];
-    if (!data || data.count === 0) return 'fill-muted/30';
-    if (data.findings > 10) return 'fill-red-500/60';
-    if (data.findings > 5) return 'fill-orange-500/50';
-    if (data.findings > 0) return 'fill-yellow-500/40';
-    return 'fill-green-500/40';
-  };
-
-  // Convert lat/lon to SVG coordinates
-  const geoToSvg = (lat: number, lon: number) => {
-    // Simple equirectangular projection
-    const x = (lon + 180) * (600 / 360);
-    const y = (90 - lat) * (300 / 180);
-    return { x, y };
+  const getCountryFill = (geo: any) => {
+    // Try different country code formats
+    const id = geo.id || geo.properties?.ISO_A2 || geo.properties?.ISO_A3;
+    const count = countryData[id] || 0;
+    
+    if (count === 0) return "hsl(220 20% 20%)"; // Dark background for empty
+    if (count >= 5) return "hsl(0 84% 60%)";    // Red - critical
+    if (count >= 3) return "hsl(25 95% 53%)";   // Orange - high  
+    if (count >= 1) return "hsl(48 96% 53%)";   // Yellow - medium
+    return "hsl(142 76% 36%)";                   // Green - low
   };
 
   const getMarkerColor = (findingsCount: number) => {
-    if (findingsCount > 5) return 'fill-red-500';
-    if (findingsCount > 2) return 'fill-orange-500';
-    if (findingsCount > 0) return 'fill-yellow-500';
-    return 'fill-green-500';
+    if (findingsCount > 5) return "hsl(0 84% 60%)";     // Red
+    if (findingsCount > 2) return "hsl(25 95% 53%)";    // Orange
+    if (findingsCount > 0) return "hsl(48 96% 53%)";    // Yellow
+    return "hsl(142 76% 36%)";                           // Green
+  };
+
+  const getMarkerSize = (findingsCount: number) => {
+    if (findingsCount > 5) return 8;
+    if (findingsCount > 2) return 6;
+    return 4;
   };
 
   return (
@@ -129,99 +97,66 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
       </CardHeader>
       <CardContent className="p-0">
         <div className="relative h-[350px] rounded-b-lg overflow-hidden bg-background/50">
-          <svg
-            viewBox="0 0 600 300"
+          <ComposableMap
+            projection="geoMercator"
+            projectionConfig={{
+              scale: 140,
+              center: [0, 30],
+            }}
             className="w-full h-full"
-            preserveAspectRatio="xMidYMid meet"
+            style={{ width: '100%', height: '100%' }}
           >
-            {/* Background grid */}
-            <defs>
-              <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
-                <path
-                  d="M 30 0 L 0 0 0 30"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="0.5"
-                  className="text-border/30"
-                />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#grid)" />
-
-            {/* Continents */}
-            <g className="transition-all duration-300">
-              <path
-                d={worldMapPaths.northAmerica}
-                className={`${getRegionColor('North America')} stroke-border transition-colors hover:opacity-80`}
-                strokeWidth="1"
-              />
-              <path
-                d={worldMapPaths.southAmerica}
-                className={`${getRegionColor('South America')} stroke-border transition-colors hover:opacity-80`}
-                strokeWidth="1"
-              />
-              <path
-                d={worldMapPaths.europe}
-                className={`${getRegionColor('Europe')} stroke-border transition-colors hover:opacity-80`}
-                strokeWidth="1"
-              />
-              <path
-                d={worldMapPaths.africa}
-                className={`${getRegionColor('Africa')} stroke-border transition-colors hover:opacity-80`}
-                strokeWidth="1"
-              />
-              <path
-                d={worldMapPaths.asia}
-                className={`${getRegionColor('Asia')} stroke-border transition-colors hover:opacity-80`}
-                strokeWidth="1"
-              />
-              <path
-                d={worldMapPaths.australia}
-                className={`${getRegionColor('Australia')} stroke-border transition-colors hover:opacity-80`}
-                strokeWidth="1"
-              />
-            </g>
-
-            {/* Asset markers */}
-            {geoAssets.map((asset) => {
-              const { x, y } = geoToSvg(
-                asset.geoLocation!.latitude,
-                asset.geoLocation!.longitude
-              );
-              return (
-                <g
-                  key={asset.id}
-                  className="cursor-pointer transition-transform hover:scale-150"
-                  onClick={() => onAssetClick?.(asset)}
-                >
+            <Geographies geography={geoUrl}>
+              {({ geographies }) =>
+                geographies.map((geo) => (
+                  <Geography
+                    key={geo.rsmKey}
+                    geography={geo}
+                    fill={getCountryFill(geo)}
+                    stroke="hsl(220 20% 30%)"
+                    strokeWidth={0.5}
+                    style={{
+                      default: { outline: "none" },
+                      hover: { outline: "none", fill: "hsl(217 91% 60%)", cursor: "pointer" },
+                      pressed: { outline: "none" },
+                    }}
+                  />
+                ))
+              }
+            </Geographies>
+            {geoAssets.map((asset) => (
+              <Marker
+                key={asset.id}
+                coordinates={[asset.geoLocation!.longitude, asset.geoLocation!.latitude]}
+                onClick={() => onAssetClick?.(asset)}
+              >
+                <g transform={`translate(-${getMarkerSize(asset.findingsCount)}, -${getMarkerSize(asset.findingsCount)})`}>
                   <circle
-                    cx={x}
-                    cy={y}
-                    r={asset.findingsCount > 0 ? 5 : 3}
-                    className={`${getMarkerColor(asset.findingsCount)} stroke-background`}
-                    strokeWidth="1.5"
-                    opacity="0.9"
-                  >
-                    <title>
-                      {asset.value}
-                      {asset.geoLocation?.city && `\n${asset.geoLocation.city}, ${asset.geoLocation.country}`}
-                      {`\n${asset.findingsCount} finding${asset.findingsCount !== 1 ? 's' : ''}`}
-                    </title>
-                  </circle>
+                    r={getMarkerSize(asset.findingsCount)}
+                    fill={getMarkerColor(asset.findingsCount)}
+                    stroke="hsl(0 0% 10%)"
+                    strokeWidth={1.5}
+                    opacity={0.9}
+                  />
                   {asset.findingsCount > 5 && (
                     <circle
-                      cx={x}
-                      cy={y}
-                      r={8}
-                      className="fill-none stroke-red-500 animate-ping"
-                      strokeWidth="1"
-                      opacity="0.5"
+                      r={getMarkerSize(asset.findingsCount) + 4}
+                      fill="none"
+                      stroke={getMarkerColor(asset.findingsCount)}
+                      strokeWidth={1}
+                      opacity={0.5}
+                      className="animate-ping"
                     />
                   )}
+                  <title>
+                    {asset.value}
+                    {asset.geoLocation?.city && `\n${asset.geoLocation.city}, ${asset.geoLocation.country}`}
+                    {`\n${asset.findingsCount} finding${asset.findingsCount !== 1 ? 's' : ''}`}
+                  </title>
                 </g>
-              );
-            })}
-          </svg>
+              </Marker>
+            ))}
+          </ComposableMap>
 
           {/* Stats overlay */}
           <div className="absolute bottom-2 left-2 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded flex items-center gap-2">
@@ -243,6 +178,3 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
 }
 
 export default WorldMap;
-
-
-

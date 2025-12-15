@@ -19,13 +19,20 @@ import base64
 from app.db.database import Base
 
 
-# Encryption key - should be set via environment variable in production
-ENCRYPTION_KEY = os.environ.get("API_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
+def get_encryption_key():
+    """Get encryption key from environment, using SECRET_KEY as fallback."""
+    # Try dedicated encryption key first
+    key = os.environ.get("API_KEY_ENCRYPTION_KEY")
+    if not key:
+        # Fall back to SECRET_KEY which is always set in docker-compose
+        key = os.environ.get("SECRET_KEY", "your-super-secret-key-change-in-production")
+    return key
 
 
 def get_cipher():
     """Get Fernet cipher for encryption/decryption."""
-    key = ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY
+    key = get_encryption_key()
+    key = key.encode() if isinstance(key, str) else key
     # Ensure key is valid Fernet key (32 url-safe base64-encoded bytes)
     if len(key) != 44:
         # Generate a deterministic key from the provided key
@@ -160,6 +167,14 @@ DEFAULT_RATE_LIMITS = {
     ExternalService.RAPIDDNS: {"per_second": 1, "per_day": None},
     ExternalService.M365: {"per_second": 1, "per_day": None},
 }
+
+
+
+
+
+
+
+
 
 
 

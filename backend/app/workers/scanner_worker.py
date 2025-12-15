@@ -88,12 +88,16 @@ class ScannerWorker:
             self.sqs = None
             self.queue_url = None
         
-        # Initialize services
+        # Initialize services (lazy init for discovery which needs db)
         self.nuclei_service = NucleiService()
         self.port_scanner_service = PortScannerService()
-        self.discovery_service = DiscoveryService()
+        self._discovery_service = None  # Lazy initialized with db session
         
         logger.info("Scanner worker initialized")
+    
+    def get_discovery_service(self, db):
+        """Get or create discovery service with db session."""
+        return DiscoveryService(db)
     
     def get_db_session(self):
         """Get a database session."""
@@ -102,30 +106,77 @@ class ScannerWorker:
         return None
     
     async def poll_for_jobs(self):
-        """Poll SQS for scan jobs."""
-        if not self.sqs or not self.queue_url:
-            logger.error("SQS not configured")
+        """Poll for scan jobs from SQS or database."""
+        # If SQS is configured, use it
+        if self.sqs and self.queue_url:
+            try:
+                response = self.sqs.receive_message(
+                    QueueUrl=self.queue_url,
+                    MaxNumberOfMessages=1,
+                    WaitTimeSeconds=POLL_INTERVAL,
+                    VisibilityTimeout=VISIBILITY_TIMEOUT,
+                    MessageAttributeNames=['All']
+                )
+                return response.get('Messages', [])
+            except ClientError as e:
+                logger.error(f"Error polling SQS: {e}")
+                return []
+        
+        # Otherwise, poll database for pending scans
+        return await self.poll_database_for_jobs()
+    
+    async def poll_database_for_jobs(self):
+        """Poll database for pending scans (local development mode)."""
+        db = self.get_db_session()
+        if not db:
             return []
         
         try:
-            response = self.sqs.receive_message(
-                QueueUrl=self.queue_url,
-                MaxNumberOfMessages=1,
-                WaitTimeSeconds=POLL_INTERVAL,
-                VisibilityTimeout=VISIBILITY_TIMEOUT,
-                MessageAttributeNames=['All']
-            )
+            # Find pending scans
+            pending_scan = db.query(Scan).filter(
+                Scan.status == ScanStatus.PENDING
+            ).order_by(Scan.created_at.asc()).first()
             
-            return response.get('Messages', [])
+            if not pending_scan:
+                await asyncio.sleep(POLL_INTERVAL)
+                return []
             
-        except ClientError as e:
-            logger.error(f"Error polling SQS: {e}")
+            # Convert to message format
+            job_type_map = {
+                ScanType.VULNERABILITY: 'NUCLEI_SCAN',
+                ScanType.PORT_SCAN: 'PORT_SCAN',
+                ScanType.DISCOVERY: 'DISCOVERY',
+                ScanType.SUBDOMAIN_ENUM: 'SUBDOMAIN_ENUM',
+            }
+            
+            job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
+            
+            message = {
+                'MessageId': f'db-{pending_scan.id}',
+                'ReceiptHandle': f'db-{pending_scan.id}',
+                'Body': json.dumps({
+                    'job_type': job_type,
+                    'scan_id': pending_scan.id,
+                    'organization_id': pending_scan.organization_id,
+                    'targets': pending_scan.targets or [],
+                    'config': pending_scan.config or {},
+                })
+            }
+            
+            logger.info(f"Found pending scan {pending_scan.id} ({pending_scan.scan_type.value})")
+            return [message]
+            
+        except Exception as e:
+            logger.error(f"Error polling database: {e}")
             return []
+        finally:
+            db.close()
     
     async def process_message(self, message: dict):
-        """Process a single SQS message."""
+        """Process a single scan job message."""
         message_id = message.get('MessageId')
         receipt_handle = message.get('ReceiptHandle')
+        is_db_message = message_id.startswith('db-') if message_id else False
         
         try:
             body = json.loads(message.get('Body', '{}'))
@@ -146,17 +197,19 @@ class ScannerWorker:
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
-            # Delete message from queue
-            self.sqs.delete_message(
-                QueueUrl=self.queue_url,
-                ReceiptHandle=receipt_handle
-            )
+            # Delete message from SQS queue (only if not a DB message)
+            if not is_db_message and self.sqs and self.queue_url:
+                self.sqs.delete_message(
+                    QueueUrl=self.queue_url,
+                    ReceiptHandle=receipt_handle
+                )
             
             logger.info(f"Job {message_id} completed successfully")
             
         except Exception as e:
             logger.error(f"Error processing message {message_id}: {e}", exc_info=True)
-            # Message will return to queue after visibility timeout
+            # Message will return to queue after visibility timeout (SQS)
+            # For DB messages, the scan status will be set to FAILED by handlers
     
     async def handle_nuclei_scan(self, job_data: dict):
         """Handle Nuclei vulnerability scan job."""
@@ -259,7 +312,7 @@ class ScannerWorker:
             scanner_type = scanner_type_map.get(scanner, ScannerType.NAABU)
             
             # Run port scan
-            result = await self.port_scanner_service.run_scan(
+            result = await self.port_scanner_service.scan(
                 scanner_type=scanner_type,
                 targets=targets,
                 ports=ports,
@@ -328,10 +381,10 @@ class ScannerWorker:
                 db.commit()
             
             # Run discovery
-            result = await self.discovery_service.full_discovery(
+            discovery_service = self.get_discovery_service(db)
+            result = await discovery_service.full_discovery(
                 domain=domain,
                 organization_id=organization_id,
-                db=db,
                 enable_subdomain_enum=True,
                 enable_dns_enum=True,
                 enable_http_probe=True,
@@ -472,6 +525,14 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+
+
+
+
+
 
 
 

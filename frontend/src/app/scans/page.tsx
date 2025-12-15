@@ -48,10 +48,15 @@ import { formatDate } from '@/lib/utils';
 
 interface Scan {
   id: number;
+  name: string;
   organization_id: number;
   organization_name?: string;
   scan_type: string;
   status: string;
+  targets?: string[];
+  progress?: number;
+  assets_discovered?: number;
+  vulnerabilities_found?: number;
   started_at?: string;
   completed_at?: string;
   targets_count?: number;
@@ -66,8 +71,9 @@ export default function ScansPage() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formData, setFormData] = useState({
+    name: '',
     organization_id: '',
-    scan_type: 'nuclei',
+    scan_type: 'vulnerability',
     targets: '',
   });
   const { toast } = useToast();
@@ -110,6 +116,15 @@ export default function ScansPage() {
       return;
     }
 
+    if (!formData.name.trim()) {
+      toast({
+        title: 'Error',
+        description: 'Please enter a scan name',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setSubmitting(true);
     try {
       const targets = formData.targets
@@ -118,6 +133,7 @@ export default function ScansPage() {
         .filter((t) => t);
 
       await api.createScan({
+        name: formData.name.trim(),
         organization_id: parseInt(formData.organization_id),
         scan_type: formData.scan_type,
         targets: targets.length > 0 ? targets : undefined,
@@ -129,7 +145,7 @@ export default function ScansPage() {
       });
 
       setCreateDialogOpen(false);
-      setFormData({ organization_id: '', scan_type: 'nuclei', targets: '' });
+      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '' });
       fetchData();
     } catch (error: any) {
       toast({
@@ -206,6 +222,15 @@ export default function ScansPage() {
 
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
+                  <Label>Scan Name</Label>
+                  <Input
+                    placeholder="e.g., Weekly vulnerability scan"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  />
+                </div>
+
+                <div className="space-y-2">
                   <Label>Organization</Label>
                   <Select
                     value={formData.organization_id}
@@ -236,10 +261,13 @@ export default function ScansPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="nuclei">Nuclei (Vulnerability Scan)</SelectItem>
-                      <SelectItem value="discovery">Discovery (Asset Discovery)</SelectItem>
+                      <SelectItem value="vulnerability">Vulnerability Scan (Nuclei)</SelectItem>
+                      <SelectItem value="discovery">Asset Discovery</SelectItem>
+                      <SelectItem value="subdomain_enum">Subdomain Enumeration</SelectItem>
                       <SelectItem value="port_scan">Port Scan</SelectItem>
-                      <SelectItem value="screenshot">Screenshot Capture</SelectItem>
+                      <SelectItem value="web_scan">Web Scan</SelectItem>
+                      <SelectItem value="technology">Technology Detection</SelectItem>
+                      <SelectItem value="full">Full Scan (All)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -353,6 +381,14 @@ export default function ScansPage() {
     </MainLayout>
   );
 }
+
+
+
+
+
+
+
+
 
 
 

@@ -41,9 +41,15 @@ interface Organization {
   id: number;
   name: string;
   description?: string;
-  domains: string[];
+  domain?: string;
+  domains?: string[];
   created_at: string;
   asset_count?: number;
+  vulnerability_count?: number;
+  critical_count?: number;
+  high_count?: number;
+  medium_count?: number;
+  low_count?: number;
 }
 
 export default function OrganizationsPage() {
@@ -214,8 +220,9 @@ export default function OrganizationsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Domains</TableHead>
+                <TableHead>Domain</TableHead>
                 <TableHead>Assets</TableHead>
+                <TableHead>Vulnerabilities</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead className="w-[50px]"></TableHead>
               </TableRow>
@@ -223,13 +230,13 @@ export default function OrganizationsPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8">
+                  <TableCell colSpan={6} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : organizations.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                     No organizations yet. Create one to get started.
                   </TableCell>
                 </TableRow>
@@ -248,21 +255,38 @@ export default function OrganizationsPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <div className="flex flex-wrap gap-1">
-                        {org.domains?.slice(0, 3).map((domain) => (
-                          <Badge key={domain} variant="outline" className="text-xs">
-                            <Globe className="h-3 w-3 mr-1" />
-                            {domain}
+                      {org.domain ? (
+                        <Badge variant="outline" className="text-xs">
+                          <Globe className="h-3 w-3 mr-1" />
+                          {org.domain}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">No domain set</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{org.asset_count || 0}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        {(org.critical_count || 0) > 0 && (
+                          <Badge variant="destructive" className="text-xs">
+                            {org.critical_count} C
                           </Badge>
-                        ))}
-                        {org.domains?.length > 3 && (
-                          <Badge variant="outline" className="text-xs">
-                            +{org.domains.length - 3} more
+                        )}
+                        {(org.high_count || 0) > 0 && (
+                          <Badge className="text-xs bg-orange-500">
+                            {org.high_count} H
                           </Badge>
+                        )}
+                        {(org.medium_count || 0) > 0 && (
+                          <Badge className="text-xs bg-yellow-500 text-black">
+                            {org.medium_count} M
+                          </Badge>
+                        )}
+                        {(org.vulnerability_count || 0) === 0 && (
+                          <span className="text-muted-foreground text-xs">None</span>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>{org.asset_count || 0}</TableCell>
                     <TableCell className="text-muted-foreground">
                       {formatDate(org.created_at)}
                     </TableCell>
@@ -300,6 +324,14 @@ export default function OrganizationsPage() {
     </MainLayout>
   );
 }
+
+
+
+
+
+
+
+
 
 
 

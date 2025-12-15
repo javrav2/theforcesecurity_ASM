@@ -18,6 +18,7 @@ import {
   Search,
   Users,
   History,
+  ServerCrash,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/store/auth';
@@ -27,7 +28,8 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Organizations', href: '/organizations', icon: Building2 },
   { name: 'Assets', href: '/assets', icon: Globe },
-  { name: 'Vulnerabilities', href: '/vulnerabilities', icon: Shield },
+  { name: 'CIDR Blocks', href: '/netblocks', icon: ServerCrash },
+  { name: 'Findings', href: '/findings', icon: Shield },
   { name: 'Screenshots', href: '/screenshots', icon: Camera },
   { name: 'Scans', href: '/scans', icon: ScanLine },
   { name: 'Ports', href: '/ports', icon: Network },

@@ -23,7 +23,15 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8080"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost",
+        "http://localhost:80",
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://3.88.188.178",
+        "http://3.88.188.178:80",
+        "http://3.88.188.178:3000",
+    ]
     
     # Pagination
     DEFAULT_PAGE_SIZE: int = 20

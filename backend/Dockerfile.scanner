@@ -19,28 +19,46 @@ FROM python:3.11-slim-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
     curl \
-    git \
     wget \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go for ProjectDiscovery tools
-ENV GO_VERSION=1.21.5
-RUN wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
-    && rm go${GO_VERSION}.linux-amd64.tar.gz
+# Download pre-built ProjectDiscovery tools (much faster than compiling)
+WORKDIR /tools
 
-ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
-ENV GOPATH="/root/go"
+# Nuclei
+RUN wget -q https://github.com/projectdiscovery/nuclei/releases/download/v3.3.7/nuclei_3.3.7_linux_amd64.zip \
+    && unzip -o -q nuclei_3.3.7_linux_amd64.zip -d /tools \
+    && rm nuclei_3.3.7_linux_amd64.zip
 
-# Install ProjectDiscovery tools
-RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
-    && go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest \
-    && go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest \
-    && go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest \
-    && go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest \
-    && go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+# Subfinder
+RUN wget -q https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip \
+    && unzip -o -q subfinder_2.6.7_linux_amd64.zip -d /tools \
+    && rm subfinder_2.6.7_linux_amd64.zip
+
+# HTTPX
+RUN wget -q https://github.com/projectdiscovery/httpx/releases/download/v1.6.10/httpx_1.6.10_linux_amd64.zip \
+    && unzip -o -q httpx_1.6.10_linux_amd64.zip -d /tools \
+    && rm httpx_1.6.10_linux_amd64.zip
+
+# Naabu
+RUN wget -q https://github.com/projectdiscovery/naabu/releases/download/v2.3.3/naabu_2.3.3_linux_amd64.zip \
+    && unzip -o -q naabu_2.3.3_linux_amd64.zip -d /tools \
+    && rm naabu_2.3.3_linux_amd64.zip
+
+# DNSX
+RUN wget -q https://github.com/projectdiscovery/dnsx/releases/download/v1.2.1/dnsx_1.2.1_linux_amd64.zip \
+    && unzip -o -q dnsx_1.2.1_linux_amd64.zip -d /tools \
+    && rm dnsx_1.2.1_linux_amd64.zip
+
+# Katana
+RUN wget -q https://github.com/projectdiscovery/katana/releases/download/v1.1.0/katana_1.1.0_linux_amd64.zip \
+    && unzip -o -q katana_1.1.0_linux_amd64.zip -d /tools \
+    && rm katana_1.1.0_linux_amd64.zip
+
+# Make all tools executable
+RUN chmod +x /tools/*
 
 # =============================================================================
 # Final Image
@@ -60,8 +78,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcap0.8 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Go binaries from builder
-COPY --from=builder /root/go/bin/* /usr/local/bin/
+# Copy pre-built binaries from builder
+COPY --from=builder /tools/nuclei /usr/local/bin/
+COPY --from=builder /tools/subfinder /usr/local/bin/
+COPY --from=builder /tools/httpx /usr/local/bin/
+COPY --from=builder /tools/naabu /usr/local/bin/
+COPY --from=builder /tools/dnsx /usr/local/bin/
+COPY --from=builder /tools/katana /usr/local/bin/
 
 # Create app directory
 WORKDIR /app
@@ -98,6 +121,14 @@ USER scanner
 
 # Start the scanner worker
 CMD ["python", "-m", "app.workers.scanner_worker"]
+
+
+
+
+
+
+
+
 
 
 

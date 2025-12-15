@@ -189,7 +189,7 @@ export default function ScreenshotsPage() {
                 <div className="aspect-video bg-muted relative">
                   {screenshot.thumbnail_path || screenshot.file_path ? (
                     <img
-                      src={`/api/screenshots/image/${screenshot.id}`}
+                      src={api.getScreenshotImageUrl(screenshot.id)}
                       alt={screenshot.page_title || screenshot.url}
                       className="w-full h-full object-cover"
                       onError={(e) => {
@@ -238,7 +238,7 @@ export default function ScreenshotsPage() {
                   <div className="w-32 h-20 bg-muted rounded overflow-hidden flex-shrink-0">
                     {screenshot.thumbnail_path || screenshot.file_path ? (
                       <img
-                        src={`/api/screenshots/image/${screenshot.id}`}
+                        src={api.getScreenshotImageUrl(screenshot.id)}
                         alt={screenshot.page_title || screenshot.url}
                         className="w-full h-full object-cover"
                       />
@@ -287,7 +287,7 @@ export default function ScreenshotsPage() {
               <div className="aspect-video bg-muted rounded-lg overflow-hidden">
                 {selectedScreenshot?.file_path ? (
                   <img
-                    src={`/api/screenshots/image/${selectedScreenshot.id}`}
+                    src={api.getScreenshotImageUrl(selectedScreenshot.id)}
                     alt={selectedScreenshot.page_title || selectedScreenshot.url}
                     className="w-full h-full object-contain"
                   />
@@ -336,6 +336,14 @@ export default function ScreenshotsPage() {
     </MainLayout>
   );
 }
+
+
+
+
+
+
+
+
 
 
 

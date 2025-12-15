@@ -20,7 +20,7 @@ class AssetCreate(AssetBase):
     parent_id: Optional[int] = None
     description: Optional[str] = None
     tags: List[str] = []
-    metadata_: dict[str, Any] = Field(default={}, alias="metadata")
+    metadata_: dict[str, Any] = Field(default={})
     discovery_source: Optional[str] = None
     criticality: str = "medium"
     is_monitored: bool = True
@@ -34,7 +34,7 @@ class AssetUpdate(BaseModel):
     status: Optional[AssetStatus] = None
     description: Optional[str] = None
     tags: Optional[List[str]] = None
-    metadata_: Optional[dict[str, Any]] = Field(default=None, alias="metadata")
+    metadata_: Optional[dict[str, Any]] = Field(default=None)
     risk_score: Optional[int] = Field(None, ge=0, le=100)
     criticality: Optional[str] = None
     is_monitored: Optional[bool] = None
@@ -70,7 +70,7 @@ class AssetResponse(AssetBase):
     status: AssetStatus
     description: Optional[str] = None
     tags: List[str] = []
-    metadata_: dict[str, Any] = Field(default={}, alias="metadata")
+    metadata_: dict[str, Any] = Field(default={})
     discovery_source: Optional[str] = None
     first_seen: datetime
     last_seen: datetime
@@ -85,6 +85,21 @@ class AssetResponse(AssetBase):
     # DNS info
     dns_records: dict = {}
     
+    # Geo-location info
+    ip_address: Optional[str] = None
+    latitude: Optional[str] = None
+    longitude: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    isp: Optional[str] = None
+    
+    # Scope and ownership
+    in_scope: bool = True
+    is_owned: bool = False
+    netblock_id: Optional[int] = None
+    asn: Optional[str] = None
+    
     # Technologies
     technologies: List[TechnologySummary] = []
     
@@ -98,7 +113,6 @@ class AssetResponse(AssetBase):
     
     class Config:
         from_attributes = True
-        populate_by_name = True
 
 
 class AssetWithPortsResponse(AssetResponse):

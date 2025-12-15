@@ -69,9 +69,43 @@ export interface Vulnerability {
   created_at: string;
 }
 
+// Finding is an alias for Vulnerability with additional fields
+export interface Finding {
+  id: number;
+  assetId: number;
+  title: string;
+  description: string;
+  severity: SeverityLevel;
+  category: string;
+  status: FindingStatus;
+  discoveredAt: Date;
+  details: Record<string, any>;
+  remediation?: string;
+  templateId?: string;
+  matchedAt?: string;
+  cveId?: string;
+  cvssScore?: number;
+  reference?: string[];
+  tags?: string[];
+}
+
+export type FindingStatus = 'open' | 'resolved' | 'ignored' | 'false_positive' | 'accepted';
+
 export type SeverityLevel = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export type VulnStatus = 'open' | 'confirmed' | 'resolved' | 'false_positive' | 'accepted';
+
+// Label for organizing and grouping assets
+export interface Label {
+  id: number;
+  name: string;
+  color: string;
+  description?: string;
+  organization_id: number;
+  asset_count?: number;
+  created_at: string;
+  updated_at?: string;
+}
 
 export interface Organization {
   id: number;
@@ -133,6 +167,14 @@ export interface FilterOption {
   label: string;
   options: { label: string; value: string }[];
 }
+
+
+
+
+
+
+
+
 
 
 

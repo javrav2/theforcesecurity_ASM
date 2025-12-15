@@ -66,3 +66,11 @@ class TechnologyScanResultResponse(BaseModel):
 
 
 
+
+
+
+
+
+
+
+

@@ -416,3 +416,119 @@ def get_assets_summary(
             "assets_with_risky_ports": assets_with_risky_ports
         }
     }
+
+
+@router.post("/enrich-geolocation")
+async def enrich_assets_geolocation(
+    organization_id: Optional[int] = None,
+    force: bool = Query(False, description="Re-enrich assets that already have geo data"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum assets to enrich"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Enrich assets with geo-location data by resolving hostnames and looking up IP locations.
+    
+    Uses ip-api.com (free, 45 requests/minute) to look up geo-location data.
+    """
+    from app.services.geolocation_service import get_geolocation_service
+    
+    query = db.query(Asset)
+    
+    # Organization filter
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Asset.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"enriched": 0, "total": 0, "message": "No organization access"}
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    # Only enrich domains and subdomains (resolvable hostnames)
+    query = query.filter(Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]))
+    
+    # Optionally skip assets that already have geo data
+    if not force:
+        query = query.filter(
+            (Asset.latitude == None) | (Asset.latitude == "")
+        )
+    
+    assets = query.limit(limit).all()
+    
+    if not assets:
+        return {"enriched": 0, "total": 0, "message": "No assets to enrich"}
+    
+    geo_service = get_geolocation_service()
+    enriched_count = 0
+    
+    for asset in assets:
+        try:
+            geo_data = await geo_service.lookup_hostname(asset.value)
+            
+            if geo_data:
+                asset.ip_address = geo_data.get("ip_address")
+                asset.latitude = geo_data.get("latitude")
+                asset.longitude = geo_data.get("longitude")
+                asset.city = geo_data.get("city")
+                asset.country = geo_data.get("country")
+                asset.country_code = geo_data.get("country_code")
+                asset.isp = geo_data.get("isp")
+                asset.asn = geo_data.get("asn")
+                enriched_count += 1
+        except Exception as e:
+            # Log but continue with other assets
+            pass
+    
+    db.commit()
+    
+    return {
+        "enriched": enriched_count,
+        "total": len(assets),
+        "message": f"Successfully enriched {enriched_count} of {len(assets)} assets with geo-location data"
+    }
+
+
+@router.post("/{asset_id}/enrich-geolocation", response_model=AssetResponse)
+async def enrich_single_asset_geolocation(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """Enrich a single asset with geo-location data."""
+    from app.services.geolocation_service import get_geolocation_service
+    
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    
+    if not asset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Asset not found"
+        )
+    
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    geo_service = get_geolocation_service()
+    geo_data = await geo_service.lookup_hostname(asset.value)
+    
+    if geo_data:
+        asset.ip_address = geo_data.get("ip_address")
+        asset.latitude = geo_data.get("latitude")
+        asset.longitude = geo_data.get("longitude")
+        asset.city = geo_data.get("city")
+        asset.country = geo_data.get("country")
+        asset.country_code = geo_data.get("country_code")
+        asset.isp = geo_data.get("isp")
+        asset.asn = geo_data.get("asn")
+        db.commit()
+        db.refresh(asset)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not resolve geo-location for this asset"
+        )
+    
+    return asset

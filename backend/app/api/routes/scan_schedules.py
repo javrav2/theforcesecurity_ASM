@@ -1,0 +1,395 @@
+"""Scan Schedule API routes for continuous monitoring."""
+
+from typing import List, Optional
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy.orm import Session
+
+from app.db.database import get_db
+from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES
+from app.models.scan import Scan, ScanType, ScanStatus
+from app.models.asset import Asset
+from app.models.label import Label
+from app.models.user import User
+from app.schemas.scan_schedule import (
+    ScanScheduleCreate,
+    ScanScheduleUpdate,
+    ScanScheduleResponse,
+    ScanScheduleSummary,
+    ManualTriggerRequest,
+)
+from app.api.deps import get_current_active_user, require_analyst
+
+router = APIRouter(prefix="/scan-schedules", tags=["Scan Schedules"])
+
+
+def check_org_access(user: User, org_id: int) -> bool:
+    """Check if user has access to organization."""
+    if user.is_superuser:
+        return True
+    return user.organization_id == org_id
+
+
+@router.get("/scan-types")
+def get_available_scan_types():
+    """Get available scan types for continuous monitoring."""
+    return CONTINUOUS_SCAN_TYPES
+
+
+@router.get("/", response_model=List[ScanScheduleResponse])
+def list_scan_schedules(
+    organization_id: Optional[int] = None,
+    scan_type: Optional[str] = None,
+    is_enabled: Optional[bool] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """List scan schedules with filtering options."""
+    query = db.query(ScanSchedule)
+    
+    # Organization filter
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(ScanSchedule.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return []
+        query = query.filter(ScanSchedule.organization_id == current_user.organization_id)
+    
+    if scan_type:
+        query = query.filter(ScanSchedule.scan_type == scan_type)
+    if is_enabled is not None:
+        query = query.filter(ScanSchedule.is_enabled == is_enabled)
+    
+    schedules = query.order_by(ScanSchedule.created_at.desc()).offset(skip).limit(limit).all()
+    return schedules
+
+
+@router.get("/summary", response_model=ScanScheduleSummary)
+def get_schedules_summary(
+    organization_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get summary statistics for scan schedules."""
+    query = db.query(ScanSchedule)
+    
+    if organization_id:
+        if not check_org_access(current_user, organization_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        query = query.filter(ScanSchedule.organization_id == organization_id)
+    elif current_user.organization_id:
+        query = query.filter(ScanSchedule.organization_id == current_user.organization_id)
+    
+    schedules = query.all()
+    
+    enabled = [s for s in schedules if s.is_enabled]
+    
+    # Group by type
+    by_type = {}
+    for s in schedules:
+        by_type[s.scan_type] = by_type.get(s.scan_type, 0) + 1
+    
+    # Group by frequency
+    by_freq = {}
+    for s in schedules:
+        by_freq[s.frequency.value] = by_freq.get(s.frequency.value, 0) + 1
+    
+    # Get upcoming scans (next 24 hours)
+    now = datetime.now(timezone.utc)
+    upcoming = []
+    for s in enabled:
+        if s.next_run_at and s.next_run_at > now:
+            upcoming.append({
+                "id": s.id,
+                "name": s.name,
+                "scan_type": s.scan_type,
+                "next_run_at": s.next_run_at.isoformat(),
+            })
+    
+    upcoming.sort(key=lambda x: x["next_run_at"])
+    
+    return {
+        "total_schedules": len(schedules),
+        "enabled_schedules": len(enabled),
+        "disabled_schedules": len(schedules) - len(enabled),
+        "schedules_by_type": by_type,
+        "schedules_by_frequency": by_freq,
+        "upcoming_scans": upcoming[:10],
+    }
+
+
+@router.post("/", response_model=ScanScheduleResponse, status_code=status.HTTP_201_CREATED)
+def create_scan_schedule(
+    schedule_data: ScanScheduleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """Create a new scan schedule for continuous monitoring."""
+    if not check_org_access(current_user, schedule_data.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
+    
+    # Validate scan type
+    if schedule_data.scan_type not in CONTINUOUS_SCAN_TYPES:
+        valid_types = list(CONTINUOUS_SCAN_TYPES.keys())
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid scan type. Valid types: {valid_types}"
+        )
+    
+    schedule = ScanSchedule(
+        name=schedule_data.name,
+        description=schedule_data.description,
+        organization_id=schedule_data.organization_id,
+        scan_type=schedule_data.scan_type,
+        targets=schedule_data.targets,
+        label_ids=schedule_data.label_ids,
+        match_all_labels=schedule_data.match_all_labels,
+        config=schedule_data.config or CONTINUOUS_SCAN_TYPES[schedule_data.scan_type].get("default_config", {}),
+        frequency=schedule_data.frequency,
+        run_at_hour=schedule_data.run_at_hour,
+        run_on_day=schedule_data.run_on_day,
+        cron_expression=schedule_data.cron_expression,
+        timezone=schedule_data.timezone,
+        is_enabled=schedule_data.is_enabled,
+        notify_on_completion=schedule_data.notify_on_completion,
+        notify_on_findings=schedule_data.notify_on_findings,
+        notification_emails=schedule_data.notification_emails,
+        created_by=current_user.username,
+    )
+    
+    # Calculate next run time
+    schedule.next_run_at = schedule.calculate_next_run()
+    
+    db.add(schedule)
+    db.commit()
+    db.refresh(schedule)
+    
+    return schedule
+
+
+@router.get("/{schedule_id}", response_model=ScanScheduleResponse)
+def get_scan_schedule(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get a single scan schedule by ID."""
+    schedule = db.query(ScanSchedule).filter(ScanSchedule.id == schedule_id).first()
+    
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    if not check_org_access(current_user, schedule.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    return schedule
+
+
+@router.put("/{schedule_id}", response_model=ScanScheduleResponse)
+def update_scan_schedule(
+    schedule_id: int,
+    schedule_data: ScanScheduleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """Update a scan schedule."""
+    schedule = db.query(ScanSchedule).filter(ScanSchedule.id == schedule_id).first()
+    
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    if not check_org_access(current_user, schedule.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Update fields
+    update_data = schedule_data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(schedule, field, value)
+    
+    # Recalculate next run if frequency changed
+    if any(f in update_data for f in ['frequency', 'run_at_hour', 'run_on_day']):
+        schedule.next_run_at = schedule.calculate_next_run()
+    
+    db.commit()
+    db.refresh(schedule)
+    
+    return schedule
+
+
+@router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_scan_schedule(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """Delete a scan schedule."""
+    schedule = db.query(ScanSchedule).filter(ScanSchedule.id == schedule_id).first()
+    
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    if not check_org_access(current_user, schedule.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    db.delete(schedule)
+    db.commit()
+
+
+@router.post("/{schedule_id}/toggle", response_model=ScanScheduleResponse)
+def toggle_schedule(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """Enable or disable a scan schedule."""
+    schedule = db.query(ScanSchedule).filter(ScanSchedule.id == schedule_id).first()
+    
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    if not check_org_access(current_user, schedule.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    schedule.is_enabled = not schedule.is_enabled
+    
+    if schedule.is_enabled:
+        schedule.next_run_at = schedule.calculate_next_run()
+        schedule.consecutive_failures = 0
+        schedule.last_error = None
+    
+    db.commit()
+    db.refresh(schedule)
+    
+    return schedule
+
+
+@router.post("/{schedule_id}/trigger", response_model=dict)
+def trigger_scheduled_scan(
+    schedule_id: int,
+    request: Optional[ManualTriggerRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """Manually trigger a scheduled scan immediately."""
+    schedule = db.query(ScanSchedule).filter(ScanSchedule.id == schedule_id).first()
+    
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    if not check_org_access(current_user, schedule.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Build targets from labels if specified
+    targets = request.override_targets if request and request.override_targets else schedule.targets
+    
+    if schedule.label_ids and not targets:
+        # Get assets with labels
+        query = db.query(Asset).filter(
+            Asset.organization_id == schedule.organization_id,
+            Asset.in_scope == True
+        )
+        
+        if schedule.match_all_labels:
+            for label_id in schedule.label_ids:
+                query = query.filter(Asset.labels.any(Label.id == label_id))
+        else:
+            query = query.filter(Asset.labels.any(Label.id.in_(schedule.label_ids)))
+        
+        assets = query.distinct().all()
+        targets = [a.value for a in assets]
+    
+    if not targets:
+        raise HTTPException(
+            status_code=400,
+            detail="No targets found for this schedule. Add targets or assign labels to assets."
+        )
+    
+    # Map schedule scan_type to ScanType enum
+    scan_type_map = {
+        "nuclei": ScanType.VULNERABILITY,
+        "port_scan": ScanType.PORT_SCAN,
+        "masscan": ScanType.PORT_SCAN,
+        "discovery": ScanType.FULL_DISCOVERY,
+        "screenshot": ScanType.SCREENSHOT,
+        "technology": ScanType.TECHNOLOGY,
+    }
+    
+    scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)
+    
+    # Create the scan
+    config = {
+        **(schedule.config or {}),
+        **(request.override_config if request and request.override_config else {}),
+        "triggered_by_schedule": schedule.id,
+        "schedule_name": schedule.name,
+    }
+    
+    scan = Scan(
+        name=f"{schedule.name} - Manual Trigger",
+        scan_type=scan_type,
+        organization_id=schedule.organization_id,
+        targets=targets,
+        config=config,
+        started_by=current_user.username,
+        status=ScanStatus.PENDING,
+    )
+    
+    db.add(scan)
+    
+    # Update schedule
+    schedule.last_run_at = datetime.now(timezone.utc)
+    schedule.run_count += 1
+    
+    db.commit()
+    db.refresh(scan)
+    
+    return {
+        "success": True,
+        "scan_id": scan.id,
+        "targets_count": len(targets),
+        "message": f"Scan '{scan.name}' created and queued",
+    }
+
+
+@router.get("/{schedule_id}/history")
+def get_schedule_history(
+    schedule_id: int,
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get scan history for a schedule."""
+    schedule = db.query(ScanSchedule).filter(ScanSchedule.id == schedule_id).first()
+    
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    if not check_org_access(current_user, schedule.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get scans triggered by this schedule
+    scans = db.query(Scan).filter(
+        Scan.organization_id == schedule.organization_id,
+        Scan.config["triggered_by_schedule"].astext == str(schedule_id)
+    ).order_by(Scan.created_at.desc()).limit(limit).all()
+    
+    return {
+        "schedule_id": schedule_id,
+        "schedule_name": schedule.name,
+        "total_runs": schedule.run_count,
+        "scans": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "status": s.status.value,
+                "started_at": s.started_at.isoformat() if s.started_at else None,
+                "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+                "assets_discovered": s.assets_discovered,
+                "vulnerabilities_found": s.vulnerabilities_found,
+            }
+            for s in scans
+        ]
+    }

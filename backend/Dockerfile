@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dnsutils \
     # EyeWitness / Chromium dependencies (compatible with Debian trixie)
     chromium \
+    chromium-driver \
     xvfb \
     libnss3 \
     libxss1 \
@@ -51,10 +52,16 @@ RUN git clone https://github.com/robertdavidgraham/masscan.git /tmp/masscan \
     && cp bin/masscan /usr/local/bin/ \
     && rm -rf /tmp/masscan
 
-# Install Go 1.21 for ProjectDiscovery tools
-RUN wget -q https://go.dev/dl/go1.21.5.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz \
-    && rm go1.21.5.linux-amd64.tar.gz
+# Install Go 1.21 for ProjectDiscovery tools (architecture-aware)
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then \
+        GO_ARCH="arm64"; \
+    else \
+        GO_ARCH="amd64"; \
+    fi && \
+    wget -q "https://go.dev/dl/go1.21.5.linux-${GO_ARCH}.tar.gz" && \
+    tar -C /usr/local -xzf "go1.21.5.linux-${GO_ARCH}.tar.gz" && \
+    rm "go1.21.5.linux-${GO_ARCH}.tar.gz"
 
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPATH="/root/go"
@@ -66,18 +73,35 @@ RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
     && go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest \
     && go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest \
     && go install -v github.com/projectdiscovery/katana/cmd/katana@latest \
+    && go install -v github.com/projectdiscovery/chaos-client/cmd/chaos@latest \
+    && go install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest \
     # waybackurls - Fetch historical URLs from Wayback Machine
-    && go install -v github.com/tomnomnom/waybackurls@latest
+    && go install -v github.com/tomnomnom/waybackurls@latest \
+    # assetfinder - Find domains and subdomains
+    && go install -v github.com/tomnomnom/assetfinder@latest
+
+# Install OWASP Amass
+RUN go install -v github.com/owasp-amass/amass/v4/...@master || echo "Amass installation skipped"
+
+# Install MassDNS
+RUN git clone https://github.com/blechschmidt/massdns.git /tmp/massdns \
+    && cd /tmp/massdns \
+    && make \
+    && cp bin/massdns /usr/local/bin/ \
+    && rm -rf /tmp/massdns || echo "MassDNS installation skipped"
+
+# Install ParamSpider
+RUN pip install paramspider || echo "ParamSpider installation skipped"
 
 # Update nuclei templates
 RUN nuclei -update-templates || true
 
-# Install EyeWitness
+# Install EyeWitness with all required dependencies
 RUN git clone https://github.com/RedSiege/EyeWitness.git /opt/EyeWitness \
     && cd /opt/EyeWitness \
     && python3 -m venv eyewitness-venv \
     && ./eyewitness-venv/bin/pip install --upgrade pip \
-    && ./eyewitness-venv/bin/pip install selenium netaddr rapidfuzz \
+    && ./eyewitness-venv/bin/pip install selenium netaddr rapidfuzz psutil \
     && chmod +x Python/EyeWitness.py
 
 # Set EyeWitness environment variables

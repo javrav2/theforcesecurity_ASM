@@ -100,7 +100,7 @@ class ApiClient {
 
   // Organizations
   async getOrganizations() {
-    const response = await this.client.get('/organizations');
+    const response = await this.client.get('/organizations/');
     return response.data;
   }
 
@@ -110,7 +110,7 @@ class ApiClient {
   }
 
   async createOrganization(data: { name: string; description?: string; domains: string[] }) {
-    const response = await this.client.post('/organizations', data);
+    const response = await this.client.post('/organizations/', data);
     return response.data;
   }
 
@@ -126,7 +126,7 @@ class ApiClient {
 
   // Assets
   async getAssets(params?: { organization_id?: number; skip?: number; limit?: number; search?: string }) {
-    const response = await this.client.get('/assets', { params });
+    const response = await this.client.get('/assets/', { params });
     return response.data;
   }
 
@@ -140,7 +140,26 @@ class ApiClient {
     return response.data;
   }
 
-  // Vulnerabilities
+  // Findings (Vulnerabilities)
+  async getFindings(params?: { 
+    organization_id?: number; 
+    asset_id?: number;
+    severity?: string;
+    skip?: number; 
+    limit?: number;
+  }) {
+    const response = await this.client.get('/vulnerabilities/', { params });
+    return response.data;
+  }
+
+  async getFindingsSummary(organizationId?: number) {
+    const response = await this.client.get('/vulnerabilities/stats/summary', {
+      params: organizationId ? { organization_id: organizationId } : {},
+    });
+    return response.data;
+  }
+
+  // Legacy aliases for backwards compatibility
   async getVulnerabilities(params?: { 
     organization_id?: number; 
     asset_id?: number;
@@ -148,20 +167,16 @@ class ApiClient {
     skip?: number; 
     limit?: number;
   }) {
-    const response = await this.client.get('/vulnerabilities', { params });
-    return response.data;
+    return this.getFindings(params);
   }
 
   async getVulnerabilitiesSummary(organizationId?: number) {
-    const response = await this.client.get('/vulnerabilities/summary', {
-      params: organizationId ? { organization_id: organizationId } : {},
-    });
-    return response.data;
+    return this.getFindingsSummary(organizationId);
   }
 
   // Scans
   async getScans(params?: { organization_id?: number; skip?: number; limit?: number }) {
-    const response = await this.client.get('/scans', { params });
+    const response = await this.client.get('/scans/', { params });
     return response.data;
   }
 
@@ -170,13 +185,118 @@ class ApiClient {
     return response.data;
   }
 
-  async createScan(data: { 
-    organization_id: number; 
+  async createScan(data: {
+    name: string;
+    organization_id: number;
     scan_type: string;
     targets?: string[];
+    label_ids?: number[];
+    match_all_labels?: boolean;
     profile_id?: number;
+    config?: Record<string, any>;
   }) {
-    const response = await this.client.post('/scans', data);
+    const response = await this.client.post('/scans/', data);
+    return response.data;
+  }
+
+  async createScanByLabel(data: {
+    name: string;
+    organization_id: number;
+    scan_type: string;
+    label_ids: number[];
+    match_all_labels?: boolean;
+    config?: Record<string, any>;
+  }) {
+    const response = await this.client.post('/scans/by-label', data);
+    return response.data;
+  }
+
+  async previewScanByLabels(labelIds: number[], organizationId: number, matchAll: boolean = false) {
+    const response = await this.client.get('/scans/labels/preview', {
+      params: { label_ids: labelIds, organization_id: organizationId, match_all: matchAll }
+    });
+    return response.data;
+  }
+
+  // Scan Schedules (Continuous Monitoring)
+  async getScanSchedules(params?: { organization_id?: number; scan_type?: string; is_enabled?: boolean }) {
+    const response = await this.client.get('/scan-schedules/', { params });
+    return response.data;
+  }
+
+  async getScanSchedulesSummary(organizationId?: number) {
+    const response = await this.client.get('/scan-schedules/summary', {
+      params: organizationId ? { organization_id: organizationId } : {}
+    });
+    return response.data;
+  }
+
+  async getScanScheduleTypes() {
+    const response = await this.client.get('/scan-schedules/scan-types');
+    return response.data;
+  }
+
+  async createScanSchedule(data: {
+    name: string;
+    organization_id: number;
+    scan_type: string;
+    frequency: string;
+    targets?: string[];
+    label_ids?: number[];
+    match_all_labels?: boolean;
+    config?: Record<string, any>;
+    run_at_hour?: number;
+    run_on_day?: number;
+    is_enabled?: boolean;
+    notify_on_findings?: boolean;
+    notification_emails?: string[];
+  }) {
+    const response = await this.client.post('/scan-schedules/', data);
+    return response.data;
+  }
+
+  async updateScanSchedule(scheduleId: number, data: Record<string, any>) {
+    const response = await this.client.put(`/scan-schedules/${scheduleId}`, data);
+    return response.data;
+  }
+
+  async deleteScanSchedule(scheduleId: number) {
+    const response = await this.client.delete(`/scan-schedules/${scheduleId}`);
+    return response.data;
+  }
+
+  async toggleScanSchedule(scheduleId: number) {
+    const response = await this.client.post(`/scan-schedules/${scheduleId}/toggle`);
+    return response.data;
+  }
+
+  async triggerScanSchedule(scheduleId: number, overrides?: { override_targets?: string[]; override_config?: Record<string, any> }) {
+    const response = await this.client.post(`/scan-schedules/${scheduleId}/trigger`, overrides || {});
+    return response.data;
+  }
+
+  async getScanScheduleHistory(scheduleId: number, limit: number = 20) {
+    const response = await this.client.get(`/scan-schedules/${scheduleId}/history`, {
+      params: { limit }
+    });
+    return response.data;
+  }
+
+  // Tools Status
+  async getToolsStatus() {
+    const response = await this.client.get('/tools/status');
+    return response.data;
+  }
+
+  async getToolStatus(toolId: string) {
+    const response = await this.client.get(`/tools/${toolId}`);
+    return response.data;
+  }
+
+  async testTool(toolId: string, target: string = 'example.com') {
+    const response = await this.client.post(`/tools/${toolId}/test`, null, {
+      params: { target }
+    });
     return response.data;
   }
 
@@ -189,14 +309,43 @@ class ApiClient {
     return response.data;
   }
 
-  // Screenshots
-  async getScreenshots(params?: { organization_id?: number; asset_id?: number; skip?: number; limit?: number }) {
-    const response = await this.client.get('/screenshots', { params });
+  // Geo-location enrichment
+  async enrichAssetsGeolocation(organizationId?: number, limit: number = 50) {
+    const params: any = { limit };
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.post('/assets/enrich-geolocation', null, { params });
     return response.data;
   }
 
+  async enrichAssetGeolocation(assetId: number) {
+    const response = await this.client.post(`/assets/${assetId}/enrich-geolocation`);
+    return response.data;
+  }
+
+  // Screenshots
+  async getScreenshots(params?: { organization_id?: number; asset_id?: number; skip?: number; limit?: number }) {
+    const response = await this.client.get('/screenshots/', { params });
+    return response.data;
+  }
+
+  async getAssetScreenshots(assetId: number) {
+    const response = await this.client.get(`/screenshots/asset/${assetId}`);
+    return response.data;
+  }
+
+  getScreenshotImageUrl(screenshotId: number): string {
+    const token = this.getToken();
+    // Dynamically determine API URL at call time (not module load time)
+    // This ensures we use the correct hostname when called from browser
+    let apiUrl = 'http://localhost:8000';
+    if (typeof window !== 'undefined') {
+      apiUrl = `http://${window.location.hostname}:8000`;
+    }
+    return `${apiUrl}/api/v1/screenshots/image/${screenshotId}?token=${token}`;
+  }
+
   async captureScreenshot(assetId: number) {
-    const response = await this.client.post(`/screenshots/capture/${assetId}`);
+    const response = await this.client.post(`/screenshots/capture/asset/${assetId}`);
     return response.data;
   }
 
@@ -265,7 +414,7 @@ class ApiClient {
 
   // Ports
   async getPorts(params?: { organization_id?: number; asset_id?: number; skip?: number; limit?: number }) {
-    const response = await this.client.get('/ports', { params });
+    const response = await this.client.get('/ports/', { params });
     return response.data;
   }
 
@@ -317,6 +466,134 @@ class ApiClient {
     max_concurrent?: number;
   }) {
     const response = await this.client.post('/waybackurls/fetch/organization', data);
+    return response.data;
+  }
+
+  // Netblocks / CIDR ranges
+  async getNetblocks(params?: { 
+    organization_id?: number; 
+    is_owned?: boolean; 
+    in_scope?: boolean;
+    ip_version?: string;
+    skip?: number; 
+    limit?: number 
+  }) {
+    const response = await this.client.get('/netblocks/', { params });
+    return response.data;
+  }
+
+  async getNetblockSummary(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/netblocks/summary', { params });
+    return response.data;
+  }
+
+  async getNetblock(netblockId: number) {
+    const response = await this.client.get(`/netblocks/${netblockId}`);
+    return response.data;
+  }
+
+  async discoverNetblocks(data: {
+    organization_id: number;
+    search_terms: string[];
+    include_variations?: boolean;
+  }) {
+    const response = await this.client.post('/netblocks/discover', data);
+    return response.data;
+  }
+
+  async updateNetblock(netblockId: number, data: {
+    is_owned?: boolean;
+    in_scope?: boolean;
+    description?: string;
+    tags?: string[];
+  }) {
+    const response = await this.client.put(`/netblocks/${netblockId}`, data);
+    return response.data;
+  }
+
+  async toggleNetblockScope(netblockId: number) {
+    const response = await this.client.put(`/netblocks/${netblockId}/toggle-scope`);
+    return response.data;
+  }
+
+  async toggleNetblockOwnership(netblockId: number) {
+    const response = await this.client.put(`/netblocks/${netblockId}/toggle-ownership`);
+    return response.data;
+  }
+
+  async bulkUpdateNetblockScope(netblockIds: number[], inScope: boolean) {
+    const response = await this.client.post('/netblocks/bulk-scope', null, {
+      params: { netblock_ids: netblockIds, in_scope: inScope }
+    });
+    return response.data;
+  }
+
+  // Label API methods
+  async getLabels(params?: { organization_id?: number; search?: string }) {
+    const response = await this.client.get('/labels/', { params });
+    return response.data;
+  }
+
+  async getLabelColors() {
+    const response = await this.client.get('/labels/colors');
+    return response.data;
+  }
+
+  async getLabel(labelId: number) {
+    const response = await this.client.get(`/labels/${labelId}`);
+    return response.data;
+  }
+
+  async createLabel(data: { name: string; color?: string; description?: string; organization_id: number }) {
+    const response = await this.client.post('/labels/', data);
+    return response.data;
+  }
+
+  async quickCreateLabel(name: string, organizationId: number, color?: string) {
+    const response = await this.client.post('/labels/quick-create', null, {
+      params: { name, organization_id: organizationId, color }
+    });
+    return response.data;
+  }
+
+  async updateLabel(labelId: number, data: { name?: string; color?: string; description?: string }) {
+    const response = await this.client.put(`/labels/${labelId}`, data);
+    return response.data;
+  }
+
+  async deleteLabel(labelId: number) {
+    const response = await this.client.delete(`/labels/${labelId}`);
+    return response.data;
+  }
+
+  async assignAssetsToLabel(labelId: number, assetIds: number[]) {
+    const response = await this.client.post(`/labels/${labelId}/assets`, assetIds);
+    return response.data;
+  }
+
+  async removeAssetsFromLabel(labelId: number, assetIds: number[]) {
+    const response = await this.client.delete(`/labels/${labelId}/assets`, {
+      params: { asset_ids: assetIds }
+    });
+    return response.data;
+  }
+
+  async bulkAssignLabels(data: { asset_ids: number[]; add_labels: number[]; remove_labels: number[] }) {
+    const response = await this.client.post('/labels/bulk-assign', data);
+    return response.data;
+  }
+
+  async getLabelsForAsset(assetId: number) {
+    const response = await this.client.get(`/labels/by-asset/${assetId}`);
+    return response.data;
+  }
+
+  async searchAssetsByLabels(labelIds: number[], matchAll: boolean = false, organizationId?: number) {
+    const response = await this.client.get('/labels/search-assets', {
+      params: { label_ids: labelIds, match_all: matchAll, organization_id: organizationId }
+    });
     return response.data;
   }
 

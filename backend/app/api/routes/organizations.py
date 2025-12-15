@@ -3,14 +3,45 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.db.database import get_db
 from app.models.organization import Organization
+from app.models.asset import Asset
+from app.models.vulnerability import Vulnerability, Severity
 from app.models.user import User
 from app.schemas.organization import OrganizationCreate, OrganizationUpdate, OrganizationResponse
 from app.api.deps import get_current_active_user, require_admin
 
 router = APIRouter(prefix="/organizations", tags=["Organizations"])
+
+
+def build_org_response(db: Session, org: Organization) -> dict:
+    """Build organization response with computed counts."""
+    # Get asset count
+    asset_count = db.query(func.count(Asset.id)).filter(
+        Asset.organization_id == org.id
+    ).scalar() or 0
+    
+    # Get vulnerability counts by severity
+    vuln_counts = db.query(
+        Vulnerability.severity,
+        func.count(Vulnerability.id)
+    ).join(Asset).filter(
+        Asset.organization_id == org.id
+    ).group_by(Vulnerability.severity).all()
+    
+    counts = {sev: cnt for sev, cnt in vuln_counts}
+    
+    return {
+        **org.__dict__,
+        "asset_count": asset_count,
+        "vulnerability_count": sum(counts.values()),
+        "critical_count": counts.get(Severity.CRITICAL, 0),
+        "high_count": counts.get(Severity.HIGH, 0),
+        "medium_count": counts.get(Severity.MEDIUM, 0),
+        "low_count": counts.get(Severity.LOW, 0),
+    }
 
 
 @router.get("/", response_model=List[OrganizationResponse])
@@ -30,7 +61,7 @@ def list_organizations(
             return []
     
     organizations = query.offset(skip).limit(limit).all()
-    return organizations
+    return [build_org_response(db, org) for org in organizations]
 
 
 @router.post("/", response_model=OrganizationResponse, status_code=status.HTTP_201_CREATED)
@@ -78,7 +109,7 @@ def get_organization(
             detail="Access denied"
         )
     
-    return org
+    return build_org_response(db, org)
 
 
 @router.put("/{org_id}", response_model=OrganizationResponse)
@@ -127,6 +158,14 @@ def delete_organization(
     db.commit()
     
     return None
+
+
+
+
+
+
+
+
 
 
 

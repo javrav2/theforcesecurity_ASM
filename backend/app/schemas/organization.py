@@ -34,8 +34,24 @@ class OrganizationResponse(OrganizationBase):
     created_at: datetime
     updated_at: datetime
     
+    # Asset and vulnerability counts (computed)
+    asset_count: int = 0
+    vulnerability_count: int = 0
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    
     class Config:
         from_attributes = True
+
+
+
+
+
+
+
+
 
 
 

@@ -49,8 +49,13 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-asm_user}:${POSTGRES_PASSWORD:-asm_password}@db:5432/${POSTGRES_DB:-asm_db}
       - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
       - DEBUG=${DEBUG:-false}
-      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:3000","http://localhost:8000","http://frontend:3000"]}
+      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost","http://localhost:80","http://localhost:3000","http://localhost:8000","http://frontend:3000","http://3.88.188.178","http://3.88.188.178:80","http://3.88.188.178:3000"]}
       - REDIS_URL=redis://redis:6379/0
+      # AWS SQS Configuration (optional - for async scan job submission)
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -59,6 +64,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
+      - ./backend/app:/app/app:ro  # Mount app code for development
       - nuclei_templates:/home/appuser/.config/nuclei
       - scan_outputs:/app/outputs
       - screenshots_data:/app/data/screenshots
@@ -82,30 +88,37 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:8000
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-80}:3000"
     depends_on:
       - backend
     networks:
       - asm_network
 
-  # Celery Worker for async tasks (optional, for production)
-  worker:
+  # Scanner Worker for async scan tasks
+  scanner:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    container_name: asm_worker
+      dockerfile: Dockerfile.scanner
+    container_name: asm_scanner
     restart: unless-stopped
-    command: celery -A app.tasks worker --loglevel=info
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-asm_user}:${POSTGRES_PASSWORD:-asm_password}@db:5432/${POSTGRES_DB:-asm_db}
       - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
       - REDIS_URL=redis://redis:6379/0
+      # AWS SQS Configuration (optional - falls back to database polling if not set)
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      backend:
+        condition: service_healthy
     volumes:
+      - ./backend/app:/app/app:ro
       - nuclei_templates:/home/appuser/.config/nuclei
       - scan_outputs:/app/outputs
       - screenshots_data:/app/data/screenshots
@@ -113,8 +126,6 @@ services:
       - asm_network
     cap_add:
       - NET_RAW
-    profiles:
-      - production
 
   # Database Admin Interface (optional, for development)
   adminer:

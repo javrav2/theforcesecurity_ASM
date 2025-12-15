@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 
-from app.api.deps import get_db, get_current_active_user, require_analyst, require_admin
+from app.api.deps import get_db, get_current_active_user, get_current_user_optional, require_analyst, require_admin
 from app.models.user import User
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.scan import Scan, ScanType, ScanStatus
@@ -47,6 +47,41 @@ def check_org_access(user: User, org_id: int) -> bool:
     if user.role.value == "admin":
         return True
     return user.organization_id == org_id
+
+
+# =============================================================================
+# List Screenshots
+# =============================================================================
+
+@router.get("/", response_model=List[ScreenshotResponse])
+def list_screenshots(
+    organization_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """List all screenshots with optional filtering."""
+    query = db.query(Screenshot).join(Asset)
+    
+    # Organization filter
+    if organization_id:
+        if not check_org_access(current_user, organization_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        query = query.filter(Asset.organization_id == organization_id)
+    elif not current_user.is_superuser:
+        if current_user.organization_id:
+            query = query.filter(Asset.organization_id == current_user.organization_id)
+        else:
+            return []
+    
+    # Asset filter
+    if asset_id:
+        query = query.filter(Screenshot.asset_id == asset_id)
+    
+    screenshots = query.order_by(Screenshot.captured_at.desc()).offset(skip).limit(limit).all()
+    return screenshots
 
 
 # =============================================================================
@@ -485,10 +520,32 @@ def get_latest_screenshot(
 @router.get("/image/{screenshot_id}")
 def get_screenshot_image(
     screenshot_id: int,
+    token: Optional[str] = Query(None, description="JWT token for image access"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: Optional[User] = Depends(get_current_user_optional)
 ):
-    """Get the actual screenshot image file."""
+    """Get the actual screenshot image file.
+    
+    Supports authentication via:
+    - Bearer token in Authorization header
+    - token query parameter (for <img> tags)
+    """
+    # If no user from header, try token from query param
+    if not current_user and token:
+        from app.core.security import decode_token
+        try:
+            payload = decode_token(token)
+            if payload and "sub" in payload:
+                subject = payload["sub"]
+                current_user = db.query(User).filter(
+                    (User.username == subject) | (User.email == subject)
+                ).first()
+        except Exception:
+            pass
+    
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
     screenshot = db.query(Screenshot).filter(Screenshot.id == screenshot_id).first()
     if not screenshot:
         raise HTTPException(status_code=404, detail="Screenshot not found")
@@ -770,6 +827,14 @@ async def run_schedule_now(
     db.commit()
     
     return result
+
+
+
+
+
+
+
+
 
 
 

@@ -30,7 +30,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { TableCustomization, Column, FilterOption } from '@/components/table/TableCustomization';
-import { WorldMap } from '@/components/map/WorldMap';
 import {
   Globe,
   Server,
@@ -67,8 +66,8 @@ interface GeoLocation {
 
 interface Asset {
   id: number;
-  hostname: string;
-  value?: string;
+  name: string;
+  value: string;
   ip_address?: string;
   asset_type: string;
   type?: string;
@@ -83,6 +82,8 @@ interface Asset {
   geoLocation?: GeoLocation;
   created_at: string;
   lastSeen?: Date;
+  // Screenshots from API
+  screenshots?: Array<{ id: number; image_path: string; thumbnail_path?: string }>;
 }
 
 // Asset type icons
@@ -122,7 +123,6 @@ export default function AssetsPage() {
   const [selectedScreenshot, setSelectedScreenshot] = useState<{ url: string; asset: string } | null>(null);
   const [editingLabels, setEditingLabels] = useState<Asset | null>(null);
   const [newLabel, setNewLabel] = useState('');
-  const [showMap, setShowMap] = useState(true);
   const { toast } = useToast();
 
   const [columns, setColumns] = useState<Column[]>([
@@ -152,16 +152,56 @@ export default function AssetsPage() {
       ]);
 
       // Transform assets to include derived properties
-      const transformedAssets = (assetsData.items || assetsData || []).map((a: any) => ({
+      const assetsList = assetsData.items || assetsData || [];
+      
+      // Fetch screenshots for each asset in parallel (limit to first 20 to avoid too many requests)
+      const assetsWithScreenshots = await Promise.all(
+        assetsList.slice(0, 50).map(async (a: any) => {
+          let screenshotUrl = null;
+          let screenshotId = null;
+          
+          try {
+            const screenshotData = await api.getAssetScreenshots(a.id);
+            if (screenshotData.screenshots && screenshotData.screenshots.length > 0) {
+              // Find the most recent successful screenshot
+              const successfulScreenshot = screenshotData.screenshots.find((s: any) => s.status === 'success' && s.file_path);
+              if (successfulScreenshot) {
+                screenshotId = successfulScreenshot.id;
+                screenshotUrl = api.getScreenshotImageUrl(successfulScreenshot.id);
+              }
+            }
+          } catch (e) {
+            // Ignore screenshot fetch errors
+          }
+          
+          return {
+            ...a,
+            name: a.name || a.value,
+            value: a.value || a.name,
+            type: a.asset_type || 'subdomain',
+            findingsCount: a.vulnerability_count || 0,
+            tags: a.tags || [],
+            lastSeen: new Date(a.updated_at || a.created_at),
+            screenshotUrl,
+            screenshotId,
+          };
+        })
+      );
+      
+      // Add remaining assets without screenshots
+      const remainingAssets = assetsList.slice(50).map((a: any) => ({
         ...a,
-        value: a.hostname,
-        type: a.asset_type || 'domain',
+        name: a.name || a.value,
+        value: a.value || a.name,
+        type: a.asset_type || 'subdomain',
         findingsCount: a.vulnerability_count || 0,
-        tags: a.tags || a.technologies || [],
+        tags: a.tags || [],
         lastSeen: new Date(a.updated_at || a.created_at),
+        screenshotUrl: null,
+        screenshotId: null,
       }));
 
-      setAssets(transformedAssets);
+      setAssets([...assetsWithScreenshots, ...remainingAssets]);
       setOrganizations(orgsData);
     } catch (error) {
       toast({
@@ -193,7 +233,8 @@ export default function AssetsPage() {
       const matchesType = typeFilter === 'all' || asset.asset_type === typeFilter || asset.type === typeFilter;
       const matchesStatus = statusFilter === 'all' || asset.status === statusFilter;
       const matchesSearch = search === '' || 
-        asset.hostname?.toLowerCase().includes(search.toLowerCase()) ||
+        asset.name?.toLowerCase().includes(search.toLowerCase()) ||
+        asset.value?.toLowerCase().includes(search.toLowerCase()) ||
         asset.ip_address?.toLowerCase().includes(search.toLowerCase()) ||
         asset.tags?.some(tag => tag.toLowerCase().includes(search.toLowerCase()));
       return matchesType && matchesStatus && matchesSearch;
@@ -213,17 +254,6 @@ export default function AssetsPage() {
     return filtered;
   }, [assets, typeFilter, statusFilter, search, sortColumn, sortDirection]);
 
-  // Transform for WorldMap
-  const mapAssets = useMemo(() => {
-    return displayedAssets.map(a => ({
-      id: a.id,
-      value: a.hostname || a.value || '',
-      type: a.type || a.asset_type || 'domain',
-      findingsCount: a.findingsCount || 0,
-      geoLocation: a.geoLocation,
-    }));
-  }, [displayedAssets]);
-
   const handleSort = (column: string) => {
     if (sortColumn === column) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -238,7 +268,7 @@ export default function AssetsPage() {
       ['Type', 'Value', 'IP Address', 'Labels', 'Status', 'Findings', 'Last Seen'],
       ...displayedAssets.map(a => [
         a.type || a.asset_type,
-        a.hostname,
+        a.name || a.value,
         a.ip_address || '',
         a.tags?.join('; ') || '',
         a.status,
@@ -270,7 +300,7 @@ export default function AssetsPage() {
     setNewLabel('');
     toast({
       title: 'Label Added',
-      description: `Added label "${newLabel.trim()}" to ${editingLabels.hostname}`,
+      description: `Added label "${newLabel.trim()}" to ${editingLabels.name || editingLabels.value}`,
     });
   };
 
@@ -342,19 +372,6 @@ export default function AssetsPage() {
       <Header title="Assets" subtitle="Discovered hosts, domains, and services" />
 
       <div className="p-6 space-y-6">
-        {/* World Map */}
-        {showMap && mapAssets.length > 0 && (
-          <WorldMap assets={mapAssets} onAssetClick={(asset) => {
-            const found = assets.find(a => a.id === asset.id);
-            if (found) {
-              toast({
-                title: found.hostname,
-                description: `${found.findingsCount || 0} findings · ${found.status}`,
-              });
-            }
-          }} />
-        )}
-
         {/* Table with Customization */}
         <TableCustomization
           columns={columns}
@@ -415,18 +432,18 @@ export default function AssetsPage() {
                         {columns.find(c => c.key === 'screenshot')?.visible && (
                           <TableCell>
                             {asset.screenshotUrl ? (
-                              <div
-                                className="relative w-16 h-12 rounded overflow-hidden border border-border cursor-pointer hover:border-primary transition-colors group"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedScreenshot({ url: asset.screenshotUrl!, asset: asset.hostname });
-                                }}
-                              >
-                                <img
-                                  src={asset.screenshotUrl}
-                                  alt={`Screenshot of ${asset.hostname}`}
-                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                />
+                                <div
+                                  className="relative w-16 h-12 rounded overflow-hidden border border-border cursor-pointer hover:border-primary transition-colors group"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedScreenshot({ url: asset.screenshotUrl!, asset: asset.name || asset.value });
+                                  }}
+                                >
+                                  <img
+                                    src={asset.screenshotUrl}
+                                    alt={`Screenshot of ${asset.name || asset.value}`}
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                  />
                                 <div className="absolute inset-0 bg-primary/0 group-hover:bg-primary/10 transition-colors flex items-center justify-center">
                                   <Eye className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
                                 </div>
@@ -451,18 +468,18 @@ export default function AssetsPage() {
                           </TableCell>
                         )}
 
-                        {/* Value/Hostname */}
+                        {/* Value/Name */}
                         {columns.find(c => c.key === 'hostname')?.visible && (
                           <TableCell>
                             <div className="flex items-center gap-2">
                               <a
-                                href={`https://${asset.hostname}`}
+                                href={`https://${asset.value || asset.name}`}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="font-mono text-sm text-foreground hover:text-primary flex items-center gap-1"
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                {asset.hostname}
+                                {asset.name || asset.value}
                                 <ExternalLink className="h-3 w-3" />
                               </a>
                             </div>
@@ -629,13 +646,6 @@ export default function AssetsPage() {
         {/* Pagination info */}
         <div className="flex items-center justify-between text-sm text-muted-foreground">
           <span>Showing {displayedAssets.length} of {assets.length} assets</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowMap(!showMap)}
-          >
-            {showMap ? 'Hide Map' : 'Show Map'}
-          </Button>
         </div>
       </div>
 
@@ -663,7 +673,7 @@ export default function AssetsPage() {
           <DialogHeader>
             <DialogTitle>Manage Labels</DialogTitle>
             <DialogDescription className="font-mono text-xs">
-              {editingLabels?.hostname}
+              {editingLabels?.name || editingLabels?.value}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

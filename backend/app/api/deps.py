@@ -10,6 +10,34 @@ from app.db.database import get_db
 from app.models.user import User, UserRole
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+
+def get_current_user_optional(
+    db: Session = Depends(get_db),
+    token: Optional[str] = Depends(oauth2_scheme_optional)
+) -> Optional[User]:
+    """Get the current authenticated user from JWT token, or None if not authenticated."""
+    if not token:
+        return None
+    
+    payload = decode_token(token)
+    if payload is None:
+        return None
+    
+    # Check token type
+    if payload.get("type") != "access":
+        return None
+    
+    subject: str = payload.get("sub")
+    if subject is None:
+        return None
+    
+    user = db.query(User).filter(
+        (User.username == subject) | (User.email == subject)
+    ).first()
+    
+    return user
 
 
 def get_current_user(

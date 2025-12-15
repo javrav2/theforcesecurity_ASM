@@ -72,7 +72,7 @@ def init_db():
         
         print("Database initialized successfully!")
         print("\nDefault users created:")
-        print("  Admin:   username='admin', password='changeme123'")
+        print("  Admin:   username='admin', password='admin123'")
         print("  Analyst: username='analyst', password='analyst123'")
         print("  Viewer:  username='viewer', password='viewer123'")
         print("\nPlease change these passwords after first login!")

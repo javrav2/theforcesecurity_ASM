@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.scan import Scan, ScanType, ScanStatus
+from app.models.asset import Asset
+from app.models.label import Label
 from app.models.user import User
-from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse
+from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRequest
 from app.api.deps import get_current_active_user, require_analyst
 
 router = APIRouter(prefix="/scans", tags=["Scans"])
@@ -67,8 +69,37 @@ def create_scan(
             detail="Access denied to this organization"
         )
     
+    # If label_ids are provided, get assets with those labels
+    scan_dict = scan_data.model_dump()
+    label_ids = scan_dict.pop('label_ids', [])
+    match_all_labels = scan_dict.pop('match_all_labels', False)
+    
+    if label_ids:
+        # Get assets with the specified labels
+        query = db.query(Asset).filter(Asset.organization_id == scan_data.organization_id)
+        
+        if match_all_labels:
+            # Assets must have ALL labels
+            for label_id in label_ids:
+                query = query.filter(Asset.labels.any(Label.id == label_id))
+        else:
+            # Assets must have ANY of the labels
+            query = query.filter(Asset.labels.any(Label.id.in_(label_ids)))
+        
+        assets = query.distinct().all()
+        
+        # Add asset values to targets
+        asset_values = [a.value for a in assets]
+        scan_dict['targets'] = list(set(scan_dict.get('targets', []) + asset_values))
+        
+        # Store label info in config for reference
+        scan_dict['config'] = scan_dict.get('config', {})
+        scan_dict['config']['source_labels'] = label_ids
+        scan_dict['config']['match_all_labels'] = match_all_labels
+        scan_dict['config']['assets_from_labels'] = len(assets)
+    
     new_scan = Scan(
-        **scan_data.model_dump(),
+        **scan_dict,
         started_by=current_user.username
     )
     db.add(new_scan)
@@ -76,6 +107,124 @@ def create_scan(
     db.refresh(new_scan)
     
     return new_scan
+
+
+@router.post("/by-label", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
+def create_scan_by_label(
+    request: ScanByLabelRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """Create a scan targeting assets with specific labels."""
+    # Check organization access
+    if not check_org_access(current_user, request.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    # Verify labels exist and belong to the organization
+    labels = db.query(Label).filter(
+        Label.id.in_(request.label_ids),
+        Label.organization_id == request.organization_id
+    ).all()
+    
+    if len(labels) != len(request.label_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more labels not found or do not belong to this organization"
+        )
+    
+    # Get assets with the specified labels
+    query = db.query(Asset).filter(
+        Asset.organization_id == request.organization_id,
+        Asset.in_scope == True
+    )
+    
+    if request.match_all_labels:
+        for label_id in request.label_ids:
+            query = query.filter(Asset.labels.any(Label.id == label_id))
+    else:
+        query = query.filter(Asset.labels.any(Label.id.in_(request.label_ids)))
+    
+    assets = query.distinct().all()
+    
+    if not assets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No in-scope assets found with the specified labels"
+        )
+    
+    # Create targets from asset values
+    targets = [a.value for a in assets]
+    
+    # Create the scan
+    new_scan = Scan(
+        name=request.name,
+        scan_type=request.scan_type,
+        organization_id=request.organization_id,
+        targets=targets,
+        config={
+            **request.config,
+            "source_labels": request.label_ids,
+            "label_names": [l.name for l in labels],
+            "match_all_labels": request.match_all_labels,
+            "assets_count": len(assets),
+        },
+        started_by=current_user.username
+    )
+    db.add(new_scan)
+    db.commit()
+    db.refresh(new_scan)
+    
+    return new_scan
+
+
+@router.get("/labels/preview")
+def preview_scan_by_labels(
+    label_ids: List[int] = Query(...),
+    organization_id: int = Query(...),
+    match_all: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Preview which assets would be included in a label-based scan."""
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    query = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.in_scope == True
+    )
+    
+    if match_all:
+        for label_id in label_ids:
+            query = query.filter(Asset.labels.any(Label.id == label_id))
+    else:
+        query = query.filter(Asset.labels.any(Label.id.in_(label_ids)))
+    
+    assets = query.distinct().all()
+    
+    # Get label names for display
+    labels = db.query(Label).filter(Label.id.in_(label_ids)).all()
+    
+    return {
+        "label_ids": label_ids,
+        "label_names": [l.name for l in labels],
+        "match_all": match_all,
+        "asset_count": len(assets),
+        "assets": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "value": a.value,
+                "asset_type": a.asset_type.value,
+                "labels": [{"id": l.id, "name": l.name, "color": l.color} for l in a.labels],
+            }
+            for a in assets[:100]  # Limit preview to 100 assets
+        ],
+        "truncated": len(assets) > 100,
+    }
 
 
 @router.get("/{scan_id}", response_model=ScanResponse)
@@ -240,6 +389,14 @@ def delete_scan(
     db.commit()
     
     return None
+
+
+
+
+
+
+
+
 
 
 

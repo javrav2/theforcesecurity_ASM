@@ -175,6 +175,20 @@ Resources:
           Value: !Sub '${AWS::StackName}-sg'
 
   # ===========================================================================
+  # SQS Queue for Scan Jobs
+  # ===========================================================================
+  ScanJobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-scan-jobs'
+      VisibilityTimeout: 3600  # 1 hour for long scans
+      MessageRetentionPeriod: 1209600  # 14 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-scan-queue'
+
+  # ===========================================================================
   # IAM Role for EC2
   # ===========================================================================
   EC2Role:
@@ -190,6 +204,20 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
         - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: SQSAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt ScanJobQueue.Arn
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-role'
@@ -265,6 +293,10 @@ Resources:
           DEBUG=false
           ENVIRONMENT=${Environment}
           CORS_ORIGINS=["http://localhost:3000"]
+          
+          # AWS SQS Configuration for Scan Jobs
+          SQS_QUEUE_URL=${ScanJobQueue}
+          AWS_REGION=${AWS::Region}
           EOF
           chmod 600 /opt/asm/.env
           chown ubuntu:ubuntu /opt/asm/.env
@@ -360,6 +392,26 @@ Outputs:
   SetupCommand:
     Description: Command to complete setup after SSH
     Value: 'cd /opt/asm && git clone <your-repo> . && ./aws/ec2-single/setup.sh'
+
+  SQSQueueURL:
+    Description: SQS Queue URL for scan jobs
+    Value: !Ref ScanJobQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-sqs-queue-url'
+
+  SQSQueueArn:
+    Description: SQS Queue ARN
+    Value: !GetAtt ScanJobQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-sqs-queue-arn'
+
+
+
+
+
+
+
+
 
 
 

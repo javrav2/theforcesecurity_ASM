@@ -317,13 +317,23 @@ class EyeWitnessService:
                         file_size=file_size
                     )
                     
-                    # Check for source file
-                    source_filename = screenshot_file.replace(".png", ".txt")
-                    source_path = os.path.join(source_dir, source_filename)
-                    if os.path.exists(source_path):
-                        dst_source = os.path.join(session_dir, self._sanitize_filename(url) + "_source.html")
-                        shutil.copy2(source_path, dst_source)
-                        result.source_path = os.path.relpath(dst_source, self.SCREENSHOTS_DIR)
+                    # Check for source file - EyeWitness uses format like "https.domain.com.txt"
+                    if os.path.exists(source_dir):
+                        base_name = screenshot_file.rsplit(".", 1)[0]  # Remove .png
+                        # Try multiple source filename patterns
+                        possible_sources = [
+                            f"https.{base_name}.txt",
+                            f"http.{base_name}.txt",
+                            base_name.replace(".png", ".txt"),
+                            f"{base_name}.txt",
+                        ]
+                        for source_filename in possible_sources:
+                            source_path = os.path.join(source_dir, source_filename)
+                            if os.path.exists(source_path):
+                                dst_source = os.path.join(session_dir, self._sanitize_filename(url) + "_source.html")
+                                shutil.copy2(source_path, dst_source)
+                                result.source_path = os.path.relpath(dst_source, self.SCREENSHOTS_DIR)
+                                break
                     
                     results.append(result)
                     
@@ -396,13 +406,19 @@ class EyeWitnessService:
         """
         Extract URL from EyeWitness screenshot filename.
         
-        EyeWitness uses format: http_domain_port.png or https_domain_port.png
+        EyeWitness newer versions use simpler format: domain.png
+        Older versions used: http_domain_port.png or https_domain_port.png
         """
         try:
             # Remove extension
             name = filename.rsplit(".", 1)[0]
             
-            # Replace underscores back to proper URL format
+            # Handle newer EyeWitness format (just domain.png)
+            if not name.startswith(("http_", "https_")):
+                # Assume HTTPS for modern web
+                return f"https://{name}"
+            
+            # Handle older format: http_domain or https_domain
             if name.startswith("http_"):
                 url = "http://" + name[5:].replace("_", ".", 1)
             elif name.startswith("https_"):
@@ -524,6 +540,14 @@ def get_eyewitness_service() -> EyeWitnessService:
     if _eyewitness_service is None:
         _eyewitness_service = EyeWitnessService()
     return _eyewitness_service
+
+
+
+
+
+
+
+
 
 
 

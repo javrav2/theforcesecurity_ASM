@@ -25,6 +25,19 @@ def check_org_access(db: Session, user: User, asset_id: int) -> bool:
     return user.organization_id == asset.organization_id
 
 
+def build_vuln_response(vuln: Vulnerability) -> dict:
+    """Build vulnerability response with computed fields."""
+    response = {
+        **vuln.__dict__,
+        "name": vuln.title,  # Alias for frontend compatibility
+        "host": vuln.asset.value if vuln.asset else None,
+        "matched_at": vuln.evidence[:200] if vuln.evidence else None,
+    }
+    # Remove SQLAlchemy internal state
+    response.pop("_sa_instance_state", None)
+    return response
+
+
 @router.get("/", response_model=List[VulnerabilityResponse])
 def list_vulnerabilities(
     severity: Optional[Severity] = None,
@@ -56,7 +69,9 @@ def list_vulnerabilities(
         query = query.filter(Vulnerability.cve_id == cve_id)
     
     vulns = query.order_by(Vulnerability.severity.desc(), Vulnerability.created_at.desc()).offset(skip).limit(limit).all()
-    return vulns
+    
+    # Build response with computed fields
+    return [build_vuln_response(v) for v in vulns]
 
 
 @router.post("/", response_model=VulnerabilityResponse, status_code=status.HTTP_201_CREATED)
@@ -209,6 +224,14 @@ def get_vulnerabilities_summary(
         "by_severity": by_severity,
         "by_status": by_status
     }
+
+
+
+
+
+
+
+
 
 
 

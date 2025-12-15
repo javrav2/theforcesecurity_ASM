@@ -1,7 +1,7 @@
 """Authentication routes."""
 
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -101,7 +101,7 @@ def login(
 
 
 @router.post("/refresh", response_model=Token)
-def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
+def refresh_token(refresh_token: str = Body(..., embed=True), db: Session = Depends(get_db)):
     """Refresh access token using refresh token."""
     payload = decode_token(refresh_token)
     
