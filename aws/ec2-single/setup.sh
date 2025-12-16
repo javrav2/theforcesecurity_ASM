@@ -184,6 +184,26 @@ create_env_file() {
     # Load secrets
     source .secrets
     
+    # Try to get SQS URL from CloudFormation or environment
+    SQS_URL=""
+    AWS_REGION_VAL="us-east-1"
+    
+    # Check if we're on EC2 and can get metadata
+    if curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/instance-id > /dev/null 2>&1; then
+        # We're on EC2, try to get region
+        AWS_REGION_VAL=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "us-east-1")
+        log "Detected AWS region: $AWS_REGION_VAL"
+        
+        # Try to find SQS queue from CloudFormation
+        STACK_NAME=$(aws cloudformation describe-stack-resources --physical-resource-id $(curl -s http://169.254.169.254/latest/meta-data/instance-id) --query 'StackResources[0].StackName' --output text 2>/dev/null || echo "")
+        if [ -n "$STACK_NAME" ] && [ "$STACK_NAME" != "None" ]; then
+            SQS_URL=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[0].Outputs[?OutputKey==`SQSQueueURL`].OutputValue' --output text 2>/dev/null || echo "")
+            if [ -n "$SQS_URL" ] && [ "$SQS_URL" != "None" ]; then
+                log "Found SQS queue from CloudFormation: $SQS_URL"
+            fi
+        fi
+    fi
+    
     cat > .env << EOF
 # =============================================================================
 # ASM Platform - Production Configuration
@@ -214,6 +234,11 @@ CORS_ORIGINS=["http://localhost:3000","https://your-domain.com"]
 REDIS_URL=redis://redis:6379
 REDIS_PORT=6379
 
+# AWS SQS Configuration (for async scan processing)
+# Leave empty to use database polling fallback
+SQS_QUEUE_URL=${SQS_URL}
+AWS_REGION=${AWS_REGION_VAL}
+
 # Scanner Configuration
 NUCLEI_TEMPLATES_PATH=/root/nuclei-templates
 SCAN_OUTPUT_DIR=/app/scans
@@ -224,6 +249,12 @@ EOF
 
     chmod 600 .env
     log "Environment file created"
+    
+    if [ -n "$SQS_URL" ]; then
+        log "SQS queue configured for async scan processing"
+    else
+        warn "SQS not configured - scanner will use database polling (add SQS_QUEUE_URL to .env for production)"
+    fi
 }
 
 # =============================================================================
@@ -302,6 +333,9 @@ services:
       DEBUG: ${DEBUG}
       ENVIRONMENT: ${ENVIRONMENT}
       CORS_ORIGINS: ${CORS_ORIGINS}
+      # AWS SQS for async scan job submission
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
     volumes:
       - scan_data:/app/scans
       - nuclei_templates:/root/nuclei-templates
@@ -362,6 +396,10 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
       WORKER_MODE: "true"
+      # AWS SQS for async scan job processing
+      # If not set, falls back to database polling
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
     volumes:
       - scan_data:/app/scans
       - nuclei_templates:/root/nuclei-templates

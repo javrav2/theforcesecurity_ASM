@@ -1,316 +1,393 @@
 # ASM Platform - Single EC2 Instance Deployment
 
-The simplest way to run the ASM platform on AWS. All components run on a single EC2 instance using Docker Compose.
+The simplest way to run the ASM platform on AWS. All components run on a single EC2 instance using Docker Compose with optional SQS for async scan job processing.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      EC2 Instance (t3.large)                │
-│                                                             │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐│
-│  │  Nginx  │──│ FastAPI │──│  Redis  │  │    Scanner      ││
-│  │  :80    │  │  :8000  │  │  :6379  │  │  (Background)   ││
-│  └─────────┘  └─────────┘  └─────────┘  └─────────────────┘│
-│       │            │                                        │
-│       │      ┌─────┴─────┐                                 │
-│       │      │PostgreSQL │                                 │
-│       │      │  :5432    │                                 │
-│       │      └───────────┘                                 │
-│       │                                                     │
-│  ┌────┴────┐                                               │
-│  │   EBS   │  (50GB gp3)                                   │
-│  │ Storage │                                                │
-│  └─────────┘                                                │
-└─────────────────────────────────────────────────────────────┘
-         │
-    ┌────┴────┐
-    │Elastic  │
-    │   IP    │
-    └─────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         EC2 Instance (t3.large)                          │
+│                                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
+│  │ Frontend │  │ Backend  │  │  Redis   │  │ Scanner  │  │PostgreSQL │ │
+│  │ Next.js  │──│ FastAPI  │──│  Cache   │  │  Worker  │──│    DB     │ │
+│  │  :3000   │  │  :8000   │  │  :6379   │  │          │  │   :5432   │ │
+│  └──────────┘  └────┬─────┘  └──────────┘  └────┬─────┘  └───────────┘ │
+│                     │                           │                        │
+│                     │      ┌────────────────────┘                       │
+│                     │      │                                             │
+│                     ▼      ▼                                             │
+│            ┌─────────────────────┐                                      │
+│            │   Security Tools    │                                      │
+│            │  Nuclei, Subfinder  │                                      │
+│            │  HTTPX, Naabu, etc. │                                      │
+│            └─────────────────────┘                                      │
+│                     │                                                    │
+└─────────────────────┼────────────────────────────────────────────────────┘
+                      │
+              ┌───────┴───────┐
+              │   AWS SQS     │  (Optional - for async scans)
+              │  Scan Queue   │
+              └───────────────┘
 ```
 
-## Cost
+## Cost Estimate
 
 | Component | Specification | Monthly Cost |
 |-----------|--------------|--------------|
 | EC2 | t3.large (2 vCPU, 8GB RAM) | ~$60 |
 | EBS | 50GB gp3 | ~$5 |
-| Elastic IP | 1 | $3.65 |
+| Elastic IP | 1 | ~$4 |
+| SQS | ~10,000 requests | ~$0.01 |
 | Data Transfer | ~50GB out | ~$5 |
 | **Total** | | **~$75/month** |
 
-*Costs based on us-east-1. On-demand pricing. Use Reserved Instances or Spot for savings.*
+*Costs based on us-east-1. Use Reserved Instances or Spot for savings.*
 
-## Quick Start
+---
 
-### Option 1: AWS Console (Manual)
+## Deployment Options
 
-1. **Launch EC2 Instance**
-   - AMI: Ubuntu 22.04 LTS
-   - Instance Type: t3.large (minimum)
-   - Storage: 50GB gp3
-   - Security Group: Allow ports 22, 80, 443
+### Option 1: CloudFormation (Recommended)
 
-2. **SSH and Setup**
-   ```bash
-   ssh -i your-key.pem ubuntu@your-instance-ip
-   
-   # Clone repository
-   git clone https://github.com/yourusername/theforcesecurity_ASM.git /opt/asm
-   cd /opt/asm
-   
-   # Run setup
-   chmod +x aws/ec2-single/setup.sh
-   ./aws/ec2-single/setup.sh
-   ```
-
-### Option 2: CloudFormation (Automated)
+This creates everything automatically: EC2, VPC, SQS queue, IAM roles, security groups.
 
 ```bash
-# Deploy stack
+# Deploy the stack
 aws cloudformation create-stack \
   --stack-name asm-platform \
   --template-body file://aws/ec2-single/cloudformation.yml \
   --parameters \
     ParameterKey=KeyName,ParameterValue=your-key-pair \
     ParameterKey=InstanceType,ParameterValue=t3.large \
+    ParameterKey=VolumeSize,ParameterValue=50 \
     ParameterKey=AllowedSSHCIDR,ParameterValue=YOUR_IP/32 \
   --capabilities CAPABILITY_IAM
 
-# Wait for completion
+# Wait for completion (~10 minutes)
 aws cloudformation wait stack-create-complete --stack-name asm-platform
 
-# Get outputs
-aws cloudformation describe-stacks --stack-name asm-platform --query 'Stacks[0].Outputs'
+# Get outputs (Public IP, SQS URL, etc.)
+aws cloudformation describe-stacks --stack-name asm-platform \
+  --query 'Stacks[0].Outputs' --output table
+```
 
-# SSH and complete setup
-ssh -i your-key.pem ubuntu@<PublicIP>
+#### CloudFormation Creates:
+- ✅ VPC with public subnet
+- ✅ EC2 instance with Ubuntu 22.04
+- ✅ SQS queue for scan jobs
+- ✅ IAM role with SQS permissions
+- ✅ Security group (SSH, HTTP, HTTPS)
+- ✅ Elastic IP
+- ✅ CloudWatch alarms
+
+### Option 2: Manual EC2 Setup
+
+1. **Launch EC2 Instance**
+   - AMI: Ubuntu 22.04 LTS (`ami-0c7217cdde317cfec` in us-east-1)
+   - Instance Type: t3.large (minimum)
+   - Storage: 50GB gp3
+   - Security Group: Allow ports 22, 80, 443
+
+2. **Create SQS Queue (Optional but recommended)**
+   ```bash
+   aws sqs create-queue \
+     --queue-name asm-scan-jobs \
+     --attributes VisibilityTimeout=3600,MessageRetentionPeriod=1209600
+   ```
+
+3. **Create IAM Role for EC2**
+   - Attach `AmazonSQSFullAccess` policy (or create custom policy)
+   - Attach role to EC2 instance
+
+---
+
+## Installation
+
+### Step 1: SSH into your EC2 instance
+
+```bash
+ssh -i your-key.pem ubuntu@YOUR_PUBLIC_IP
+```
+
+### Step 2: Clone the repository
+
+```bash
+git clone https://github.com/javrav2/theforcesecurity_ASM.git /opt/asm
 cd /opt/asm
-git clone https://github.com/yourusername/theforcesecurity_ASM.git .
+```
+
+### Step 3: Run the setup script
+
+```bash
+chmod +x aws/ec2-single/setup.sh
 ./aws/ec2-single/setup.sh
 ```
 
-### Option 3: AWS CLI (Quick)
+This will:
+- Install Docker and Docker Compose
+- Generate secure passwords
+- Create environment file with SQS configuration
+- Build and start all containers
+- Initialize the database
+- Update Nuclei templates
+
+### Step 4: Configure SQS (if using CloudFormation)
+
+The CloudFormation template automatically adds SQS configuration to `.env`. Verify:
 
 ```bash
-# Launch instance
-aws ec2 run-instances \
-  --image-id ami-0c7217cdde317cfec \
-  --instance-type t3.large \
-  --key-name your-key-pair \
-  --security-group-ids sg-xxx \
-  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3"}}]' \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=ASM-Platform}]'
+cat /opt/asm/.env | grep SQS
+# Should show:
+# SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789/asm-platform-scan-jobs
+# AWS_REGION=us-east-1
 ```
+
+If you created SQS manually, add these to `.env`:
+
+```bash
+# Add to /opt/asm/.env
+SQS_QUEUE_URL=https://sqs.YOUR_REGION.amazonaws.com/YOUR_ACCOUNT_ID/asm-scan-jobs
+AWS_REGION=us-east-1
+```
+
+Then restart the services:
+```bash
+docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml up -d
+```
+
+---
+
+## How Scan Jobs Work
+
+### With SQS (Production - Recommended)
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   User      │     │   Backend   │     │    SQS      │     │   Scanner   │
+│ Creates Scan│────▶│ Submits Job │────▶│   Queue     │────▶│   Worker    │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+                                                                   │
+                                                                   ▼
+                                                            ┌─────────────┐
+                                                            │ Runs Nuclei │
+                                                            │ Port Scans  │
+                                                            │ Discovery   │
+                                                            └─────────────┘
+```
+
+**Benefits:**
+- Reliable message delivery
+- Automatic retries
+- Visibility timeout for long scans
+- Decoupled architecture
+
+### Without SQS (Fallback Mode)
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   User      │     │   Backend   │     │   Scanner   │
+│ Creates Scan│────▶│ Saves to DB │◀────│ Polls DB    │
+│             │     │ (PENDING)   │     │ Every 20s   │
+└─────────────┘     └─────────────┘     └─────────────┘
+```
+
+The scanner worker automatically falls back to database polling if SQS is not configured.
+
+---
+
+## Environment Variables
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection | `postgresql://user:pass@db:5432/asm_db` |
+| `SECRET_KEY` | JWT signing key | `openssl rand -hex 32` |
+| `REDIS_URL` | Redis connection | `redis://redis:6379/0` |
+
+### AWS/SQS (Optional)
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SQS_QUEUE_URL` | SQS queue URL | `https://sqs.us-east-1.amazonaws.com/123456789/queue-name` |
+| `AWS_REGION` | AWS region | `us-east-1` |
+| `AWS_ACCESS_KEY_ID` | IAM access key | Only if not using IAM role |
+| `AWS_SECRET_ACCESS_KEY` | IAM secret key | Only if not using IAM role |
+
+**Note:** When running on EC2 with an IAM role attached, you don't need AWS credentials - the SDK uses the instance role automatically.
+
+---
 
 ## Post-Installation
 
 ### Access the Platform
 
-```bash
-# API Documentation
-http://YOUR_IP/docs
-
-# Health Check
-http://YOUR_IP/health
-
-# Login
-curl -X POST "http://YOUR_IP/api/v1/auth/login" \
-  -d "username=admin&password=changeme123"
-```
+| Service | URL |
+|---------|-----|
+| Frontend | `http://YOUR_IP` |
+| API | `http://YOUR_IP:8000` |
+| API Docs | `http://YOUR_IP:8000/api/docs` |
 
 ### Default Credentials
 
 | User | Password | Role |
 |------|----------|------|
-| admin | changeme123 | Admin |
-| analyst | analyst123 | Analyst |
-| viewer | viewer123 | Viewer |
+| admin@theforce.security | admin123 | Admin |
 
-⚠️ **Change these immediately!**
+⚠️ **Change the password immediately!**
 
-### Management Commands
+### Verify SQS Connection
+
+```bash
+# Check scanner logs
+docker compose logs scanner | grep -i sqs
+
+# Should show:
+# INFO - SQS client initialized for queue: https://sqs...
+
+# If SQS not configured, you'll see:
+# WARNING - SQS_QUEUE_URL not set, running in test mode
+```
+
+### Create a Test Scan
+
+```bash
+# Login and get token
+TOKEN=$(curl -s -X POST "http://localhost:8000/api/v1/auth/login" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=admin@theforce.security&password=admin123" \
+  | jq -r '.access_token')
+
+# Create a scan
+curl -X POST "http://localhost:8000/api/v1/scans/" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Test Scan",
+    "organization_id": 1,
+    "scan_type": "VULNERABILITY",
+    "targets": ["example.com"]
+  }'
+
+# Check scan status
+curl "http://localhost:8000/api/v1/scans/" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+---
+
+## Management Commands
 
 ```bash
 cd /opt/asm
 
-# View status
-./manage.sh status
+# View all container status
+docker compose -f docker-compose.prod.yml ps
 
 # View logs
-./manage.sh logs
+docker compose -f docker-compose.prod.yml logs -f
+docker compose -f docker-compose.prod.yml logs -f scanner
+docker compose -f docker-compose.prod.yml logs -f backend
+
+# Restart services
+docker compose -f docker-compose.prod.yml restart
+
+# Restart just the scanner
+docker compose -f docker-compose.prod.yml restart scanner
+
+# Update and redeploy
+git pull
+docker compose -f docker-compose.prod.yml up -d --build
 
 # Backup database
-./manage.sh backup
+docker compose -f docker-compose.prod.yml exec db pg_dump -U asm_user asm_db > backup.sql
 
 # Update Nuclei templates
-./manage.sh update-nuclei
-
-# Check health
-./manage.sh health
-
-# Setup SSL
-./manage.sh ssl-setup your-domain.com your-email@domain.com
+docker compose -f docker-compose.prod.yml exec scanner nuclei -update-templates
 ```
 
-## SSL Setup (HTTPS)
+---
+
+## SSL/HTTPS Setup
 
 ### Option 1: Let's Encrypt (Free)
 
 ```bash
-./manage.sh ssl-setup asm.yourdomain.com admin@yourdomain.com
+# Install certbot
+sudo apt install certbot
+
+# Stop services temporarily
+docker compose -f docker-compose.prod.yml stop
+
+# Get certificate
+sudo certbot certonly --standalone -d your-domain.com
+
+# Copy certificates
+sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem /opt/asm/nginx/ssl/
+sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem /opt/asm/nginx/ssl/
+
+# Restart services
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ### Option 2: AWS Certificate Manager + ALB
 
-For production with custom domain:
+For production with custom domains, use an Application Load Balancer with ACM certificate.
 
-1. Create ACM certificate
-2. Create Application Load Balancer
-3. Point ALB to EC2 instance
-4. Update Route53 DNS
-
-## Scaling Up
-
-When you outgrow a single instance:
-
-1. **Vertical Scaling**: Upgrade to t3.xlarge, m5.large, etc.
-2. **Add RDS**: Move PostgreSQL to RDS for better reliability
-3. **Add ElastiCache**: Move Redis to ElastiCache
-4. **Full AWS Setup**: Use the Terraform configuration in `aws/terraform/`
-
-## Monitoring
-
-### CloudWatch Metrics
-
-The CloudFormation template sets up alarms for:
-- CPU > 80%
-- Disk > 80%
-
-### Manual Monitoring
-
-```bash
-# Real-time stats
-docker stats
-
-# Check logs
-./manage.sh logs
-
-# System health
-htop
-df -h
-free -h
-```
-
-## Backup & Recovery
-
-### Automated Backups
-
-Set up cron job:
-```bash
-# Daily backup at 2 AM
-0 2 * * * /opt/asm/manage.sh backup
-```
-
-### Manual Backup
-
-```bash
-./manage.sh backup
-# Backup saved to /opt/asm/backups/
-```
-
-### Restore
-
-```bash
-./manage.sh restore /opt/asm/backups/asm_backup_20240115_020000.sql.gz
-```
-
-### Backup to S3
-
-```bash
-# Upload backups to S3
-aws s3 sync /opt/asm/backups/ s3://your-bucket/asm-backups/
-```
-
-## Security Hardening
-
-1. **Restrict SSH Access**
-   ```bash
-   # Update security group to only allow your IP
-   aws ec2 authorize-security-group-ingress \
-     --group-id sg-xxx \
-     --protocol tcp \
-     --port 22 \
-     --cidr YOUR_IP/32
-   ```
-
-2. **Enable Fail2ban**
-   ```bash
-   sudo apt install fail2ban
-   sudo systemctl enable fail2ban
-   ```
-
-3. **Update Regularly**
-   ```bash
-   sudo apt update && sudo apt upgrade -y
-   ./manage.sh update
-   ```
-
-4. **Enable AWS Systems Manager**
-   - No SSH keys needed
-   - Audit logging
-   - Patch management
+---
 
 ## Troubleshooting
 
-### Services Not Starting
+### Scanner stuck on "SQS not set"
 
 ```bash
-# Check Docker
-sudo systemctl status docker
+# Check environment
+docker compose -f docker-compose.prod.yml exec scanner env | grep SQS
 
-# Check containers
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs
+# If empty, add to .env and restart
+echo "SQS_QUEUE_URL=your-queue-url" >> .env
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-### Database Connection Issues
+### Scans staying in PENDING status
 
 ```bash
-# Check database
+# Check scanner is running
+docker compose -f docker-compose.prod.yml ps scanner
+
+# Check scanner logs for errors
+docker compose -f docker-compose.prod.yml logs --tail=50 scanner
+
+# Check if scanner can reach targets (network issues)
+docker compose -f docker-compose.prod.yml exec scanner ping -c 3 example.com
+```
+
+### Permission denied for port scanning
+
+The scanner container needs `NET_RAW` capability. Verify in docker-compose:
+
+```yaml
+scanner:
+  cap_add:
+    - NET_RAW
+```
+
+### Database connection issues
+
+```bash
+# Check database is running
+docker compose -f docker-compose.prod.yml ps db
+
+# Check database logs
 docker compose -f docker-compose.prod.yml logs db
 
-# Restart database
-docker compose -f docker-compose.prod.yml restart db
+# Test connection
+docker compose -f docker-compose.prod.yml exec db psql -U asm_user -d asm_db -c "SELECT 1"
 ```
 
-### Out of Disk Space
-
-```bash
-# Check disk
-df -h
-
-# Clean Docker
-docker system prune -a
-
-# Clean old backups
-ls -la /opt/asm/backups/
-```
-
-### Memory Issues
-
-```bash
-# Check memory
-free -h
-
-# Upgrade instance type if needed
-# Or add swap
-sudo fallocate -l 4G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-```
+---
 
 ## Cleanup
 
@@ -318,6 +395,7 @@ sudo swapon /swapfile
 
 ```bash
 aws cloudformation delete-stack --stack-name asm-platform
+aws cloudformation wait stack-delete-complete --stack-name asm-platform
 ```
 
 ### Manual Cleanup
@@ -325,17 +403,18 @@ aws cloudformation delete-stack --stack-name asm-platform
 1. Terminate EC2 instance
 2. Delete EBS volumes
 3. Release Elastic IP
-4. Delete security groups
+4. Delete SQS queue
+5. Delete security groups
+6. Delete IAM role
 
+---
 
+## Security Hardening
 
-
-
-
-
-
-
-
-
-
-
+1. **Restrict SSH** to your IP only
+2. **Change default passwords** immediately
+3. **Enable HTTPS** with SSL certificates
+4. **Use IAM roles** instead of access keys
+5. **Enable CloudTrail** for audit logging
+6. **Set up VPC Flow Logs** for network monitoring
+7. **Regular updates**: `sudo apt update && sudo apt upgrade -y`

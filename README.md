@@ -216,58 +216,111 @@ To enable paid discovery sources, configure API keys in the **Settings** page:
 4. For **WhoisXML**: Add organization names (e.g., "Rockwell Automation") to discover IP ranges
 5. For **Whoxy**: Add registration emails to discover domains
 
-## ☁️ AWS EC2 Deployment
+## ☁️ AWS Deployment
 
-### 1. Launch EC2 Instance
+### Quick Deploy with CloudFormation
 
-- **Instance Type**: t3.large or larger (recommended)
-- **Storage**: 30GB+ EBS volume
-- **OS**: Ubuntu 24.04 LTS
-- **Security Group**: Allow inbound on ports 22, 3000, 8000
-
-### 2. Install Docker
+The fastest way to deploy on AWS with full SQS support for async scan processing:
 
 ```bash
-# Install Docker
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
+# Deploy the stack (creates EC2, SQS, VPC, IAM roles)
+aws cloudformation create-stack \
+  --stack-name asm-platform \
+  --template-body file://aws/ec2-single/cloudformation.yml \
+  --parameters \
+    ParameterKey=KeyName,ParameterValue=your-key-pair \
+    ParameterKey=InstanceType,ParameterValue=t3.large \
+    ParameterKey=AllowedSSHCIDR,ParameterValue=YOUR_IP/32 \
+  --capabilities CAPABILITY_IAM
 
-# Log out and back in, then verify
-docker --version
-docker compose version
+# Wait for completion (~10 minutes)
+aws cloudformation wait stack-create-complete --stack-name asm-platform
+
+# Get the public IP and SQS URL
+aws cloudformation describe-stacks --stack-name asm-platform \
+  --query 'Stacks[0].Outputs' --output table
+
+# SSH and complete setup
+ssh -i your-key.pem ubuntu@<PUBLIC_IP>
+cd /opt/asm
+git clone https://github.com/javrav2/theforcesecurity_ASM.git .
+./aws/ec2-single/setup.sh
 ```
 
-### 3. Clone and Deploy
+### What CloudFormation Creates
 
-```bash
-# Clone repository
-git clone https://github.com/javrav2/theforcesecurity_ASM.git ~/asm
-cd ~/asm
+| Resource | Description |
+|----------|-------------|
+| EC2 Instance | Ubuntu 22.04 with Docker |
+| SQS Queue | For async scan job processing |
+| IAM Role | EC2 permissions for SQS |
+| VPC + Subnet | Isolated network |
+| Security Group | Ports 22, 80, 443 |
+| Elastic IP | Static public IP |
 
-# Create .env file (see Quick Start section)
-nano .env
+### Manual EC2 Deployment
 
-# Build and start
-sudo docker compose up -d --build
+1. **Launch EC2 Instance**
+   - AMI: Ubuntu 22.04 LTS
+   - Instance Type: t3.large (2 vCPU, 8GB RAM)
+   - Storage: 50GB gp3
+   - Security Group: Allow ports 22, 80, 443
 
-# Create admin user (see Quick Start section)
-```
+2. **Install Docker**
+   ```bash
+   curl -fsSL https://get.docker.com | sudo sh
+   sudo usermod -aG docker $USER
+   # Log out and back in
+   ```
 
-### 4. Configure Security Group
+3. **Clone and Deploy**
+   ```bash
+   git clone https://github.com/javrav2/theforcesecurity_ASM.git /opt/asm
+   cd /opt/asm
+   ./aws/ec2-single/setup.sh
+   ```
 
-In AWS Console, ensure your EC2 security group allows:
+### SQS Configuration (Recommended for Production)
 
-| Port | Protocol | Source | Purpose |
-|------|----------|--------|---------|
-| 22 | TCP | Your IP | SSH |
-| 3000 | TCP | 0.0.0.0/0 | Frontend |
-| 8000 | TCP | 0.0.0.0/0 | Backend API |
+For reliable async scan processing, configure AWS SQS:
 
-### 5. Access Your Deployment
+1. **Create SQS Queue**
+   ```bash
+   aws sqs create-queue \
+     --queue-name asm-scan-jobs \
+     --attributes VisibilityTimeout=3600
+   ```
 
-```
-http://<your-ec2-public-ip>:3000
-```
+2. **Add to Environment**
+   ```bash
+   # Add to /opt/asm/.env
+   SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/YOUR_ACCOUNT/asm-scan-jobs
+   AWS_REGION=us-east-1
+   ```
+
+3. **Restart Services**
+   ```bash
+   docker compose down && docker compose up -d
+   ```
+
+### Scan Processing Modes
+
+| Mode | When Used | How It Works |
+|------|-----------|--------------|
+| **SQS Mode** | `SQS_QUEUE_URL` is set | Scanner polls SQS for jobs |
+| **Database Mode** | `SQS_QUEUE_URL` not set | Scanner polls DB for pending scans |
+
+Both modes work - SQS is recommended for production reliability.
+
+### Access Your Deployment
+
+| Service | URL |
+|---------|-----|
+| Frontend | `http://YOUR_IP` |
+| API | `http://YOUR_IP:8000` |
+| API Docs | `http://YOUR_IP:8000/api/docs` |
+
+See [aws/ec2-single/README.md](aws/ec2-single/README.md) for detailed AWS deployment instructions.
 
 ## 📁 Project Structure
 
@@ -347,53 +400,71 @@ sudo docker system prune -a -f
 
 ## 📊 API Endpoints
 
+All endpoints are prefixed with `/api/v1/`
+
 ### Authentication
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/auth/login` | Login and get token |
-| GET | `/api/auth/me` | Get current user |
-| POST | `/api/auth/logout` | Logout |
+| POST | `/api/v1/auth/login` | Login and get token |
+| GET | `/api/v1/auth/me` | Get current user |
+| POST | `/api/v1/auth/logout` | Logout |
 
 ### Organizations
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/organizations` | List organizations |
-| POST | `/api/organizations` | Create organization |
-| GET | `/api/organizations/{id}` | Get organization |
-| DELETE | `/api/organizations/{id}` | Delete organization |
+| GET | `/api/v1/organizations/` | List organizations |
+| POST | `/api/v1/organizations/` | Create organization |
+| GET | `/api/v1/organizations/{id}` | Get organization |
+| DELETE | `/api/v1/organizations/{id}` | Delete organization |
 
 ### Assets
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/assets` | List assets |
-| GET | `/api/assets/{id}` | Get asset details |
+| GET | `/api/v1/assets/` | List assets |
+| GET | `/api/v1/assets/{id}` | Get asset details |
+| POST | `/api/v1/assets/enrich-geolocation` | Enrich with geo data |
 
-### Vulnerabilities
+### Findings (Vulnerabilities)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/vulnerabilities` | List vulnerabilities |
-| GET | `/api/vulnerabilities/summary` | Get summary stats |
+| GET | `/api/v1/vulnerabilities/` | List findings |
+| GET | `/api/v1/vulnerabilities/stats/summary` | Get summary stats |
+| POST | `/api/v1/vulnerabilities/` | Create finding |
 
 ### Scans
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/scans` | List scans |
-| POST | `/api/scans` | Create new scan |
+| GET | `/api/v1/scans/` | List scans |
+| POST | `/api/v1/scans/` | Create new scan |
+| POST | `/api/v1/scans/by-label` | Create scan by asset labels |
 
 ### Discovery
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/discovery/run` | Run discovery |
-| POST | `/api/external-discovery/run` | External discovery (CT, Wayback, etc.) |
-| GET | `/api/external-discovery/services` | List available sources |
+| POST | `/api/v1/discovery/run` | Run subdomain discovery |
+| POST | `/api/v1/external-discovery/run` | External discovery (CT, Wayback, Whoxy) |
+| GET | `/api/v1/external-discovery/services` | List available sources |
+
+### Screenshots
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/screenshots/` | List screenshots |
+| GET | `/api/v1/screenshots/image/{id}` | Get screenshot image |
+| POST | `/api/v1/screenshots/capture/asset/{id}` | Capture screenshot |
+
+### Netblocks / CIDR
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/netblocks/` | List netblocks |
+| POST | `/api/v1/netblocks/discover` | Discover netblocks by org name |
+| GET | `/api/v1/netblocks/summary` | Get netblock summary |
 
 ### Wayback URLs
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/waybackurls/status` | Check tool status |
-| POST | `/api/waybackurls/fetch` | Fetch URLs for single domain |
-| POST | `/api/waybackurls/fetch/batch` | Fetch URLs for multiple domains |
-| POST | `/api/waybackurls/fetch/organization` | Fetch URLs for all org assets |
+| GET | `/api/v1/waybackurls/status` | Check tool status |
+| POST | `/api/v1/waybackurls/fetch` | Fetch URLs for single domain |
+| POST | `/api/v1/waybackurls/fetch/organization` | Fetch URLs for all org assets |
 
 Full API documentation available at `/api/docs`
 
