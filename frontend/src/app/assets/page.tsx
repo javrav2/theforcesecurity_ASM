@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
 import { Card } from '@/components/ui/card';
@@ -119,6 +120,7 @@ const assetColors: Record<string, string> = {
 };
 
 export default function AssetsPage() {
+  const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -445,6 +447,7 @@ export default function AssetsPage() {
                       <TableRow 
                         key={asset.id} 
                         className="border-border cursor-pointer transition-colors hover:bg-secondary/50"
+                        onClick={() => router.push(`/assets/${asset.id}`)}
                       >
                         {/* Screenshot */}
                         {columns.find(c => c.key === 'screenshot')?.visible && (
