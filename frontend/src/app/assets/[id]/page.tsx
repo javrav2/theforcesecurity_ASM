@@ -565,7 +565,9 @@ export default function AssetDetailPage() {
                         <div className="flex items-center gap-2">
                           {port.service || '—'}
                           {port.is_ssl && (
-                            <Lock className="h-3 w-3 text-green-400" title="SSL/TLS" />
+                            <span title="SSL/TLS">
+                              <Lock className="h-3 w-3 text-green-400" />
+                            </span>
                           )}
                         </div>
                       </TableCell>
