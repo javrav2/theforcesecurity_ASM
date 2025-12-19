@@ -38,6 +38,15 @@ import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
 
+interface ScanResults {
+  summary?: Record<string, any>;
+  import_summary?: Record<string, any>;
+  targets_original?: number;
+  targets_expanded?: number;
+  targets_scanned?: number;
+  [key: string]: any;
+}
+
 interface Scan {
   id: number;
   name: string;
@@ -57,7 +66,7 @@ interface Scan {
   started_at?: string;
   completed_at?: string;
   error_message?: string;
-  results: Record<string, any>;
+  results: ScanResults;
   created_at: string;
   updated_at: string;
 }
@@ -243,8 +252,15 @@ export default function ScanDetailPage() {
               <div className="flex items-center gap-3">
                 <Target className="h-8 w-8 text-blue-400" />
                 <div>
-                  <p className="text-2xl font-bold">{scan.targets?.length || 0}</p>
-                  <p className="text-sm text-muted-foreground">Targets</p>
+                  <p className="text-2xl font-bold">
+                    {scan.results?.targets_expanded || scan.results?.targets_scanned || scan.targets?.length || 0}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {scan.results?.targets_expanded && scan.results?.targets_original && 
+                     scan.results.targets_expanded !== scan.results.targets_original
+                      ? `IPs (from ${scan.results.targets_original} ${scan.results.targets_original === 1 ? 'range' : 'ranges'})`
+                      : 'Targets'}
+                  </p>
                 </div>
               </div>
             </CardContent>
@@ -354,9 +370,16 @@ export default function ScanDetailPage() {
             <CardTitle className="text-lg flex items-center gap-2">
               <Target className="h-5 w-5" />
               Targets ({scan.targets?.length || 0})
+              {scan.results?.targets_expanded && scan.results.targets_expanded > (scan.targets?.length || 0) && (
+                <Badge variant="outline" className="ml-2 text-xs">
+                  {scan.results.targets_expanded} IPs after CIDR expansion
+                </Badge>
+              )}
             </CardTitle>
             <CardDescription>
-              Assets scanned in this job
+              {scan.results?.targets_expanded && scan.results.targets_expanded > (scan.targets?.length || 0)
+                ? `${scan.targets?.length || 0} input targets expanded to ${scan.results.targets_expanded} individual IPs`
+                : 'Assets scanned in this job'}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -365,6 +388,9 @@ export default function ScanDetailPage() {
                 {scan.targets.map((target, index) => (
                   <Badge key={index} variant="secondary" className="font-mono">
                     {target}
+                    {target.includes('/') && (
+                      <span className="text-xs text-muted-foreground ml-1">(CIDR)</span>
+                    )}
                   </Badge>
                 ))}
               </div>

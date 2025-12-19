@@ -9,6 +9,7 @@ security community and built on a simple YAML-based DSL.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import subprocess
@@ -20,6 +21,88 @@ from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def expand_cidr_targets(targets: list[str]) -> tuple[list[str], int]:
+    """
+    Expand CIDR ranges in targets to individual IPs.
+    
+    Returns:
+        tuple: (expanded_targets, total_ip_count)
+        
+    Nuclei can handle CIDRs natively, but we expand them to:
+    1. Get accurate target counts for reporting
+    2. Better control over large ranges
+    """
+    expanded = []
+    total_count = 0
+    
+    for target in targets:
+        target = target.strip()
+        if not target:
+            continue
+            
+        # Check if it's a CIDR notation
+        if '/' in target:
+            try:
+                # Try to parse as IP network (CIDR)
+                network = ipaddress.ip_network(target, strict=False)
+                
+                # For small networks (/24 or smaller = 256 IPs or less), expand all
+                # For larger networks, we still expand but log a warning
+                num_hosts = network.num_addresses
+                
+                if num_hosts > 65536:  # /16 or larger
+                    logger.warning(
+                        f"Large CIDR range {target} has {num_hosts} addresses. "
+                        "Consider breaking into smaller ranges for better performance."
+                    )
+                
+                # Expand all hosts in the network
+                for ip in network.hosts():
+                    expanded.append(str(ip))
+                    total_count += 1
+                    
+                # Also include network and broadcast for /31 and /32
+                if network.prefixlen >= 31:
+                    expanded.append(str(network.network_address))
+                    total_count += 1
+                    
+            except ValueError:
+                # Not a valid CIDR, treat as regular target (might be URL with port)
+                expanded.append(target)
+                total_count += 1
+        else:
+            # Regular target (IP, domain, URL)
+            expanded.append(target)
+            total_count += 1
+    
+    return expanded, total_count
+
+
+def count_cidr_targets(targets: list[str]) -> int:
+    """
+    Count total IPs across all targets, expanding CIDRs.
+    
+    Use this for quick counting without full expansion.
+    """
+    total = 0
+    for target in targets:
+        target = target.strip()
+        if not target:
+            continue
+            
+        if '/' in target:
+            try:
+                network = ipaddress.ip_network(target, strict=False)
+                # Count usable hosts (excludes network/broadcast for /30 and larger)
+                total += max(network.num_addresses - 2, 1)
+            except ValueError:
+                total += 1
+        else:
+            total += 1
+    
+    return total
 
 
 @dataclass
@@ -98,6 +181,8 @@ class NucleiScanResult:
     """Complete Nuclei scan result."""
     success: bool
     targets_scanned: int = 0
+    targets_original: int = 0  # Original count (e.g., 1 CIDR)
+    targets_expanded: int = 0  # Expanded count (e.g., 254 IPs from /24)
     findings: list[NucleiResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     duration_seconds: float = 0
@@ -195,9 +280,20 @@ class NucleiService:
         result = NucleiScanResult(success=False)
         start_time = datetime.utcnow()
         
+        # Track original target count
+        original_count = len(targets)
+        
+        # Expand CIDR ranges to individual IPs for accurate scanning
+        expanded_targets, expanded_count = expand_cidr_targets(targets)
+        
+        logger.info(
+            f"Target expansion: {original_count} input targets -> "
+            f"{expanded_count} IPs (including CIDR expansion)"
+        )
+        
         # Create temporary files for input/output
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
-            targets_file.write("\n".join(targets))
+            targets_file.write("\n".join(expanded_targets))
             targets_file_path = targets_file.name
         
         output_file_path = os.path.join(
@@ -272,7 +368,9 @@ class NucleiService:
                                 logger.warning(f"Failed to parse finding: {e}")
             
             result.success = True
-            result.targets_scanned = len(targets)
+            result.targets_scanned = expanded_count
+            result.targets_original = original_count
+            result.targets_expanded = expanded_count
             
             # Generate summary
             result.summary = self._generate_summary(result.findings)

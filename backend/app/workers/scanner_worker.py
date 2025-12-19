@@ -258,7 +258,10 @@ class ScannerWorker:
                 scan.vulnerabilities_found = import_summary['findings_created']
                 scan.results = {
                     'summary': result.summary,
-                    'import_summary': import_summary
+                    'import_summary': import_summary,
+                    'targets_original': result.targets_original,
+                    'targets_expanded': result.targets_expanded,
+                    'targets_scanned': result.targets_scanned,
                 }
                 db.commit()
             

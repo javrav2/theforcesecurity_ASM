@@ -12,6 +12,7 @@ from app.models.label import Label
 from app.models.user import User
 from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRequest
 from app.api.deps import get_current_active_user, require_analyst
+from app.services.nuclei_service import count_cidr_targets
 
 router = APIRouter(prefix="/scans", tags=["Scans"])
 
@@ -69,7 +70,7 @@ def list_scans(
             "assets_discovered": scan.assets_discovered,
             "technologies_found": scan.technologies_found,
             "vulnerabilities_found": scan.vulnerabilities_found,
-            "targets_count": len(scan.targets) if scan.targets else 0,
+            "targets_count": count_cidr_targets(scan.targets) if scan.targets else 0,
             "findings_count": scan.vulnerabilities_found,
             "started_by": scan.started_by,
             "started_at": scan.started_at,
