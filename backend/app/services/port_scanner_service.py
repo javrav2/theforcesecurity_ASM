@@ -194,6 +194,7 @@ class PortScannerService:
                 "-silent",
                 "-rate", str(rate),
                 "-timeout", str(timeout),
+                "-c",  # Use CONNECT scan (doesn't require root privileges)
             ]
             
             # Handle port specification
@@ -210,6 +211,7 @@ class PortScannerService:
                 cmd.append("-exclude-cdn")
             
             logger.info(f"Running naabu scan on {len(targets)} targets")
+            logger.debug(f"Naabu command: {' '.join(cmd)}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -218,6 +220,20 @@ class PortScannerService:
             )
             
             stdout, stderr = await process.communicate()
+            
+            # Log any errors from naabu
+            if process.returncode != 0:
+                error_msg = stderr.decode() if stderr else f"Exit code: {process.returncode}"
+                logger.error(f"Naabu scan failed: {error_msg}")
+                result.errors.append(error_msg)
+            
+            if stderr:
+                stderr_text = stderr.decode()
+                if "error" in stderr_text.lower() or "failed" in stderr_text.lower():
+                    logger.warning(f"Naabu stderr: {stderr_text}")
+                    result.errors.append(stderr_text)
+                else:
+                    logger.info(f"Naabu output: {stderr_text}")
             
             # Parse JSON output
             if os.path.exists(output_path):
