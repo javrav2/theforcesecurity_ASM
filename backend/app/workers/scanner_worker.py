@@ -150,17 +150,29 @@ class ScannerWorker:
             }
             
             job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
+            config = pending_scan.config or {}
+            
+            # Build job data with config values extracted
+            job_data = {
+                'job_type': job_type,
+                'scan_id': pending_scan.id,
+                'organization_id': pending_scan.organization_id,
+                'targets': pending_scan.targets or [],
+                'config': config,
+                # Extract common config fields for easier access
+                'scanner': config.get('scanner', 'naabu'),
+                'ports': config.get('ports'),
+                'severity': config.get('severity'),
+                'tags': config.get('tags'),
+                'exclude_tags': config.get('exclude_tags'),
+                'service_detection': config.get('service_detection', True),
+                'domain': pending_scan.targets[0] if pending_scan.targets else None,
+            }
             
             message = {
                 'MessageId': f'db-{pending_scan.id}',
                 'ReceiptHandle': f'db-{pending_scan.id}',
-                'Body': json.dumps({
-                    'job_type': job_type,
-                    'scan_id': pending_scan.id,
-                    'organization_id': pending_scan.organization_id,
-                    'targets': pending_scan.targets or [],
-                    'config': pending_scan.config or {},
-                })
+                'Body': json.dumps(job_data)
             }
             
             logger.info(f"Found pending scan {pending_scan.id} ({pending_scan.scan_type.value})")

@@ -77,6 +77,8 @@ export default function ScansPage() {
     organization_id: '',
     scan_type: 'vulnerability',
     targets: '',
+    scanner: 'naabu',  // Port scanner: naabu, masscan, nmap
+    ports: '',         // Port specification for port scans
   });
   const { toast } = useToast();
 
@@ -134,11 +136,21 @@ export default function ScansPage() {
         .map((t) => t.trim())
         .filter((t) => t);
 
+      // Build config based on scan type
+      const config: Record<string, any> = {};
+      if (formData.scan_type === 'port_scan') {
+        config.scanner = formData.scanner;
+        if (formData.ports) {
+          config.ports = formData.ports;
+        }
+      }
+
       await api.createScan({
         name: formData.name.trim(),
         organization_id: parseInt(formData.organization_id),
         scan_type: formData.scan_type,
         targets: targets.length > 0 ? targets : undefined,
+        config: Object.keys(config).length > 0 ? config : undefined,
       });
 
       toast({
@@ -147,7 +159,7 @@ export default function ScansPage() {
       });
 
       setCreateDialogOpen(false);
-      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '' });
+      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '', scanner: 'naabu', ports: '' });
       fetchData();
     } catch (error: any) {
       toast({
@@ -273,6 +285,55 @@ export default function ScansPage() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* Port Scan Options */}
+                {formData.scan_type === 'port_scan' && (
+                  <>
+                    <div className="space-y-2">
+                      <Label>Scanner Tool</Label>
+                      <Select
+                        value={formData.scanner}
+                        onValueChange={(value) => setFormData({ ...formData, scanner: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="naabu">
+                            <div className="flex flex-col">
+                              <span>Naabu (Recommended)</span>
+                              <span className="text-xs text-muted-foreground">Fast, reliable port scanner</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="masscan">
+                            <div className="flex flex-col">
+                              <span>Masscan</span>
+                              <span className="text-xs text-muted-foreground">Fastest scanner, good for large ranges</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="nmap">
+                            <div className="flex flex-col">
+                              <span>Nmap</span>
+                              <span className="text-xs text-muted-foreground">Most accurate, includes service detection</span>
+                            </div>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Ports (optional)</Label>
+                      <Input
+                        placeholder="80,443,8080 or 1-1000 or - for all"
+                        value={formData.ports}
+                        onChange={(e) => setFormData({ ...formData, ports: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Leave empty to scan top 100 common ports
+                      </p>
+                    </div>
+                  </>
+                )}
 
                 <div className="space-y-2">
                   <Label>Targets (optional, one per line)</Label>
