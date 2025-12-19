@@ -312,10 +312,12 @@ export default function ScansPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Organization</TableHead>
                 <TableHead>Targets</TableHead>
+                <TableHead>Assets</TableHead>
                 <TableHead>Findings</TableHead>
                 <TableHead>Started</TableHead>
                 <TableHead>Duration</TableHead>
@@ -324,13 +326,13 @@ export default function ScansPage() {
             <TableBody>
               {loading && scans.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8">
+                  <TableCell colSpan={9} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : scans.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                     No scans yet. Start a new scan to begin discovering vulnerabilities.
                   </TableCell>
                 </TableRow>
@@ -338,38 +340,71 @@ export default function ScansPage() {
                 scans.map((scan) => (
                   <TableRow key={scan.id}>
                     <TableCell>
+                      <div className="flex flex-col">
+                        <span className="font-medium">{scan.name}</span>
+                        {scan.progress !== undefined && scan.progress > 0 && scan.progress < 100 && (
+                          <div className="flex items-center gap-2 mt-1">
+                            <div className="w-20 h-1.5 bg-secondary rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-primary transition-all" 
+                                style={{ width: `${scan.progress}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-muted-foreground">{scan.progress}%</span>
+                          </div>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
                       <div className="flex items-center gap-2">
                         {getStatusIcon(scan.status)}
                         <Badge className={getStatusColor(scan.status)}>{scan.status}</Badge>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">{scan.scan_type}</Badge>
+                      <Badge variant="outline">{scan.scan_type?.replace(/_/g, ' ')}</Badge>
                     </TableCell>
-                    <TableCell>{scan.organization_name || '-'}</TableCell>
-                    <TableCell>{scan.targets_count || '-'}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {scan.organization_name || '-'}
+                    </TableCell>
                     <TableCell>
-                      {scan.findings_count !== undefined ? (
-                        <Badge variant={scan.findings_count > 0 ? 'destructive' : 'secondary'}>
-                          {scan.findings_count}
-                        </Badge>
+                      {scan.targets_count ? (
+                        <span className="font-mono text-sm">{scan.targets_count}</span>
                       ) : (
-                        '-'
+                        <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
+                    <TableCell>
+                      {scan.assets_discovered !== undefined && scan.assets_discovered > 0 ? (
+                        <Badge variant="secondary">{scan.assets_discovered}</Badge>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {scan.findings_count !== undefined && scan.findings_count > 0 ? (
+                        <Badge variant="destructive">{scan.findings_count}</Badge>
+                      ) : scan.vulnerabilities_found !== undefined && scan.vulnerabilities_found > 0 ? (
+                        <Badge variant="destructive">{scan.vulnerabilities_found}</Badge>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
                       {scan.started_at ? formatDate(scan.started_at) : formatDate(scan.created_at)}
                     </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
+                    <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
                       {scan.started_at && scan.completed_at
                         ? `${Math.round(
                             (new Date(scan.completed_at).getTime() -
                               new Date(scan.started_at).getTime()) /
                               1000
                           )}s`
-                        : scan.status === 'running'
+                        : scan.status?.toLowerCase() === 'running'
                         ? 'In progress...'
-                        : '-'}
+                        : scan.status?.toLowerCase() === 'pending'
+                        ? 'Waiting...'
+                        : '—'}
                     </TableCell>
                   </TableRow>
                 ))
