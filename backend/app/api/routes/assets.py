@@ -205,22 +205,23 @@ def get_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Get asset by ID."""
+    """Get asset by ID with port services and technologies."""
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
-    
+
     if not asset:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Asset not found"
         )
-    
+
     if not check_org_access(current_user, asset.organization_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied"
         )
-    
-    return asset
+
+    # Build full response with port services and technologies
+    return build_asset_response(asset)
 
 
 @router.get("/{asset_id}/ports", response_model=AssetPortsSummary)
