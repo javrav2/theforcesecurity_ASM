@@ -412,7 +412,7 @@ class PortScannerService:
         self,
         targets: List[str],
         ports: Optional[str] = None,
-        scan_type: str = "-sS",  # SYN scan (requires root)
+        scan_type: str = "-sT",  # TCP connect scan (doesn't require root)
         service_detection: bool = True,
         os_detection: bool = False,
         timing: int = 4,  # T4 aggressive timing
@@ -424,9 +424,12 @@ class PortScannerService:
         Nmap is the most feature-rich scanner with service detection,
         OS fingerprinting, and scripting capabilities.
         
+        NOTE: Uses -sT (connect scan) by default which doesn't require root.
+        SYN scan (-sS) is faster but requires root privileges.
+        
         Args:
             targets: List of targets
-            ports: Port specification (None = top 1000)
+            ports: Port specification (None = top 1000, "-" = all ports)
             scan_type: Nmap scan type (-sS, -sT, -sU, etc.)
             service_detection: Enable service/version detection (-sV)
             os_detection: Enable OS detection (-O)
@@ -435,6 +438,10 @@ class PortScannerService:
         """
         result = ScanResult(success=False, scanner=ScannerType.NMAP)
         start_time = datetime.utcnow()
+        
+        # Handle special port notation
+        if ports == "-" or ports == "all":
+            ports = "1-65535"
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
             targets_file.write("\n".join(targets))
@@ -450,6 +457,7 @@ class PortScannerService:
                 "-oX", output_path,
                 scan_type,
                 f"-T{timing}",
+                "-Pn",  # Skip host discovery, scan all hosts
             ]
             
             if ports:
@@ -464,7 +472,8 @@ class PortScannerService:
             if scripts:
                 cmd.extend(["--script", ",".join(scripts)])
             
-            logger.info(f"Running nmap scan on {len(targets)} targets")
+            logger.info(f"Running nmap scan on {len(targets)} targets with ports={ports}")
+            logger.debug(f"Nmap command: {' '.join(cmd)}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -474,9 +483,27 @@ class PortScannerService:
             
             stdout, stderr = await process.communicate()
             
+            # Log any errors from nmap
+            if process.returncode != 0:
+                error_msg = stderr.decode() if stderr else f"Exit code: {process.returncode}"
+                logger.error(f"Nmap scan failed: {error_msg}")
+                result.errors.append(error_msg)
+                
+                # Check for common issues
+                if "requires root" in error_msg.lower() or "operation not permitted" in error_msg.lower():
+                    result.errors.append("Nmap SYN scan requires root. Using -sT (connect scan) instead.")
+            
+            if stderr:
+                stderr_text = stderr.decode()
+                logger.info(f"Nmap stderr: {stderr_text}")
+            
             # Parse XML output
             if os.path.exists(output_path):
                 result.ports_found = self._parse_nmap_xml(output_path)
+                logger.info(f"Parsed {len(result.ports_found)} ports from nmap XML output")
+            else:
+                logger.warning(f"Nmap output file not found: {output_path}")
+                result.errors.append("Nmap did not produce output file")
             
             result.success = True
             result.targets_scanned = len(targets)
