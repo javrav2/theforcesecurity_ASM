@@ -418,3 +418,4 @@ def search_assets_by_labels(
             for a in assets
         ]
     }
+

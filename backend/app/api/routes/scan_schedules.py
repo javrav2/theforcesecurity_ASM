@@ -393,3 +393,4 @@ def get_schedule_history(
             for s in scans
         ]
     }
+

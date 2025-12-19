@@ -75,3 +75,4 @@ LABEL_COLORS = [
     "#f43f5e",  # Rose
     "#64748b",  # Slate
 ]
+

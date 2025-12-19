@@ -86,28 +86,36 @@ interface Asset {
   screenshots?: Array<{ id: number; image_path: string; thumbnail_path?: string }>;
 }
 
-// Asset type icons
+// Asset type icons - matching AssetType enum values
 const assetIcons: Record<string, typeof Globe> = {
   domain: Globe,
   subdomain: Globe,
-  ip: Server,
-  cidr: Wifi,
+  ip_address: Server,
+  ip: Server,  // alias
+  url: ExternalLink,
   port: Network,
   service: Layers,
   certificate: Lock,
-  asn: Hash,
+  cloud_resource: Server,
+  api_endpoint: Layers,
+  email: Globe,
+  other: Globe,
 };
 
-// Asset type colors
+// Asset type colors - matching AssetType enum values
 const assetColors: Record<string, string> = {
   domain: 'text-primary',
   subdomain: 'text-blue-400',
-  ip: 'text-orange-400',
-  cidr: 'text-yellow-400',
+  ip_address: 'text-orange-400',
+  ip: 'text-orange-400',  // alias
+  url: 'text-cyan-400',
   port: 'text-purple-400',
   service: 'text-green-400',
   certificate: 'text-gray-400',
-  asn: 'text-cyan-400',
+  cloud_resource: 'text-yellow-400',
+  api_endpoint: 'text-pink-400',
+  email: 'text-teal-400',
+  other: 'text-gray-400',
 };
 
 export default function AssetsPage() {
@@ -321,19 +329,29 @@ export default function AssetsPage() {
 
   const getStatusColor = (status: string) => {
     switch (status?.toLowerCase()) {
+      // AssetStatus enum values
+      case 'discovered':
+        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+      case 'verified':
+        return 'bg-green-500/20 text-green-400 border-green-500/30';
+      case 'unverified':
+        return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      case 'inactive':
+        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+      case 'archived':
+        return 'bg-slate-500/20 text-slate-400 border-slate-500/30';
+      // Legacy/scan status values (for backward compatibility)
       case 'active':
       case 'completed':
         return 'bg-green-500/20 text-green-400 border-green-500/30';
-      case 'inactive':
       case 'pending':
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
       case 'running':
         return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
       case 'error':
       case 'failed':
         return 'bg-red-500/20 text-red-400 border-red-500/30';
       default:
-        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
     }
   };
 
@@ -344,23 +362,23 @@ export default function AssetsPage() {
       options: [
         { label: 'Domain', value: 'domain' },
         { label: 'Subdomain', value: 'subdomain' },
-        { label: 'IP', value: 'ip' },
+        { label: 'IP Address', value: 'ip_address' },
+        { label: 'URL', value: 'url' },
         { label: 'Port', value: 'port' },
         { label: 'Service', value: 'service' },
         { label: 'Certificate', value: 'certificate' },
-        { label: 'CIDR', value: 'cidr' },
-        { label: 'ASN', value: 'asn' },
+        { label: 'API Endpoint', value: 'api_endpoint' },
       ],
     },
     {
       key: 'status',
       label: 'Status',
       options: [
-        { label: 'Active', value: 'active' },
+        { label: 'Discovered', value: 'discovered' },
+        { label: 'Verified', value: 'verified' },
+        { label: 'Unverified', value: 'unverified' },
         { label: 'Inactive', value: 'inactive' },
-        { label: 'Running', value: 'running' },
-        { label: 'Pending', value: 'pending' },
-        { label: 'Failed', value: 'failed' },
+        { label: 'Archived', value: 'archived' },
       ],
     },
   ];

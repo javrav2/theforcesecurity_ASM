@@ -159,3 +159,4 @@ def get_geolocation_service() -> GeoLocationService:
     if _geo_service is None:
         _geo_service = GeoLocationService()
     return _geo_service
+

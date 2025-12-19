@@ -152,3 +152,4 @@ CONTINUOUS_SCAN_TYPES = {
         "default_config": {}
     },
 }
+

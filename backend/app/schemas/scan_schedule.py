@@ -105,3 +105,4 @@ class ManualTriggerRequest(BaseModel):
     """Request to manually trigger a scheduled scan."""
     override_targets: Optional[List[str]] = None
     override_config: Optional[dict[str, Any]] = None
+

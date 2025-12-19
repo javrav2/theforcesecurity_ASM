@@ -143,3 +143,4 @@ class NetblockDiscoveryResponse(BaseModel):
     owned_count: int
     total_ips: int
     details: List[dict] = []
+

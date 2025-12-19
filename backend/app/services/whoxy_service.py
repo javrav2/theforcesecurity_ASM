@@ -305,3 +305,4 @@ class WhoxyService:
 def get_whoxy_service(api_key: str) -> WhoxyService:
     """Get a Whoxy service instance with the given API key."""
     return WhoxyService(api_key)
+

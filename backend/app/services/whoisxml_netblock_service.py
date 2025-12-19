@@ -395,3 +395,4 @@ class WhoisXMLNetblockService:
 def get_whoisxml_netblock_service(api_key: str) -> WhoisXMLNetblockService:
     """Get a WhoisXML netblock service instance."""
     return WhoisXMLNetblockService(api_key)
+

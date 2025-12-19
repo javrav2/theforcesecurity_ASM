@@ -70,12 +70,13 @@ def list_assets(
     search: Optional[str] = None,
     has_open_ports: Optional[bool] = None,
     has_risky_ports: Optional[bool] = None,
+    include_cidr: bool = Query(False, description="Include IP_RANGE/CIDR assets (excluded by default)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """List assets with filtering options."""
+    """List assets with filtering options. By default excludes IP_RANGE/CIDR blocks (use netblocks endpoint for those)."""
     query = db.query(Asset)
     
     # Organization filter
@@ -90,6 +91,11 @@ def list_assets(
     # Apply filters
     if asset_type:
         query = query.filter(Asset.asset_type == asset_type)
+    else:
+        # By default, exclude IP_RANGE (CIDR blocks) - these are managed in netblocks
+        if not include_cidr:
+            query = query.filter(Asset.asset_type != AssetType.IP_RANGE)
+    
     if status:
         query = query.filter(Asset.status == status)
     if search:

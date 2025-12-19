@@ -365,3 +365,4 @@ def bulk_update_scope(
     db.commit()
     
     return {"updated": updated, "in_scope": in_scope}
+

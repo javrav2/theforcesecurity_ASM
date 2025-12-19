@@ -52,7 +52,36 @@ def list_scans(
         query = query.filter(Scan.status == status)
     
     scans = query.order_by(Scan.created_at.desc()).offset(skip).limit(limit).all()
-    return scans
+    
+    # Enrich with organization names and computed fields
+    result = []
+    for scan in scans:
+        scan_dict = {
+            "id": scan.id,
+            "name": scan.name,
+            "scan_type": scan.scan_type,
+            "organization_id": scan.organization_id,
+            "organization_name": scan.organization.name if scan.organization else None,
+            "targets": scan.targets or [],
+            "config": scan.config or {},
+            "status": scan.status,
+            "progress": scan.progress,
+            "assets_discovered": scan.assets_discovered,
+            "technologies_found": scan.technologies_found,
+            "vulnerabilities_found": scan.vulnerabilities_found,
+            "targets_count": len(scan.targets) if scan.targets else 0,
+            "findings_count": scan.vulnerabilities_found,
+            "started_by": scan.started_by,
+            "started_at": scan.started_at,
+            "completed_at": scan.completed_at,
+            "error_message": scan.error_message,
+            "results": scan.results or {},
+            "created_at": scan.created_at,
+            "updated_at": scan.updated_at,
+        }
+        result.append(scan_dict)
+    
+    return result
 
 
 @router.post("/", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
@@ -389,6 +418,7 @@ def delete_scan(
     db.commit()
     
     return None
+
 
 
 

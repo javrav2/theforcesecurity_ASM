@@ -45,6 +45,7 @@ class ScanResponse(ScanBase):
     """Schema for scan response."""
     id: int
     organization_id: int
+    organization_name: Optional[str] = None
     targets: List[str] = []
     config: dict[str, Any] = {}
     status: ScanStatus
@@ -52,6 +53,8 @@ class ScanResponse(ScanBase):
     assets_discovered: int
     technologies_found: int
     vulnerabilities_found: int
+    targets_count: int = 0
+    findings_count: int = 0
     started_by: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

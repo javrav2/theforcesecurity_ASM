@@ -435,3 +435,4 @@ async def test_tool(
         return {"error": "Command timed out after 30 seconds"}
     except Exception as e:
         return {"error": str(e)}
+
