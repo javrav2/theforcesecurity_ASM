@@ -196,8 +196,13 @@ class PortScannerService:
                 "-timeout", str(timeout),
             ]
             
+            # Handle port specification
             if ports:
-                cmd.extend(["-p", ports])
+                if ports == "-" or ports == "all":
+                    # Naabu uses "-" for all ports
+                    cmd.extend(["-p", "-"])
+                else:
+                    cmd.extend(["-p", ports])
             else:
                 cmd.extend(["-top-ports", str(top_ports)])
             
@@ -266,6 +271,9 @@ class PortScannerService:
         Masscan is the fastest port scanner, capable of scanning the
         entire internet in under 6 minutes.
         
+        NOTE: Masscan requires root privileges for raw socket access.
+        In Docker, the container needs --privileged or CAP_NET_RAW capability.
+        
         Args:
             targets: List of targets (IPs, CIDRs)
             ports: Port specification
@@ -274,6 +282,12 @@ class PortScannerService:
         """
         result = ScanResult(success=False, scanner=ScannerType.MASSCAN)
         start_time = datetime.utcnow()
+        
+        # Handle special port notation
+        if ports == "-" or ports == "all":
+            ports = "0-65535"
+        elif not ports:
+            ports = "1-65535"
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
             targets_file.write("\n".join(targets))
@@ -292,7 +306,8 @@ class PortScannerService:
                 "-oJ", output_path,
             ]
             
-            logger.info(f"Running masscan on {len(targets)} targets")
+            logger.info(f"Running masscan on {len(targets)} targets with ports={ports}")
+            logger.debug(f"Masscan command: {' '.join(cmd)}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -301,6 +316,21 @@ class PortScannerService:
             )
             
             stdout, stderr = await process.communicate()
+            
+            # Log any errors from masscan
+            if process.returncode != 0:
+                error_msg = stderr.decode() if stderr else f"Exit code: {process.returncode}"
+                logger.error(f"Masscan failed: {error_msg}")
+                result.errors.append(error_msg)
+                
+                # Check for common issues
+                if "permission denied" in error_msg.lower() or "operation not permitted" in error_msg.lower():
+                    result.errors.append("Masscan requires root privileges. Run container with --privileged or use naabu instead.")
+                elif "libpcap" in error_msg.lower():
+                    result.errors.append("Masscan requires libpcap. Install with: apt-get install libpcap-dev")
+            
+            if stderr and process.returncode == 0:
+                logger.info(f"Masscan output: {stderr.decode()}")
             
             # Parse JSON output
             if os.path.exists(output_path):

@@ -357,11 +357,24 @@ class ScannerWorker:
             if scan:
                 scan.status = ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
+                # Convert PortResult objects to dicts for JSON serialization
+                ports_data = [
+                    {"host": p.host, "ip": p.ip, "port": p.port, "protocol": p.protocol, "state": p.state}
+                    for p in result.ports_found
+                ]
                 scan.results = {
-                    'ports_found': result.ports_found,
+                    'ports_found': ports_data,
+                    'ports_count': len(result.ports_found),
+                    'targets_scanned': result.targets_scanned,
+                    'scanner': result.scanner.value,
+                    'duration_seconds': result.duration_seconds,
+                    'errors': result.errors,
                     'import_summary': import_summary,
                     'findings_summary': findings_summary
                 }
+                # If there were scanner errors but scan "succeeded", note it
+                if result.errors:
+                    scan.error_message = "; ".join(result.errors[:3])  # First 3 errors
                 db.commit()
             
             logger.info(
