@@ -312,14 +312,17 @@ class ScannerWorker:
                 'masscan': ScannerType.MASSCAN,
                 'nmap': ScannerType.NMAP
             }
-            scanner_type = scanner_type_map.get(scanner, ScannerType.NAABU)
+            selected_scanner = scanner_type_map.get(scanner, ScannerType.NAABU)
             
             # Run port scan
+            # Note: service_detection only applies to nmap scanner
+            scan_kwargs = {"targets": targets, "ports": ports}
+            if selected_scanner == ScannerType.NMAP and service_detection:
+                scan_kwargs["service_detection"] = service_detection
+            
             result = await self.port_scanner_service.scan(
-                scanner_type=scanner_type,
-                targets=targets,
-                ports=ports,
-                service_detection=service_detection
+                scanner=selected_scanner,
+                **scan_kwargs
             )
             
             # Import results
