@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -65,6 +66,7 @@ interface Scan {
 }
 
 export default function ScansPage() {
+  const router = useRouter();
   const [scans, setScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState(true);
   const [organizations, setOrganizations] = useState<any[]>([]);
@@ -338,10 +340,14 @@ export default function ScansPage() {
                 </TableRow>
               ) : (
                 scans.map((scan) => (
-                  <TableRow key={scan.id}>
+                  <TableRow 
+                    key={scan.id} 
+                    className="cursor-pointer hover:bg-secondary/50 transition-colors"
+                    onClick={() => router.push(`/scans/${scan.id}`)}
+                  >
                     <TableCell>
                       <div className="flex flex-col">
-                        <span className="font-medium">{scan.name}</span>
+                        <span className="font-medium text-primary hover:underline">{scan.name}</span>
                         {scan.progress !== undefined && scan.progress > 0 && scan.progress < 100 && (
                           <div className="flex items-center gap-2 mt-1">
                             <div className="w-20 h-1.5 bg-secondary rounded-full overflow-hidden">
