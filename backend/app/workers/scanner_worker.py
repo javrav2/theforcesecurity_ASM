@@ -345,9 +345,13 @@ class ScannerWorker:
                 create_assets=True
             )
             
-            # Generate findings
-            findings_service = PortFindingsService(db)
-            findings_summary = await findings_service.generate_findings_for_organization(organization_id)
+            # Generate findings from port scan results
+            findings_service = PortFindingsService()
+            findings_summary = findings_service.create_findings_from_scan(
+                db=db,
+                organization_id=organization_id,
+                scan_id=scan_id
+            )
             
             # Update scan record
             if scan:
