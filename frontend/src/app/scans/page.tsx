@@ -42,6 +42,7 @@ import {
   XCircle,
   AlertTriangle,
   RefreshCw,
+  StopCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -169,6 +170,24 @@ export default function ScansPage() {
       });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleCancelScan = async (scanId: number, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent row click navigation
+    try {
+      await api.cancelScan(scanId);
+      toast({
+        title: 'Scan Cancelled',
+        description: 'The scan has been stopped.',
+      });
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to cancel scan',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -384,6 +403,7 @@ export default function ScansPage() {
                 <TableHead>Findings</TableHead>
                 <TableHead>Started</TableHead>
                 <TableHead>Duration</TableHead>
+                <TableHead className="w-[80px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -472,6 +492,18 @@ export default function ScansPage() {
                         : scan.status?.toLowerCase() === 'pending'
                         ? 'Waiting...'
                         : '—'}
+                    </TableCell>
+                    <TableCell>
+                      {(scan.status?.toLowerCase() === 'running' || scan.status?.toLowerCase() === 'pending') && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                          onClick={(e) => handleCancelScan(scan.id, e)}
+                        >
+                          <StopCircle className="h-4 w-4" />
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))

@@ -353,10 +353,18 @@ class ScannerWorker:
                 scan_id=scan_id
             )
             
+            # Calculate unique live hosts (assets discovered)
+            unique_hosts = set()
+            for p in result.ports_found:
+                unique_hosts.add(p.ip or p.host)
+            
             # Update scan record
             if scan:
                 scan.status = ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
+                scan.assets_discovered = len(unique_hosts)  # Live hosts with open ports
+                scan.vulnerabilities_found = findings_summary.get('findings_created', 0)
+                
                 # Convert PortResult objects to dicts for JSON serialization
                 ports_data = [
                     {"host": p.host, "ip": p.ip, "port": p.port, "protocol": p.protocol, "state": p.state}
@@ -365,6 +373,7 @@ class ScannerWorker:
                 scan.results = {
                     'ports_found': ports_data,
                     'ports_count': len(result.ports_found),
+                    'unique_hosts': len(unique_hosts),
                     'targets_scanned': result.targets_scanned,
                     'scanner': result.scanner.value,
                     'duration_seconds': result.duration_seconds,

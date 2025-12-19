@@ -33,6 +33,7 @@ import {
   User,
   FileText,
   AlertCircle,
+  StopCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -78,6 +79,7 @@ export default function ScanDetailPage() {
   const [scan, setScan] = useState<Scan | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const { toast } = useToast();
 
   const fetchScan = async () => {
@@ -110,6 +112,28 @@ export default function ScanDetailPage() {
   const handleRefresh = () => {
     setRefreshing(true);
     fetchScan();
+  };
+
+  const handleCancel = async () => {
+    if (!scan) return;
+    
+    setCancelling(true);
+    try {
+      await api.cancelScan(scan.id);
+      toast({
+        title: 'Scan Cancelled',
+        description: 'The scan has been stopped.',
+      });
+      fetchScan();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to cancel scan',
+        variant: 'destructive',
+      });
+    } finally {
+      setCancelling(false);
+    }
   };
 
   const getStatusIcon = (status: string) => {
@@ -199,10 +223,26 @@ export default function ScanDetailPage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Scans
           </Button>
-          <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            {(scan.status === 'running' || scan.status === 'pending') && (
+              <Button 
+                variant="destructive" 
+                onClick={handleCancel} 
+                disabled={cancelling}
+              >
+                {cancelling ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <StopCircle className="h-4 w-4 mr-2" />
+                )}
+                Stop Scan
+              </Button>
+            )}
+            <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Status Banner */}
