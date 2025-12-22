@@ -39,3 +39,4 @@ class Label(Base):
     def __repr__(self):
         return f"<Label(id={self.id}, name='{self.name}', org={self.organization_id})>"
 
+

@@ -12,6 +12,10 @@ RUN npm install
 # Copy source code
 COPY . .
 
+# Build argument for API URL (defaults to relative path for same-origin)
+ARG NEXT_PUBLIC_API_URL=
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build

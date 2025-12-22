@@ -106,3 +106,4 @@ class ManualTriggerRequest(BaseModel):
     override_targets: Optional[List[str]] = None
     override_config: Optional[dict[str, Any]] = None
 
+

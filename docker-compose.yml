@@ -83,10 +83,12 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # For AWS: set NEXT_PUBLIC_API_URL in .env to http://YOUR_PUBLIC_IP:8000
+        # For local: leave empty to use relative API calls
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
     container_name: asm_frontend
     restart: unless-stopped
-    environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
     ports:
       - "${FRONTEND_PORT:-80}:3000"
     depends_on:

@@ -160,3 +160,4 @@ def get_geolocation_service() -> GeoLocationService:
         _geo_service = GeoLocationService()
     return _geo_service
 
+

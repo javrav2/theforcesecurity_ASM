@@ -76,3 +76,4 @@ LABEL_COLORS = [
     "#64748b",  # Slate
 ]
 
+

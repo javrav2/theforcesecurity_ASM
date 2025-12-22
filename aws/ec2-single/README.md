@@ -419,3 +419,4 @@ aws cloudformation wait stack-delete-complete --stack-name asm-platform
 6. **Set up VPC Flow Logs** for network monitoring
 7. **Regular updates**: `sudo apt update && sudo apt upgrade -y`
 
+

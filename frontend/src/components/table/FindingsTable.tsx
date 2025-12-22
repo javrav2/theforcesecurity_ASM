@@ -471,3 +471,4 @@ export function FindingsTable({ findings, assets, onStatusChange }: FindingsTabl
   );
 }
 
+

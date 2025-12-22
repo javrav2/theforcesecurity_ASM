@@ -179,3 +179,4 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
 
 export default WorldMap;
 
+
