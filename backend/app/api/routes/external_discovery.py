@@ -10,7 +10,7 @@ Provides endpoints to:
 import time
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_active_user, require_analyst, require_admin
@@ -32,6 +32,7 @@ from app.schemas.external_discovery import (
     FREE_SERVICES_INFO,
 )
 from app.services.external_discovery_service import ExternalDiscoveryService
+from app.services.technology_scan_service import run_technology_scan_for_hosts
 
 router = APIRouter(prefix="/external-discovery", tags=["external-discovery"])
 
@@ -264,6 +265,7 @@ def delete_api_config(
 @router.post("/run", response_model=ExternalDiscoveryResponse)
 async def run_external_discovery(
     request: ExternalDiscoveryRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst)
 ):
@@ -314,6 +316,7 @@ async def run_external_discovery(
     # Create assets if requested
     assets_created = 0
     assets_skipped = 0
+    created_hosts: list[str] = []
     
     if request.create_assets:
         # Create domain assets
@@ -340,6 +343,7 @@ async def run_external_discovery(
                 )
                 db.add(asset)
                 assets_created += 1
+                created_hosts.append(domain)
         
         # Create subdomain assets
         for subdomain in aggregated["subdomains"]:
@@ -365,6 +369,7 @@ async def run_external_discovery(
                 )
                 db.add(asset)
                 assets_created += 1
+                created_hosts.append(subdomain)
         
         # Create IP assets
         for ip in aggregated["ip_addresses"]:
@@ -417,6 +422,15 @@ async def run_external_discovery(
                 assets_created += 1
         
         db.commit()
+
+        # Optional: schedule lightweight tech scan on a subset of newly created hosts
+        if request.run_technology_scan and created_hosts:
+            background_tasks.add_task(
+                run_technology_scan_for_hosts,
+                organization_id=request.organization_id,
+                hosts=created_hosts,
+                max_hosts=request.max_technology_scan,
+            )
     
     return ExternalDiscoveryResponse(
         domain=request.domain,
@@ -588,6 +602,7 @@ async def test_api_config(
         "error": result.error,
         "message": "API key is valid" if result.success else f"API key test failed: {result.error}"
     }
+
 
 
 

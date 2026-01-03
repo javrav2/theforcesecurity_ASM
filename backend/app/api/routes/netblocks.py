@@ -367,3 +367,4 @@ def bulk_update_scope(
     return {"updated": updated, "in_scope": in_scope}
 
 
+

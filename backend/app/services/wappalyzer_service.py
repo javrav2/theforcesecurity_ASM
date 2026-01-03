@@ -431,7 +431,8 @@ class WappalyzerService:
         
         # Parse HTML
         html = response.text
-        headers = dict(response.headers)
+        # Normalize headers to lowercase keys (fingerprints use header names, we lower() them)
+        headers = {k.lower(): v for k, v in response.headers.items()}
         cookies = {c.name: c.value for c in response.cookies.jar}
         
         # Parse meta tags
@@ -602,6 +603,7 @@ class WappalyzerService:
                     categories[cat] = []
                 categories[cat].append(tech.name)
         return categories
+
 
 
 

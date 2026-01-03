@@ -23,6 +23,7 @@ from app.services.dns_service import DNSService
 from app.services.subdomain_service import SubdomainService
 from app.services.http_service import HTTPService
 from app.services.wappalyzer_service import WappalyzerService
+from app.services.asset_labeling_service import add_tech_to_asset
 
 logger = logging.getLogger(__name__)
 
@@ -298,10 +299,20 @@ class DiscoveryService:
                             for tech in technologies:
                                 # Get or create technology record
                                 db_tech = self._get_or_create_technology(tech)
-                                
-                                # Associate with asset if not already
-                                if db_tech not in url_asset.technologies:
-                                    url_asset.technologies.append(db_tech)
+
+                                # Associate technology + ensure corresponding Label (`tech:<slug>`)
+                                # Attach to URL asset and its parent (subdomain/domain).
+                                before_count = len(url_asset.technologies or [])
+                                add_tech_to_asset(
+                                    self.db,
+                                    organization_id=organization_id,
+                                    asset=url_asset,
+                                    tech=db_tech,
+                                    also_tag_asset=True,
+                                    tag_parent=True,
+                                )
+                                after_count = len(url_asset.technologies or [])
+                                if after_count > before_count:
                                     progress.technologies_found += 1
                                 
                                 result.technologies.append({
@@ -312,14 +323,7 @@ class DiscoveryService:
                                     "categories": tech.categories
                                 })
                                 
-                                # Add technology as tag to asset
-                                if tech.name not in (url_asset.tags or []):
-                                    url_asset.tags = (url_asset.tags or []) + [tech.name]
-                                
-                                # Also tag parent assets
-                                if url_asset.parent:
-                                    if tech.name not in (url_asset.parent.tags or []):
-                                        url_asset.parent.tags = (url_asset.parent.tags or []) + [tech.name]
+                                # NOTE: Tagging is now handled by add_tech_to_asset() using `tech:<slug>`
                     
                     except Exception as e:
                         logger.warning(f"Technology scan failed for {url}: {e}")
@@ -362,6 +366,40 @@ class DiscoveryService:
                 self._update_scan_failed(scan_id, str(e))
         
         return result
+
+    async def full_discovery(
+        self,
+        domain: str,
+        organization_id: int,
+        enable_subdomain_enum: bool = True,
+        enable_dns_enum: bool = True,
+        enable_http_probe: bool = True,
+        enable_tech_detection: bool = True,
+        scan_id: Optional[int] = None,
+    ) -> dict:
+        """
+        Backwards-compatible entrypoint used by `workers/scanner_worker.py`.
+
+        Note: The current implementation delegates to `discover_domain()`. The
+        enable_* flags are accepted for compatibility; `discover_domain()` always
+        performs DNS/subdomain/http steps, and conditionally runs tech detection.
+        """
+        result = await self.discover_domain(
+            domain=domain,
+            organization_id=organization_id,
+            scan_id=scan_id,
+            include_technology_scan=enable_tech_detection,
+        )
+
+        # Summaries for worker consumers
+        subdomains_found = len([a for a in result.assets if a.get("type") == "subdomain"])
+        return {
+            "assets_created": len(result.assets),
+            "subdomains_found": subdomains_found,
+            "technologies_detected": len(result.technologies),
+            "success": result.success,
+            "errors": result.errors,
+        }
     
     def _create_or_update_asset(
         self,
@@ -513,6 +551,7 @@ class DiscoveryService:
                 include_technology_scan=include_technology_scan
             )
         )
+
 
 
 

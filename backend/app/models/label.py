@@ -40,3 +40,4 @@ class Label(Base):
         return f"<Label(id={self.id}, name='{self.name}', org={self.organization_id})>"
 
 
+

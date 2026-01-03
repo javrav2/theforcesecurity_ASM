@@ -86,3 +86,4 @@ class Netblock(Base):
         return f"<Netblock {self.cidr_notation or self.inetnum} owned={self.is_owned} scope={self.in_scope}>"
 
 
+

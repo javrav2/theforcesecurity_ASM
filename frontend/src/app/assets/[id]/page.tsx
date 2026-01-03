@@ -654,3 +654,4 @@ export default function AssetDetailPage() {
   );
 }
 
+

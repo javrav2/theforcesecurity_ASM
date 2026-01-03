@@ -97,6 +97,18 @@ class ExternalDiscoveryRequest(BaseModel):
     create_assets: bool = Field(default=True, description="Automatically create discovered assets")
     skip_existing: bool = Field(default=True, description="Skip assets that already exist")
 
+    # Optional active follow-up (off by default to avoid unexpected scanning)
+    run_technology_scan: bool = Field(
+        default=False,
+        description="If true, run a lightweight Wappalyzer tech scan on a subset of newly discovered domains/subdomains",
+    )
+    max_technology_scan: int = Field(
+        default=25,
+        ge=1,
+        le=200,
+        description="Maximum number of hosts to attempt technology scanning against (only when run_technology_scan=true)",
+    )
+
 
 class SourceResult(BaseModel):
     """Result from a single discovery source."""
@@ -267,6 +279,7 @@ FREE_SERVICES_INFO = [
         "website": "https://www.microsoft.com/",
     },
 ]
+
 
 
 

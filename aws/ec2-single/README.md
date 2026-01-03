@@ -420,3 +420,4 @@ aws cloudformation wait stack-delete-complete --stack-name asm-platform
 7. **Regular updates**: `sudo apt update && sudo apt upgrade -y`
 
 
+
