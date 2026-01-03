@@ -69,6 +69,7 @@ Automated discovery from multiple intelligence sources:
 | **Wayback Machine** | Historical URLs and subdomains | ❌ Free |
 | **RapidDNS** | DNS enumeration | ❌ Free |
 | **Microsoft 365** | Federated domain discovery | ❌ Free |
+| **Common Crawl** | Web archive subdomain discovery | ❌ Free (S3 optional) |
 | **AlienVault OTX** | Threat intelligence passive DNS | ✅ Free tier |
 | **VirusTotal** | Subdomain database | ✅ Paid |
 | **WhoisXML API** | IP ranges by organization name | ✅ Paid |
@@ -311,6 +312,63 @@ For reliable async scan processing, configure AWS SQS:
 | **Database Mode** | `SQS_QUEUE_URL` not set | Scanner polls DB for pending scans |
 
 Both modes work - SQS is recommended for production reliability.
+
+### Common Crawl S3 Index (Fast Subdomain Lookups)
+
+For faster subdomain discovery, set up an S3-backed Common Crawl index:
+
+```
+┌─────────────────┐     Monthly      ┌──────────────────┐
+│  Common Crawl   │ ───────────────► │    S3 Bucket     │
+│   Index API     │   update-index   │  domains.txt.gz  │
+└─────────────────┘                  └────────┬─────────┘
+                                              │
+                                              │ sync_from_s3()
+                                              ▼
+                                     ┌──────────────────┐
+                                     │  ASM Backend     │
+                                     │  Local Cache     │
+                                     │  ~100ms lookups  │
+                                     └──────────────────┘
+```
+
+**1. Create S3 Bucket**
+```bash
+cd /opt/asm/aws/commoncrawl
+chmod +x setup-s3.sh
+./setup-s3.sh asm-commoncrawl-yourorg us-east-1
+```
+
+**2. Build Initial Index** (takes 10-30 minutes)
+```bash
+pip install boto3 httpx
+python update-index.py --bucket asm-commoncrawl-yourorg
+```
+
+**3. Configure Environment**
+```bash
+# Add to /opt/asm/.env
+CC_S3_BUCKET=asm-commoncrawl-yourorg
+```
+
+**4. Schedule Monthly Updates**
+```bash
+# Add to crontab
+0 0 1 * * cd /opt/asm/aws/commoncrawl && python update-index.py >> /var/log/cc-update.log 2>&1
+```
+
+**5. Restart Services**
+```bash
+docker compose down && docker compose up -d
+```
+
+**Benefits:**
+- **Speed**: ~100ms lookups vs 30-60s API queries
+- **Historical data**: Find forgotten/legacy subdomains
+- **Offline capable**: Works even if Common Crawl API is down
+- **Example**: Query `rockwellautomation.com` → finds all subdomains from web crawl history
+
+See [aws/commoncrawl/README.md](aws/commoncrawl/README.md) for detailed setup instructions.
 
 ### Access Your Deployment
 
