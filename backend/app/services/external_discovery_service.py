@@ -679,29 +679,50 @@ class ExternalDiscoveryService:
         """
         Discover subdomains from Common Crawl web archive.
         
-        Common Crawl maintains a massive archive of web crawl data.
-        This searches the CC Index API for URLs matching the domain.
+        Uses S3-backed index if CC_S3_BUCKET is configured (fast, ~100ms).
+        Falls back to CC Index API if S3 not configured (slower, 30-60s).
         
         Args:
             domain: Domain to search (e.g., rockwellautomation.com)
         """
+        import os
         start_time = time.time()
         result = DiscoveryResult(source=ExternalService.COMMONCRAWL, success=False)
         
         try:
-            from app.services.commoncrawl_service import CommonCrawlService
+            # Check if S3-backed index is configured
+            s3_bucket = os.getenv("CC_S3_BUCKET")
             
-            cc_service = CommonCrawlService(timeout=60.0)
-            cc_result = await cc_service.search_domain(domain)
-            
-            if cc_result.error:
-                result.error = cc_result.error
-            else:
-                result.success = True
-                result.subdomains = cc_result.subdomains
-                result.urls = cc_result.urls[:500]  # Limit for response size
+            if s3_bucket:
+                # Use fast S3-backed index
+                from app.services.commoncrawl_s3_service import CommonCrawlS3Service
                 
-            logger.info(f"Common Crawl found {len(result.subdomains)} subdomains for {domain}")
+                cc_service = CommonCrawlS3Service(s3_bucket=s3_bucket)
+                await cc_service.sync_from_s3()  # Sync if needed
+                cc_result = await cc_service.search_domain(domain)
+                
+                if cc_result.error:
+                    result.error = cc_result.error
+                else:
+                    result.success = True
+                    result.subdomains = cc_result.subdomains
+                    
+                logger.info(f"Common Crawl (S3) found {len(result.subdomains)} subdomains for {domain}")
+            else:
+                # Fall back to API
+                from app.services.commoncrawl_service import CommonCrawlService
+                
+                cc_service = CommonCrawlService(timeout=60.0)
+                cc_result = await cc_service.search_domain(domain)
+                
+                if cc_result.error:
+                    result.error = cc_result.error
+                else:
+                    result.success = True
+                    result.subdomains = cc_result.subdomains
+                    result.urls = cc_result.urls[:500]  # Limit for response size
+                    
+                logger.info(f"Common Crawl (API) found {len(result.subdomains)} subdomains for {domain}")
             
         except Exception as e:
             result.error = str(e)
