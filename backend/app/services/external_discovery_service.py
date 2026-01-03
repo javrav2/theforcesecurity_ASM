@@ -672,6 +672,45 @@ class ExternalDiscoveryService:
         return result
 
     # =========================================================================
+    # Common Crawl - Web Crawl Data
+    # =========================================================================
+    
+    async def discover_commoncrawl(self, domain: str) -> DiscoveryResult:
+        """
+        Discover subdomains from Common Crawl web archive.
+        
+        Common Crawl maintains a massive archive of web crawl data.
+        This searches the CC Index API for URLs matching the domain.
+        
+        Args:
+            domain: Domain to search (e.g., rockwellautomation.com)
+        """
+        start_time = time.time()
+        result = DiscoveryResult(source=ExternalService.COMMONCRAWL, success=False)
+        
+        try:
+            from app.services.commoncrawl_service import CommonCrawlService
+            
+            cc_service = CommonCrawlService(timeout=60.0)
+            cc_result = await cc_service.search_domain(domain)
+            
+            if cc_result.error:
+                result.error = cc_result.error
+            else:
+                result.success = True
+                result.subdomains = cc_result.subdomains
+                result.urls = cc_result.urls[:500]  # Limit for response size
+                
+            logger.info(f"Common Crawl found {len(result.subdomains)} subdomains for {domain}")
+            
+        except Exception as e:
+            result.error = str(e)
+            logger.error(f"Common Crawl error: {e}")
+        
+        result.elapsed_time = time.time() - start_time
+        return result
+
+    # =========================================================================
     # Full Discovery - Run All Sources
     # =========================================================================
     
@@ -705,6 +744,7 @@ class ExternalDiscoveryService:
             tasks.append(("rapiddns", self.discover_rapiddns(domain)))
             tasks.append(("crtsh", self.discover_crtsh(domain)))
             tasks.append(("m365", self.discover_m365(domain)))
+            tasks.append(("commoncrawl", self.discover_commoncrawl(domain)))
         
         # Paid sources (require API keys)
         if include_paid:

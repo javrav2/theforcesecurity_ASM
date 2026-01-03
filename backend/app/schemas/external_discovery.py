@@ -278,6 +278,14 @@ FREE_SERVICES_INFO = [
         "rate_limit": "1/second recommended",
         "website": "https://www.microsoft.com/",
     },
+    {
+        "name": "commoncrawl",
+        "display_name": "Common Crawl",
+        "description": "Web archive with billions of crawled URLs - finds subdomains from historical crawl data",
+        "requires_key": False,
+        "rate_limit": "1/second recommended",
+        "website": "https://commoncrawl.org/",
+    },
 ]
 
 

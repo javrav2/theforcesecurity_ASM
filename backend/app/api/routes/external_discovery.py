@@ -480,6 +480,7 @@ async def run_single_source(
         "wayback": service.discover_wayback,
         "rapiddns": service.discover_rapiddns,
         "m365": service.discover_m365,
+        "commoncrawl": service.discover_commoncrawl,
     }
     
     if request.source not in source_methods:
