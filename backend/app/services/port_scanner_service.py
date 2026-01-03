@@ -310,7 +310,7 @@ class PortScannerService:
         elif not ports:
             ports = "1-65535"
         
-        # If one_port_at_a_time mode, scan each port separately (HISAC approach)
+        # If one_port_at_a_time mode, scan each port separately (ASM Recon approach)
         # This is slower but less likely to be blocked by cloud providers
         if one_port_at_a_time:
             return await self._scan_masscan_per_port(
@@ -432,10 +432,10 @@ class PortScannerService:
         banner_grab: bool
     ) -> ScanResult:
         """
-        Scan one port at a time across all targets (HISAC approach).
+        Scan one port at a time across all targets (ASM Recon approach).
         
         This is slower but less likely to trigger cloud provider blocks.
-        Based on HISAC get_masscan script approach.
+        Based on ASM Recon get_masscan script approach.
         """
         result = ScanResult(success=False, scanner=ScannerType.MASSCAN)
         start_time = datetime.utcnow()

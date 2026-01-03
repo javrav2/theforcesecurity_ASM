@@ -60,7 +60,7 @@
 - **JWT Authentication**: Secure API with access tokens
 - **Role-Based Access**: Admin, Analyst, and Viewer roles
 
-### External Discovery (HISAC Integration)
+### External Discovery (ASM Recon)
 Automated discovery from multiple intelligence sources:
 
 | Source | Description | API Key Required |
@@ -537,4 +537,4 @@ MIT License - See LICENSE file for details.
 - [RedSiege](https://github.com/RedSiege) for EyeWitness
 - [shadcn/ui](https://ui.shadcn.com/) for React components
 - [crt.sh](https://crt.sh) for certificate transparency data
-- HISAC for discovery script inspiration
+- ASM Recon methodology for discovery script design

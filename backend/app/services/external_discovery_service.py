@@ -12,7 +12,7 @@ Integrates multiple external intelligence sources for comprehensive asset discov
 - Microsoft 365 - Federated domain discovery
 - ASN Discovery - BGP/ASN data for organizations
 
-Based on HISAC discovery scripts.
+Based on ASM Recon discovery methodology.
 """
 
 import asyncio

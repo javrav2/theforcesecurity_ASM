@@ -6,7 +6,7 @@ the CC Index API to find subdomains and URLs for a given domain.
 
 Two modes:
 1. API Mode: Query CC Index Server API (slower but no setup)
-2. Local Index Mode: Use pre-downloaded index for fast lookups (HISAC approach)
+2. Local Index Mode: Use pre-downloaded index for fast lookups (ASM Recon approach)
 
 API Reference: https://index.commoncrawl.org/
 """
@@ -156,7 +156,7 @@ class CommonCrawlService:
     
     async def search_domain_local(self, domain: str) -> CommonCrawlResult:
         """
-        Search for subdomains using pre-downloaded local index (HISAC approach).
+        Search for subdomains using pre-downloaded local index (ASM Recon approach).
         
         This is much faster for repeated queries but requires:
         1. Pre-downloaded CC domain index file
