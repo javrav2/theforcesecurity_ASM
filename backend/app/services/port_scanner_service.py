@@ -279,22 +279,27 @@ class PortScannerService:
         targets: List[str],
         ports: str = "1-65535",
         rate: int = 10000,
-        timeout: int = 30
+        timeout: int = 30,
+        banner_grab: bool = True,
+        one_port_at_a_time: bool = False
     ) -> ScanResult:
         """
         Run port scan using Masscan.
         
         Masscan is the fastest port scanner, capable of scanning the
-        entire internet in under 6 minutes.
+        entire internet in under 6 minutes. Supports CIDR notation
+        (e.g., 205.175.240.0/24) directly in targets.
         
         NOTE: Masscan requires root privileges for raw socket access.
-        In Docker, the container needs --privileged or CAP_NET_RAW capability.
+        In Docker, the container needs CAP_NET_RAW + CAP_NET_ADMIN and run as root.
         
         Args:
-            targets: List of targets (IPs, CIDRs)
-            ports: Port specification
-            rate: Packets per second (default 10000)
+            targets: List of targets (IPs, CIDRs like 205.175.240.0/24)
+            ports: Port specification (e.g., "80,443", "1-1000", "1-65535")
+            rate: Packets per second (default 10000, reduce for stealth)
             timeout: Wait time after scan completes
+            banner_grab: Enable banner grabbing for service detection
+            one_port_at_a_time: Scan each port separately (slower but avoids cloud blocks)
         """
         result = ScanResult(success=False, scanner=ScannerType.MASSCAN)
         start_time = datetime.utcnow()
@@ -305,7 +310,15 @@ class PortScannerService:
         elif not ports:
             ports = "1-65535"
         
+        # If one_port_at_a_time mode, scan each port separately (HISAC approach)
+        # This is slower but less likely to be blocked by cloud providers
+        if one_port_at_a_time:
+            return await self._scan_masscan_per_port(
+                targets, ports, rate, timeout, banner_grab
+            )
+        
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
+            # Masscan natively supports CIDR notation in input files
             targets_file.write("\n".join(targets))
             targets_path = targets_file.name
         
@@ -321,6 +334,10 @@ class PortScannerService:
                 "--wait", str(timeout),
                 "-oJ", output_path,
             ]
+            
+            # Add banner grabbing for service detection
+            if banner_grab:
+                cmd.append("--banner")
             
             logger.info(f"Running masscan on {len(targets)} targets with ports={ports}")
             logger.debug(f"Masscan command: {' '.join(cmd)}")
@@ -405,6 +422,139 @@ class PortScannerService:
         
         logger.info(f"Masscan found {len(result.ports_found)} open ports")
         return result
+    
+    async def _scan_masscan_per_port(
+        self,
+        targets: List[str],
+        ports: str,
+        rate: int,
+        timeout: int,
+        banner_grab: bool
+    ) -> ScanResult:
+        """
+        Scan one port at a time across all targets (HISAC approach).
+        
+        This is slower but less likely to trigger cloud provider blocks.
+        Based on HISAC get_masscan script approach.
+        """
+        result = ScanResult(success=False, scanner=ScannerType.MASSCAN)
+        start_time = datetime.utcnow()
+        
+        # Parse port range
+        port_list = self._parse_port_spec(ports)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
+            targets_file.write("\n".join(targets))
+            targets_path = targets_file.name
+        
+        try:
+            logger.info(f"Running masscan per-port mode on {len(targets)} targets, {len(port_list)} ports")
+            
+            for port in port_list:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as output_file:
+                    output_path = output_file.name
+                
+                try:
+                    cmd = [
+                        self.masscan_path,
+                        "-iL", targets_path,
+                        "-p", str(port),
+                        "--rate", str(rate),
+                        "--wait", str(min(timeout, 5)),  # Shorter wait per port
+                        "-oJ", output_path,
+                    ]
+                    
+                    if banner_grab:
+                        cmd.append("--banner")
+                    
+                    process = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    
+                    await process.communicate()
+                    
+                    # Parse output for this port
+                    if os.path.exists(output_path):
+                        with open(output_path, 'r') as f:
+                            content = f.read().strip()
+                            if content:
+                                self._parse_masscan_json(content, result.ports_found)
+                    
+                finally:
+                    if os.path.exists(output_path):
+                        os.unlink(output_path)
+            
+            result.success = True
+            result.targets_scanned = len(targets)
+            
+        except Exception as e:
+            logger.error(f"Masscan per-port scan failed: {e}")
+            result.errors.append(str(e))
+        
+        finally:
+            if os.path.exists(targets_path):
+                os.unlink(targets_path)
+            result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info(f"Masscan per-port found {len(result.ports_found)} open ports")
+        return result
+    
+    def _parse_port_spec(self, ports: str) -> List[int]:
+        """Parse port specification into list of ports."""
+        port_list = []
+        
+        for part in ports.split(","):
+            part = part.strip()
+            if "-" in part:
+                start, end = part.split("-", 1)
+                port_list.extend(range(int(start), int(end) + 1))
+            else:
+                port_list.append(int(part))
+        
+        return port_list
+    
+    def _parse_masscan_json(self, content: str, results: List[PortResult]):
+        """Parse masscan JSON output and append to results list."""
+        try:
+            data = json.loads(content)
+            for entry in data:
+                ip = entry.get("ip", "")
+                for port_info in entry.get("ports", []):
+                    # Extract banner/service info if available
+                    service_info = port_info.get("service", {})
+                    banner = service_info.get("banner", "")
+                    
+                    results.append(PortResult(
+                        host=ip,
+                        ip=ip,
+                        port=port_info.get("port", 0),
+                        protocol=port_info.get("proto", "tcp"),
+                        state=port_info.get("status", "open"),
+                        reason=port_info.get("reason", ""),
+                        banner=banner,
+                        scanner="masscan"
+                    ))
+        except json.JSONDecodeError:
+            # Try line-by-line parsing for partial JSON
+            for line in content.split("\n"):
+                line = line.strip().rstrip(",")
+                if line and line.startswith("{"):
+                    try:
+                        entry = json.loads(line)
+                        ip = entry.get("ip", "")
+                        for port_info in entry.get("ports", []):
+                            results.append(PortResult(
+                                host=ip,
+                                ip=ip,
+                                port=port_info.get("port", 0),
+                                protocol=port_info.get("proto", "tcp"),
+                                state="open",
+                                scanner="masscan"
+                            ))
+                    except json.JSONDecodeError:
+                        pass
     
     # ==================== NMAP ====================
     
@@ -614,10 +764,13 @@ class PortScannerService:
         Run a port scan using the specified scanner.
         
         Args:
-            targets: List of targets
+            targets: List of targets (IPs, domains, CIDRs like 205.175.240.0/24)
             scanner: Scanner to use (naabu, masscan, nmap)
-            ports: Port specification
-            **kwargs: Additional scanner-specific options
+            ports: Port specification (e.g., "80,443", "1-1000", "-" for all)
+            **kwargs: Additional scanner-specific options:
+                - For masscan: banner_grab=True, one_port_at_a_time=False
+                - For naabu: top_ports=100, rate=1000, exclude_cdn=True
+                - For nmap: service_detection=True, os_detection=False
         """
         if scanner == ScannerType.NAABU:
             return await self.scan_with_naabu(targets, ports=ports, **kwargs)
