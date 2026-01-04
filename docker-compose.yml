@@ -67,7 +67,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./backend/app:/app/app:ro  # Mount app code for development
+      # Note: Dev mount commented out to avoid read-only filesystem issues
+      # - ./backend/app:/app/app:ro  # Mount app code for development
       - nuclei_templates:/home/appuser/.config/nuclei
       - scan_outputs:/app/outputs
       - screenshots_data:/app/data/screenshots
@@ -124,7 +125,8 @@ services:
       backend:
         condition: service_healthy
     volumes:
-      - ./backend/app:/app/app:ro
+      # Note: Dev mount commented out to avoid read-only filesystem issues
+      # - ./backend/app:/app/app:ro
       - nuclei_templates:/home/appuser/.config/nuclei
       - scan_outputs:/app/outputs
       - screenshots_data:/app/data/screenshots
