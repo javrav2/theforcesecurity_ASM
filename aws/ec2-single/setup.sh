@@ -187,12 +187,19 @@ create_env_file() {
     # Try to get SQS URL from CloudFormation or environment
     SQS_URL=""
     AWS_REGION_VAL="us-east-1"
+    PUBLIC_IP=""
     
     # Check if we're on EC2 and can get metadata
     if curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/instance-id > /dev/null 2>&1; then
         # We're on EC2, try to get region
         AWS_REGION_VAL=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "us-east-1")
         log "Detected AWS region: $AWS_REGION_VAL"
+        
+        # Get public IP from EC2 metadata
+        PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "")
+        if [ -n "$PUBLIC_IP" ]; then
+            log "Detected public IP from EC2 metadata: $PUBLIC_IP"
+        fi
         
         # Try to find SQS queue from CloudFormation
         STACK_NAME=$(aws cloudformation describe-stack-resources --physical-resource-id $(curl -s http://169.254.169.254/latest/meta-data/instance-id) --query 'StackResources[0].StackName' --output text 2>/dev/null || echo "")
@@ -202,6 +209,12 @@ create_env_file() {
                 log "Found SQS queue from CloudFormation: $SQS_URL"
             fi
         fi
+    fi
+    
+    # Fallback: get public IP from external service
+    if [ -z "$PUBLIC_IP" ]; then
+        PUBLIC_IP=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -s --connect-timeout 5 icanhazip.com 2>/dev/null || echo "localhost")
+        log "Detected public IP: $PUBLIC_IP"
     fi
     
     cat > .env << EOF
@@ -227,8 +240,11 @@ SECRET_KEY=${JWT_SECRET}
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 REFRESH_TOKEN_EXPIRE_DAYS=7
 
-# CORS - Update with your domain
-CORS_ORIGINS=["http://localhost:3000","https://your-domain.com"]
+# Frontend API URL (auto-configured with public IP)
+NEXT_PUBLIC_API_URL=http://${PUBLIC_IP}:8000
+
+# CORS - Auto-configured with public IP
+CORS_ORIGINS=["http://localhost","http://localhost:3000","http://${PUBLIC_IP}","http://${PUBLIC_IP}:80","http://${PUBLIC_IP}:8000"]
 
 # Redis
 REDIS_URL=redis://redis:6379

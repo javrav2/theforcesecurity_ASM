@@ -64,6 +64,22 @@ interface Scan {
   targets_count?: number;
   findings_count?: number;
   created_at: string;
+  results?: {
+    ports_found?: number;
+    ports_imported?: number;
+    live_hosts?: number;
+    host_results?: Array<{
+      host: string;
+      ip: string;
+      is_live: boolean;
+      open_ports: number[];
+      port_count: number;
+      asset_id?: number;
+      asset_created?: boolean;
+    }>;
+    targets_expanded?: number;
+    [key: string]: any;
+  };
 }
 
 export default function ScansPage() {
@@ -399,7 +415,8 @@ export default function ScansPage() {
                 <TableHead>Type</TableHead>
                 <TableHead>Organization</TableHead>
                 <TableHead>Targets</TableHead>
-                <TableHead>Assets</TableHead>
+                <TableHead>Live Assets</TableHead>
+                <TableHead>Ports</TableHead>
                 <TableHead>Findings</TableHead>
                 <TableHead>Started</TableHead>
                 <TableHead>Duration</TableHead>
@@ -409,13 +426,13 @@ export default function ScansPage() {
             <TableBody>
               {loading && scans.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8">
+                  <TableCell colSpan={11} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : scans.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
                     No scans yet. Start a new scan to begin discovering vulnerabilities.
                   </TableCell>
                 </TableRow>
@@ -455,15 +472,47 @@ export default function ScansPage() {
                       {scan.organization_name || '-'}
                     </TableCell>
                     <TableCell>
-                      {scan.targets_count ? (
-                        <span className="font-mono text-sm">{scan.targets_count}</span>
+                      {scan.targets?.length || scan.targets_count || scan.results?.targets_expanded ? (
+                        <div className="flex flex-col">
+                          <span className="font-mono text-sm">
+                            {scan.results?.targets_expanded || scan.targets?.length || scan.targets_count}
+                          </span>
+                          {scan.targets?.length && scan.targets.length <= 3 && (
+                            <span className="text-xs text-muted-foreground truncate max-w-[120px]">
+                              {scan.targets.slice(0, 2).join(', ')}
+                              {scan.targets.length > 2 && '...'}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      {scan.assets_discovered !== undefined && scan.assets_discovered > 0 ? (
-                        <Badge variant="secondary">{scan.assets_discovered}</Badge>
+                      {(() => {
+                        const liveHosts = scan.results?.live_hosts || 
+                          scan.results?.host_results?.filter((h: any) => h.is_live).length || 
+                          0;
+                        const totalHosts = scan.results?.host_results?.length || scan.assets_discovered || 0;
+                        
+                        if (liveHosts > 0) {
+                          return (
+                            <div className="flex items-center gap-1">
+                              <Badge className="bg-green-500/20 text-green-400">{liveHosts}</Badge>
+                              {totalHosts > liveHosts && (
+                                <span className="text-xs text-muted-foreground">/ {totalHosts}</span>
+                              )}
+                            </div>
+                          );
+                        } else if (scan.assets_discovered !== undefined && scan.assets_discovered > 0) {
+                          return <Badge variant="secondary">{scan.assets_discovered}</Badge>;
+                        }
+                        return <span className="text-muted-foreground">—</span>;
+                      })()}
+                    </TableCell>
+                    <TableCell>
+                      {scan.results?.ports_found !== undefined && scan.results.ports_found > 0 ? (
+                        <Badge variant="outline" className="font-mono">{scan.results.ports_found}</Badge>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}

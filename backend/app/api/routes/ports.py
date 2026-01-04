@@ -30,6 +30,7 @@ from app.schemas.port_service import (
 from app.schemas.port_scanner import (
     PortScanRequest,
     PortScanResultResponse,
+    HostResult,
     ImportPortsRequest,
     ImportPortsResponse,
     ScannerStatusResponse
@@ -820,7 +821,20 @@ async def run_port_scan(
                 create_assets=request.create_assets
             )
         
-        # Update scan record
+        # Build host results from import summary
+        host_results = []
+        for hr in import_summary.get("host_results", []):
+            host_results.append(HostResult(
+                host=hr["host"],
+                ip=hr["ip"],
+                is_live=hr["is_live"],
+                open_ports=hr["open_ports"],
+                port_count=hr["port_count"],
+                asset_id=hr["asset_id"],
+                asset_created=hr["asset_created"]
+            ))
+        
+        # Update scan record with full results including host_results
         scan.status = ScanStatus.COMPLETED
         scan.completed_at = datetime.utcnow()
         scan.assets_discovered = import_summary.get("assets_created", 0)
@@ -828,7 +842,11 @@ async def run_port_scan(
             "ports_found": len(result.ports_found),
             "ports_imported": import_summary.get("ports_imported", 0),
             "ports_updated": import_summary.get("ports_updated", 0),
-            "duration": result.duration_seconds
+            "duration": result.duration_seconds,
+            "live_hosts": import_summary.get("live_hosts", 0),
+            "hosts_processed": import_summary.get("hosts_processed", 0),
+            "targets_expanded": result.targets_scanned,
+            "host_results": import_summary.get("host_results", [])
         }
         db.commit()
         
@@ -837,11 +855,14 @@ async def run_port_scan(
             scanner=request.scanner.value,
             targets_scanned=result.targets_scanned,
             ports_found=len(result.ports_found),
+            hosts_found=len(host_results),
+            live_hosts=import_summary.get("live_hosts", 0),
             duration_seconds=result.duration_seconds,
             errors=result.errors + import_summary.get("errors", []),
             ports_imported=import_summary.get("ports_imported", 0),
             ports_updated=import_summary.get("ports_updated", 0),
-            assets_created=import_summary.get("assets_created", 0)
+            assets_created=import_summary.get("assets_created", 0),
+            hosts=host_results
         )
         
     except Exception as e:
@@ -1259,7 +1280,7 @@ async def scan_and_generate_findings(
                 scan_id=scan.id
             )
         
-        # Update scan record
+        # Update scan record with full results including host_results
         scan.status = ScanStatus.COMPLETED
         scan.completed_at = datetime.utcnow()
         scan.vulnerabilities_found = findings_summary.get("findings_created", 0)
@@ -1267,8 +1288,13 @@ async def scan_and_generate_findings(
         scan.results = {
             "ports_found": len(result.ports_found),
             "ports_imported": import_summary.get("ports_imported", 0),
+            "ports_updated": import_summary.get("ports_updated", 0),
             "findings_created": findings_summary.get("findings_created", 0),
-            "duration": result.duration_seconds
+            "duration": result.duration_seconds,
+            "live_hosts": import_summary.get("live_hosts", 0),
+            "hosts_processed": import_summary.get("hosts_processed", 0),
+            "targets_expanded": result.targets_scanned,
+            "host_results": import_summary.get("host_results", [])
         }
         db.commit()
         
@@ -1279,13 +1305,15 @@ async def scan_and_generate_findings(
                 "scanner": request.scanner.value,
                 "targets_scanned": result.targets_scanned,
                 "ports_found": len(result.ports_found),
+                "live_hosts": import_summary.get("live_hosts", 0),
                 "duration_seconds": result.duration_seconds,
                 "errors": result.errors
             },
             "import_results": {
                 "ports_imported": import_summary.get("ports_imported", 0),
                 "ports_updated": import_summary.get("ports_updated", 0),
-                "assets_created": import_summary.get("assets_created", 0)
+                "assets_created": import_summary.get("assets_created", 0),
+                "host_results": import_summary.get("host_results", [])
             },
             "findings_results": {
                 "findings_created": findings_summary.get("findings_created", 0),

@@ -31,12 +31,25 @@ class PortScanRequest(BaseModel):
     import_results: bool = Field(default=True, description="Import results to database")
 
 
+class HostResult(BaseModel):
+    """Schema for a scanned host result."""
+    host: str
+    ip: str
+    is_live: bool = True
+    open_ports: List[int] = []
+    port_count: int = 0
+    asset_id: Optional[int] = None
+    asset_created: bool = False
+
+
 class PortScanResultResponse(BaseModel):
     """Schema for port scan results."""
     success: bool
     scanner: str
     targets_scanned: int
     ports_found: int
+    hosts_found: int = 0
+    live_hosts: int = 0
     duration_seconds: float
     errors: List[str] = []
     
@@ -44,6 +57,9 @@ class PortScanResultResponse(BaseModel):
     ports_imported: int = 0
     ports_updated: int = 0
     assets_created: int = 0
+    
+    # Detailed host results
+    hosts: List[HostResult] = []
 
 
 class PortResultItem(BaseModel):

@@ -70,6 +70,7 @@ class Asset(Base):
     
     # State
     is_monitored = Column(Boolean, default=True)
+    is_live = Column(Boolean, default=False, index=True)  # Has the asset responded to probes (port scan, HTTP, etc.)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -96,15 +96,34 @@ class PortResult:
 
 
 @dataclass
+class HostScanResult:
+    """Result for a single host."""
+    host: str
+    ip: str
+    is_live: bool = True
+    open_ports: List[int] = field(default_factory=list)
+    
+    @property
+    def port_count(self) -> int:
+        return len(self.open_ports)
+
+
+@dataclass
 class ScanResult:
     """Complete scan result from any scanner."""
     success: bool
     scanner: ScannerType
     targets_scanned: int = 0
     ports_found: List[PortResult] = field(default_factory=list)
+    hosts_scanned: List[str] = field(default_factory=list)  # All targets that were scanned
+    hosts_found: List[HostScanResult] = field(default_factory=list)  # Hosts with results (live or with ports)
     errors: List[str] = field(default_factory=list)
     duration_seconds: float = 0
     raw_output: Optional[str] = None
+    
+    @property
+    def live_host_count(self) -> int:
+        return len([h for h in self.hosts_found if h.is_live])
 
 
 class PortScannerService:
@@ -218,7 +237,16 @@ class PortScannerService:
         result.targets_scanned = sum(len(chunk) for chunk in expanded_targets)
         result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
         
-        logger.info(f"Naabu found {len(result.ports_found)} open ports across {result.targets_scanned} targets")
+        # Track all scanned hosts and build host results
+        all_targets = []
+        for chunk in expanded_targets:
+            all_targets.extend(chunk)
+        result.hosts_scanned = all_targets
+        
+        # Build host results from port findings
+        result.hosts_found = self._build_host_results(all_ports_found, all_targets)
+        
+        logger.info(f"Naabu found {len(result.ports_found)} open ports across {result.targets_scanned} targets, {len(result.hosts_found)} hosts with open ports")
         return result
     
     def _expand_and_chunk_targets(self, targets: List[str], chunk_size: int) -> List[List[str]]:
@@ -579,6 +607,8 @@ class PortScannerService:
             
             result.success = True
             result.targets_scanned = len(targets)
+            result.hosts_scanned = targets
+            result.hosts_found = self._build_host_results(result.ports_found, targets)
             
         except Exception as e:
             logger.error(f"Masscan scan failed: {e}")
@@ -591,7 +621,7 @@ class PortScannerService:
             
             result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
         
-        logger.info(f"Masscan found {len(result.ports_found)} open ports")
+        logger.info(f"Masscan found {len(result.ports_found)} open ports across {len(result.hosts_found)} hosts")
         return result
     
     async def _scan_masscan_per_port(
@@ -659,6 +689,8 @@ class PortScannerService:
             
             result.success = True
             result.targets_scanned = len(targets)
+            result.hosts_scanned = targets
+            result.hosts_found = self._build_host_results(result.ports_found, targets)
             
         except Exception as e:
             logger.error(f"Masscan per-port scan failed: {e}")
@@ -669,7 +701,7 @@ class PortScannerService:
                 os.unlink(targets_path)
             result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
         
-        logger.info(f"Masscan per-port found {len(result.ports_found)} open ports")
+        logger.info(f"Masscan per-port found {len(result.ports_found)} open ports across {len(result.hosts_found)} hosts")
         return result
     
     def _parse_port_spec(self, ports: str) -> List[int]:
@@ -863,6 +895,8 @@ class PortScannerService:
             
             result.success = True
             result.targets_scanned = len(targets)
+            result.hosts_scanned = targets
+            result.hosts_found = self._build_host_results(result.ports_found, targets)
             
         except Exception as e:
             logger.error(f"Nmap scan failed: {e}")
@@ -875,7 +909,7 @@ class PortScannerService:
             
             result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
         
-        logger.info(f"Nmap found {len(result.ports_found)} open ports")
+        logger.info(f"Nmap found {len(result.ports_found)} open ports across {len(result.hosts_found)} hosts")
         return result
     
     def _parse_nmap_xml(self, xml_path: str) -> List[PortResult]:
@@ -994,7 +1028,8 @@ class PortScannerService:
         db: Session,
         scan_result: ScanResult,
         organization_id: int,
-        create_assets: bool = True
+        create_assets: bool = True,
+        create_all_hosts: bool = True  # Create assets even for hosts with no open ports
     ) -> dict:
         """
         Import scan results into the database, associating with assets.
@@ -1004,18 +1039,22 @@ class PortScannerService:
             scan_result: Scan results to import
             organization_id: Organization ID
             create_assets: Create assets if they don't exist
+            create_all_hosts: Create assets for ALL scanned hosts (even those with no open ports)
             
         Returns:
-            Summary of import results
+            Summary of import results including host details
         """
         summary = {
             "ports_imported": 0,
             "ports_updated": 0,
             "assets_created": 0,
-            "errors": []
+            "hosts_processed": 0,
+            "live_hosts": 0,
+            "errors": [],
+            "host_results": []  # Detailed results per host
         }
         
-        # Group results by host/IP
+        # Group port results by host/IP
         by_host = {}
         for port_result in scan_result.ports_found:
             key = port_result.ip or port_result.host
@@ -1023,7 +1062,37 @@ class PortScannerService:
                 by_host[key] = []
             by_host[key].append(port_result)
         
-        for host, ports in by_host.items():
+        # Get all hosts to process (either from hosts_found or just ports)
+        all_hosts_to_process = set()
+        
+        # Add hosts with ports
+        for host in by_host.keys():
+            all_hosts_to_process.add(host)
+        
+        # Add all scanned hosts if create_all_hosts is enabled
+        if create_all_hosts and scan_result.hosts_scanned:
+            for host in scan_result.hosts_scanned:
+                all_hosts_to_process.add(host)
+        
+        # Process each host
+        for host in all_hosts_to_process:
+            summary["hosts_processed"] += 1
+            ports = by_host.get(host, [])
+            is_live = len(ports) > 0
+            
+            if is_live:
+                summary["live_hosts"] += 1
+            
+            host_result = {
+                "host": host,
+                "ip": host,
+                "is_live": is_live,
+                "open_ports": [p.port for p in ports],
+                "port_count": len(ports),
+                "asset_id": None,
+                "asset_created": False
+            }
+            
             # Find or create asset
             asset = db.query(Asset).filter(
                 Asset.organization_id == organization_id,
@@ -1041,50 +1110,59 @@ class PortScannerService:
                     name=host,
                     value=host,
                     asset_type=asset_type,
-                    discovery_source=scan_result.scanner.value
+                    discovery_source=scan_result.scanner.value if hasattr(scan_result, 'scanner') else "port_scan",
+                    is_live=is_live
                 )
                 db.add(asset)
                 db.flush()
                 summary["assets_created"] += 1
+                host_result["asset_created"] = True
+            elif asset:
+                # Update existing asset's live status
+                asset.is_live = is_live or asset.is_live  # Don't mark as not live if it was previously live
+                asset.last_seen = datetime.utcnow()
             
-            if not asset:
-                summary["errors"].append(f"No asset found for {host}")
-                continue
-            
-            # Import ports
-            for port_result in ports:
-                try:
-                    # Check for existing port
-                    existing = db.query(PortService).filter(
-                        PortService.asset_id == asset.id,
-                        PortService.port == port_result.port,
-                        PortService.protocol == Protocol(port_result.protocol.lower())
-                    ).first()
-                    
-                    if existing:
-                        # Update existing
-                        existing.last_seen = datetime.utcnow()
-                        existing.state = PortState.OPEN
-                        if port_result.service_name:
-                            existing.service_name = port_result.service_name
-                        if port_result.service_product:
-                            existing.service_product = port_result.service_product
-                        if port_result.service_version:
-                            existing.service_version = port_result.service_version
-                        if port_result.banner:
-                            existing.banner = port_result.banner
-                        if port_result.cpe:
-                            existing.cpe = port_result.cpe
-                        summary["ports_updated"] += 1
-                    else:
-                        # Create new
-                        port_data = port_result.to_port_service_dict(asset.id)
-                        port_service = PortService(**port_data)
-                        db.add(port_service)
-                        summary["ports_imported"] += 1
+            if asset:
+                host_result["asset_id"] = asset.id
+                
+                # Import ports for this host
+                for port_result in ports:
+                    try:
+                        # Check for existing port
+                        existing = db.query(PortService).filter(
+                            PortService.asset_id == asset.id,
+                            PortService.port == port_result.port,
+                            PortService.protocol == Protocol(port_result.protocol.lower())
+                        ).first()
                         
-                except Exception as e:
-                    summary["errors"].append(f"Error importing {host}:{port_result.port}: {e}")
+                        if existing:
+                            # Update existing
+                            existing.last_seen = datetime.utcnow()
+                            existing.state = PortState.OPEN
+                            if port_result.service_name:
+                                existing.service_name = port_result.service_name
+                            if port_result.service_product:
+                                existing.service_product = port_result.service_product
+                            if port_result.service_version:
+                                existing.service_version = port_result.service_version
+                            if port_result.banner:
+                                existing.banner = port_result.banner
+                            if port_result.cpe:
+                                existing.cpe = port_result.cpe
+                            summary["ports_updated"] += 1
+                        else:
+                            # Create new
+                            port_data = port_result.to_port_service_dict(asset.id)
+                            port_service = PortService(**port_data)
+                            db.add(port_service)
+                            summary["ports_imported"] += 1
+                            
+                    except Exception as e:
+                        summary["errors"].append(f"Error importing {host}:{port_result.port}: {e}")
+            else:
+                summary["errors"].append(f"No asset found/created for {host}")
+            
+            summary["host_results"].append(host_result)
         
         db.commit()
         return summary
@@ -1095,6 +1173,41 @@ class PortScannerService:
         ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
         ipv6_pattern = r'^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$'
         return bool(re.match(ipv4_pattern, value) or re.match(ipv6_pattern, value))
+    
+    def _build_host_results(self, ports_found: List[PortResult], all_targets: List[str]) -> List[HostScanResult]:
+        """Build host results from port findings and target list."""
+        # Group ports by host
+        host_ports = {}
+        for port in ports_found:
+            key = port.ip or port.host
+            if key not in host_ports:
+                host_ports[key] = []
+            host_ports[key].append(port.port)
+        
+        results = []
+        seen_hosts = set()
+        
+        # Add hosts with open ports (live)
+        for host, ports in host_ports.items():
+            results.append(HostScanResult(
+                host=host,
+                ip=host,
+                is_live=True,
+                open_ports=sorted(set(ports))
+            ))
+            seen_hosts.add(host)
+        
+        # Add remaining targets that were scanned but had no open ports
+        for target in all_targets:
+            if target not in seen_hosts:
+                results.append(HostScanResult(
+                    host=target,
+                    ip=target,
+                    is_live=False,  # No response / no open ports
+                    open_ports=[]
+                ))
+        
+        return results
     
     # ==================== PARSE EXISTING OUTPUT ====================
     

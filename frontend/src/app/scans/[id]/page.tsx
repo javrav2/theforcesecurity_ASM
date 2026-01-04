@@ -311,8 +311,10 @@ export default function ScanDetailPage() {
               <div className="flex items-center gap-3">
                 <Server className="h-8 w-8 text-green-400" />
                 <div>
-                  <p className="text-2xl font-bold">{scan.assets_discovered || 0}</p>
-                  <p className="text-sm text-muted-foreground">Assets Discovered</p>
+                  <p className="text-2xl font-bold">
+                    {scan.results?.live_hosts || scan.results?.host_results?.filter((h: any) => h.is_live).length || scan.assets_discovered || 0}
+                  </p>
+                  <p className="text-sm text-muted-foreground">Live Assets</p>
                 </div>
               </div>
             </CardContent>
@@ -321,11 +323,23 @@ export default function ScanDetailPage() {
           <Card>
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
-                <Bug className="h-8 w-8 text-red-400" />
-                <div>
-                  <p className="text-2xl font-bold">{scan.vulnerabilities_found || 0}</p>
-                  <p className="text-sm text-muted-foreground">Vulnerabilities</p>
-                </div>
+                {scan.scan_type === 'port_scan' ? (
+                  <>
+                    <Shield className="h-8 w-8 text-purple-400" />
+                    <div>
+                      <p className="text-2xl font-bold">{scan.results?.ports_found || 0}</p>
+                      <p className="text-sm text-muted-foreground">Ports Found</p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Bug className="h-8 w-8 text-red-400" />
+                    <div>
+                      <p className="text-2xl font-bold">{scan.vulnerabilities_found || 0}</p>
+                      <p className="text-sm text-muted-foreground">Vulnerabilities</p>
+                    </div>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -442,19 +456,141 @@ export default function ScanDetailPage() {
           </CardContent>
         </Card>
 
-        {/* Results */}
+        {/* Live Assets Found */}
+        {scan.results?.host_results && scan.results.host_results.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Server className="h-5 w-5" />
+                Discovered Hosts ({scan.results.host_results.length})
+                <Badge variant="default" className="ml-2">
+                  {scan.results.host_results.filter((h: any) => h.is_live).length} Live
+                </Badge>
+              </CardTitle>
+              <CardDescription>
+                Hosts discovered during the scan with their port information
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Host / IP</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Open Ports</TableHead>
+                    <TableHead>Port Count</TableHead>
+                    <TableHead>Asset</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {scan.results.host_results.map((host: any, index: number) => (
+                    <TableRow key={index}>
+                      <TableCell className="font-mono">{host.host || host.ip}</TableCell>
+                      <TableCell>
+                        {host.is_live ? (
+                          <Badge className="bg-green-500/20 text-green-400">Live</Badge>
+                        ) : (
+                          <Badge variant="secondary">No Response</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {host.open_ports && host.open_ports.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {host.open_ports.slice(0, 10).map((port: number) => (
+                              <Badge key={port} variant="outline" className="font-mono text-xs">
+                                {port}
+                              </Badge>
+                            ))}
+                            {host.open_ports.length > 10 && (
+                              <Badge variant="secondary" className="text-xs">
+                                +{host.open_ports.length - 10} more
+                              </Badge>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-mono">{host.port_count || 0}</span>
+                      </TableCell>
+                      <TableCell>
+                        {host.asset_id ? (
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="link"
+                              className="h-auto p-0 text-primary"
+                              onClick={() => router.push(`/assets/${host.asset_id}`)}
+                            >
+                              View Asset
+                            </Button>
+                            {host.asset_created && (
+                              <Badge className="bg-blue-500/20 text-blue-400 text-xs">New</Badge>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Port Scan Summary */}
+        {scan.results?.ports_found !== undefined && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Shield className="h-5 w-5" />
+                Port Scan Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center p-4 bg-secondary/50 rounded-lg">
+                  <p className="text-2xl font-bold text-blue-400">{scan.results.ports_found || 0}</p>
+                  <p className="text-sm text-muted-foreground">Ports Found</p>
+                </div>
+                <div className="text-center p-4 bg-secondary/50 rounded-lg">
+                  <p className="text-2xl font-bold text-green-400">{scan.results.ports_imported || 0}</p>
+                  <p className="text-sm text-muted-foreground">Ports Imported</p>
+                </div>
+                <div className="text-center p-4 bg-secondary/50 rounded-lg">
+                  <p className="text-2xl font-bold text-yellow-400">{scan.results.ports_updated || 0}</p>
+                  <p className="text-sm text-muted-foreground">Ports Updated</p>
+                </div>
+                <div className="text-center p-4 bg-secondary/50 rounded-lg">
+                  <p className="text-2xl font-bold text-purple-400">{scan.results.live_hosts || scan.results.host_results?.filter((h: any) => h.is_live).length || 0}</p>
+                  <p className="text-sm text-muted-foreground">Live Hosts</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Raw Results (Collapsible) */}
         {scan.results && Object.keys(scan.results).length > 0 && (
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
                 <FileText className="h-5 w-5" />
-                Results
+                Raw Results
               </CardTitle>
+              <CardDescription>Full scan output data (JSON format)</CardDescription>
             </CardHeader>
             <CardContent>
-              <pre className="bg-secondary/50 p-4 rounded-lg overflow-x-auto text-sm">
-                {JSON.stringify(scan.results, null, 2)}
-              </pre>
+              <details className="group">
+                <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground mb-2">
+                  Click to expand raw JSON data
+                </summary>
+                <pre className="bg-secondary/50 p-4 rounded-lg overflow-x-auto text-sm max-h-96 overflow-y-auto">
+                  {JSON.stringify(scan.results, null, 2)}
+                </pre>
+              </details>
             </CardContent>
           </Card>
         )}
@@ -479,5 +615,6 @@ export default function ScanDetailPage() {
     </MainLayout>
   );
 }
+
 
 
