@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from typing import Optional, Callable
 from dataclasses import dataclass
 
@@ -10,6 +11,22 @@ import dns.exception
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Check if subfinder is available
+def _check_subfinder_available() -> bool:
+    """Check if subfinder binary is available."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["subfinder", "-version"],
+            capture_output=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+SUBFINDER_AVAILABLE = _check_subfinder_available()
 
 
 # Common subdomain wordlist for brute-force enumeration
@@ -66,13 +83,14 @@ class SubdomainResult:
 
 
 class SubdomainService:
-    """Service for subdomain enumeration."""
+    """Service for subdomain enumeration using multiple sources including subfinder."""
     
     def __init__(
         self,
         nameservers: Optional[list[str]] = None,
         timeout: float = 3.0,
-        max_concurrent: int = 50
+        max_concurrent: int = 50,
+        use_subfinder: bool = True
     ):
         """
         Initialize subdomain service.
@@ -81,6 +99,7 @@ class SubdomainService:
             nameservers: Custom DNS servers to use
             timeout: Query timeout in seconds
             max_concurrent: Maximum concurrent DNS queries
+            use_subfinder: Whether to use subfinder if available
         """
         self.resolver = dns.resolver.Resolver()
         self.resolver.timeout = timeout
@@ -93,21 +112,29 @@ class SubdomainService:
         
         self.max_concurrent = max_concurrent
         self.timeout = timeout
+        self.use_subfinder = use_subfinder and SUBFINDER_AVAILABLE
+        
+        if self.use_subfinder:
+            logger.info("Subfinder is available and will be used for subdomain enumeration")
+        else:
+            logger.info("Subfinder not available, using crt.sh and DNS brute-forcing only")
     
     async def enumerate_subdomains(
         self,
         domain: str,
         wordlist: Optional[list[str]] = None,
         use_crtsh: bool = True,
+        use_subfinder: bool = True,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> list[SubdomainResult]:
         """
-        Enumerate subdomains using multiple techniques.
+        Enumerate subdomains using multiple techniques including subfinder.
         
         Args:
             domain: Base domain to enumerate
             wordlist: Custom wordlist (defaults to COMMON_SUBDOMAINS)
             use_crtsh: Whether to query crt.sh for certificate transparency logs
+            use_subfinder: Whether to use subfinder (if available)
             progress_callback: Optional callback for progress updates (current, total)
             
         Returns:
@@ -115,7 +142,20 @@ class SubdomainService:
         """
         discovered = {}
         
-        # 1. Query certificate transparency logs
+        # 1. Run subfinder first (if available) - uses 40+ passive sources
+        if use_subfinder and self.use_subfinder:
+            logger.info(f"Running subfinder for passive subdomain enumeration on {domain}")
+            subfinder_results = await self._run_subfinder(domain)
+            for subdomain in subfinder_results:
+                if subdomain not in discovered:
+                    discovered[subdomain] = SubdomainResult(
+                        subdomain=subdomain,
+                        ip_addresses=[],
+                        source="subfinder"
+                    )
+            logger.info(f"Subfinder found {len(subfinder_results)} subdomains for {domain}")
+        
+        # 2. Query certificate transparency logs (backup if subfinder fails or as additional source)
         if use_crtsh:
             logger.info(f"Querying certificate transparency logs for {domain}")
             ct_subdomains = await self._query_crtsh(domain)
@@ -127,7 +167,7 @@ class SubdomainService:
                         source="crt.sh"
                     )
         
-        # 2. Brute-force common subdomains
+        # 3. Brute-force common subdomains
         wordlist = wordlist or COMMON_SUBDOMAINS
         logger.info(f"Brute-forcing {len(wordlist)} subdomain names for {domain}")
         
@@ -154,15 +194,93 @@ class SubdomainService:
                     discovered[result.subdomain].ip_addresses = result.ip_addresses
                     discovered[result.subdomain].is_alive = True
         
-        # 3. Resolve IPs for CT-discovered subdomains
-        logger.info("Resolving IP addresses for discovered subdomains")
+        # 4. Resolve IPs for all discovered subdomains
+        logger.info(f"Resolving IP addresses for {len(discovered)} discovered subdomains")
         for subdomain, result in discovered.items():
             if not result.ip_addresses:
                 ips = await self._resolve_subdomain(subdomain)
                 result.ip_addresses = ips
                 result.is_alive = len(ips) > 0
         
+        logger.info(f"Total subdomains discovered for {domain}: {len(discovered)}")
         return list(discovered.values())
+    
+    async def _run_subfinder(self, domain: str, timeout: int = 60) -> list[str]:
+        """
+        Run subfinder for passive subdomain enumeration.
+        
+        Subfinder queries 40+ passive sources including:
+        - Certificate transparency (crtsh, certspotter, digicert, etc.)
+        - DNS databases (DNSDumpster, RapidDNS, etc.)
+        - Search engines (Bing, Yahoo, etc.)
+        - Threat intelligence (VirusTotal, AlienVault, ThreatCrowd, etc.)
+        - Web archives (Wayback Machine, CommonCrawl)
+        - And many more...
+        
+        Reference: https://github.com/projectdiscovery/subfinder
+        """
+        import tempfile
+        import json
+        
+        subdomains = []
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as output_file:
+            output_path = output_file.name
+        
+        try:
+            cmd = [
+                "subfinder",
+                "-d", domain,
+                "-json",
+                "-o", output_path,
+                "-silent",
+                "-timeout", str(timeout),
+                "-all",  # Use all sources for maximum coverage
+            ]
+            
+            logger.info(f"Executing: {' '.join(cmd)}")
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout + 30
+            )
+            
+            if stderr:
+                logger.debug(f"Subfinder stderr: {stderr.decode()[:500]}")
+            
+            # Parse results
+            if os.path.exists(output_path):
+                with open(output_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                data = json.loads(line)
+                                subdomain = data.get("host", "")
+                                if subdomain:
+                                    subdomains.append(subdomain.lower())
+                            except json.JSONDecodeError:
+                                # Plain text output - just the subdomain
+                                subdomains.append(line.lower())
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"Subfinder timed out for {domain}")
+        except Exception as e:
+            logger.error(f"Subfinder failed for {domain}: {e}")
+        finally:
+            if os.path.exists(output_path):
+                try:
+                    os.unlink(output_path)
+                except Exception:
+                    pass
+        
+        return list(set(subdomains))  # Remove duplicates
     
     async def _query_crtsh(self, domain: str) -> list[str]:
         """Query crt.sh certificate transparency logs."""
