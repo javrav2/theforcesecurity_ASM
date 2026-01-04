@@ -308,7 +308,7 @@ export default function NetblocksPage() {
     setSubmittingScan(true);
     try {
       // Get targets from selected netblocks
-      const targetsResponse = await api.request('/api/netblocks/targets/by-ids', {
+      const targetsResponse = await api.request('/netblocks/targets/by-ids', {
         method: 'POST',
         body: JSON.stringify(Array.from(selectedIds)),
       });

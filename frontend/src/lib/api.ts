@@ -611,6 +611,50 @@ class ApiClient {
     return this.client.post(url, data);
   }
 
+  // Generic request method for flexible API calls
+  async request(url: string, options?: { 
+    method?: string; 
+    body?: string; 
+    params?: any;
+    headers?: Record<string, string>;
+  }) {
+    const method = options?.method?.toUpperCase() || 'GET';
+    const config: any = {
+      headers: options?.headers || {},
+    };
+    
+    if (options?.params) {
+      config.params = options.params;
+    }
+
+    let data: any = undefined;
+    if (options?.body) {
+      try {
+        data = JSON.parse(options.body);
+      } catch {
+        data = options.body;
+      }
+    }
+
+    switch (method) {
+      case 'POST':
+        const postRes = await this.client.post(url, data, config);
+        return postRes.data;
+      case 'PUT':
+        const putRes = await this.client.put(url, data, config);
+        return putRes.data;
+      case 'DELETE':
+        const delRes = await this.client.delete(url, config);
+        return delRes.data;
+      case 'PATCH':
+        const patchRes = await this.client.patch(url, data, config);
+        return patchRes.data;
+      default:
+        const getRes = await this.client.get(url, config);
+        return getRes.data;
+    }
+  }
+
   // Health check
   async healthCheck() {
     const response = await axios.get(`${API_URL}/health`);

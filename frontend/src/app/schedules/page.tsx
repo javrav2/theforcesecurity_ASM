@@ -120,8 +120,8 @@ export default function SchedulesPage() {
     setLoading(true);
     try {
       const [schedulesData, typesData, orgsData] = await Promise.all([
-        api.request('/api/scan-schedules/'),
-        api.request('/api/scan-schedules/scan-types'),
+        api.request('/scan-schedules/'),
+        api.request('/scan-schedules/scan-types'),
         api.getOrganizations(),
       ]);
 
@@ -165,7 +165,7 @@ export default function SchedulesPage() {
         .map((t) => t.trim())
         .filter((t) => t);
 
-      await api.request('/api/scan-schedules/', {
+      await api.request('/scan-schedules/', {
         method: 'POST',
         body: JSON.stringify({
           name: formData.name,
@@ -211,7 +211,7 @@ export default function SchedulesPage() {
 
   const handleToggle = async (scheduleId: number) => {
     try {
-      await api.request(`/api/scan-schedules/${scheduleId}/toggle`, {
+      await api.request(`/scan-schedules/${scheduleId}/toggle`, {
         method: 'POST',
       });
       fetchData();
@@ -226,7 +226,7 @@ export default function SchedulesPage() {
 
   const handleTrigger = async (scheduleId: number) => {
     try {
-      const result = await api.request(`/api/scan-schedules/${scheduleId}/trigger`, {
+      const result = await api.request(`/scan-schedules/${scheduleId}/trigger`, {
         method: 'POST',
       });
       toast({
@@ -247,7 +247,7 @@ export default function SchedulesPage() {
     if (!confirm('Are you sure you want to delete this schedule?')) return;
     
     try {
-      await api.request(`/api/scan-schedules/${scheduleId}`, {
+      await api.request(`/scan-schedules/${scheduleId}`, {
         method: 'DELETE',
       });
       toast({
