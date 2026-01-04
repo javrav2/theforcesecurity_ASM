@@ -33,6 +33,10 @@ from app.schemas.external_discovery import (
 )
 from app.services.external_discovery_service import ExternalDiscoveryService
 from app.services.technology_scan_service import run_technology_scan_for_hosts
+from app.services.subdomain_service import SubdomainService
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/external-discovery", tags=["external-discovery"])
 
@@ -312,6 +316,54 @@ async def run_external_discovery(
             elapsed_time=result.elapsed_time,
             error=result.error
         ))
+    
+    # ==========================================================================
+    # CHAINED SUBDOMAIN ENUMERATION on discovered domains
+    # Run subdomain enumeration on all domains discovered from Whoxy, M365, etc.
+    # ==========================================================================
+    if request.enumerate_discovered_domains and len(aggregated["domains"]) > 1:
+        logger.info(f"Running chained subdomain enumeration on {len(aggregated['domains'])} discovered domains")
+        subdomain_service = SubdomainService()
+        
+        # Exclude the original domain (already discovered)
+        discovered_domains = [d for d in aggregated["domains"] if d != request.domain]
+        domains_to_enumerate = discovered_domains[:request.max_domains_to_enumerate]
+        
+        chained_subdomains_total = 0
+        for domain_to_enum in domains_to_enumerate:
+            try:
+                logger.info(f"Enumerating subdomains for discovered domain: {domain_to_enum}")
+                subdomains = await subdomain_service.enumerate_subdomains(
+                    domain=domain_to_enum,
+                    use_crtsh=True,
+                    wordlist=None  # Use default wordlist
+                )
+                
+                for sub_result in subdomains:
+                    if sub_result.subdomain not in aggregated["subdomains"]:
+                        aggregated["subdomains"].add(sub_result.subdomain)
+                        chained_subdomains_total += 1
+                        
+                        # Add resolved IPs
+                        for ip in sub_result.ip_addresses:
+                            aggregated["ip_addresses"].add(ip)
+                
+            except Exception as e:
+                logger.warning(f"Failed to enumerate subdomains for {domain_to_enum}: {e}")
+        
+        if chained_subdomains_total > 0:
+            logger.info(f"Chained subdomain enumeration found {chained_subdomains_total} additional subdomains")
+            # Add a source result for chained enumeration
+            source_results.append(SourceResult(
+                source="chained_subdomain_enum",
+                success=True,
+                domains_found=0,
+                subdomains_found=chained_subdomains_total,
+                ips_found=0,
+                cidrs_found=0,
+                elapsed_time=0,
+                error=None
+            ))
     
     # Create assets if requested
     assets_created = 0

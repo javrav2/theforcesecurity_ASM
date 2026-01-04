@@ -96,6 +96,18 @@ class ExternalDiscoveryRequest(BaseModel):
     # Options
     create_assets: bool = Field(default=True, description="Automatically create discovered assets")
     skip_existing: bool = Field(default=True, description="Skip assets that already exist")
+    
+    # Automated subdomain enumeration on discovered domains
+    enumerate_discovered_domains: bool = Field(
+        default=True,
+        description="Run subdomain enumeration (crt.sh, brute-force) on all discovered domains from Whoxy and other sources"
+    )
+    max_domains_to_enumerate: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        description="Maximum number of discovered domains to run subdomain enumeration on"
+    )
 
     # Optional active follow-up (off by default to avoid unexpected scanning)
     run_technology_scan: bool = Field(

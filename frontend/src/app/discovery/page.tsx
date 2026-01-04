@@ -128,6 +128,8 @@ export default function DiscoveryPage() {
   const [includePaid, setIncludePaid] = useState(true);
   const [includeFree, setIncludeFree] = useState(true);
   const [createAssets, setCreateAssets] = useState(true);
+  const [enumerateDiscoveredDomains, setEnumerateDiscoveredDomains] = useState(true);
+  const [maxDomainsToEnumerate, setMaxDomainsToEnumerate] = useState(50);
   const [orgNames, setOrgNames] = useState<string[]>([]);
   const [newOrgName, setNewOrgName] = useState('');
   const [regEmails, setRegEmails] = useState<string[]>([]);
@@ -182,6 +184,8 @@ export default function DiscoveryPage() {
         include_free_sources: includeFree,
         create_assets: createAssets,
         skip_existing: true,
+        enumerate_discovered_domains: enumerateDiscoveredDomains,
+        max_domains_to_enumerate: maxDomainsToEnumerate,
         organization_names: orgNames.length > 0 ? orgNames : undefined,
         registration_emails: regEmails.length > 0 ? regEmails : undefined,
       });
@@ -333,6 +337,7 @@ export default function DiscoveryPage() {
     { name: 'VirusTotal', key: 'virustotal', description: 'VT subdomain database', icon: '🦠', free: false },
     { name: 'WhoisXML API', key: 'whoisxml', description: 'IP ranges by org name', icon: '📋', free: false },
     { name: 'Whoxy', key: 'whoxy', description: 'Reverse WHOIS by email', icon: '🔍', free: false },
+    { name: 'Chained Subdomain Enum', key: 'chained', description: 'Auto-enum on discovered domains', icon: '🔄', free: true },
   ];
 
   const getSourceStatus = (sourceKey: string) => {
@@ -449,7 +454,7 @@ export default function DiscoveryPage() {
 
                 {showAdvanced && (
                   <div className="space-y-4 p-4 bg-muted/50 rounded-lg">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       <div className="flex items-center gap-2">
                         <Switch checked={includeFree} onCheckedChange={setIncludeFree} />
                         <Label>Free Sources</Label>
@@ -462,7 +467,21 @@ export default function DiscoveryPage() {
                         <Switch checked={createAssets} onCheckedChange={setCreateAssets} />
                         <Label>Create Assets</Label>
                       </div>
+                      <div className="flex items-center gap-2">
+                        <Switch checked={enumerateDiscoveredDomains} onCheckedChange={setEnumerateDiscoveredDomains} />
+                        <Label>Auto-Enumerate Subdomains</Label>
+                      </div>
                     </div>
+                    
+                    {enumerateDiscoveredDomains && (
+                      <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
+                        <p className="text-sm text-green-400 font-medium">🔄 Chained Subdomain Enumeration Enabled</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          When domains are discovered via Whoxy or other sources, subdomain enumeration (crt.sh, brute-force) 
+                          will automatically run on up to {maxDomainsToEnumerate} discovered domains.
+                        </p>
+                      </div>
+                    )}
 
                     <div className="space-y-2">
                       <Label className="flex items-center gap-2">

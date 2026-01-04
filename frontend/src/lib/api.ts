@@ -387,6 +387,8 @@ class ApiClient {
     registration_emails?: string[];
     create_assets?: boolean;
     skip_existing?: boolean;
+    enumerate_discovered_domains?: boolean;
+    max_domains_to_enumerate?: number;
   }) {
     const response = await this.client.post('/external-discovery/run', data);
     return response.data;
