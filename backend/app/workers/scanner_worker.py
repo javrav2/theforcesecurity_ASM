@@ -305,6 +305,27 @@ class ScannerWorker:
         ports = job_data.get('ports')
         service_detection = job_data.get('service_detection', True)
         
+        # Get advanced config options with sensible defaults for reliability
+        config = job_data.get('config', {})
+        rate = config.get('rate', 500)  # Lower rate for reliability
+        timeout = config.get('timeout', 30)  # Longer timeout
+        retries = config.get('retries', 2)  # Retry on failure
+        chunk_size = config.get('chunk_size', 64)  # Chunk large scans
+        
+        # IMPORTANT: Set default ports if not specified (don't scan all 65535!)
+        # This prevents accidental 33+ minute scans
+        if not ports or ports == "-":
+            # Default to top 100 common ports for reasonable scan time
+            ports = config.get('ports') or "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1433,1723,3306,3389,5432,5900,8080,8443"
+            logger.info(f"No ports specified, defaulting to top common ports")
+        
+        # Log scan estimate
+        from app.services.port_scanner_service import PortScannerService
+        scanner_svc = PortScannerService()
+        num_ports = scanner_svc._count_ports(ports) if hasattr(scanner_svc, '_count_ports') else 0
+        num_hosts = scanner_svc._estimate_hosts(targets) if hasattr(scanner_svc, '_estimate_hosts') else len(targets)
+        logger.info(f"Port scan: {num_hosts} hosts × {num_ports} ports = ~{num_hosts * num_ports:,} probes")
+        
         db = self.get_db_session()
         if not db:
             logger.error("No database connection")
@@ -326,11 +347,22 @@ class ScannerWorker:
             }
             selected_scanner = scanner_type_map.get(scanner, ScannerType.NAABU)
             
-            # Run port scan
-            # Note: service_detection only applies to nmap scanner
-            scan_kwargs = {"targets": targets, "ports": ports}
-            if selected_scanner == ScannerType.NMAP and service_detection:
+            # Run port scan with reliability options
+            scan_kwargs = {
+                "targets": targets, 
+                "ports": ports,
+                "rate": rate,
+                "timeout": timeout,
+            }
+            
+            # Add scanner-specific options
+            if selected_scanner == ScannerType.NAABU:
+                scan_kwargs["retries"] = retries
+                scan_kwargs["chunk_size"] = chunk_size
+            elif selected_scanner == ScannerType.NMAP and service_detection:
                 scan_kwargs["service_detection"] = service_detection
+            
+            logger.info(f"Starting port scan with rate={rate}, timeout={timeout}, retries={retries}")
             
             result = await self.port_scanner_service.scan(
                 scanner=selected_scanner,

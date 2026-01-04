@@ -647,6 +647,92 @@ def get_scanner_status(
     )
 
 
+@router.get("/scanners/network-test")
+async def test_network_connectivity(
+    target: str = Query("8.8.8.8", description="Target to test connectivity"),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Test network connectivity from the scanner container.
+    
+    Useful for diagnosing scanning issues like:
+    - DNS resolution problems
+    - Firewall blocking
+    - Network timeouts
+    """
+    import subprocess
+    import socket
+    
+    results = {
+        "target": target,
+        "dns_resolution": None,
+        "tcp_connectivity": {},
+        "ping": None,
+        "errors": []
+    }
+    
+    # DNS resolution test
+    try:
+        resolved_ips = socket.gethostbyname_ex(target)
+        results["dns_resolution"] = {
+            "success": True,
+            "hostname": resolved_ips[0],
+            "aliases": resolved_ips[1],
+            "ips": resolved_ips[2]
+        }
+    except socket.gaierror as e:
+        results["dns_resolution"] = {"success": False, "error": str(e)}
+        results["errors"].append(f"DNS resolution failed: {e}")
+    
+    # TCP connectivity test on common ports
+    test_ports = [80, 443, 22]
+    for port in test_ports:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            result = sock.connect_ex((target, port))
+            results["tcp_connectivity"][port] = {
+                "success": result == 0,
+                "state": "open" if result == 0 else "closed/filtered"
+            }
+            sock.close()
+        except Exception as e:
+            results["tcp_connectivity"][port] = {"success": False, "error": str(e)}
+    
+    # Ping test (may not work in all containers)
+    try:
+        proc = subprocess.run(
+            ["ping", "-c", "1", "-W", "3", target],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        results["ping"] = {
+            "success": proc.returncode == 0,
+            "output": proc.stdout[:500] if proc.returncode == 0 else proc.stderr[:500]
+        }
+    except Exception as e:
+        results["ping"] = {"success": False, "error": str(e)}
+    
+    # Quick naabu test
+    try:
+        proc = subprocess.run(
+            ["naabu", "-host", target, "-p", "80,443", "-scan-type", "c", "-silent", "-json"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        results["naabu_test"] = {
+            "success": proc.returncode == 0,
+            "output": proc.stdout[:1000] if proc.stdout else None,
+            "errors": proc.stderr[:500] if proc.stderr else None
+        }
+    except Exception as e:
+        results["naabu_test"] = {"success": False, "error": str(e)}
+    
+    return results
+
+
 @router.post("/scan", response_model=PortScanResultResponse)
 async def run_port_scan(
     request: PortScanRequest,

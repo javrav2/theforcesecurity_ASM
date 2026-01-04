@@ -437,4 +437,257 @@ async def test_tool(
         return {"error": str(e)}
 
 
+# =============================================================================
+# Data Schema & Field Mapping Endpoints
+# =============================================================================
+
+@router.get("/data-sources", response_model=List[Dict])
+def list_data_sources(
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    List all supported data sources with their field mappings.
+    
+    Returns information about how each tool's output maps to the unified ASMDataModel.
+    This is useful for understanding what fields are available from each source.
+    """
+    from app.services.data_normalizer_service import get_source_info, get_supported_sources
+    from app.schemas.data_sources import DATA_SOURCE_MAPPINGS
+    
+    sources = []
+    for source_name in get_supported_sources():
+        info = get_source_info(source_name)
+        if info:
+            sources.append(info)
+    
+    return sources
+
+
+@router.get("/data-sources/{source_name}", response_model=Dict)
+def get_data_source_details(
+    source_name: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get detailed field mapping for a specific data source.
+    
+    Shows how the tool's native output fields map to the unified ASMDataModel.
+    """
+    from app.services.data_normalizer_service import get_source_info
+    from app.schemas.data_sources import (
+        DataSourceType, get_source_mapping,
+        get_fields_for_source, get_unmapped_fields_for_source
+    )
+    
+    try:
+        source = DataSourceType(source_name.lower())
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Unknown data source: {source_name}")
+    
+    info = get_source_info(source)
+    if not info:
+        raise HTTPException(status_code=404, detail=f"No mapping found for source: {source_name}")
+    
+    # Add additional details
+    info["fields_populated"] = get_fields_for_source(source)
+    info["fields_not_populated"] = get_unmapped_fields_for_source(source)
+    
+    return info
+
+
+@router.get("/data-model/fields", response_model=Dict)
+def get_data_model_schema(
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get the complete unified ASMDataModel schema with all fields.
+    
+    This shows ALL fields available in the normalized data model, 
+    organized by category. Use this to understand what data can be
+    collected across all sources.
+    """
+    from app.schemas.data_sources import ASMDataModel, list_all_model_fields
+    
+    # Get field info from Pydantic model
+    schema = ASMDataModel.model_json_schema()
+    
+    # Organize fields by category (based on field names)
+    categories = {
+        "identification": [],
+        "target": [],
+        "finding": [],
+        "service": [],
+        "http": [],
+        "tls": [],
+        "dns": [],
+        "vulnerability": [],
+        "technology": [],
+        "infrastructure": [],
+        "geolocation": [],
+        "whois": [],
+        "screenshot": [],
+        "email": [],
+        "archive": [],
+        "classification": [],
+        "raw": [],
+    }
+    
+    # Field prefixes to category mapping
+    prefix_map = {
+        "id": "identification",
+        "source": "identification",
+        "category": "identification",
+        "timestamp": "identification",
+        "first_seen": "identification",
+        "last_seen": "identification",
+        "organization_id": "identification",
+        "asset_id": "identification",
+        "scan_id": "identification",
+        
+        "target": "target",
+        "hostname": "target",
+        "ip": "target",
+        "cidr": "target",
+        "asn": "target",
+        "url": "target",
+        "scheme": "target",
+        "path": "target",
+        "query": "target",
+        "port": "target",
+        "protocol": "target",
+        
+        "title": "finding",
+        "description": "finding",
+        "severity": "finding",
+        "confidence": "finding",
+        "is_risky": "finding",
+        "risk": "finding",
+        
+        "service": "service",
+        "banner": "service",
+        "cpe": "service",
+        
+        "http": "http",
+        
+        "tls": "tls",
+        
+        "dns": "dns",
+        "cname": "dns",
+        "mx": "dns",
+        "ns": "dns",
+        "txt": "dns",
+        
+        "vuln": "vulnerability",
+        "template": "vulnerability",
+        "cve": "vulnerability",
+        "cwe": "vulnerability",
+        "cvss": "vulnerability",
+        "epss": "vulnerability",
+        "exploit": "vulnerability",
+        "patch": "vulnerability",
+        "matched": "vulnerability",
+        "matcher": "vulnerability",
+        "extracted": "vulnerability",
+        "curl": "vulnerability",
+        "proof": "vulnerability",
+        
+        "tech": "technology",
+        "framework": "technology",
+        "cms": "technology",
+        "language": "technology",
+        
+        "cdn": "infrastructure",
+        "waf": "infrastructure",
+        "cloud": "infrastructure",
+        "hosting": "infrastructure",
+        
+        "country": "geolocation",
+        "city": "geolocation",
+        "region": "geolocation",
+        "latitude": "geolocation",
+        "longitude": "geolocation",
+        
+        "whois": "whois",
+        
+        "screenshot": "screenshot",
+        
+        "email": "email",
+        
+        "archive": "archive",
+        "commoncrawl": "archive",
+        
+        "tag": "classification",
+        "label": "classification",
+        "categories": "classification",
+        "reference": "classification",
+        "evidence": "classification",
+        "note": "classification",
+        
+        "raw": "raw",
+    }
+    
+    all_fields = list_all_model_fields()
+    properties = schema.get("properties", {})
+    
+    for field_name in all_fields:
+        field_info = properties.get(field_name, {})
+        
+        # Find category
+        category = "raw"
+        for prefix, cat in prefix_map.items():
+            if field_name.startswith(prefix):
+                category = cat
+                break
+        
+        categories[category].append({
+            "name": field_name,
+            "type": field_info.get("type", "any"),
+            "description": field_info.get("description", ""),
+            "default": field_info.get("default"),
+        })
+    
+    return {
+        "total_fields": len(all_fields),
+        "categories": categories,
+        "all_fields": all_fields,
+    }
+
+
+@router.post("/normalize-test", response_model=Dict)
+def test_normalization(
+    source: str,
+    data: str,
+    target: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Test data normalization by converting raw tool output to unified format.
+    
+    Useful for debugging field mappings and understanding how data is normalized.
+    """
+    from app.services.data_normalizer_service import normalize_tool_output
+    from app.schemas.data_sources import DataSourceType
+    
+    try:
+        source_type = DataSourceType(source.lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown data source: {source}")
+    
+    try:
+        findings = normalize_tool_output(source_type, data, target=target)
+        return {
+            "success": True,
+            "findings_count": len(findings),
+            "findings": [f.model_dump(mode="json", exclude_none=True) for f in findings],
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "findings_count": 0,
+            "findings": [],
+        }
+
+
+
 

@@ -155,12 +155,14 @@ class PortScannerService:
         targets: List[str],
         ports: Optional[str] = None,
         top_ports: int = 100,
-        rate: int = 1000,
-        timeout: int = 10,
-        exclude_cdn: bool = True
+        rate: int = 500,  # Reduced default rate for reliability
+        timeout: int = 30,  # Increased timeout
+        exclude_cdn: bool = True,
+        retries: int = 2,  # Number of retry attempts
+        chunk_size: int = 64,  # Max hosts per chunk for large CIDR scans
     ) -> ScanResult:
         """
-        Run port scan using Naabu.
+        Run port scan using Naabu with improved reliability.
         
         Naabu is a fast port scanner from ProjectDiscovery designed for
         reliability and simplicity. Supports SYN/CONNECT scans.
@@ -171,12 +173,146 @@ class PortScannerService:
             targets: List of targets (IPs, domains, CIDRs)
             ports: Port specification (e.g., "80,443,8080" or "1-1000" or "-" for all)
             top_ports: Scan top N ports if ports not specified
-            rate: Packets per second
-            timeout: Timeout in seconds
+            rate: Packets per second (default 500 for reliability)
+            timeout: Timeout in seconds per host (default 30)
             exclude_cdn: Exclude CDN IPs (only scan 80,443)
+            retries: Number of retry attempts on failure
+            chunk_size: Max targets per scan chunk (for large CIDR ranges)
         """
         result = ScanResult(success=False, scanner=ScannerType.NAABU)
         start_time = datetime.utcnow()
+        
+        # Expand CIDR ranges and chunk if needed for large scans
+        expanded_targets = self._expand_and_chunk_targets(targets, chunk_size)
+        total_chunks = len(expanded_targets)
+        
+        if total_chunks > 1:
+            logger.info(f"Splitting scan into {total_chunks} chunks of ~{chunk_size} targets each")
+        
+        all_ports_found = []
+        chunk_errors = []
+        
+        for chunk_idx, target_chunk in enumerate(expanded_targets):
+            chunk_result = await self._scan_naabu_chunk(
+                targets=target_chunk,
+                ports=ports,
+                top_ports=top_ports,
+                rate=rate,
+                timeout=timeout,
+                exclude_cdn=exclude_cdn,
+                retries=retries,
+                chunk_num=chunk_idx + 1,
+                total_chunks=total_chunks
+            )
+            
+            all_ports_found.extend(chunk_result.ports_found)
+            chunk_errors.extend(chunk_result.errors)
+            
+            # Small delay between chunks to avoid overwhelming the network
+            if chunk_idx < total_chunks - 1:
+                await asyncio.sleep(1)
+        
+        result.ports_found = all_ports_found
+        result.errors = chunk_errors
+        result.success = True
+        result.targets_scanned = sum(len(chunk) for chunk in expanded_targets)
+        result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info(f"Naabu found {len(result.ports_found)} open ports across {result.targets_scanned} targets")
+        return result
+    
+    def _expand_and_chunk_targets(self, targets: List[str], chunk_size: int) -> List[List[str]]:
+        """Expand CIDR ranges and split into manageable chunks."""
+        import ipaddress
+        
+        expanded = []
+        for target in targets:
+            # Check if it's a CIDR range
+            if '/' in target:
+                try:
+                    network = ipaddress.ip_network(target, strict=False)
+                    # Only expand if it's a manageable size (up to /20 = 4096 hosts)
+                    if network.num_addresses <= 4096:
+                        expanded.extend([str(ip) for ip in network.hosts()])
+                    else:
+                        # For very large ranges, keep as CIDR and let naabu handle it
+                        expanded.append(target)
+                except ValueError:
+                    expanded.append(target)
+            else:
+                expanded.append(target)
+        
+        # Chunk the expanded list
+        if len(expanded) <= chunk_size:
+            return [expanded]
+        
+        return [expanded[i:i + chunk_size] for i in range(0, len(expanded), chunk_size)]
+    
+    async def _scan_naabu_chunk(
+        self,
+        targets: List[str],
+        ports: Optional[str],
+        top_ports: int,
+        rate: int,
+        timeout: int,
+        exclude_cdn: bool,
+        retries: int,
+        chunk_num: int,
+        total_chunks: int
+    ) -> ScanResult:
+        """Scan a single chunk of targets with retry logic."""
+        result = ScanResult(success=False, scanner=ScannerType.NAABU)
+        
+        for attempt in range(retries + 1):
+            try:
+                chunk_result = await self._execute_naabu_scan(
+                    targets, ports, top_ports, rate, timeout, exclude_cdn
+                )
+                
+                if chunk_result.success or not chunk_result.errors:
+                    result = chunk_result
+                    break
+                
+                # Check if errors are retryable
+                retryable_errors = ['timeout', 'connection refused', 'network unreachable', 'temporary failure']
+                is_retryable = any(
+                    err_type in ' '.join(chunk_result.errors).lower() 
+                    for err_type in retryable_errors
+                )
+                
+                if is_retryable and attempt < retries:
+                    wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
+                    logger.warning(
+                        f"Chunk {chunk_num}/{total_chunks} attempt {attempt + 1} failed, "
+                        f"retrying in {wait_time}s..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    # Reduce rate on retry
+                    rate = max(100, rate // 2)
+                else:
+                    result = chunk_result
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Chunk {chunk_num}/{total_chunks} error: {e}")
+                if attempt < retries:
+                    await asyncio.sleep((attempt + 1) * 2)
+                else:
+                    result.errors.append(str(e))
+        
+        return result
+    
+    async def _execute_naabu_scan(
+        self,
+        targets: List[str],
+        ports: Optional[str],
+        top_ports: int,
+        rate: int,
+        timeout: int,
+        exclude_cdn: bool
+    ) -> ScanResult:
+        """Execute a single naabu scan."""
+        result = ScanResult(success=False, scanner=ScannerType.NAABU)
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
             targets_file.write("\n".join(targets))
@@ -194,13 +330,13 @@ class PortScannerService:
                 "-silent",
                 "-rate", str(rate),
                 "-timeout", str(timeout),
-                "-c",  # Use CONNECT scan (doesn't require root privileges)
+                "-retries", "2",  # Naabu internal retries
+                "-scan-type", "c",  # Use CONNECT scan (doesn't require root privileges)
             ]
             
             # Handle port specification
             if ports:
                 if ports == "-" or ports == "all":
-                    # Naabu uses "-" for all ports
                     cmd.extend(["-p", "-"])
                 else:
                     cmd.extend(["-p", ports])
@@ -210,7 +346,6 @@ class PortScannerService:
             if exclude_cdn:
                 cmd.append("-exclude-cdn")
             
-            logger.info(f"Running naabu scan on {len(targets)} targets")
             logger.debug(f"Naabu command: {' '.join(cmd)}")
             
             process = await asyncio.create_subprocess_exec(
@@ -219,7 +354,17 @@ class PortScannerService:
                 stderr=asyncio.subprocess.PIPE
             )
             
-            stdout, stderr = await process.communicate()
+            try:
+                # Add overall timeout for the scan process
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout * len(targets) + 60  # Scale timeout with target count
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                result.errors.append(f"Scan timed out after {timeout * len(targets) + 60}s")
+                return result
             
             # Log any errors from naabu
             if process.returncode != 0:
@@ -231,9 +376,11 @@ class PortScannerService:
                 stderr_text = stderr.decode()
                 if "error" in stderr_text.lower() or "failed" in stderr_text.lower():
                     logger.warning(f"Naabu stderr: {stderr_text}")
-                    result.errors.append(stderr_text)
+                    # Don't add to errors if it's just info messages
+                    if "fatal" in stderr_text.lower() or process.returncode != 0:
+                        result.errors.append(stderr_text)
                 else:
-                    logger.info(f"Naabu output: {stderr_text}")
+                    logger.debug(f"Naabu output: {stderr_text}")
             
             # Parse JSON output
             if os.path.exists(output_path):
@@ -243,7 +390,6 @@ class PortScannerService:
                         if line:
                             try:
                                 data = json.loads(line)
-                                # Naabu JSON format: {"host":"example.com","ip":"1.2.3.4","port":80}
                                 result.ports_found.append(PortResult(
                                     host=data.get("host", ""),
                                     ip=data.get("ip", data.get("host", "")),
@@ -266,18 +412,21 @@ class PortScannerService:
             for path in [targets_path, output_path]:
                 if os.path.exists(path):
                     os.unlink(path)
-            
-            result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
         
-        logger.info(f"Naabu found {len(result.ports_found)} open ports")
         return result
     
     # ==================== MASSCAN ====================
     
+    # Common ports for quick scans (top 100 most common)
+    COMMON_PORTS = "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,3306,3389,5432,5900,8080,8443"
+    
+    # Top 1000 ports (nmap default) - for standard scans
+    TOP_PORTS = "1,3,7,9,13,17,19,21-23,25-26,37,53,79-82,88,100,106,110-111,113,119,135,139,143-144,179,199,254,255,280,311,389,427,443-445,464-465,497,513-515,543-544,548,554,587,593,625,631,636,646,787,808,873,902,990,993,995,1000,1022,1024-1033,1035-1041,1044,1048-1050,1053-1054,1056,1058-1059,1064-1066,1069,1071,1074,1080,1110,1234,1433,1494,1521,1720,1723,1755,1761,1801,1900,1935,1998,2000-2003,2005,2049,2103,2105,2107,2121,2161,2301,2383,2401,2601,2717,2869,2967,3000-3001,3128,3268,3306,3389,3689-3690,3703,3986,4000-4001,4045,4443,4899,5000-5001,5003,5009,5050-5051,5060,5101,5120,5190,5357,5432,5555,5631,5666,5800,5900-5901,6000-6002,6004,6112,6646,6666,7000,7070,7937-7938,8000,8002,8008-8010,8031,8080-8081,8443,8888,9000-9001,9090,9100,9102,9999-10001,10010,32768,32771,49152-49157"
+    
     async def scan_with_masscan(
         self,
         targets: List[str],
-        ports: str = "1-65535",
+        ports: Optional[str] = None,  # None = use top ports, not all
         rate: int = 10000,
         timeout: int = 30,
         banner_grab: bool = True,
@@ -295,7 +444,9 @@ class PortScannerService:
         
         Args:
             targets: List of targets (IPs, CIDRs like 205.175.240.0/24)
-            ports: Port specification (e.g., "80,443", "1-1000", "1-65535")
+            ports: Port specification (e.g., "80,443", "1-1000")
+                   None or empty = top 1000 ports (safer default)
+                   "all" or "-" = all 65535 ports (slow!)
             rate: Packets per second (default 10000, reduce for stealth)
             timeout: Wait time after scan completes
             banner_grab: Enable banner grabbing for service detection
@@ -304,11 +455,31 @@ class PortScannerService:
         result = ScanResult(success=False, scanner=ScannerType.MASSCAN)
         start_time = datetime.utcnow()
         
-        # Handle special port notation
-        if ports == "-" or ports == "all":
+        # Handle special port notation - SAFER DEFAULTS
+        if ports == "all" or ports == "-":
             ports = "0-65535"
-        elif not ports:
-            ports = "1-65535"
+            logger.warning("Scanning ALL 65535 ports - this will be slow for large ranges!")
+        elif not ports or ports.strip() == "":
+            # Default to top ports instead of all ports for faster scans
+            ports = self.TOP_PORTS
+            logger.info(f"No ports specified, using top ~1000 common ports")
+        
+        # Estimate scan time for large scans
+        num_ports = self._count_ports(ports)
+        num_hosts = self._estimate_hosts(targets)
+        total_probes = num_ports * num_hosts
+        estimated_seconds = total_probes / rate + timeout
+        
+        if estimated_seconds > 300:  # More than 5 minutes
+            logger.warning(
+                f"Large scan detected: {num_hosts} hosts × {num_ports} ports = {total_probes:,} probes. "
+                f"Estimated time: {estimated_seconds/60:.1f} minutes at {rate} pps"
+            )
+        else:
+            logger.info(
+                f"Scan estimate: {num_hosts} hosts × {num_ports} ports = {total_probes:,} probes, "
+                f"~{estimated_seconds:.0f} seconds"
+            )
         
         # If one_port_at_a_time mode, scan each port separately (ASM Recon approach)
         # This is slower but less likely to be blocked by cloud providers
@@ -514,6 +685,41 @@ class PortScannerService:
                 port_list.append(int(part))
         
         return port_list
+    
+    def _count_ports(self, ports: str) -> int:
+        """Count total number of ports in a port specification."""
+        if not ports:
+            return 0
+        
+        count = 0
+        for part in ports.split(","):
+            part = part.strip()
+            if "-" in part:
+                try:
+                    start, end = part.split("-", 1)
+                    count += int(end) - int(start) + 1
+                except ValueError:
+                    count += 1
+            else:
+                count += 1
+        return count
+    
+    def _estimate_hosts(self, targets: List[str]) -> int:
+        """Estimate total number of hosts from targets (including CIDR expansion)."""
+        import ipaddress
+        
+        total = 0
+        for target in targets:
+            target = target.strip()
+            if "/" in target:
+                try:
+                    network = ipaddress.ip_network(target, strict=False)
+                    total += network.num_addresses
+                except ValueError:
+                    total += 1
+            else:
+                total += 1
+        return total
     
     def _parse_masscan_json(self, content: str, results: List[PortResult]):
         """Parse masscan JSON output and append to results list."""

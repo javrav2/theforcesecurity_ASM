@@ -1,6 +1,6 @@
 """Scan routes for ASM scan management."""
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -421,8 +421,567 @@ def delete_scan(
     return None
 
 
+# =============================================================================
+# Unified Export Endpoints
+# =============================================================================
+
+@router.get("/{scan_id}/export/unified", response_model=dict)
+def export_scan_unified(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Export scan results in unified ASM format.
+    
+    This standardized format is compatible with H-ISAC and ASM Recon outputs,
+    making it easy to share, integrate, or import into other security tools.
+    """
+    from app.schemas.unified_results import (
+        UnifiedFinding, UnifiedScanResult, ASMExportFormat,
+        ResultType, Severity
+    )
+    from app.models.vulnerability import Vulnerability
+    from app.models.port_service import PortService
+    
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Scan not found"
+        )
+    
+    if not check_org_access(current_user, scan.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    # Build unified scan result
+    unified_result = UnifiedScanResult(
+        scan_id=scan.id,
+        scan_type=scan.scan_type.value if scan.scan_type else "unknown",
+        scanner=scan.config.get("scanner", "unknown") if scan.config else "unknown",
+        success=scan.status == ScanStatus.COMPLETED,
+        status=scan.status.value if scan.status else "unknown",
+        targets_original=scan.targets or [],
+        targets_scanned=count_cidr_targets(scan.targets) if scan.targets else 0,
+        started_at=scan.started_at,
+        completed_at=scan.completed_at,
+        duration_seconds=(scan.completed_at - scan.started_at).total_seconds() if scan.started_at and scan.completed_at else 0,
+        organization_id=scan.organization_id,
+        started_by=scan.started_by,
+        errors=[scan.error_message] if scan.error_message else [],
+    )
+    
+    # Add vulnerability findings
+    vulns = db.query(Vulnerability).filter(Vulnerability.scan_id == scan.id).all()
+    for vuln in vulns:
+        severity_map = {
+            "critical": Severity.CRITICAL,
+            "high": Severity.HIGH,
+            "medium": Severity.MEDIUM,
+            "low": Severity.LOW,
+            "info": Severity.INFO,
+        }
+        finding = UnifiedFinding(
+            type=ResultType.VULNERABILITY,
+            source=vuln.detected_by or "nuclei",
+            target=vuln.asset.value if vuln.asset else "",
+            host=vuln.asset.value if vuln.asset else "",
+            ip=vuln.ip_address,
+            url=vuln.url,
+            title=vuln.title,
+            description=vuln.description,
+            severity=severity_map.get(vuln.severity.value if vuln.severity else "info", Severity.INFO),
+            template_id=vuln.template_id,
+            cve_id=vuln.cve_id,
+            cvss_score=vuln.cvss_score,
+            tags=vuln.tags or [],
+            references=vuln.references or [],
+            timestamp=vuln.first_detected_at or vuln.created_at,
+            first_seen=vuln.first_detected_at,
+            last_seen=vuln.last_detected_at,
+            organization_id=scan.organization_id,
+            asset_id=vuln.asset_id,
+            scan_id=scan.id,
+        )
+        unified_result.add_finding(finding)
+    
+    # Add port findings (for port scans)
+    if scan.scan_type == ScanType.PORT_SCAN:
+        # Get assets scanned in this job
+        for target in scan.targets or []:
+            asset = db.query(Asset).filter(
+                Asset.organization_id == scan.organization_id,
+                Asset.value == target
+            ).first()
+            if asset:
+                ports = db.query(PortService).filter(PortService.asset_id == asset.id).all()
+                for port in ports:
+                    finding = UnifiedFinding(
+                        type=ResultType.PORT,
+                        source=port.discovered_by or "naabu",
+                        target=target,
+                        host=asset.value,
+                        ip=asset.ip_address,
+                        port=port.port,
+                        protocol=port.protocol.value if port.protocol else "tcp",
+                        title=f"Port {port.port}/{port.protocol.value if port.protocol else 'tcp'} Open",
+                        service_name=port.service_name,
+                        service_product=port.service_product,
+                        service_version=port.service_version,
+                        banner=port.banner,
+                        state=port.state.value if port.state else "open",
+                        is_risky=port.is_risky or False,
+                        risk_reason=port.risk_reason,
+                        severity=Severity.MEDIUM if port.is_risky else Severity.INFO,
+                        timestamp=port.first_seen or port.created_at,
+                        first_seen=port.first_seen,
+                        last_seen=port.last_seen,
+                        organization_id=scan.organization_id,
+                        asset_id=asset.id,
+                        scan_id=scan.id,
+                    )
+                    unified_result.add_finding(finding)
+    
+    # Build export format
+    org_name = scan.organization.name if scan.organization else None
+    export = ASMExportFormat.from_scan_result(unified_result, org_name)
+    
+    return export.model_dump(mode="json")
 
 
+@router.get("/export/all", response_model=dict)
+def export_all_findings(
+    organization_id: Optional[int] = None,
+    finding_type: Optional[str] = Query(None, description="Filter by type: vulnerability, port, subdomain, etc."),
+    severity: Optional[str] = Query(None, description="Filter by severity: critical, high, medium, low, info"),
+    source: Optional[str] = Query(None, description="Filter by source tool: nuclei, naabu, subfinder, etc."),
+    since: Optional[datetime] = Query(None, description="Filter findings after this date"),
+    limit: int = Query(1000, ge=1, le=10000, description="Maximum findings to export"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Export all findings in unified ASM format across all scans.
+    
+    This endpoint provides a consolidated view of all findings for:
+    - Threat intel sharing (H-ISAC compatible)
+    - SIEM integration
+    - Security reporting
+    - Cross-tool analysis
+    """
+    from app.schemas.unified_results import (
+        UnifiedFinding, ASMExportFormat,
+        ResultType, Severity
+    )
+    from app.models.vulnerability import Vulnerability
+    from app.models.port_service import PortService
+    from app.models.organization import Organization
+    
+    # Determine organization scope
+    if current_user.is_superuser:
+        org_id = organization_id
+    else:
+        org_id = current_user.organization_id
+    
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Organization ID required"
+        )
+    
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    
+    findings = []
+    severity_map = {
+        "critical": Severity.CRITICAL,
+        "high": Severity.HIGH,
+        "medium": Severity.MEDIUM,
+        "low": Severity.LOW,
+        "info": Severity.INFO,
+    }
+    
+    # Get vulnerabilities
+    if not finding_type or finding_type == "vulnerability":
+        vuln_query = db.query(Vulnerability).filter(Vulnerability.organization_id == org_id)
+        if severity:
+            vuln_query = vuln_query.filter(Vulnerability.severity == severity)
+        if source:
+            vuln_query = vuln_query.filter(Vulnerability.detected_by == source)
+        if since:
+            vuln_query = vuln_query.filter(Vulnerability.created_at >= since)
+        
+        for vuln in vuln_query.limit(limit).all():
+            finding = UnifiedFinding(
+                type=ResultType.VULNERABILITY,
+                source=vuln.detected_by or "nuclei",
+                target=vuln.asset.value if vuln.asset else "",
+                host=vuln.asset.value if vuln.asset else "",
+                ip=vuln.ip_address,
+                url=vuln.url,
+                title=vuln.title,
+                description=vuln.description,
+                severity=severity_map.get(vuln.severity.value if vuln.severity else "info", Severity.INFO),
+                template_id=vuln.template_id,
+                cve_id=vuln.cve_id,
+                cvss_score=vuln.cvss_score,
+                tags=vuln.tags or [],
+                references=vuln.references or [],
+                timestamp=vuln.first_detected_at or vuln.created_at,
+                first_seen=vuln.first_detected_at,
+                last_seen=vuln.last_detected_at,
+                organization_id=org_id,
+                asset_id=vuln.asset_id,
+                scan_id=vuln.scan_id,
+            )
+            findings.append(finding)
+    
+    # Get port findings
+    if not finding_type or finding_type == "port":
+        # Get assets for this org
+        asset_ids = [a.id for a in db.query(Asset).filter(Asset.organization_id == org_id).all()]
+        
+        port_query = db.query(PortService).filter(PortService.asset_id.in_(asset_ids))
+        if source:
+            port_query = port_query.filter(PortService.discovered_by == source)
+        if since:
+            port_query = port_query.filter(PortService.created_at >= since)
+        
+        remaining = limit - len(findings)
+        for port in port_query.limit(remaining).all():
+            asset = port.asset
+            finding = UnifiedFinding(
+                type=ResultType.PORT,
+                source=port.discovered_by or "naabu",
+                target=asset.value if asset else "",
+                host=asset.value if asset else "",
+                ip=asset.ip_address if asset else None,
+                port=port.port,
+                protocol=port.protocol.value if port.protocol else "tcp",
+                title=f"Port {port.port}/{port.protocol.value if port.protocol else 'tcp'} Open",
+                service_name=port.service_name,
+                service_product=port.service_product,
+                service_version=port.service_version,
+                banner=port.banner,
+                state=port.state.value if port.state else "open",
+                is_risky=port.is_risky or False,
+                risk_reason=port.risk_reason,
+                severity=Severity.MEDIUM if port.is_risky else Severity.INFO,
+                timestamp=port.first_seen or port.created_at,
+                first_seen=port.first_seen,
+                last_seen=port.last_seen,
+                organization_id=org_id,
+                asset_id=port.asset_id,
+            )
+            
+            # Apply severity filter
+            if severity and finding.severity.value != severity:
+                continue
+            
+            findings.append(finding)
+    
+    # Build export format
+    severity_breakdown = {s.value: 0 for s in Severity}
+    type_breakdown = {}
+    source_breakdown = {}
+    
+    for f in findings:
+        severity_breakdown[f.severity.value] = severity_breakdown.get(f.severity.value, 0) + 1
+        type_breakdown[f.type.value] = type_breakdown.get(f.type.value, 0) + 1
+        source_breakdown[f.source] = source_breakdown.get(f.source, 0) + 1
+    
+    export = ASMExportFormat(
+        organization=org.name if org else None,
+        organization_id=org_id,
+        findings=findings,
+        total_count=len(findings),
+        severity_breakdown=severity_breakdown,
+        type_breakdown=type_breakdown,
+        source_breakdown=source_breakdown,
+    )
+    
+    return export.model_dump(mode="json")
+
+
+# =============================================================================
+# H-ISAC Format Export Endpoints
+# =============================================================================
+
+@router.get("/{scan_id}/export/hisac", response_model=List[Dict])
+def export_scan_hisac(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Export scan results in H-ISAC format.
+    
+    Returns JSON Lines compatible output matching the H-ISAC reconnaissance
+    scripts format:
+    
+    {"ip_or_fqdn": "...", "port": 443, "protocol": "tcp", "data": [...]}
+    
+    This format is compatible with:
+    - get_masscan
+    - get_massdns
+    - get_whoxy
+    - Other H-ISAC recon scripts
+    """
+    from app.schemas.hisac_format import HISACResult
+    from app.models.vulnerability import Vulnerability
+    from app.models.port_service import PortService
+    
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Scan not found"
+        )
+    
+    if not check_org_access(current_user, scan.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    results = []
+    
+    # Export vulnerability findings
+    vulns = db.query(Vulnerability).filter(Vulnerability.scan_id == scan.id).all()
+    for vuln in vulns:
+        result = HISACResult(
+            ip_or_fqdn=vuln.asset.value if vuln.asset else vuln.ip_address or "",
+            port=0,
+            protocol="vuln",
+            data=[{
+                "template_id": vuln.template_id,
+                "severity": vuln.severity.value if vuln.severity else "info",
+                "title": vuln.title,
+                "cve_id": vuln.cve_id,
+                "cvss_score": vuln.cvss_score,
+                "matched_at": vuln.url,
+            }],
+            source="nuclei",
+        )
+        results.append(result.model_dump(mode="json", exclude_none=True))
+    
+    # Export port findings (for port scans)
+    if scan.scan_type == ScanType.PORT_SCAN:
+        for target in scan.targets or []:
+            asset = db.query(Asset).filter(
+                Asset.organization_id == scan.organization_id,
+                Asset.value == target
+            ).first()
+            if asset:
+                ports = db.query(PortService).filter(PortService.asset_id == asset.id).all()
+                for port in ports:
+                    result = HISACResult(
+                        ip_or_fqdn=asset.ip_address or asset.value,
+                        port=port.port,
+                        protocol=port.protocol.value if port.protocol else "tcp",
+                        data=[{
+                            "status": port.state.value if port.state else "open",
+                            "service": port.service_name,
+                            "product": port.service_product,
+                            "version": port.service_version,
+                            "banner": port.banner,
+                        }],
+                        source=port.discovered_by or "naabu",
+                    )
+                    # Clean up None values in data
+                    result.data = [{k: v for k, v in d.items() if v is not None} for d in result.data]
+                    results.append(result.model_dump(mode="json", exclude_none=True))
+    
+    return results
+
+
+@router.get("/export/hisac", response_model=List[Dict])
+def export_all_hisac(
+    organization_id: Optional[int] = None,
+    protocol: Optional[str] = Query(None, description="Filter by protocol: tcp, dns, whois, vuln, etc."),
+    since: Optional[datetime] = Query(None, description="Filter findings after this date"),
+    limit: int = Query(1000, ge=1, le=10000, description="Maximum results"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Export all findings in H-ISAC format.
+    
+    Returns JSON Lines compatible output that can be piped to other H-ISAC tools
+    or used for integration with external systems.
+    """
+    from app.schemas.hisac_format import HISACResult
+    from app.models.vulnerability import Vulnerability
+    from app.models.port_service import PortService
+    
+    # Determine organization scope
+    if current_user.is_superuser:
+        org_id = organization_id
+    else:
+        org_id = current_user.organization_id
+    
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Organization ID required"
+        )
+    
+    results = []
+    
+    # Get vulnerabilities (protocol = "vuln")
+    if not protocol or protocol == "vuln":
+        vuln_query = db.query(Vulnerability).filter(Vulnerability.organization_id == org_id)
+        if since:
+            vuln_query = vuln_query.filter(Vulnerability.created_at >= since)
+        
+        for vuln in vuln_query.limit(limit).all():
+            result = HISACResult(
+                ip_or_fqdn=vuln.asset.value if vuln.asset else vuln.ip_address or "",
+                port=0,
+                protocol="vuln",
+                data=[{
+                    "template_id": vuln.template_id,
+                    "severity": vuln.severity.value if vuln.severity else "info",
+                    "title": vuln.title,
+                    "cve_id": vuln.cve_id,
+                    "cvss_score": vuln.cvss_score,
+                    "matched_at": vuln.url,
+                }],
+                source="nuclei",
+            )
+            results.append(result.model_dump(mode="json", exclude_none=True))
+    
+    # Get ports (protocol = "tcp" or "udp")
+    if not protocol or protocol in ["tcp", "udp"]:
+        asset_ids = [a.id for a in db.query(Asset).filter(Asset.organization_id == org_id).all()]
+        
+        port_query = db.query(PortService).filter(PortService.asset_id.in_(asset_ids))
+        if protocol:
+            from app.models.port_service import Protocol as PortProtocol
+            port_query = port_query.filter(PortService.protocol == PortProtocol(protocol))
+        if since:
+            port_query = port_query.filter(PortService.created_at >= since)
+        
+        remaining = limit - len(results)
+        for port in port_query.limit(remaining).all():
+            asset = port.asset
+            result = HISACResult(
+                ip_or_fqdn=asset.ip_address or asset.value if asset else "",
+                port=port.port,
+                protocol=port.protocol.value if port.protocol else "tcp",
+                data=[{
+                    "status": port.state.value if port.state else "open",
+                    "service": port.service_name,
+                    "product": port.service_product,
+                    "version": port.service_version,
+                    "banner": port.banner,
+                }],
+                source=port.discovered_by or "naabu",
+            )
+            result.data = [{k: v for k, v in d.items() if v is not None} for d in result.data]
+            results.append(result.model_dump(mode="json", exclude_none=True))
+    
+    return results
+
+
+@router.post("/import/hisac", response_model=Dict)
+def import_hisac_results(
+    organization_id: int,
+    results: List[Dict],
+    source: Optional[str] = Query(None, description="Source tool name"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Import H-ISAC format results into the ASM database.
+    
+    Accepts JSON array of H-ISAC format objects:
+    [{"ip_or_fqdn": "...", "port": 443, "protocol": "tcp", "data": [...]}]
+    
+    This allows importing results from:
+    - H-ISAC reconnaissance scripts
+    - Other ASM tools using the same format
+    - Manual data entry in H-ISAC format
+    """
+    from app.schemas.hisac_format import HISACResult, hisac_to_asm
+    from app.schemas.data_sources import FindingCategory
+    
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    imported = 0
+    errors = []
+    
+    for i, raw_result in enumerate(results):
+        try:
+            # Parse H-ISAC result
+            hisac = HISACResult(**raw_result)
+            hisac.organization_id = organization_id
+            
+            # Convert to ASM model
+            asm_finding = hisac_to_asm(hisac, source_hint=source)
+            
+            # Import based on category
+            if asm_finding.category == FindingCategory.PORT:
+                # Create or update port service
+                asset = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.value == asm_finding.hostname or asm_finding.ip_address
+                ).first()
+                
+                if not asset:
+                    # Create asset
+                    asset = Asset(
+                        organization_id=organization_id,
+                        asset_type="ip" if asm_finding.ip_address else "domain",
+                        value=asm_finding.ip_address or asm_finding.hostname,
+                        ip_address=asm_finding.ip_address,
+                        is_active=True,
+                    )
+                    db.add(asset)
+                    db.flush()
+                
+                # Create port service
+                from app.models.port_service import PortService, Protocol as PortProtocol, PortState as PSState
+                existing_port = db.query(PortService).filter(
+                    PortService.asset_id == asset.id,
+                    PortService.port == asm_finding.port,
+                    PortService.protocol == asm_finding.protocol
+                ).first()
+                
+                if not existing_port:
+                    port_service = PortService(
+                        asset_id=asset.id,
+                        port=asm_finding.port,
+                        protocol=asm_finding.protocol,
+                        service_name=asm_finding.service_name,
+                        service_product=asm_finding.service_product,
+                        service_version=asm_finding.service_version,
+                        banner=asm_finding.banner,
+                        state=asm_finding.port_state or PSState.OPEN,
+                        discovered_by=source or "hisac_import",
+                    )
+                    db.add(port_service)
+                    imported += 1
+            
+            # Add more category handlers as needed
+            
+        except Exception as e:
+            errors.append({"index": i, "error": str(e)})
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "imported": imported,
+        "total": len(results),
+        "errors": errors,
+    }
 
 
 

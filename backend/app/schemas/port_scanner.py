@@ -8,7 +8,7 @@ from app.services.port_scanner_service import ScannerType
 
 class PortScanRequest(BaseModel):
     """Schema for initiating a port scan."""
-    targets: List[str] = Field(..., description="List of targets (IPs, domains, CIDRs)")
+    targets: List[str] = Field(..., description="List of targets (IPs, domains, CIDRs like 205.175.240.0/24)")
     organization_id: int = Field(..., description="Organization ID to associate results with")
     scanner: ScannerType = Field(default=ScannerType.NAABU, description="Scanner to use: naabu, masscan, nmap")
     ports: Optional[str] = Field(default=None, description="Port specification (e.g., '80,443' or '1-1000' or '-' for all)")
@@ -17,8 +17,11 @@ class PortScanRequest(BaseModel):
     top_ports: int = Field(default=100, ge=1, le=65535, description="Top N ports to scan (naabu)")
     exclude_cdn: bool = Field(default=True, description="Exclude CDN IPs (naabu)")
     
-    # Rate limiting
-    rate: int = Field(default=1000, ge=1, le=100000, description="Packets per second")
+    # Rate limiting and reliability settings
+    rate: int = Field(default=500, ge=1, le=100000, description="Packets per second (lower = more reliable)")
+    timeout: int = Field(default=30, ge=5, le=300, description="Timeout in seconds per host")
+    retries: int = Field(default=2, ge=0, le=5, description="Number of retry attempts on network errors")
+    chunk_size: int = Field(default=64, ge=8, le=256, description="Max hosts per scan chunk (for large CIDR ranges)")
     
     # Nmap options
     service_detection: bool = Field(default=True, description="Enable service detection (nmap)")

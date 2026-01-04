@@ -9,6 +9,12 @@ from app.services.nuclei_findings_service import NucleiFindingsService
 from app.services.projectdiscovery_service import ProjectDiscoveryService
 from app.services.port_scanner_service import PortScannerService, ScannerType, PortResult, ScanResult
 from app.services.port_findings_service import PortFindingsService, PORT_FINDING_RULES
+from app.services.data_normalizer_service import (
+    DataNormalizerService,
+    normalize_tool_output,
+    get_supported_sources,
+    get_source_info,
+)
 
 __all__ = [
     "DNSService",
@@ -25,4 +31,9 @@ __all__ = [
     "ScannerType",
     "PortResult",
     "ScanResult",
+    # Data normalization
+    "DataNormalizerService",
+    "normalize_tool_output",
+    "get_supported_sources",
+    "get_source_info",
 ]
