@@ -24,6 +24,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Search,
   Globe,
@@ -45,10 +46,18 @@ import {
   Settings,
   ChevronDown,
   ChevronUp,
+  History,
+  AlertTriangle,
+  FileWarning,
+  FileText,
+  ExternalLink,
+  Link,
+  Radar,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 
+// Types for External Discovery
 interface SourceResult {
   source: string;
   success: boolean;
@@ -77,38 +86,72 @@ interface DiscoveryResult {
   total_elapsed_time: number;
 }
 
+// Types for Wayback URLs
+interface DomainResult {
+  domain: string;
+  success: boolean;
+  url_count: number;
+  interesting_count: number;
+  elapsed_time: number;
+  error?: string;
+}
+
+interface WaybackResult {
+  domain?: string;
+  domains_scanned?: number;
+  total_urls: number;
+  total_interesting?: number;
+  interesting_count?: number;
+  url_count?: number;
+  unique_paths_count?: number;
+  file_extensions: Record<string, number>;
+  urls: string[];
+  interesting_urls: string[];
+  unique_paths?: string[];
+  domain_results?: DomainResult[];
+  elapsed_time?: number;
+}
+
 export default function DiscoveryPage() {
+  // Common state
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
   const [selectedOrg, setSelectedOrg] = useState<string>('');
   const [domain, setDomain] = useState('');
-  const [results, setResults] = useState<DiscoveryResult | null>(null);
-  const [activeTab, setActiveTab] = useState<'subdomains' | 'ips' | 'domains' | 'ranges'>('subdomains');
+  const { toast } = useToast();
+
+  // External Discovery state
+  const [discoveryRunning, setDiscoveryRunning] = useState(false);
+  const [discoveryResults, setDiscoveryResults] = useState<DiscoveryResult | null>(null);
+  const [discoveryActiveTab, setDiscoveryActiveTab] = useState<'subdomains' | 'ips' | 'domains' | 'ranges'>('subdomains');
   const [showAdvanced, setShowAdvanced] = useState(false);
-  
-  // Advanced options
   const [includePaid, setIncludePaid] = useState(true);
   const [includeFree, setIncludeFree] = useState(true);
   const [createAssets, setCreateAssets] = useState(true);
-  
-  // Organization names for WhoisXML
   const [orgNames, setOrgNames] = useState<string[]>([]);
   const [newOrgName, setNewOrgName] = useState('');
-  
-  // Registration emails for Whoxy
   const [regEmails, setRegEmails] = useState<string[]>([]);
   const [newRegEmail, setNewRegEmail] = useState('');
-  
-  const { toast } = useToast();
+
+  // Wayback URLs state
+  const [waybackRunning, setWaybackRunning] = useState(false);
+  const [waybackResults, setWaybackResults] = useState<WaybackResult | null>(null);
+  const [waybackMode, setWaybackMode] = useState<'single' | 'organization'>('single');
+  const [includeSubdomains, setIncludeSubdomains] = useState(true);
+  const [waybackActiveTab, setWaybackActiveTab] = useState<'interesting' | 'all'>('interesting');
 
   const fetchData = async () => {
     setLoading(true);
     try {
       const orgsData = await api.getOrganizations();
-      setOrganizations(orgsData);
+      setOrganizations(orgsData || []);
     } catch (error) {
-      console.error('Failed to fetch data:', error);
+      console.error('Failed to fetch organizations:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load organizations. Please check your connection.',
+        variant: 'destructive',
+      });
     } finally {
       setLoading(false);
     }
@@ -118,6 +161,7 @@ export default function DiscoveryPage() {
     fetchData();
   }, []);
 
+  // External Discovery handlers
   const handleRunDiscovery = async () => {
     if (!selectedOrg || !domain) {
       toast({
@@ -128,8 +172,8 @@ export default function DiscoveryPage() {
       return;
     }
 
-    setRunning(true);
-    setResults(null);
+    setDiscoveryRunning(true);
+    setDiscoveryResults(null);
     try {
       const result = await api.runExternalDiscovery({
         organization_id: parseInt(selectedOrg),
@@ -142,39 +186,40 @@ export default function DiscoveryPage() {
         registration_emails: regEmails.length > 0 ? regEmails : undefined,
       });
 
-      setResults(result);
+      setDiscoveryResults(result);
       toast({
         title: 'Discovery Complete',
         description: `Found ${result.total_subdomains} subdomains, ${result.total_ips} IPs. Created ${result.assets_created} new assets.`,
       });
     } catch (error: any) {
+      console.error('Discovery error:', error);
       toast({
-        title: 'Error',
-        description: error.response?.data?.detail || 'Failed to run discovery',
+        title: 'Discovery Failed',
+        description: error.response?.data?.detail || error.message || 'Failed to run discovery. Check API keys in Settings.',
         variant: 'destructive',
       });
     } finally {
-      setRunning(false);
+      setDiscoveryRunning(false);
     }
   };
 
-  const downloadResults = () => {
-    if (!results) return;
+  const downloadDiscoveryResults = () => {
+    if (!discoveryResults) return;
     
     const data = {
-      domain: results.domain,
+      domain: discoveryResults.domain,
       timestamp: new Date().toISOString(),
-      subdomains: results.subdomains,
-      domains: results.domains,
-      ip_addresses: results.ip_addresses,
-      ip_ranges: results.ip_ranges,
+      subdomains: discoveryResults.subdomains,
+      domains: discoveryResults.domains,
+      ip_addresses: discoveryResults.ip_addresses,
+      ip_ranges: discoveryResults.ip_ranges,
     };
     
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `discovery-${results.domain}-${Date.now()}.json`;
+    a.download = `discovery-${discoveryResults.domain}-${Date.now()}.json`;
     a.click();
   };
 
@@ -200,90 +245,124 @@ export default function DiscoveryPage() {
     setRegEmails(regEmails.filter(e => e !== email));
   };
 
+  // Wayback URLs handlers
+  const handleRunWayback = async () => {
+    if (waybackMode === 'single' && !domain) {
+      toast({
+        title: 'Error',
+        description: 'Please enter a domain',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (waybackMode === 'organization' && !selectedOrg) {
+      toast({
+        title: 'Error',
+        description: 'Please select an organization',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setWaybackRunning(true);
+    setWaybackResults(null);
+    try {
+      let result;
+      if (waybackMode === 'single') {
+        const response = await api.post('/waybackurls/fetch', {
+          domain,
+          no_subs: !includeSubdomains,
+          timeout: 120
+        });
+        result = response.data;
+      } else {
+        const response = await api.post('/waybackurls/fetch/organization', {
+          organization_id: parseInt(selectedOrg),
+          include_subdomains: includeSubdomains,
+          timeout_per_domain: 120,
+          max_concurrent: 3
+        });
+        result = response.data;
+      }
+
+      setWaybackResults(result);
+      
+      const totalUrls = result.total_urls || result.url_count || 0;
+      const interestingCount = result.total_interesting || result.interesting_count || 0;
+      
+      toast({
+        title: 'Wayback Scan Complete',
+        description: `Found ${totalUrls} URLs, ${interestingCount} potentially interesting`,
+      });
+    } catch (error: any) {
+      console.error('Wayback error:', error);
+      toast({
+        title: 'Wayback Scan Failed',
+        description: error.response?.data?.detail || error.message || 'Failed to run wayback scan',
+        variant: 'destructive',
+      });
+    } finally {
+      setWaybackRunning(false);
+    }
+  };
+
+  const downloadWaybackResults = () => {
+    if (!waybackResults) return;
+    
+    const data = {
+      timestamp: new Date().toISOString(),
+      mode: waybackMode,
+      ...waybackResults
+    };
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `wayback-${waybackMode === 'single' ? domain : `org-${selectedOrg}`}-${Date.now()}.json`;
+    a.click();
+  };
+
   const discoveryMethods = [
-    {
-      name: 'Certificate Transparency (crt.sh)',
-      key: 'crtsh',
-      description: 'Discover subdomains from SSL/TLS certificate logs',
-      icon: '🔐',
-      free: true,
-    },
-    {
-      name: 'Wayback Machine',
-      key: 'wayback',
-      description: 'Find historical URLs and subdomains from web archives',
-      icon: '📜',
-      free: true,
-    },
-    {
-      name: 'RapidDNS',
-      key: 'rapiddns',
-      description: 'DNS enumeration and subdomain discovery',
-      icon: '🌐',
-      free: true,
-    },
-    {
-      name: 'Microsoft 365 Federation',
-      key: 'm365',
-      description: 'Discover federated M365 tenant domains',
-      icon: '☁️',
-      free: true,
-    },
-    {
-      name: 'AlienVault OTX',
-      key: 'otx',
-      description: 'Threat intelligence passive DNS data',
-      icon: '👽',
-      free: true,
-    },
-    {
-      name: 'VirusTotal',
-      key: 'virustotal',
-      description: 'Subdomain discovery via VT database',
-      icon: '🦠',
-      free: false,
-    },
-    {
-      name: 'WhoisXML API',
-      key: 'whoisxml',
-      description: 'IP ranges & CIDRs by organization name',
-      icon: '📋',
-      free: false,
-    },
-    {
-      name: 'Whoxy',
-      key: 'whoxy',
-      description: 'Reverse WHOIS by registration email',
-      icon: '🔍',
-      free: false,
-    },
+    { name: 'Certificate Transparency (crt.sh)', key: 'crtsh', description: 'SSL/TLS certificate logs', icon: '🔐', free: true },
+    { name: 'Wayback Machine', key: 'wayback', description: 'Historical web archives', icon: '📜', free: true },
+    { name: 'RapidDNS', key: 'rapiddns', description: 'DNS enumeration', icon: '🌐', free: true },
+    { name: 'Microsoft 365', key: 'm365', description: 'Federated tenant domains', icon: '☁️', free: true },
+    { name: 'AlienVault OTX', key: 'otx', description: 'Threat intelligence DNS', icon: '👽', free: true },
+    { name: 'VirusTotal', key: 'virustotal', description: 'VT subdomain database', icon: '🦠', free: false },
+    { name: 'WhoisXML API', key: 'whoisxml', description: 'IP ranges by org name', icon: '📋', free: false },
+    { name: 'Whoxy', key: 'whoxy', description: 'Reverse WHOIS by email', icon: '🔍', free: false },
   ];
 
   const getSourceStatus = (sourceKey: string) => {
-    if (!results) return null;
-    return results.source_results.find(s => s.source.toLowerCase().includes(sourceKey));
+    if (!discoveryResults) return null;
+    return discoveryResults.source_results.find(s => s.source.toLowerCase().includes(sourceKey));
   };
+
+  const totalWaybackUrls = waybackResults?.total_urls || waybackResults?.url_count || 0;
+  const interestingCount = waybackResults?.total_interesting || waybackResults?.interesting_count || 0;
 
   return (
     <MainLayout>
-      <Header title="External Discovery" subtitle="Discover assets using certificate transparency, DNS, and threat intelligence" />
+      <Header title="Asset Discovery" subtitle="Discover subdomains, IPs, historical URLs, and more from multiple sources" />
 
       <div className="p-6 space-y-6">
-        {/* Run Discovery */}
+        {/* Organization & Domain Selection - Shared */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Search className="h-5 w-5" />
-              Run External Discovery
+              <Radar className="h-5 w-5" />
+              Discovery Configuration
             </CardTitle>
             <CardDescription>
-              Enter a domain to discover subdomains, related domains, and IP addresses from multiple sources
+              Select an organization and target domain to begin discovery
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Organization</Label>
+                <Label>Organization *</Label>
                 <Select value={selectedOrg} onValueChange={setSelectedOrg}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select organization" />
@@ -299,425 +378,661 @@ export default function DiscoveryPage() {
               </div>
 
               <div className="space-y-2">
-                <Label>Target Domain</Label>
+                <Label>Target Domain *</Label>
                 <Input
                   placeholder="example.com"
                   value={domain}
                   onChange={(e) => setDomain(e.target.value)}
                 />
               </div>
-
-              <div className="flex items-end gap-2">
-                <Button
-                  onClick={handleRunDiscovery}
-                  disabled={running || !selectedOrg || !domain}
-                  className="flex-1"
-                >
-                  {running ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Discovering...
-                    </>
-                  ) : (
-                    <>
-                      <Play className="h-4 w-4 mr-2" />
-                      Start Discovery
-                    </>
-                  )}
-                </Button>
-              </div>
             </div>
-
-            {/* Advanced Options Toggle */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="text-muted-foreground"
-            >
-              {showAdvanced ? <ChevronUp className="h-4 w-4 mr-2" /> : <ChevronDown className="h-4 w-4 mr-2" />}
-              Advanced Options
-            </Button>
-
-            {showAdvanced && (
-              <div className="space-y-4 p-4 bg-muted/50 rounded-lg">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="flex items-center gap-2">
-                    <Switch checked={includeFree} onCheckedChange={setIncludeFree} />
-                    <Label>Include Free Sources</Label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Switch checked={includePaid} onCheckedChange={setIncludePaid} />
-                    <Label>Include Paid Sources</Label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Switch checked={createAssets} onCheckedChange={setCreateAssets} />
-                    <Label>Create Assets in Database</Label>
-                  </div>
-                </div>
-
-                {/* Organization Names for WhoisXML */}
-                <div className="space-y-2">
-                  <Label className="flex items-center gap-2">
-                    <Building2 className="h-4 w-4" />
-                    Organization Names (for WhoisXML IP Range Discovery)
-                  </Label>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="e.g., Rockwell Automation"
-                      value={newOrgName}
-                      onChange={(e) => setNewOrgName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && addOrgName()}
-                    />
-                    <Button onClick={addOrgName} variant="outline" size="icon">
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {orgNames.map((name) => (
-                      <Badge key={name} variant="secondary" className="flex items-center gap-1">
-                        {name}
-                        <button onClick={() => removeOrgName(name)} className="ml-1 hover:text-destructive">
-                          <X className="h-3 w-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Registration Emails for Whoxy */}
-                <div className="space-y-2">
-                  <Label className="flex items-center gap-2">
-                    <Mail className="h-4 w-4" />
-                    Registration Emails (for Whoxy Reverse WHOIS)
-                  </Label>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="e.g., domains@yourcompany.com"
-                      value={newRegEmail}
-                      onChange={(e) => setNewRegEmail(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && addRegEmail()}
-                    />
-                    <Button onClick={addRegEmail} variant="outline" size="icon">
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {regEmails.map((email) => (
-                      <Badge key={email} variant="secondary" className="flex items-center gap-1">
-                        {email}
-                        <button onClick={() => removeRegEmail(email)} className="ml-1 hover:text-destructive">
-                          <X className="h-3 w-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-
-                <p className="text-xs text-muted-foreground">
-                  💡 Configure API keys in <a href="/settings" className="text-primary underline">Settings</a> to enable VirusTotal, WhoisXML, OTX, and Whoxy.
-                </p>
-              </div>
-            )}
-
-            {running && (
-              <div className="p-4 bg-muted rounded-lg">
-                <div className="flex items-center gap-3">
-                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                  <div>
-                    <p className="font-medium">Discovery in progress...</p>
-                    <p className="text-sm text-muted-foreground">
-                      Querying crt.sh, Wayback Machine, RapidDNS, OTX, and other sources...
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
           </CardContent>
         </Card>
 
-        {/* Results Summary */}
-        {results && (
-          <div className="space-y-6">
-            {/* Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-              <Card>
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <Globe className="h-8 w-8 text-blue-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{results.total_subdomains}</p>
-                      <p className="text-sm text-muted-foreground">Subdomains</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-              
-              <Card>
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <Server className="h-8 w-8 text-green-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{results.total_ips}</p>
-                      <p className="text-sm text-muted-foreground">IP Addresses</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+        {/* Main Tabs */}
+        <Tabs defaultValue="external" className="space-y-6">
+          <TabsList className="grid w-full grid-cols-2 lg:w-[400px]">
+            <TabsTrigger value="external" className="flex items-center gap-2">
+              <Search className="h-4 w-4" />
+              External Discovery
+            </TabsTrigger>
+            <TabsTrigger value="wayback" className="flex items-center gap-2">
+              <History className="h-4 w-4" />
+              Wayback URLs
+            </TabsTrigger>
+          </TabsList>
 
-              <Card>
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <Network className="h-8 w-8 text-purple-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{results.total_cidrs}</p>
-                      <p className="text-sm text-muted-foreground">IP Ranges</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <Shield className="h-8 w-8 text-orange-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{results.assets_created}</p>
-                      <p className="text-sm text-muted-foreground">Assets Created</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <Clock className="h-8 w-8 text-gray-500" />
-                    <div>
-                      <p className="text-2xl font-bold">{results.total_elapsed_time.toFixed(1)}s</p>
-                      <p className="text-sm text-muted-foreground">Total Time</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Source Results */}
+          {/* External Discovery Tab */}
+          <TabsContent value="external" className="space-y-6">
+            {/* Run Discovery Card */}
             <Card>
               <CardHeader>
-                <div className="flex justify-between items-center">
-                  <CardTitle>Source Results</CardTitle>
-                  <Button variant="outline" size="sm" onClick={downloadResults}>
-                    <Download className="h-4 w-4 mr-2" />
-                    Export JSON
-                  </Button>
-                </div>
+                <CardTitle className="flex items-center gap-2">
+                  <Globe className="h-5 w-5" />
+                  External Asset Discovery
+                </CardTitle>
+                <CardDescription>
+                  Discover subdomains, IPs, and related domains using certificate transparency, DNS, and threat intelligence sources
+                </CardDescription>
               </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Source</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Subdomains</TableHead>
-                      <TableHead className="text-right">IPs</TableHead>
-                      <TableHead className="text-right">CIDRs</TableHead>
-                      <TableHead className="text-right">Time</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {results.source_results.map((source) => (
-                      <TableRow key={source.source}>
-                        <TableCell className="font-medium">{source.source}</TableCell>
-                        <TableCell>
-                          {source.success ? (
-                            <Badge variant="default" className="bg-green-600">
-                              <CheckCircle className="h-3 w-3 mr-1" />
-                              Success
-                            </Badge>
-                          ) : (
-                            <Badge variant="destructive">
-                              <XCircle className="h-3 w-3 mr-1" />
-                              {source.error?.substring(0, 30) || 'Failed'}
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">{source.subdomains_found}</TableCell>
-                        <TableCell className="text-right">{source.ips_found}</TableCell>
-                        <TableCell className="text-right">{source.cidrs_found}</TableCell>
-                        <TableCell className="text-right">{source.elapsed_time.toFixed(2)}s</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-
-            {/* Discovered Assets */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Discovered Assets</CardTitle>
-                <div className="flex gap-2 mt-2">
+              <CardContent className="space-y-4">
+                <div className="flex gap-2">
                   <Button
-                    variant={activeTab === 'subdomains' ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setActiveTab('subdomains')}
+                    onClick={handleRunDiscovery}
+                    disabled={discoveryRunning || !selectedOrg || !domain}
+                    className="flex-1 md:flex-none"
                   >
-                    Subdomains ({results.subdomains.length})
-                  </Button>
-                  <Button
-                    variant={activeTab === 'ips' ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setActiveTab('ips')}
-                  >
-                    IPs ({results.ip_addresses.length})
-                  </Button>
-                  <Button
-                    variant={activeTab === 'domains' ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setActiveTab('domains')}
-                  >
-                    Domains ({results.domains.length})
-                  </Button>
-                  <Button
-                    variant={activeTab === 'ranges' ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setActiveTab('ranges')}
-                  >
-                    Ranges ({results.ip_ranges.length})
+                    {discoveryRunning ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Discovering...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-4 w-4 mr-2" />
+                        Start Discovery
+                      </>
+                    )}
                   </Button>
                 </div>
-              </CardHeader>
-              <CardContent>
-                <div className="max-h-96 overflow-y-auto">
-                  {activeTab === 'subdomains' && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                      {results.subdomains.slice(0, 100).map((subdomain) => (
-                        <div key={subdomain} className="p-2 bg-muted rounded text-sm font-mono">
-                          {subdomain}
-                        </div>
-                      ))}
-                      {results.subdomains.length > 100 && (
-                        <div className="p-2 text-muted-foreground text-sm col-span-full">
-                          ...and {results.subdomains.length - 100} more
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {activeTab === 'ips' && (
-                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                      {results.ip_addresses.slice(0, 100).map((ip) => (
-                        <div key={ip} className="p-2 bg-muted rounded text-sm font-mono">
-                          {ip}
-                        </div>
-                      ))}
-                      {results.ip_addresses.length > 100 && (
-                        <div className="p-2 text-muted-foreground text-sm col-span-full">
-                          ...and {results.ip_addresses.length - 100} more
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {activeTab === 'domains' && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {results.domains.map((domain) => (
-                        <div key={domain} className="p-2 bg-muted rounded text-sm font-mono">
-                          {domain}
-                        </div>
-                      ))}
-                      {results.domains.length === 0 && (
-                        <p className="text-muted-foreground">No additional domains discovered</p>
-                      )}
-                    </div>
-                  )}
-                  {activeTab === 'ranges' && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {results.ip_ranges.map((range) => (
-                        <div key={range} className="p-2 bg-muted rounded text-sm font-mono">
-                          {range}
-                        </div>
-                      ))}
-                      {results.ip_ranges.length === 0 && (
-                        <p className="text-muted-foreground">No IP ranges discovered (requires WhoisXML API key + organization names)</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
 
-        {/* Discovery Methods Grid */}
-        <div>
-          <h2 className="text-lg font-semibold mb-4">Available Discovery Sources</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {discoveryMethods.map((method) => {
-              const status = getSourceStatus(method.key);
-              return (
-                <Card key={method.name} className="hover:border-primary/50 transition-colors">
-                  <CardContent className="p-4">
-                    <div className="flex items-start justify-between">
-                      <div className="text-2xl mb-2">{method.icon}</div>
-                      <div className="flex gap-1">
-                        {status && (
-                          status.success ? (
-                            <Badge variant="default" className="bg-green-600 text-xs">
-                              ✓ {status.subdomains_found + status.ips_found + status.cidrs_found}
-                            </Badge>
-                          ) : (
-                            <Badge variant="destructive" className="text-xs">✗</Badge>
-                          )
-                        )}
-                        <Badge variant={method.free ? 'secondary' : 'outline'} className="text-xs">
-                          {method.free ? 'Free' : <><Key className="h-3 w-3" /></>}
-                        </Badge>
+                {/* Advanced Options Toggle */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="text-muted-foreground"
+                >
+                  {showAdvanced ? <ChevronUp className="h-4 w-4 mr-2" /> : <ChevronDown className="h-4 w-4 mr-2" />}
+                  Advanced Options
+                </Button>
+
+                {showAdvanced && (
+                  <div className="space-y-4 p-4 bg-muted/50 rounded-lg">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="flex items-center gap-2">
+                        <Switch checked={includeFree} onCheckedChange={setIncludeFree} />
+                        <Label>Free Sources</Label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch checked={includePaid} onCheckedChange={setIncludePaid} />
+                        <Label>Paid Sources</Label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch checked={createAssets} onCheckedChange={setCreateAssets} />
+                        <Label>Create Assets</Label>
                       </div>
                     </div>
-                    <h3 className="font-medium text-sm">{method.name}</h3>
-                    <p className="text-xs text-muted-foreground mt-1">{method.description}</p>
+
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2">
+                        <Building2 className="h-4 w-4" />
+                        Organization Names (WhoisXML IP Range Discovery)
+                      </Label>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="e.g., Acme Corporation"
+                          value={newOrgName}
+                          onChange={(e) => setNewOrgName(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && addOrgName()}
+                        />
+                        <Button onClick={addOrgName} variant="outline" size="icon">
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {orgNames.map((name) => (
+                          <Badge key={name} variant="secondary" className="flex items-center gap-1">
+                            {name}
+                            <button onClick={() => removeOrgName(name)} className="ml-1 hover:text-destructive">
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2">
+                        <Mail className="h-4 w-4" />
+                        Registration Emails (Whoxy Reverse WHOIS)
+                      </Label>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="e.g., domains@company.com"
+                          value={newRegEmail}
+                          onChange={(e) => setNewRegEmail(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && addRegEmail()}
+                        />
+                        <Button onClick={addRegEmail} variant="outline" size="icon">
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {regEmails.map((email) => (
+                          <Badge key={email} variant="secondary" className="flex items-center gap-1">
+                            {email}
+                            <button onClick={() => removeRegEmail(email)} className="ml-1 hover:text-destructive">
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-muted-foreground">
+                      💡 Configure API keys in <a href="/settings" className="text-primary underline">Settings</a> for VirusTotal, WhoisXML, OTX, and Whoxy.
+                    </p>
+                  </div>
+                )}
+
+                {discoveryRunning && (
+                  <div className="p-4 bg-muted rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                      <div>
+                        <p className="font-medium">Discovery in progress...</p>
+                        <p className="text-sm text-muted-foreground">
+                          Querying crt.sh, Wayback, RapidDNS, OTX, and other sources...
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Discovery Results */}
+            {discoveryResults && (
+              <div className="space-y-6">
+                {/* Stats */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Globe className="h-8 w-8 text-blue-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{discoveryResults.total_subdomains}</p>
+                          <p className="text-sm text-muted-foreground">Subdomains</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Server className="h-8 w-8 text-green-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{discoveryResults.total_ips}</p>
+                          <p className="text-sm text-muted-foreground">IP Addresses</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Network className="h-8 w-8 text-purple-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{discoveryResults.total_cidrs}</p>
+                          <p className="text-sm text-muted-foreground">IP Ranges</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Shield className="h-8 w-8 text-orange-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{discoveryResults.assets_created}</p>
+                          <p className="text-sm text-muted-foreground">Assets Created</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Clock className="h-8 w-8 text-gray-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{discoveryResults.total_elapsed_time.toFixed(1)}s</p>
+                          <p className="text-sm text-muted-foreground">Total Time</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Source Results */}
+                <Card>
+                  <CardHeader>
+                    <div className="flex justify-between items-center">
+                      <CardTitle>Source Results</CardTitle>
+                      <Button variant="outline" size="sm" onClick={downloadDiscoveryResults}>
+                        <Download className="h-4 w-4 mr-2" />
+                        Export JSON
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Source</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Subdomains</TableHead>
+                          <TableHead className="text-right">IPs</TableHead>
+                          <TableHead className="text-right">CIDRs</TableHead>
+                          <TableHead className="text-right">Time</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {discoveryResults.source_results.map((source) => (
+                          <TableRow key={source.source}>
+                            <TableCell className="font-medium">{source.source}</TableCell>
+                            <TableCell>
+                              {source.success ? (
+                                <Badge variant="default" className="bg-green-600">
+                                  <CheckCircle className="h-3 w-3 mr-1" />
+                                  Success
+                                </Badge>
+                              ) : (
+                                <Badge variant="destructive">
+                                  <XCircle className="h-3 w-3 mr-1" />
+                                  {source.error?.substring(0, 30) || 'Failed'}
+                                </Badge>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">{source.subdomains_found}</TableCell>
+                            <TableCell className="text-right">{source.ips_found}</TableCell>
+                            <TableCell className="text-right">{source.cidrs_found}</TableCell>
+                            <TableCell className="text-right">{source.elapsed_time.toFixed(2)}s</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </CardContent>
                 </Card>
-              );
-            })}
-          </div>
-        </div>
 
-        {/* Help Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">How External Discovery Works</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground space-y-2">
-            <p>
-              <strong>Certificate Transparency (crt.sh):</strong> Queries public CT logs for SSL certificates 
-              issued to your domain, revealing subdomains that have been issued certificates.
-            </p>
-            <p>
-              <strong>Wayback Machine:</strong> Searches the Internet Archive for historical URLs 
-              associated with your domain, uncovering old or forgotten subdomains.
-            </p>
-            <p>
-              <strong>RapidDNS:</strong> Queries DNS databases for subdomain enumeration.
-            </p>
-            <p>
-              <strong>Microsoft 365:</strong> Discovers federated domains associated with your M365 tenant.
-            </p>
-            <p>
-              <strong>AlienVault OTX:</strong> Leverages threat intelligence to find passive DNS records and related domains.
-            </p>
-            <p>
-              <strong>WhoisXML API:</strong> Discovers IP ranges (CIDRs) registered to your organization name.
-            </p>
-            <p>
-              <strong>Whoxy:</strong> Finds all domains registered using your company email addresses.
-            </p>
-            <p className="pt-2 border-t">
-              <strong>💡 Tip:</strong> Configure API keys in <a href="/settings" className="text-primary underline">Settings</a> and 
-              add organization names + registration emails in Advanced Options for comprehensive IP range and domain discovery.
-            </p>
-          </CardContent>
-        </Card>
+                {/* Discovered Assets */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Discovered Assets</CardTitle>
+                    <div className="flex gap-2 mt-2">
+                      <Button variant={discoveryActiveTab === 'subdomains' ? 'default' : 'outline'} size="sm" onClick={() => setDiscoveryActiveTab('subdomains')}>
+                        Subdomains ({discoveryResults.subdomains.length})
+                      </Button>
+                      <Button variant={discoveryActiveTab === 'ips' ? 'default' : 'outline'} size="sm" onClick={() => setDiscoveryActiveTab('ips')}>
+                        IPs ({discoveryResults.ip_addresses.length})
+                      </Button>
+                      <Button variant={discoveryActiveTab === 'domains' ? 'default' : 'outline'} size="sm" onClick={() => setDiscoveryActiveTab('domains')}>
+                        Domains ({discoveryResults.domains.length})
+                      </Button>
+                      <Button variant={discoveryActiveTab === 'ranges' ? 'default' : 'outline'} size="sm" onClick={() => setDiscoveryActiveTab('ranges')}>
+                        Ranges ({discoveryResults.ip_ranges.length})
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="max-h-96 overflow-y-auto">
+                      {discoveryActiveTab === 'subdomains' && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                          {discoveryResults.subdomains.slice(0, 100).map((subdomain) => (
+                            <div key={subdomain} className="p-2 bg-muted rounded text-sm font-mono">{subdomain}</div>
+                          ))}
+                          {discoveryResults.subdomains.length > 100 && (
+                            <div className="p-2 text-muted-foreground text-sm col-span-full">
+                              ...and {discoveryResults.subdomains.length - 100} more
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {discoveryActiveTab === 'ips' && (
+                        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                          {discoveryResults.ip_addresses.slice(0, 100).map((ip) => (
+                            <div key={ip} className="p-2 bg-muted rounded text-sm font-mono">{ip}</div>
+                          ))}
+                          {discoveryResults.ip_addresses.length > 100 && (
+                            <div className="p-2 text-muted-foreground text-sm col-span-full">
+                              ...and {discoveryResults.ip_addresses.length - 100} more
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {discoveryActiveTab === 'domains' && (
+                        discoveryResults.domains.length > 0 ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {discoveryResults.domains.map((d) => (
+                              <div key={d} className="p-2 bg-muted rounded text-sm font-mono">{d}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground">No additional domains discovered</p>
+                        )
+                      )}
+                      {discoveryActiveTab === 'ranges' && (
+                        discoveryResults.ip_ranges.length > 0 ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {discoveryResults.ip_ranges.map((range) => (
+                              <div key={range} className="p-2 bg-muted rounded text-sm font-mono">{range}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground">No IP ranges discovered (requires WhoisXML API key + organization names)</p>
+                        )
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Discovery Sources Grid */}
+            <div>
+              <h2 className="text-lg font-semibold mb-4">Available Discovery Sources</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {discoveryMethods.map((method) => {
+                  const status = getSourceStatus(method.key);
+                  return (
+                    <Card key={method.name} className="hover:border-primary/50 transition-colors">
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between">
+                          <div className="text-2xl mb-2">{method.icon}</div>
+                          <div className="flex gap-1">
+                            {status && (
+                              status.success ? (
+                                <Badge variant="default" className="bg-green-600 text-xs">
+                                  ✓ {status.subdomains_found + status.ips_found + status.cidrs_found}
+                                </Badge>
+                              ) : (
+                                <Badge variant="destructive" className="text-xs">✗</Badge>
+                              )
+                            )}
+                            <Badge variant={method.free ? 'secondary' : 'outline'} className="text-xs">
+                              {method.free ? 'Free' : <Key className="h-3 w-3" />}
+                            </Badge>
+                          </div>
+                        </div>
+                        <h3 className="font-medium text-sm">{method.name}</h3>
+                        <p className="text-xs text-muted-foreground mt-1">{method.description}</p>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* Wayback URLs Tab */}
+          <TabsContent value="wayback" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <History className="h-5 w-5" />
+                  Wayback URL Scanner
+                </CardTitle>
+                <CardDescription>
+                  Fetch all historical URLs from the Wayback Machine to find old endpoints, APIs, and sensitive files
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex gap-4">
+                  <Button variant={waybackMode === 'single' ? 'default' : 'outline'} onClick={() => setWaybackMode('single')}>
+                    Single Domain
+                  </Button>
+                  <Button variant={waybackMode === 'organization' ? 'default' : 'outline'} onClick={() => setWaybackMode('organization')}>
+                    Organization Assets
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <Switch checked={includeSubdomains} onCheckedChange={setIncludeSubdomains} />
+                    <Label>Include Subdomains</Label>
+                  </div>
+
+                  <Button
+                    onClick={handleRunWayback}
+                    disabled={waybackRunning || (waybackMode === 'single' ? !domain : !selectedOrg)}
+                  >
+                    {waybackRunning ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Fetching...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-4 w-4 mr-2" />
+                        Fetch URLs
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {waybackRunning && (
+                  <div className="p-4 bg-muted rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                      <div>
+                        <p className="font-medium">Fetching historical URLs...</p>
+                        <p className="text-sm text-muted-foreground">This may take a while for domains with many URLs.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Wayback Results */}
+            {waybackResults && (
+              <div className="space-y-6">
+                {/* Stats */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Link className="h-8 w-8 text-blue-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{totalWaybackUrls.toLocaleString()}</p>
+                          <p className="text-sm text-muted-foreground">Total URLs</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <FileWarning className="h-8 w-8 text-orange-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{interestingCount.toLocaleString()}</p>
+                          <p className="text-sm text-muted-foreground">Interesting</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <FileText className="h-8 w-8 text-green-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{(waybackResults.unique_paths_count || waybackResults.unique_paths?.length || 0).toLocaleString()}</p>
+                          <p className="text-sm text-muted-foreground">Unique Paths</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Clock className="h-8 w-8 text-gray-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{(waybackResults.elapsed_time || 0).toFixed(1)}s</p>
+                          <p className="text-sm text-muted-foreground">Elapsed</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Domain Results (organization mode) */}
+                {waybackResults.domain_results && waybackResults.domain_results.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Domain Results</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Domain</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead className="text-right">URLs</TableHead>
+                            <TableHead className="text-right">Interesting</TableHead>
+                            <TableHead className="text-right">Time</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {waybackResults.domain_results.map((dr) => (
+                            <TableRow key={dr.domain}>
+                              <TableCell className="font-mono text-sm">{dr.domain}</TableCell>
+                              <TableCell>
+                                {dr.success ? (
+                                  <Badge variant="default" className="bg-green-600">
+                                    <CheckCircle className="h-3 w-3 mr-1" />
+                                    Success
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="destructive">
+                                    <XCircle className="h-3 w-3 mr-1" />
+                                    {dr.error?.substring(0, 20) || 'Failed'}
+                                  </Badge>
+                                )}
+                              </TableCell>
+                              <TableCell className="text-right">{dr.url_count}</TableCell>
+                              <TableCell className="text-right">{dr.interesting_count}</TableCell>
+                              <TableCell className="text-right">{dr.elapsed_time.toFixed(1)}s</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* File Extensions */}
+                {Object.keys(waybackResults.file_extensions || {}).length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>File Extensions Found</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(waybackResults.file_extensions).slice(0, 30).map(([ext, count]) => (
+                          <Badge key={ext} variant="secondary" className="flex items-center gap-1">
+                            {ext}
+                            <span className="text-xs bg-muted px-1 rounded">{count}</span>
+                          </Badge>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* URLs */}
+                <Card>
+                  <CardHeader>
+                    <div className="flex justify-between items-center">
+                      <CardTitle>Discovered URLs</CardTitle>
+                      <Button variant="outline" size="sm" onClick={downloadWaybackResults}>
+                        <Download className="h-4 w-4 mr-2" />
+                        Export JSON
+                      </Button>
+                    </div>
+                    <div className="flex gap-2 mt-2">
+                      <Button variant={waybackActiveTab === 'interesting' ? 'default' : 'outline'} size="sm" onClick={() => setWaybackActiveTab('interesting')}>
+                        <AlertTriangle className="h-4 w-4 mr-1" />
+                        Interesting ({waybackResults.interesting_urls?.length || 0})
+                      </Button>
+                      <Button variant={waybackActiveTab === 'all' ? 'default' : 'outline'} size="sm" onClick={() => setWaybackActiveTab('all')}>
+                        All URLs ({waybackResults.urls?.length || 0})
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="max-h-96 overflow-y-auto space-y-1">
+                      {waybackActiveTab === 'interesting' && (
+                        waybackResults.interesting_urls?.length > 0 ? (
+                          waybackResults.interesting_urls.slice(0, 200).map((url, i) => (
+                            <div key={i} className="flex items-center gap-2 p-2 bg-muted/50 rounded text-sm font-mono hover:bg-muted">
+                              <a href={url} target="_blank" rel="noopener noreferrer" className="flex-1 truncate text-primary hover:underline">
+                                {url}
+                              </a>
+                              <ExternalLink className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-muted-foreground">No interesting URLs found</p>
+                        )
+                      )}
+                      {waybackActiveTab === 'all' && (
+                        waybackResults.urls?.length > 0 ? (
+                          waybackResults.urls.slice(0, 500).map((url, i) => (
+                            <div key={i} className="flex items-center gap-2 p-2 bg-muted/50 rounded text-sm font-mono hover:bg-muted">
+                              <a href={url} target="_blank" rel="noopener noreferrer" className="flex-1 truncate text-primary hover:underline">
+                                {url}
+                              </a>
+                              <ExternalLink className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-muted-foreground">No URLs found</p>
+                        )
+                      )}
+                      {((waybackActiveTab === 'interesting' && (waybackResults.interesting_urls?.length || 0) > 200) ||
+                        (waybackActiveTab === 'all' && (waybackResults.urls?.length || 0) > 500)) && (
+                        <p className="text-sm text-muted-foreground p-2">
+                          Showing first {waybackActiveTab === 'interesting' ? 200 : 500} URLs. Export JSON for full list.
+                        </p>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Help Section */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">About Wayback URLs</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-muted-foreground space-y-2">
+                <p>
+                  <strong>What is waybackurls?</strong> Fetches all URLs the Wayback Machine has archived for a domain.
+                </p>
+                <p>
+                  <strong>Why is this useful?</strong> Historical URLs can reveal:
+                </p>
+                <ul className="list-disc pl-6 space-y-1">
+                  <li>Old/forgotten endpoints that may still be accessible</li>
+                  <li>API endpoints with parameters</li>
+                  <li>Backup files, config files, and sensitive data</li>
+                  <li>Admin panels and login pages</li>
+                </ul>
+                <p>
+                  <strong>Interesting patterns:</strong> URLs containing admin, api, backup, config, .sql, .bak, .env are highlighted.
+                </p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
       </div>
     </MainLayout>
   );

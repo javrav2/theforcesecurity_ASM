@@ -17,7 +17,6 @@ import {
   ChevronRight,
   Search,
   Users,
-  History,
   ServerCrash,
   CalendarClock,
 } from 'lucide-react';
@@ -36,7 +35,6 @@ const navigation = [
   { name: 'Schedules', href: '/schedules', icon: CalendarClock },
   { name: 'Ports', href: '/ports', icon: Network },
   { name: 'Discovery', href: '/discovery', icon: Search },
-  { name: 'Wayback URLs', href: '/wayback', icon: History },
 ];
 
 const adminNavigation = [
