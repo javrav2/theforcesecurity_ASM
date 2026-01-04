@@ -10,7 +10,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-asm_db}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d
+      # Note: DB init scripts are optional - remove if causing mount issues
+      # - ./db/init:/docker-entrypoint-initdb.d
     ports:
       - "${DB_PORT:-5432}:5432"
     healthcheck:
