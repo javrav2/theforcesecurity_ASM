@@ -138,6 +138,29 @@ services:
     # Run scanner as root for masscan raw socket access
     user: "0:0"
 
+  # Schedule Worker for recurring scans
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.scanner
+    container_name: asm_scheduler
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-asm_user}:${POSTGRES_PASSWORD:-asm_password}@db:5432/${POSTGRES_DB:-asm_db}
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
+      - REDIS_URL=redis://redis:6379/0
+      - SCHEDULE_CHECK_INTERVAL=${SCHEDULE_CHECK_INTERVAL:-60}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    command: ["python", "-m", "app.workers.schedule_worker"]
+    networks:
+      - asm_network
+
   # Database Admin Interface (optional, for development)
   adminer:
     image: adminer:latest

@@ -19,6 +19,7 @@ import {
   Users,
   History,
   ServerCrash,
+  CalendarClock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/store/auth';
@@ -32,6 +33,7 @@ const navigation = [
   { name: 'Findings', href: '/findings', icon: Shield },
   { name: 'Screenshots', href: '/screenshots', icon: Camera },
   { name: 'Scans', href: '/scans', icon: ScanLine },
+  { name: 'Schedules', href: '/schedules', icon: CalendarClock },
   { name: 'Ports', href: '/ports', icon: Network },
   { name: 'Discovery', href: '/discovery', icon: Search },
   { name: 'Wayback URLs', href: '/wayback', icon: History },

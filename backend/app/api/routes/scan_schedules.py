@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES
+from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES, CRITICAL_PORTS, ALL_CRITICAL_PORTS
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset
 from app.models.label import Label
@@ -34,6 +34,17 @@ def check_org_access(user: User, org_id: int) -> bool:
 def get_available_scan_types():
     """Get available scan types for continuous monitoring."""
     return CONTINUOUS_SCAN_TYPES
+
+
+@router.get("/critical-ports")
+def get_critical_ports():
+    """Get the list of critical ports monitored by the system."""
+    return {
+        "categories": CRITICAL_PORTS,
+        "all_ports": ALL_CRITICAL_PORTS,
+        "total_count": len(ALL_CRITICAL_PORTS),
+        "description": "These ports are monitored for exposure and generate security findings when found open."
+    }
 
 
 @router.get("/", response_model=List[ScanScheduleResponse])
@@ -312,12 +323,19 @@ def trigger_scheduled_scan(
         "nuclei": ScanType.VULNERABILITY,
         "port_scan": ScanType.PORT_SCAN,
         "masscan": ScanType.PORT_SCAN,
+        "critical_ports": ScanType.PORT_SCAN,
         "discovery": ScanType.FULL_DISCOVERY,
         "screenshot": ScanType.SCREENSHOT,
         "technology": ScanType.TECHNOLOGY,
     }
     
     scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)
+    
+    # For critical_ports scans, ensure we use the critical ports list
+    if schedule.scan_type == "critical_ports":
+        config["ports"] = ",".join(str(p) for p in ALL_CRITICAL_PORTS)
+        config["generate_findings"] = True
+        config["scanner"] = config.get("scanner", "naabu")
     
     # Create the scan
     config = {
@@ -393,6 +411,7 @@ def get_schedule_history(
             for s in scans
         ]
     }
+
 
 
 

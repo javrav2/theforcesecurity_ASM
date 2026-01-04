@@ -100,8 +100,43 @@ class ScanSchedule(Base):
         return next_run
 
 
+# Critical ports that should be monitored for exposure
+CRITICAL_PORTS = {
+    # Remote Access - High value targets
+    "remote_access": [22, 23, 3389, 5900, 5901, 5902, 5903, 512, 513, 514],
+    # Databases - Data exposure risk
+    "databases": [3306, 5432, 1433, 1434, 1521, 27017, 27018, 6379, 9200, 9300, 5984, 11211],
+    # File Sharing - Ransomware vectors
+    "file_sharing": [21, 69, 445, 139, 2049],
+    # Container/Orchestration - Host takeover
+    "container": [2375, 2376, 6443, 10250],
+    # Management
+    "management": [161, 162, 389, 636, 88],
+    # Email
+    "email": [25, 110, 143],
+    # Web (for service detection)
+    "web": [80, 443, 8080, 8000, 8443, 8888, 3000],
+}
+
+# Flatten all critical ports for quick scanning
+ALL_CRITICAL_PORTS = sorted(set(
+    port for ports in CRITICAL_PORTS.values() for port in ports
+))
+
+
 # Tool-specific scan types for continuous monitoring
 CONTINUOUS_SCAN_TYPES = {
+    "critical_ports": {
+        "name": "Critical Port Monitoring",
+        "description": "Monitor for exposed critical ports (databases, remote access, file sharing, containers). Generates security findings for exposed services.",
+        "default_config": {
+            "ports": ",".join(str(p) for p in ALL_CRITICAL_PORTS),
+            "scanner": "naabu",
+            "service_detection": True,
+            "generate_findings": True,
+            "alert_on_new": True,
+        }
+    },
     "masscan": {
         "name": "Masscan Port Scan",
         "description": "High-speed port scanning using masscan",
@@ -152,6 +187,7 @@ CONTINUOUS_SCAN_TYPES = {
         "default_config": {}
     },
 }
+
 
 
 
