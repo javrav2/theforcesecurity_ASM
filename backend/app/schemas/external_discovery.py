@@ -93,6 +93,17 @@ class ExternalDiscoveryRequest(BaseModel):
         description="Registration emails for reverse WHOIS"
     )
     
+    # Common Crawl comprehensive search options
+    commoncrawl_org_name: Optional[str] = Field(
+        default=None,
+        description="Organization name for Common Crawl search (e.g., 'rockwellautomation' to find rockwellautomation.*)"
+    )
+    commoncrawl_keywords: Optional[List[str]] = Field(
+        default=None,
+        description="Additional keywords to search in Common Crawl (e.g., ['rockwell'] to find *rockwell* domains)",
+        examples=[["rockwell", "factory", "automation"]]
+    )
+    
     # Options
     create_assets: bool = Field(default=True, description="Automatically create discovered assets")
     skip_existing: bool = Field(default=True, description="Skip assets that already exist")

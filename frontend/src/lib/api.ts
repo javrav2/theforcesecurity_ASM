@@ -389,6 +389,9 @@ class ApiClient {
     skip_existing?: boolean;
     enumerate_discovered_domains?: boolean;
     max_domains_to_enumerate?: number;
+    // Common Crawl comprehensive search options
+    commoncrawl_org_name?: string;
+    commoncrawl_keywords?: string[];
   }) {
     const response = await this.client.post('/external-discovery/run', data);
     return response.data;

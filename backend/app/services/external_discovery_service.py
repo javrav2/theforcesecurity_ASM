@@ -730,6 +730,70 @@ class ExternalDiscoveryService:
         
         result.elapsed_time = time.time() - start_time
         return result
+    
+    async def discover_commoncrawl_comprehensive(
+        self,
+        primary_domain: str,
+        org_name: Optional[str] = None,
+        keywords: Optional[List[str]] = None
+    ) -> DiscoveryResult:
+        """
+        Comprehensive Common Crawl discovery for an organization.
+        
+        Searches for:
+        1. Subdomains of primary domain (e.g., *.rockwellautomation.com)
+        2. org_name.* across all TLDs (e.g., rockwellautomation.net, rockwellautomation.io)
+        3. *org_name* pattern (e.g., mycompany-rockwellautomation.com)
+        4. Keyword patterns (e.g., *rockwell* finds rockwellcollins.com, rockwell.com)
+        
+        Example:
+            discover_commoncrawl_comprehensive(
+                primary_domain="rockwellautomation.com",
+                org_name="rockwellautomation",
+                keywords=["rockwell"]
+            )
+        
+        Args:
+            primary_domain: Primary domain for subdomain search
+            org_name: Organization name for TLD and pattern searches
+            keywords: Additional keywords to search (e.g., ["rockwell"])
+            
+        Returns:
+            DiscoveryResult with domains and subdomains
+        """
+        start_time = time.time()
+        result = DiscoveryResult(source="commoncrawl_comprehensive", success=False)
+        
+        try:
+            from app.services.commoncrawl_service import CommonCrawlService
+            
+            cc_service = CommonCrawlService(timeout=120.0)
+            
+            # Run comprehensive search
+            cc_result = await cc_service.comprehensive_org_search(
+                org_name=org_name or primary_domain.split(".")[0],
+                keywords=keywords,
+                primary_domain=primary_domain
+            )
+            
+            if cc_result.error:
+                result.error = cc_result.error
+            else:
+                result.success = True
+                result.domains = cc_result.domains
+                result.subdomains = cc_result.subdomains
+                
+            logger.info(
+                f"Common Crawl comprehensive search: "
+                f"{len(result.domains)} domains, {len(result.subdomains)} subdomains"
+            )
+            
+        except Exception as e:
+            result.error = str(e)
+            logger.error(f"Common Crawl comprehensive error: {e}")
+        
+        result.elapsed_time = time.time() - start_time
+        return result
 
     # =========================================================================
     # Full Discovery - Run All Sources
@@ -741,7 +805,9 @@ class ExternalDiscoveryService:
         include_paid: bool = True,
         include_free: bool = True,
         organization_names: Optional[List[str]] = None,
-        registration_emails: Optional[List[str]] = None
+        registration_emails: Optional[List[str]] = None,
+        commoncrawl_org_name: Optional[str] = None,
+        commoncrawl_keywords: Optional[List[str]] = None
     ) -> Dict[str, DiscoveryResult]:
         """
         Run full discovery using all available sources.
@@ -752,6 +818,10 @@ class ExternalDiscoveryService:
             include_free: Include free sources
             organization_names: Organization names for WHOIS lookups
             registration_emails: Emails for reverse WHOIS
+            commoncrawl_org_name: Organization name for CC comprehensive search
+                                  (e.g., "rockwellautomation" to find rockwellautomation.*)
+            commoncrawl_keywords: Keywords for CC keyword search
+                                  (e.g., ["rockwell"] to find *rockwell* domains)
             
         Returns:
             Dictionary of results by source
@@ -765,7 +835,17 @@ class ExternalDiscoveryService:
             tasks.append(("rapiddns", self.discover_rapiddns(domain)))
             tasks.append(("crtsh", self.discover_crtsh(domain)))
             tasks.append(("m365", self.discover_m365(domain)))
-            tasks.append(("commoncrawl", self.discover_commoncrawl(domain)))
+            
+            # Use comprehensive CC search if org_name or keywords provided
+            if commoncrawl_org_name or commoncrawl_keywords:
+                tasks.append(("commoncrawl", self.discover_commoncrawl_comprehensive(
+                    primary_domain=domain,
+                    org_name=commoncrawl_org_name,
+                    keywords=commoncrawl_keywords
+                )))
+            else:
+                # Basic subdomain search
+                tasks.append(("commoncrawl", self.discover_commoncrawl(domain)))
         
         # Paid sources (require API keys)
         if include_paid:

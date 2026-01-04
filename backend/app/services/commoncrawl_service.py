@@ -33,10 +33,21 @@ class CommonCrawlResult:
     """Result from Common Crawl lookup."""
     domain: str
     subdomains: List[str] = field(default_factory=list)
+    domains: List[str] = field(default_factory=list)  # New domains discovered (different TLDs, keyword matches)
     urls: List[str] = field(default_factory=list)
     source: str = "commoncrawl"
+    success: bool = True
     elapsed_time: float = 0.0
     error: Optional[str] = None
+
+
+# Common TLDs to search for org name variations
+COMMON_TLDS = [
+    "com", "net", "org", "io", "co", "info", "biz", "us", "eu", "uk", "de", 
+    "ca", "au", "fr", "jp", "cn", "in", "br", "mx", "es", "it", "nl", "ru",
+    "cloud", "app", "dev", "tech", "ai", "solutions", "systems", "services",
+    "global", "world", "online", "digital", "group", "inc", "corp", "ltd"
+]
 
 
 class CommonCrawlService:
@@ -264,6 +275,241 @@ class CommonCrawlService:
         except Exception as e:
             logger.error(f"Failed to get CC indexes: {e}")
         return []
+    
+    async def search_by_keyword(self, keyword: str, max_results: int = 5000) -> CommonCrawlResult:
+        """
+        Search Common Crawl for domains containing a keyword.
+        
+        Example: search_by_keyword("rockwell") will find:
+        - rockwellautomation.com
+        - rockwell.com
+        - rockwellcollins.com
+        - rockwell-software.com
+        - mycompany-rockwell.net
+        - etc.
+        
+        Args:
+            keyword: Keyword to search for in domain names (e.g., "rockwell")
+            max_results: Maximum results to fetch
+            
+        Returns:
+            CommonCrawlResult with discovered domains
+        """
+        result = CommonCrawlResult(domain=keyword)
+        start_time = datetime.utcnow()
+        
+        try:
+            # CC Index wildcard search: *keyword*
+            search_url = f"*{keyword}*"
+            
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    self.index_api,
+                    params={
+                        "url": search_url,
+                        "output": "json",
+                        "limit": max_results
+                    }
+                )
+                
+                if response.status_code != 200:
+                    result.error = f"CC Index API returned {response.status_code}"
+                    return result
+                
+                # Parse NDJSON response
+                import json
+                domains: Set[str] = set()
+                
+                for line in response.text.strip().split("\n"):
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        url = record.get("url", "")
+                        
+                        if url:
+                            parsed = urlparse(url)
+                            hostname = parsed.netloc.lower()
+                            
+                            # Remove port and www prefix for cleaner results
+                            if ":" in hostname:
+                                hostname = hostname.split(":")[0]
+                            
+                            # Extract root domain (ignore subdomains for this search)
+                            parts = hostname.split(".")
+                            if len(parts) >= 2:
+                                # Get root domain (e.g., rockwellautomation.com)
+                                root = ".".join(parts[-2:]) if len(parts[-1]) <= 3 else ".".join(parts[-2:])
+                                if keyword.lower() in root.lower():
+                                    domains.add(root)
+                                # Also add full hostname if it contains keyword
+                                if keyword.lower() in hostname.lower():
+                                    domains.add(hostname)
+                    except Exception:
+                        continue
+                
+                result.domains = sorted(list(domains))
+                logger.info(f"Common Crawl keyword search '{keyword}' found {len(result.domains)} domains")
+                
+        except httpx.TimeoutException:
+            result.error = "Request timed out"
+            logger.warning(f"Common Crawl timeout for keyword '{keyword}'")
+        except Exception as e:
+            result.error = str(e)
+            logger.error(f"Common Crawl keyword search error: {e}")
+        
+        result.elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+        return result
+    
+    async def search_org_all_tlds(
+        self, 
+        org_name: str, 
+        tlds: Optional[List[str]] = None
+    ) -> CommonCrawlResult:
+        """
+        Search for an organization name across multiple TLDs.
+        
+        Example: search_org_all_tlds("rockwellautomation") will find:
+        - rockwellautomation.com
+        - rockwellautomation.net
+        - rockwellautomation.org
+        - rockwellautomation.io
+        - rockwellautomation.cloud
+        - etc.
+        
+        Args:
+            org_name: Organization/brand name (e.g., "rockwellautomation")
+            tlds: List of TLDs to check (defaults to COMMON_TLDS)
+            
+        Returns:
+            CommonCrawlResult with discovered domains
+        """
+        result = CommonCrawlResult(domain=org_name)
+        start_time = datetime.utcnow()
+        tlds = tlds or COMMON_TLDS
+        
+        try:
+            domains: Set[str] = set()
+            
+            # Search for org_name.* pattern
+            search_url = f"{org_name}.*"
+            
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    self.index_api,
+                    params={
+                        "url": search_url,
+                        "output": "json",
+                        "limit": self.max_results
+                    }
+                )
+                
+                if response.status_code == 200:
+                    import json
+                    for line in response.text.strip().split("\n"):
+                        if not line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                            url = record.get("url", "")
+                            if url:
+                                parsed = urlparse(url)
+                                hostname = parsed.netloc.lower()
+                                if ":" in hostname:
+                                    hostname = hostname.split(":")[0]
+                                
+                                # Check if it matches org_name.tld pattern
+                                parts = hostname.split(".")
+                                if len(parts) >= 2:
+                                    name_part = parts[0] if parts[0] != "www" else (parts[1] if len(parts) > 1 else parts[0])
+                                    if name_part.lower() == org_name.lower():
+                                        domains.add(hostname)
+                        except Exception:
+                            continue
+            
+            result.domains = sorted(list(domains))
+            logger.info(f"Common Crawl TLD search for '{org_name}' found {len(result.domains)} domains")
+            
+        except httpx.TimeoutException:
+            result.error = "Request timed out"
+        except Exception as e:
+            result.error = str(e)
+            logger.error(f"Common Crawl TLD search error: {e}")
+        
+        result.elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+        return result
+    
+    async def comprehensive_org_search(
+        self,
+        org_name: str,
+        keywords: Optional[List[str]] = None,
+        primary_domain: Optional[str] = None
+    ) -> CommonCrawlResult:
+        """
+        Comprehensive organization search combining multiple strategies.
+        
+        Searches for:
+        1. org_name.* (all TLDs)
+        2. *org_name* (keyword anywhere in domain)
+        3. Additional keywords if provided
+        4. Subdomains of primary domain if provided
+        
+        Example: comprehensive_org_search("rockwellautomation", keywords=["rockwell"], primary_domain="rockwellautomation.com")
+        
+        Args:
+            org_name: Organization name (e.g., "rockwellautomation")
+            keywords: Additional keywords to search (e.g., ["rockwell"])
+            primary_domain: Primary domain to find subdomains for
+            
+        Returns:
+            CommonCrawlResult with all discovered domains and subdomains
+        """
+        result = CommonCrawlResult(domain=org_name)
+        start_time = datetime.utcnow()
+        
+        all_domains: Set[str] = set()
+        all_subdomains: Set[str] = set()
+        
+        try:
+            # 1. Search org_name across all TLDs
+            logger.info(f"CC: Searching for {org_name}.* across TLDs")
+            tld_result = await self.search_org_all_tlds(org_name)
+            if tld_result.domains:
+                all_domains.update(tld_result.domains)
+            
+            # 2. Search *org_name* keyword pattern
+            logger.info(f"CC: Searching for *{org_name}* keyword pattern")
+            keyword_result = await self.search_by_keyword(org_name)
+            if keyword_result.domains:
+                all_domains.update(keyword_result.domains)
+            
+            # 3. Search additional keywords
+            if keywords:
+                for keyword in keywords:
+                    logger.info(f"CC: Searching for *{keyword}* keyword pattern")
+                    kw_result = await self.search_by_keyword(keyword)
+                    if kw_result.domains:
+                        all_domains.update(kw_result.domains)
+            
+            # 4. Search subdomains of primary domain
+            if primary_domain:
+                logger.info(f"CC: Searching for subdomains of {primary_domain}")
+                sub_result = await self.search_domain(primary_domain)
+                if sub_result.subdomains:
+                    all_subdomains.update(sub_result.subdomains)
+            
+            result.domains = sorted(list(all_domains))
+            result.subdomains = sorted(list(all_subdomains))
+            result.success = True
+            
+            logger.info(f"CC comprehensive search: {len(result.domains)} domains, {len(result.subdomains)} subdomains")
+            
+        except Exception as e:
+            result.error = str(e)
+            logger.error(f"Common Crawl comprehensive search error: {e}")
+        
+        result.elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+        return result
 
 
 # Convenience function for one-off searches
@@ -280,4 +526,26 @@ async def search_commoncrawl(domain: str, timeout: float = 60.0) -> CommonCrawlR
     """
     service = CommonCrawlService(timeout=timeout)
     return await service.search_domain(domain)
+
+
+async def search_commoncrawl_comprehensive(
+    org_name: str,
+    keywords: Optional[List[str]] = None,
+    primary_domain: Optional[str] = None,
+    timeout: float = 120.0
+) -> CommonCrawlResult:
+    """
+    Comprehensive Common Crawl search for an organization.
+    
+    Args:
+        org_name: Organization name (e.g., "rockwellautomation")
+        keywords: Additional keywords (e.g., ["rockwell"])
+        primary_domain: Primary domain (e.g., "rockwellautomation.com")
+        timeout: Request timeout
+        
+    Returns:
+        CommonCrawlResult with domains and subdomains
+    """
+    service = CommonCrawlService(timeout=timeout)
+    return await service.comprehensive_org_search(org_name, keywords, primary_domain)
 

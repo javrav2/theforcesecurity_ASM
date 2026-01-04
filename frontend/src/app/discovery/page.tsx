@@ -134,6 +134,11 @@ export default function DiscoveryPage() {
   const [newOrgName, setNewOrgName] = useState('');
   const [regEmails, setRegEmails] = useState<string[]>([]);
   const [newRegEmail, setNewRegEmail] = useState('');
+  
+  // Common Crawl comprehensive search options
+  const [ccOrgName, setCcOrgName] = useState('');
+  const [ccKeywords, setCcKeywords] = useState<string[]>([]);
+  const [newCcKeyword, setNewCcKeyword] = useState('');
 
   // Wayback URLs state
   const [waybackRunning, setWaybackRunning] = useState(false);
@@ -188,6 +193,8 @@ export default function DiscoveryPage() {
         max_domains_to_enumerate: maxDomainsToEnumerate,
         organization_names: orgNames.length > 0 ? orgNames : undefined,
         registration_emails: regEmails.length > 0 ? regEmails : undefined,
+        commoncrawl_org_name: ccOrgName || undefined,
+        commoncrawl_keywords: ccKeywords.length > 0 ? ccKeywords : undefined,
       });
 
       setDiscoveryResults(result);
@@ -247,6 +254,17 @@ export default function DiscoveryPage() {
 
   const removeRegEmail = (email: string) => {
     setRegEmails(regEmails.filter(e => e !== email));
+  };
+
+  const addCcKeyword = () => {
+    if (newCcKeyword && !ccKeywords.includes(newCcKeyword)) {
+      setCcKeywords([...ccKeywords, newCcKeyword]);
+      setNewCcKeyword('');
+    }
+  };
+
+  const removeCcKeyword = (keyword: string) => {
+    setCcKeywords(ccKeywords.filter(k => k !== keyword));
   };
 
   // Wayback URLs handlers
@@ -536,6 +554,60 @@ export default function DiscoveryPage() {
                             </button>
                           </Badge>
                         ))}
+                      </div>
+                    </div>
+
+                    {/* Common Crawl Comprehensive Search */}
+                    <div className="border-t pt-4 mt-4">
+                      <h4 className="font-medium text-sm mb-3 flex items-center gap-2">
+                        <Radar className="h-4 w-4" />
+                        Common Crawl Deep Search
+                      </h4>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        Search Common Crawl's billions of URLs for organization-related domains.
+                        Use this to find domains like org.*, *org*, and keyword matches like *rockwell*.
+                      </p>
+                      
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label>Organization Name (for TLD search)</Label>
+                          <Input
+                            placeholder="e.g., rockwellautomation (finds rockwellautomation.net, .io, .cloud...)"
+                            value={ccOrgName}
+                            onChange={(e) => setCcOrgName(e.target.value)}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Searches for <code>{ccOrgName || 'orgname'}.*</code> across all TLDs
+                          </p>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <Label>Keywords (for wildcard search)</Label>
+                          <div className="flex gap-2">
+                            <Input
+                              placeholder="e.g., rockwell (finds *rockwell* domains)"
+                              value={newCcKeyword}
+                              onChange={(e) => setNewCcKeyword(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && addCcKeyword()}
+                            />
+                            <Button onClick={addCcKeyword} variant="outline" size="icon">
+                              <Plus className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Each keyword searches for <code>*keyword*</code> pattern in domain names
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {ccKeywords.map((keyword) => (
+                              <Badge key={keyword} variant="secondary" className="flex items-center gap-1">
+                                *{keyword}*
+                                <button onClick={() => removeCcKeyword(keyword)} className="ml-1 hover:text-destructive">
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     </div>
 

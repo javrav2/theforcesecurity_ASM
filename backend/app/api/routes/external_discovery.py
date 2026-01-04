@@ -297,7 +297,9 @@ async def run_external_discovery(
         include_paid=request.include_paid_sources,
         include_free=request.include_free_sources,
         organization_names=request.organization_names,
-        registration_emails=request.registration_emails
+        registration_emails=request.registration_emails,
+        commoncrawl_org_name=request.commoncrawl_org_name,
+        commoncrawl_keywords=request.commoncrawl_keywords
     )
     
     # Aggregate results
