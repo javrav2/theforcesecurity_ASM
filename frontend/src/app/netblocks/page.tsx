@@ -47,6 +47,10 @@ import {
   Building2,
   Eye,
   ExternalLink,
+  Play,
+  CheckSquare,
+  Square,
+  Target,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -104,6 +108,13 @@ export default function NetblocksPage() {
   const [discoverDialogOpen, setDiscoverDialogOpen] = useState(false);
   const [searchTerms, setSearchTerms] = useState('');
   const { toast } = useToast();
+  
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [scanDialogOpen, setScanDialogOpen] = useState(false);
+  const [scanType, setScanType] = useState<string>('port_scan');
+  const [scanName, setScanName] = useState('');
+  const [submittingScan, setSubmittingScan] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
@@ -255,6 +266,91 @@ export default function NetblocksPage() {
     });
   };
 
+  // Selection handlers
+  const toggleSelect = (id: number) => {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    setSelectedIds(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredNetblocks.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredNetblocks.map(n => n.id)));
+    }
+  };
+
+  const getSelectedIpCount = () => {
+    return filteredNetblocks
+      .filter(n => selectedIds.has(n.id))
+      .reduce((sum, n) => sum + (n.ip_count || 0), 0);
+  };
+
+  const handleScanSelected = async () => {
+    if (selectedIds.size === 0) {
+      toast({
+        title: 'Error',
+        description: 'Please select at least one netblock',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Get organization ID from selected netblocks
+    const firstSelected = netblocks.find(n => selectedIds.has(n.id));
+    if (!firstSelected) return;
+
+    setSubmittingScan(true);
+    try {
+      // Get targets from selected netblocks
+      const targetsResponse = await api.request('/api/netblocks/targets/by-ids', {
+        method: 'POST',
+        body: JSON.stringify(Array.from(selectedIds)),
+      });
+
+      if (!targetsResponse.targets || targetsResponse.targets.length === 0) {
+        toast({
+          title: 'Error',
+          description: 'No valid CIDR targets found in selected netblocks',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Create scan
+      await api.createScan({
+        name: scanName || `Netblock Scan - ${new Date().toLocaleDateString()}`,
+        organization_id: firstSelected.organization_id,
+        scan_type: scanType,
+        targets: targetsResponse.targets,
+        config: scanType === 'port_scan' ? { scanner: 'naabu' } : undefined,
+      });
+
+      toast({
+        title: 'Scan Created',
+        description: `Scan queued for ${targetsResponse.count} CIDR blocks (${formatIpCount(targetsResponse.total_ips)} IPs)`,
+      });
+
+      setScanDialogOpen(false);
+      setSelectedIds(new Set());
+      setScanName('');
+      router.push('/scans');
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to create scan',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmittingScan(false);
+    }
+  };
+
   const filteredNetblocks = useMemo(() => {
     return netblocks.filter(
       n =>
@@ -396,6 +492,29 @@ export default function NetblocksPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            {selectedIds.size > 0 && (
+              <div className="flex items-center gap-2 mr-2 px-3 py-1 bg-primary/10 rounded-lg">
+                <Target className="h-4 w-4 text-primary" />
+                <span className="text-sm font-medium">
+                  {selectedIds.size} selected ({formatIpCount(getSelectedIpCount())} IPs)
+                </span>
+                <Button 
+                  size="sm" 
+                  onClick={() => setScanDialogOpen(true)}
+                  className="ml-2"
+                >
+                  <Play className="h-4 w-4 mr-1" />
+                  Scan Selected
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  Clear
+                </Button>
+              </div>
+            )}
             <Button variant="outline" size="sm" onClick={fetchData}>
               <RefreshCw className="h-4 w-4 mr-2" />
               Refresh
@@ -416,6 +535,18 @@ export default function NetblocksPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[40px]">
+                  <button
+                    onClick={toggleSelectAll}
+                    className="p-1 hover:bg-muted rounded"
+                  >
+                    {selectedIds.size === filteredNetblocks.length && filteredNetblocks.length > 0 ? (
+                      <CheckSquare className="h-4 w-4 text-primary" />
+                    ) : (
+                      <Square className="h-4 w-4 text-muted-foreground" />
+                    )}
+                  </button>
+                </TableHead>
                 <TableHead>CIDR / Range</TableHead>
                 <TableHead>IPs</TableHead>
                 <TableHead>ASN</TableHead>
@@ -430,13 +561,13 @@ export default function NetblocksPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8">
+                  <TableCell colSpan={10} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : filteredNetblocks.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
                     No netblocks found. Click "Discover CIDR Blocks" to find IP ranges.
                   </TableCell>
                 </TableRow>
@@ -444,9 +575,21 @@ export default function NetblocksPage() {
                 filteredNetblocks.map((netblock) => (
                   <TableRow 
                     key={netblock.id} 
-                    className="cursor-pointer hover:bg-muted/50"
+                    className={`cursor-pointer hover:bg-muted/50 ${selectedIds.has(netblock.id) ? 'bg-primary/5' : ''}`}
                     onClick={() => router.push(`/netblocks/${netblock.id}`)}
                   >
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => toggleSelect(netblock.id)}
+                        className="p-1 hover:bg-muted rounded"
+                      >
+                        {selectedIds.has(netblock.id) ? (
+                          <CheckSquare className="h-4 w-4 text-primary" />
+                        ) : (
+                          <Square className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </button>
+                    </TableCell>
                     <TableCell>
                       <div>
                         <div className="font-mono font-medium text-primary hover:underline">
@@ -578,10 +721,86 @@ export default function NetblocksPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Scan Selected Dialog */}
+        <Dialog open={scanDialogOpen} onOpenChange={setScanDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Scan Selected CIDR Blocks</DialogTitle>
+              <DialogDescription>
+                Create a scan for {selectedIds.size} selected netblocks ({formatIpCount(getSelectedIpCount())} total IPs)
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label>Scan Name</Label>
+                <Input
+                  placeholder="e.g., Weekly Port Scan"
+                  value={scanName}
+                  onChange={(e) => setScanName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Scan Type</Label>
+                <Select value={scanType} onValueChange={setScanType}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="port_scan">Port Scan (Fast)</SelectItem>
+                    <SelectItem value="vulnerability">Vulnerability Scan (Nuclei)</SelectItem>
+                    <SelectItem value="full">Full Scan</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="p-3 bg-muted/50 rounded-lg space-y-1">
+                <p className="text-sm font-medium">Selected Targets:</p>
+                <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto">
+                  {filteredNetblocks
+                    .filter(n => selectedIds.has(n.id))
+                    .slice(0, 10)
+                    .map(n => (
+                      <Badge key={n.id} variant="secondary" className="font-mono text-xs">
+                        {n.cidr_notation || n.inetnum}
+                      </Badge>
+                    ))}
+                  {selectedIds.size > 10 && (
+                    <Badge variant="outline" className="text-xs">
+                      +{selectedIds.size - 10} more
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setScanDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleScanSelected} disabled={submittingScan}>
+                {submittingScan ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Creating Scan...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 mr-2" />
+                    Start Scan
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </MainLayout>
   );
 }
+
 
 
 

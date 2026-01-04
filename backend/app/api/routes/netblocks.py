@@ -367,4 +367,84 @@ def bulk_update_scope(
     return {"updated": updated, "in_scope": in_scope}
 
 
+@router.get("/targets/by-org/{organization_id}")
+def get_netblock_targets(
+    organization_id: int,
+    in_scope_only: bool = True,
+    owned_only: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all netblock CIDRs for an organization as scan targets.
+    
+    Returns a list of CIDR notations that can be used directly in scans.
+    """
+    query = db.query(Netblock).filter(Netblock.organization_id == organization_id)
+    
+    if in_scope_only:
+        query = query.filter(Netblock.in_scope == True)
+    if owned_only:
+        query = query.filter(Netblock.is_owned == True)
+    
+    netblocks = query.all()
+    
+    targets = []
+    total_ips = 0
+    for nb in netblocks:
+        cidr = nb.cidr_notation or nb.inetnum
+        if cidr:
+            targets.append(cidr)
+            total_ips += nb.ip_count or 0
+    
+    return {
+        "organization_id": organization_id,
+        "targets": targets,
+        "count": len(targets),
+        "total_ips": total_ips,
+        "in_scope_only": in_scope_only,
+        "owned_only": owned_only
+    }
+
+
+@router.post("/targets/by-ids")
+def get_targets_by_netblock_ids(
+    netblock_ids: List[int],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get CIDR targets for specific netblock IDs.
+    
+    Use this to get targets from selected netblocks for scanning.
+    """
+    netblocks = db.query(Netblock).filter(Netblock.id.in_(netblock_ids)).all()
+    
+    targets = []
+    total_ips = 0
+    netblock_details = []
+    
+    for nb in netblocks:
+        cidr = nb.cidr_notation or nb.inetnum
+        if cidr:
+            targets.append(cidr)
+            total_ips += nb.ip_count or 0
+            netblock_details.append({
+                "id": nb.id,
+                "cidr": cidr,
+                "ip_count": nb.ip_count,
+                "org_name": nb.org_name,
+                "in_scope": nb.in_scope,
+                "is_owned": nb.is_owned
+            })
+    
+    return {
+        "targets": targets,
+        "count": len(targets),
+        "total_ips": total_ips,
+        "netblocks": netblock_details
+    }
+
+
+
 
