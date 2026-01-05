@@ -32,9 +32,11 @@ export default function LoginPage() {
       });
       router.push('/dashboard');
     } catch (error: any) {
+      // Handle validation errors which return detail as array of objects
+      const { getApiErrorMessage } = await import('@/lib/api');
       toast({
         title: 'Login failed',
-        description: error.response?.data?.detail || 'Invalid credentials',
+        description: getApiErrorMessage(error, 'Invalid credentials'),
         variant: 'destructive',
       });
     } finally {

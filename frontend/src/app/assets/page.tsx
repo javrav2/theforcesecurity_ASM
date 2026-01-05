@@ -213,10 +213,21 @@ export default function AssetsPage() {
 
       setAssets([...assetsWithScreenshots, ...remainingAssets]);
       setOrganizations(orgsData);
-    } catch (error) {
+    } catch (error: any) {
+      console.error('Failed to fetch assets:', error);
+      // Extract meaningful error message
+      let errorMessage = 'Failed to fetch assets';
+      const detail = error?.response?.data?.detail;
+      if (typeof detail === 'string') {
+        errorMessage = detail;
+      } else if (Array.isArray(detail) && detail.length > 0) {
+        errorMessage = detail.map((e: any) => e.msg || e.message || String(e)).join(', ');
+      } else if (error?.message) {
+        errorMessage = error.message;
+      }
       toast({
         title: 'Error',
-        description: 'Failed to fetch assets',
+        description: errorMessage,
         variant: 'destructive',
       });
     } finally {

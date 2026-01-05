@@ -1,5 +1,36 @@
 import axios, { AxiosError, AxiosInstance } from 'axios';
 
+/**
+ * Extract a user-friendly error message from an API error response.
+ * Handles FastAPI's validation error format (detail as array of objects)
+ * as well as simple string detail messages.
+ */
+export function getApiErrorMessage(error: any, fallback: string = 'An error occurred'): string {
+  const detail = error?.response?.data?.detail;
+  
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  
+  if (Array.isArray(detail) && detail.length > 0) {
+    // FastAPI validation error format: [{type, loc, msg, input, url}, ...]
+    return detail.map((e: any) => {
+      if (typeof e === 'string') return e;
+      return e.msg || e.message || JSON.stringify(e);
+    }).join(', ');
+  }
+  
+  if (error?.response?.data?.message) {
+    return error.response.data.message;
+  }
+  
+  if (error?.message) {
+    return error.message;
+  }
+  
+  return fallback;
+}
+
 // Determine API URL based on environment
 // In browser: use same host with port 8000
 // In Node.js (SSR): use environment variable or localhost
