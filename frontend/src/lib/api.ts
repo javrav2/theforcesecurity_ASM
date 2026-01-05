@@ -392,6 +392,9 @@ class ApiClient {
     // Common Crawl comprehensive search options
     commoncrawl_org_name?: string;
     commoncrawl_keywords?: string[];
+    // Technology fingerprinting options
+    run_technology_scan?: boolean;
+    max_technology_scan?: number;
   }) {
     const response = await this.client.post('/external-discovery/run', data);
     return response.data;

@@ -371,10 +371,12 @@ async def run_external_discovery(
     assets_created = 0
     assets_skipped = 0
     created_hosts: list[str] = []
+    all_hosts: list[str] = []  # ALL discovered domains and subdomains for tech scanning
     
     if request.create_assets:
         # Create domain assets
         for domain in aggregated["domains"]:
+            all_hosts.append(domain)  # Track all hosts for tech scanning
             existing = db.query(Asset).filter(
                 Asset.organization_id == request.organization_id,
                 Asset.value == domain,
@@ -401,6 +403,7 @@ async def run_external_discovery(
         
         # Create subdomain assets
         for subdomain in aggregated["subdomains"]:
+            all_hosts.append(subdomain)  # Track all hosts for tech scanning
             existing = db.query(Asset).filter(
                 Asset.organization_id == request.organization_id,
                 Asset.value == subdomain,
@@ -477,12 +480,14 @@ async def run_external_discovery(
         
         db.commit()
 
-        # Optional: schedule lightweight tech scan on a subset of newly created hosts
-        if request.run_technology_scan and created_hosts:
+        # Automated technology fingerprinting on ALL discovered hosts
+        # This runs in background to avoid blocking the response
+        if request.run_technology_scan and all_hosts:
+            logger.info(f"Scheduling technology scan for {len(all_hosts)} hosts (max: {request.max_technology_scan})")
             background_tasks.add_task(
                 run_technology_scan_for_hosts,
                 organization_id=request.organization_id,
-                hosts=created_hosts,
+                hosts=all_hosts,  # Scan ALL discovered hosts, not just newly created
                 max_hosts=request.max_technology_scan,
             )
     

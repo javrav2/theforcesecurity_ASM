@@ -120,16 +120,16 @@ class ExternalDiscoveryRequest(BaseModel):
         description="Maximum number of discovered domains to run subdomain enumeration on"
     )
 
-    # Optional active follow-up (off by default to avoid unexpected scanning)
+    # Automated technology fingerprinting on discovered hosts
     run_technology_scan: bool = Field(
-        default=False,
-        description="If true, run a lightweight Wappalyzer tech scan on a subset of newly discovered domains/subdomains",
+        default=True,
+        description="Run Wappalyzer tech scan on all discovered domains/subdomains to identify technologies and add tags",
     )
     max_technology_scan: int = Field(
-        default=25,
+        default=500,
         ge=1,
-        le=200,
-        description="Maximum number of hosts to attempt technology scanning against (only when run_technology_scan=true)",
+        le=2000,
+        description="Maximum number of hosts to scan for technologies (runs in background batches)",
     )
 
 

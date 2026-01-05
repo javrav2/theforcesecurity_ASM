@@ -139,6 +139,10 @@ export default function DiscoveryPage() {
   const [ccOrgName, setCcOrgName] = useState('');
   const [ccKeywords, setCcKeywords] = useState<string[]>([]);
   const [newCcKeyword, setNewCcKeyword] = useState('');
+  
+  // Technology scanning options
+  const [runTechScan, setRunTechScan] = useState(true);
+  const [maxTechScan, setMaxTechScan] = useState(500);
 
   // Wayback URLs state
   const [waybackRunning, setWaybackRunning] = useState(false);
@@ -195,6 +199,8 @@ export default function DiscoveryPage() {
         registration_emails: regEmails.length > 0 ? regEmails : undefined,
         commoncrawl_org_name: ccOrgName || undefined,
         commoncrawl_keywords: ccKeywords.length > 0 ? ccKeywords : undefined,
+        run_technology_scan: runTechScan,
+        max_technology_scan: maxTechScan,
       });
 
       setDiscoveryResults(result);
@@ -554,6 +560,46 @@ export default function DiscoveryPage() {
                             </button>
                           </Badge>
                         ))}
+                      </div>
+                    </div>
+
+                    {/* Technology Fingerprinting */}
+                    <div className="border-t pt-4 mt-4">
+                      <h4 className="font-medium text-sm mb-3 flex items-center gap-2">
+                        <Settings className="h-4 w-4" />
+                        Technology Fingerprinting (Wappalyzer)
+                      </h4>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        Automatically scan all discovered domains and subdomains to identify web technologies (CMS, frameworks, servers, etc.) and add technology tags.
+                      </p>
+                      
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Switch 
+                              checked={runTechScan} 
+                              onCheckedChange={setRunTechScan} 
+                              id="tech-scan"
+                            />
+                            <Label htmlFor="tech-scan">Run Technology Scan on All Hosts</Label>
+                          </div>
+                        </div>
+                        
+                        {runTechScan && (
+                          <div className="space-y-2">
+                            <Label>Maximum Hosts to Scan</Label>
+                            <Input
+                              type="number"
+                              value={maxTechScan}
+                              onChange={(e) => setMaxTechScan(parseInt(e.target.value) || 500)}
+                              min={1}
+                              max={2000}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Hosts are scanned in batches in the background. Each host is probed for technologies like WordPress, Nginx, React, etc.
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
 
