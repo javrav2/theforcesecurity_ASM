@@ -58,7 +58,12 @@ def build_asset_response(asset: Asset) -> dict:
         "port_services": port_summaries,
         "technologies": tech_summaries,
         "open_ports_count": len([p for p in asset.port_services if p.state == PortState.OPEN]),
-        "risky_ports_count": len([p for p in asset.port_services if p.is_risky])
+        "risky_ports_count": len([p for p in asset.port_services if p.is_risky]),
+        # Ensure new fields have defaults if not set in DB
+        "endpoints": asset.endpoints or [],
+        "parameters": asset.parameters or [],
+        "js_files": asset.js_files or [],
+        "is_live": getattr(asset, 'is_live', False) or False,
     }
 
 

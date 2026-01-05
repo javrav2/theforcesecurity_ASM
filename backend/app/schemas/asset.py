@@ -97,8 +97,14 @@ class AssetResponse(AssetBase):
     # Scope and ownership
     in_scope: bool = True
     is_owned: bool = False
+    is_live: bool = False
     netblock_id: Optional[int] = None
     asn: Optional[str] = None
+    
+    # Discovered endpoints and parameters
+    endpoints: List[str] = []
+    parameters: List[str] = []
+    js_files: List[str] = []
     
     # Technologies
     technologies: List[TechnologySummary] = []
