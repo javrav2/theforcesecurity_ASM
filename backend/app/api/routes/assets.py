@@ -26,44 +26,94 @@ def check_org_access(user: User, org_id: int) -> bool:
 
 
 def build_asset_response(asset: Asset) -> dict:
-    """Build asset response with port service information."""
+    """Build asset response with port service information.
+    
+    Explicitly builds the response dict to avoid SQLAlchemy internal state
+    and handle missing database columns gracefully.
+    """
     # Build port service summaries
     port_summaries = []
-    for ps in asset.port_services:
-        port_summaries.append(PortServiceSummary(
-            id=ps.id,
-            port=ps.port,
-            protocol=ps.protocol.value,
-            service=ps.service_name,
-            product=ps.service_product,
-            version=ps.service_version,
-            state=ps.state.value,
-            is_ssl=ps.is_ssl,
-            is_risky=ps.is_risky,
-            port_string=ps.port_string
-        ))
+    try:
+        for ps in asset.port_services:
+            port_summaries.append(PortServiceSummary(
+                id=ps.id,
+                port=ps.port,
+                protocol=ps.protocol.value,
+                service=ps.service_name,
+                product=ps.service_product,
+                version=ps.service_version,
+                state=ps.state.value,
+                is_ssl=ps.is_ssl,
+                is_risky=ps.is_risky,
+                port_string=ps.port_string
+            ))
+    except Exception:
+        port_summaries = []
     
     # Build technology summaries
     tech_summaries = []
-    for tech in asset.technologies:
-        tech_summaries.append({
-            "name": tech.name,
-            "slug": tech.slug,
-            "categories": tech.categories or [],
-            "version": None
-        })
+    try:
+        for tech in asset.technologies:
+            tech_summaries.append({
+                "name": tech.name,
+                "slug": tech.slug,
+                "categories": tech.categories or [],
+                "version": None
+            })
+    except Exception:
+        tech_summaries = []
     
+    # Helper to safely get attribute with default
+    def safe_get(attr: str, default=None):
+        try:
+            val = getattr(asset, attr, default)
+            return val if val is not None else default
+        except Exception:
+            return default
+    
+    # Build response explicitly to avoid _sa_instance_state and missing columns
     return {
-        **asset.__dict__,
+        "id": asset.id,
+        "name": asset.name,
+        "asset_type": asset.asset_type,
+        "value": asset.value,
+        "organization_id": asset.organization_id,
+        "parent_id": safe_get("parent_id"),
+        "status": asset.status,
+        "description": safe_get("description"),
+        "tags": safe_get("tags", []),
+        "metadata_": safe_get("metadata_", {}),
+        "discovery_source": safe_get("discovery_source"),
+        "first_seen": safe_get("first_seen"),
+        "last_seen": safe_get("last_seen"),
+        "risk_score": safe_get("risk_score", 0),
+        "criticality": safe_get("criticality", "medium"),
+        "is_monitored": safe_get("is_monitored", True),
+        "http_status": safe_get("http_status"),
+        "http_title": safe_get("http_title"),
+        "dns_records": safe_get("dns_records", {}),
+        "ip_address": safe_get("ip_address"),
+        "latitude": safe_get("latitude"),
+        "longitude": safe_get("longitude"),
+        "city": safe_get("city"),
+        "country": safe_get("country"),
+        "country_code": safe_get("country_code"),
+        "isp": safe_get("isp"),
+        "asn": safe_get("asn"),
+        "in_scope": safe_get("in_scope", True),
+        "is_owned": safe_get("is_owned", False),
+        "is_live": safe_get("is_live", False),
+        "netblock_id": safe_get("netblock_id"),
+        "endpoints": safe_get("endpoints", []),
+        "parameters": safe_get("parameters", []),
+        "js_files": safe_get("js_files", []),
+        "created_at": safe_get("created_at"),
+        "updated_at": safe_get("updated_at"),
+        # Computed fields
         "port_services": port_summaries,
         "technologies": tech_summaries,
-        "open_ports_count": len([p for p in asset.port_services if p.state == PortState.OPEN]),
-        "risky_ports_count": len([p for p in asset.port_services if p.is_risky]),
-        # Ensure new fields have defaults if not set in DB
-        "endpoints": asset.endpoints or [],
-        "parameters": asset.parameters or [],
-        "js_files": asset.js_files or [],
-        "is_live": getattr(asset, 'is_live', False) or False,
+        "open_ports_count": len([p for p in port_summaries if hasattr(p, 'state') and p.state == 'open']),
+        "risky_ports_count": len([p for p in port_summaries if hasattr(p, 'is_risky') and p.is_risky]),
     }
 
 
