@@ -104,6 +104,17 @@ class ExternalDiscoveryRequest(BaseModel):
         examples=[["rockwell", "factory", "automation"]]
     )
     
+    # SNI IP Ranges - Cloud Asset Discovery
+    include_sni_discovery: bool = Field(
+        default=True,
+        description="Include SNI IP ranges discovery (discovers cloud-hosted assets on AWS, GCP, Azure, etc.)"
+    )
+    sni_keywords: Optional[List[str]] = Field(
+        default=None,
+        description="Additional keywords for SNI search (e.g., ['rockwell', 'ra-', 'allen-bradley'])",
+        examples=[["rockwell", "factory", "allen-bradley"]]
+    )
+    
     # Options
     create_assets: bool = Field(default=True, description="Automatically create discovered assets")
     skip_existing: bool = Field(default=True, description="Skip assets that already exist")
@@ -326,6 +337,15 @@ FREE_SERVICES_INFO = [
         "requires_key": False,
         "rate_limit": "1/second recommended",
         "website": "https://commoncrawl.org/",
+    },
+    {
+        "name": "sni_ip_ranges",
+        "display_name": "SNI IP Ranges",
+        "description": "Cloud provider SSL/TLS certificate scan data - discovers assets hosted on AWS, GCP, Azure, Oracle, DigitalOcean",
+        "requires_key": False,
+        "rate_limit": "Local data, no limit",
+        "website": "https://kaeferjaeger.gay/?dir=sni-ip-ranges",
+        "notes": "Scans cloud provider IP ranges for SSL certificates, revealing domains/subdomains hosted on cloud infrastructure",
     },
 ]
 

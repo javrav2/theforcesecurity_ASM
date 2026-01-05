@@ -54,6 +54,7 @@ import {
   Link,
   Radar,
   Camera,
+  Cloud,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -149,6 +150,11 @@ export default function DiscoveryPage() {
   const [runScreenshots, setRunScreenshots] = useState(true);
   const [maxScreenshots, setMaxScreenshots] = useState(200);
   const [screenshotTimeout, setScreenshotTimeout] = useState(30);
+  
+  // SNI IP Ranges - Cloud asset discovery
+  const [includeSniDiscovery, setIncludeSniDiscovery] = useState(true);
+  const [sniKeywords, setSniKeywords] = useState<string[]>([]);
+  const [newSniKeyword, setNewSniKeyword] = useState('');
 
   // Wayback URLs state
   const [waybackRunning, setWaybackRunning] = useState(false);
@@ -205,6 +211,8 @@ export default function DiscoveryPage() {
         registration_emails: regEmails.length > 0 ? regEmails : undefined,
         commoncrawl_org_name: ccOrgName || undefined,
         commoncrawl_keywords: ccKeywords.length > 0 ? ccKeywords : undefined,
+        include_sni_discovery: includeSniDiscovery,
+        sni_keywords: sniKeywords.length > 0 ? sniKeywords : undefined,
         run_technology_scan: runTechScan,
         max_technology_scan: maxTechScan,
         run_screenshots: runScreenshots,
@@ -280,6 +288,17 @@ export default function DiscoveryPage() {
 
   const removeCcKeyword = (keyword: string) => {
     setCcKeywords(ccKeywords.filter(k => k !== keyword));
+  };
+
+  const addSniKeyword = () => {
+    if (newSniKeyword && !sniKeywords.includes(newSniKeyword)) {
+      setSniKeywords([...sniKeywords, newSniKeyword]);
+      setNewSniKeyword('');
+    }
+  };
+
+  const removeSniKeyword = (keyword: string) => {
+    setSniKeywords(sniKeywords.filter(k => k !== keyword));
   };
 
   // Wayback URLs handlers
@@ -715,6 +734,64 @@ export default function DiscoveryPage() {
                             ))}
                           </div>
                         </div>
+                      </div>
+                    </div>
+
+                    {/* SNI IP Ranges - Cloud Asset Discovery */}
+                    <div className="p-4 bg-gradient-to-r from-cyan-500/5 to-blue-500/5 rounded-lg border border-cyan-500/20">
+                      <h4 className="text-sm font-medium flex items-center gap-2 mb-2">
+                        <Cloud className="h-4 w-4 text-cyan-500" />
+                        SNI IP Ranges - Cloud Asset Discovery
+                      </h4>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        Discover cloud-hosted assets by searching SSL/TLS certificate data from AWS, GCP, Azure, Oracle, and DigitalOcean IP ranges.
+                        Source: <a href="https://kaeferjaeger.gay/?dir=sni-ip-ranges" target="_blank" rel="noopener" className="text-primary underline">kaeferjaeger.gay</a>
+                      </p>
+                      
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-0.5">
+                            <Label htmlFor="sni-discovery" className="text-sm font-medium">Enable Cloud Asset Discovery</Label>
+                            <p className="text-xs text-muted-foreground">
+                              Searches cloud provider IP ranges for your organization's SSL certificates
+                            </p>
+                          </div>
+                          <Switch
+                            checked={includeSniDiscovery}
+                            onCheckedChange={setIncludeSniDiscovery}
+                            id="sni-discovery"
+                          />
+                        </div>
+                        
+                        {includeSniDiscovery && (
+                          <div className="space-y-2">
+                            <Label>Additional Keywords (optional)</Label>
+                            <div className="flex gap-2">
+                              <Input
+                                placeholder="e.g., rockwell, allen-bradley (finds additional cloud assets)"
+                                value={newSniKeyword}
+                                onChange={(e) => setNewSniKeyword(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && addSniKeyword()}
+                              />
+                              <Button onClick={addSniKeyword} variant="outline" size="icon">
+                                <Plus className="h-4 w-4" />
+                              </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Keywords to search in addition to the organization name and primary domain
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {sniKeywords.map((keyword) => (
+                                <Badge key={keyword} variant="secondary" className="flex items-center gap-1 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300">
+                                  {keyword}
+                                  <button onClick={() => removeSniKeyword(keyword)} className="ml-1 hover:text-destructive">
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
 

@@ -796,6 +796,82 @@ class ExternalDiscoveryService:
         return result
 
     # =========================================================================
+    # SNI IP Ranges Discovery - Cloud Asset Discovery
+    # =========================================================================
+    
+    async def discover_sni_ip_ranges(
+        self,
+        domain: str,
+        org_name: Optional[str] = None,
+        keywords: Optional[List[str]] = None
+    ) -> DiscoveryResult:
+        """
+        Discover cloud-hosted assets using SNI IP ranges data.
+        
+        Uses data from kaeferjaeger.gay which scans cloud provider IP ranges
+        (AWS, Google, Azure, Oracle, DigitalOcean) and collects SSL/TLS
+        certificate information.
+        
+        Args:
+            domain: Primary domain to search for
+            org_name: Organization name for broader search
+            keywords: Additional keywords to search
+            
+        Returns:
+            DiscoveryResult with discovered domains, subdomains, and IPs
+        """
+        start_time = time.time()
+        result = DiscoveryResult(source="sni_ip_ranges", success=False)
+        
+        try:
+            from app.services.sni_scanner_service import get_sni_service
+            
+            service = get_sni_service()
+            
+            # Check if data is available
+            stats = service.get_stats()
+            if stats["unique_domains"] == 0:
+                # Try to sync data first (this happens in background but we log it)
+                logger.info("SNI data not loaded, attempting sync...")
+                await service.sync_all_providers()
+            
+            # Perform organization search
+            sni_result = await service.search_organization(
+                org_name=org_name or domain.split('.')[0],
+                primary_domain=domain,
+                keywords=keywords
+            )
+            
+            if sni_result.success:
+                result.success = True
+                result.domains = sni_result.domains
+                result.subdomains = sni_result.subdomains
+                result.ip_addresses = sni_result.ips
+                result.raw_data = {
+                    "total_records": sni_result.total_records,
+                    "by_cloud_provider": sni_result.by_cloud_provider,
+                    "query": sni_result.query,
+                }
+                
+                logger.info(
+                    f"SNI IP ranges: found {len(result.domains)} domains, "
+                    f"{len(result.subdomains)} subdomains, {len(result.ip_addresses)} IPs "
+                    f"across {sni_result.by_cloud_provider}"
+                )
+            else:
+                result.error = sni_result.error
+                
+        except ImportError:
+            result.error = "SNI scanner service not available"
+            logger.warning("SNI scanner service not installed")
+        except Exception as e:
+            result.error = str(e)
+            logger.error(f"SNI IP ranges error: {e}")
+        
+        result.elapsed_time = time.time() - start_time
+        return result
+
+    # =========================================================================
     # Full Discovery - Run All Sources
     # =========================================================================
     
@@ -807,7 +883,9 @@ class ExternalDiscoveryService:
         organization_names: Optional[List[str]] = None,
         registration_emails: Optional[List[str]] = None,
         commoncrawl_org_name: Optional[str] = None,
-        commoncrawl_keywords: Optional[List[str]] = None
+        commoncrawl_keywords: Optional[List[str]] = None,
+        include_sni_discovery: bool = True,
+        sni_keywords: Optional[List[str]] = None
     ) -> Dict[str, DiscoveryResult]:
         """
         Run full discovery using all available sources.
@@ -822,6 +900,8 @@ class ExternalDiscoveryService:
                                   (e.g., "rockwellautomation" to find rockwellautomation.*)
             commoncrawl_keywords: Keywords for CC keyword search
                                   (e.g., ["rockwell"] to find *rockwell* domains)
+            include_sni_discovery: Include SNI IP ranges discovery (cloud asset discovery)
+            sni_keywords: Additional keywords for SNI search
             
         Returns:
             Dictionary of results by source
@@ -846,6 +926,26 @@ class ExternalDiscoveryService:
             else:
                 # Basic subdomain search
                 tasks.append(("commoncrawl", self.discover_commoncrawl(domain)))
+            
+            # SNI IP Ranges - discover cloud-hosted assets
+            if include_sni_discovery:
+                org_name = None
+                if organization_names:
+                    org_name = organization_names[0]
+                elif commoncrawl_org_name:
+                    org_name = commoncrawl_org_name
+                else:
+                    # Extract org name from domain (e.g., "rockwellautomation" from "rockwellautomation.com")
+                    parts = domain.split('.')
+                    if len(parts) >= 2:
+                        org_name = parts[0]
+                
+                if org_name:
+                    tasks.append(("sni_ip_ranges", self.discover_sni_ip_ranges(
+                        domain=domain,
+                        org_name=org_name,
+                        keywords=sni_keywords or commoncrawl_keywords
+                    )))
         
         # Paid sources (require API keys)
         if include_paid:

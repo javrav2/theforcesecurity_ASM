@@ -300,7 +300,9 @@ async def run_external_discovery(
         organization_names=request.organization_names,
         registration_emails=request.registration_emails,
         commoncrawl_org_name=request.commoncrawl_org_name,
-        commoncrawl_keywords=request.commoncrawl_keywords
+        commoncrawl_keywords=request.commoncrawl_keywords,
+        include_sni_discovery=request.include_sni_discovery,
+        sni_keywords=request.sni_keywords
     )
     
     # Aggregate results
