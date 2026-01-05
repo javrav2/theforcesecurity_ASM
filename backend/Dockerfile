@@ -78,7 +78,9 @@ RUN go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
     # waybackurls - Fetch historical URLs from Wayback Machine
     && go install -v github.com/tomnomnom/waybackurls@latest \
     # assetfinder - Find domains and subdomains
-    && go install -v github.com/tomnomnom/assetfinder@latest
+    && go install -v github.com/tomnomnom/assetfinder@latest \
+    # ffuf - Fast web fuzzer for directory/endpoint discovery
+    && go install -v github.com/ffuf/ffuf/v2@latest
 
 # Install OWASP Amass
 RUN go install -v github.com/owasp-amass/amass/v4/...@master || echo "Amass installation skipped"

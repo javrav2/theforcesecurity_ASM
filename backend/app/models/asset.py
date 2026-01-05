@@ -100,6 +100,11 @@ class Asset(Base):
     # SSL/TLS info
     ssl_info = Column(JSON, default=dict)  # Certificate details
     
+    # Discovered endpoints and parameters (from ffuf, ParamSpider, Katana, etc.)
+    endpoints = Column(JSON, default=list)  # List of discovered URL paths/endpoints
+    parameters = Column(JSON, default=list)  # List of discovered URL parameters
+    js_files = Column(JSON, default=list)  # JavaScript files found (often contain secrets/endpoints)
+    
     # Geo-location info (for IP addresses and resolved domains)
     ip_address = Column(String(45), nullable=True)  # Resolved IP address
     latitude = Column(String(20), nullable=True)
