@@ -34,6 +34,7 @@ from app.schemas.external_discovery import (
 from app.services.external_discovery_service import ExternalDiscoveryService
 from app.services.technology_scan_service import run_technology_scan_for_hosts
 from app.services.subdomain_service import SubdomainService
+from app.services.screenshot_service import run_screenshots_for_hosts
 import logging
 
 logger = logging.getLogger(__name__)
@@ -489,6 +490,18 @@ async def run_external_discovery(
                 organization_id=request.organization_id,
                 hosts=all_hosts,  # Scan ALL discovered hosts, not just newly created
                 max_hosts=request.max_technology_scan,
+            )
+        
+        # Automated screenshot capture on ALL discovered hosts
+        # This runs in background after tech scanning
+        if request.run_screenshots and all_hosts:
+            logger.info(f"Scheduling screenshot capture for {len(all_hosts)} hosts (max: {request.max_screenshots})")
+            background_tasks.add_task(
+                run_screenshots_for_hosts,
+                organization_id=request.organization_id,
+                hosts=all_hosts,
+                max_hosts=request.max_screenshots,
+                timeout=request.screenshot_timeout,
             )
     
     return ExternalDiscoveryResponse(

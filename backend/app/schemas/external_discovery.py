@@ -131,6 +131,24 @@ class ExternalDiscoveryRequest(BaseModel):
         le=2000,
         description="Maximum number of hosts to scan for technologies (runs in background batches)",
     )
+    
+    # Automated screenshots on discovered hosts
+    run_screenshots: bool = Field(
+        default=True,
+        description="Capture screenshots of all discovered domains/subdomains using EyeWitness",
+    )
+    max_screenshots: int = Field(
+        default=200,
+        ge=1,
+        le=1000,
+        description="Maximum number of hosts to screenshot (runs in background)",
+    )
+    screenshot_timeout: int = Field(
+        default=30,
+        ge=5,
+        le=120,
+        description="Timeout in seconds for each screenshot",
+    )
 
 
 class SourceResult(BaseModel):

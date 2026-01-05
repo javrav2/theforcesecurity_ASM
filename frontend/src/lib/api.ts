@@ -395,6 +395,10 @@ class ApiClient {
     // Technology fingerprinting options
     run_technology_scan?: boolean;
     max_technology_scan?: number;
+    // Screenshot capture options
+    run_screenshots?: boolean;
+    max_screenshots?: number;
+    screenshot_timeout?: number;
   }) {
     const response = await this.client.post('/external-discovery/run', data);
     return response.data;

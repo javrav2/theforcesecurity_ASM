@@ -53,6 +53,7 @@ import {
   ExternalLink,
   Link,
   Radar,
+  Camera,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -143,6 +144,11 @@ export default function DiscoveryPage() {
   // Technology scanning options
   const [runTechScan, setRunTechScan] = useState(true);
   const [maxTechScan, setMaxTechScan] = useState(500);
+  
+  // Screenshot capture options
+  const [runScreenshots, setRunScreenshots] = useState(true);
+  const [maxScreenshots, setMaxScreenshots] = useState(200);
+  const [screenshotTimeout, setScreenshotTimeout] = useState(30);
 
   // Wayback URLs state
   const [waybackRunning, setWaybackRunning] = useState(false);
@@ -201,6 +207,9 @@ export default function DiscoveryPage() {
         commoncrawl_keywords: ccKeywords.length > 0 ? ccKeywords : undefined,
         run_technology_scan: runTechScan,
         max_technology_scan: maxTechScan,
+        run_screenshots: runScreenshots,
+        max_screenshots: maxScreenshots,
+        screenshot_timeout: screenshotTimeout,
       });
 
       setDiscoveryResults(result);
@@ -598,6 +607,58 @@ export default function DiscoveryPage() {
                             <p className="text-xs text-muted-foreground">
                               Hosts are scanned in batches in the background. Each host is probed for technologies like WordPress, Nginx, React, etc.
                             </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Screenshot Capture */}
+                    <div className="border-t pt-4 mt-4">
+                      <h4 className="font-medium text-sm mb-3 flex items-center gap-2">
+                        <Camera className="h-4 w-4" />
+                        Screenshot Capture (EyeWitness)
+                      </h4>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        Automatically capture screenshots of all discovered domains and subdomains for visual monitoring and change detection.
+                      </p>
+                      
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Switch 
+                              checked={runScreenshots} 
+                              onCheckedChange={setRunScreenshots} 
+                              id="screenshots"
+                            />
+                            <Label htmlFor="screenshots">Capture Screenshots on All Hosts</Label>
+                          </div>
+                        </div>
+                        
+                        {runScreenshots && (
+                          <div className="space-y-4">
+                            <div className="space-y-2">
+                              <Label>Maximum Hosts to Screenshot</Label>
+                              <Input
+                                type="number"
+                                value={maxScreenshots}
+                                onChange={(e) => setMaxScreenshots(parseInt(e.target.value) || 200)}
+                                min={1}
+                                max={1000}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Screenshot Timeout (seconds)</Label>
+                              <Input
+                                type="number"
+                                value={screenshotTimeout}
+                                onChange={(e) => setScreenshotTimeout(parseInt(e.target.value) || 30)}
+                                min={5}
+                                max={120}
+                              />
+                              <p className="text-xs text-muted-foreground">
+                                Screenshots are captured in batches in the background. View results on the Screenshots page.
+                              </p>
+                            </div>
                           </div>
                         )}
                       </div>
