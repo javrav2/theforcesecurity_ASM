@@ -51,6 +51,13 @@ import {
   Camera,
   Shield,
   Eye,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  MapPin,
+  Code,
+  Zap,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -76,7 +83,7 @@ interface Asset {
   organization_id: number;
   organization_name?: string;
   http_status?: number;
-  technologies?: string[];
+  technologies?: Array<{ name: string; slug: string; categories: string[] }>;
   tags?: string[];
   findingsCount?: number;
   screenshotUrl?: string;
@@ -85,6 +92,20 @@ interface Asset {
   lastSeen?: Date;
   // Screenshots from API
   screenshots?: Array<{ id: number; image_path: string; thumbnail_path?: string }>;
+  // Attack surface data
+  is_live?: boolean;
+  open_ports_count?: number;
+  risky_ports_count?: number;
+  port_services?: Array<{ port: number; protocol: string; service?: string; is_risky?: boolean }>;
+  endpoints?: string[];
+  parameters?: string[];
+  js_files?: string[];
+  discovery_source?: string;
+  risk_score?: number;
+  in_scope?: boolean;
+  asn?: string;
+  country?: string;
+  city?: string;
 }
 
 // Asset type icons - matching AssetType enum values
@@ -139,12 +160,17 @@ export default function AssetsPage() {
     { key: 'screenshot', label: 'Screenshot', visible: true },
     { key: 'type', label: 'Type', visible: true },
     { key: 'hostname', label: 'Value', visible: true },
-    { key: 'ip_address', label: 'IP Address', visible: true },
+    { key: 'is_live', label: 'Live', visible: true },
+    { key: 'ports', label: 'Ports', visible: true },
+    { key: 'technologies', label: 'Technologies', visible: true },
     { key: 'labels', label: 'Labels', visible: true },
-    { key: 'status', label: 'Status', visible: true },
+    { key: 'ip_address', label: 'IP Address', visible: false },
+    { key: 'status', label: 'Status', visible: false },
     { key: 'findings', label: 'Findings', visible: true },
     { key: 'http_status', label: 'HTTP', visible: false },
-    { key: 'technologies', label: 'Technologies', visible: false },
+    { key: 'endpoints', label: 'Endpoints', visible: false },
+    { key: 'source', label: 'Source', visible: false },
+    { key: 'location', label: 'Location', visible: false },
     { key: 'organization', label: 'Organization', visible: true },
     { key: 'created_at', label: 'Last Seen', visible: true },
   ]);
@@ -398,11 +424,119 @@ export default function AssetsPage() {
 
   const visibleColumns = columns.filter(c => c.visible);
 
+  // Calculate attack surface stats
+  const attackSurfaceStats = useMemo(() => {
+    const liveAssets = assets.filter(a => a.is_live).length;
+    const totalPorts = assets.reduce((sum, a) => sum + (a.open_ports_count || 0), 0);
+    const riskyPorts = assets.reduce((sum, a) => sum + (a.risky_ports_count || 0), 0);
+    const withTech = assets.filter(a => a.technologies && a.technologies.length > 0).length;
+    const withEndpoints = assets.filter(a => a.endpoints && a.endpoints.length > 0).length;
+    const withFindings = assets.filter(a => (a.findingsCount || 0) > 0).length;
+    
+    // Count unique technologies
+    const techSet = new Set<string>();
+    assets.forEach(a => {
+      a.technologies?.forEach(t => techSet.add(typeof t === 'string' ? t : t.name));
+    });
+    
+    return {
+      total: assets.length,
+      live: liveAssets,
+      totalPorts,
+      riskyPorts,
+      withTech,
+      uniqueTech: techSet.size,
+      withEndpoints,
+      withFindings,
+    };
+  }, [assets]);
+
   return (
     <MainLayout>
-      <Header title="Assets" subtitle="Discovered hosts, domains, and services" />
+      <Header title="Attack Surface" subtitle="Discovered hosts, domains, and services across your organization" />
 
       <div className="p-6 space-y-6">
+        {/* Attack Surface Overview Stats */}
+        {!loading && assets.length > 0 && (
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+            <Card className="p-4 bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-blue-500/20">
+                  <Globe className="h-5 w-5 text-blue-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.total}</p>
+                  <p className="text-xs text-muted-foreground">Total Assets</p>
+                </div>
+              </div>
+            </Card>
+            
+            <Card className="p-4 bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-green-500/20">
+                  <Activity className="h-5 w-5 text-green-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.live}</p>
+                  <p className="text-xs text-muted-foreground">Live Assets</p>
+                </div>
+              </div>
+            </Card>
+            
+            <Card className="p-4 bg-gradient-to-br from-cyan-500/10 to-cyan-600/5 border-cyan-500/20">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-cyan-500/20">
+                  <Network className="h-5 w-5 text-cyan-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.totalPorts}</p>
+                  <p className="text-xs text-muted-foreground">Open Ports</p>
+                </div>
+              </div>
+            </Card>
+            
+            {attackSurfaceStats.riskyPorts > 0 && (
+              <Card className="p-4 bg-gradient-to-br from-red-500/10 to-red-600/5 border-red-500/20">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-red-500/20">
+                    <AlertTriangle className="h-5 w-5 text-red-400" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.riskyPorts}</p>
+                    <p className="text-xs text-muted-foreground">Risky Ports</p>
+                  </div>
+                </div>
+              </Card>
+            )}
+            
+            <Card className="p-4 bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-purple-500/20">
+                  <Zap className="h-5 w-5 text-purple-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.uniqueTech}</p>
+                  <p className="text-xs text-muted-foreground">Technologies</p>
+                </div>
+              </div>
+            </Card>
+            
+            {attackSurfaceStats.withFindings > 0 && (
+              <Card className="p-4 bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-orange-500/20">
+                    <Shield className="h-5 w-5 text-orange-400" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.withFindings}</p>
+                    <p className="text-xs text-muted-foreground">With Findings</p>
+                  </div>
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
+
         {/* Table with Customization */}
         <TableCustomization
           columns={columns}
@@ -518,6 +652,70 @@ export default function AssetsPage() {
                           </TableCell>
                         )}
 
+                        {/* Live Status */}
+                        {columns.find(c => c.key === 'is_live')?.visible && (
+                          <TableCell>
+                            {asset.is_live ? (
+                              <div className="flex items-center gap-1">
+                                <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                <span className="text-xs text-green-500 font-medium">Live</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1">
+                                <XCircle className="h-4 w-4 text-muted-foreground/50" />
+                                <span className="text-xs text-muted-foreground">—</span>
+                              </div>
+                            )}
+                          </TableCell>
+                        )}
+
+                        {/* Ports */}
+                        {columns.find(c => c.key === 'ports')?.visible && (
+                          <TableCell>
+                            {(asset.open_ports_count || 0) > 0 ? (
+                              <div className="flex items-center gap-1">
+                                <Network className="h-4 w-4 text-blue-400" />
+                                <span className="font-mono text-sm text-blue-400">
+                                  {asset.open_ports_count}
+                                </span>
+                                {(asset.risky_ports_count || 0) > 0 && (
+                                  <Badge variant="destructive" className="text-[10px] px-1 py-0 h-4">
+                                    {asset.risky_ports_count} risky
+                                  </Badge>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">—</span>
+                            )}
+                          </TableCell>
+                        )}
+
+                        {/* Technologies */}
+                        {columns.find(c => c.key === 'technologies')?.visible && (
+                          <TableCell>
+                            {asset.technologies && asset.technologies.length > 0 ? (
+                              <div className="flex items-center gap-1 flex-wrap max-w-[200px]">
+                                {asset.technologies.slice(0, 3).map((tech, i) => (
+                                  <Badge 
+                                    key={i} 
+                                    variant="outline" 
+                                    className="text-[10px] px-1.5 py-0 h-5 bg-purple-500/10 text-purple-400 border-purple-500/30"
+                                  >
+                                    {typeof tech === 'string' ? tech : tech.name}
+                                  </Badge>
+                                ))}
+                                {asset.technologies.length > 3 && (
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 h-5">
+                                    +{asset.technologies.length - 3}
+                                  </Badge>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">—</span>
+                            )}
+                          </TableCell>
+                        )}
+
                         {/* IP Address */}
                         {columns.find(c => c.key === 'ip_address')?.visible && (
                           <TableCell className="font-mono text-sm">
@@ -602,26 +800,58 @@ export default function AssetsPage() {
                                 {asset.http_status}
                               </Badge>
                             ) : (
-                              '—'
+                              <span className="text-muted-foreground">—</span>
                             )}
                           </TableCell>
                         )}
 
-                        {/* Technologies */}
-                        {columns.find(c => c.key === 'technologies')?.visible && (
+                        {/* Endpoints */}
+                        {columns.find(c => c.key === 'endpoints')?.visible && (
                           <TableCell>
-                            <div className="flex flex-wrap gap-1 max-w-[200px]">
-                              {asset.technologies?.slice(0, 3).map((tech) => (
-                                <Badge key={tech} variant="secondary" className="text-xs">
-                                  {tech}
-                                </Badge>
-                              ))}
-                              {(asset.technologies?.length || 0) > 3 && (
-                                <Badge variant="secondary" className="text-xs">
-                                  +{asset.technologies!.length - 3}
-                                </Badge>
-                              )}
-                            </div>
+                            {(asset.endpoints?.length || 0) > 0 ? (
+                              <div className="flex items-center gap-1">
+                                <Code className="h-4 w-4 text-cyan-400" />
+                                <span className="font-mono text-sm text-cyan-400">
+                                  {asset.endpoints!.length}
+                                </span>
+                                {(asset.parameters?.length || 0) > 0 && (
+                                  <span className="text-xs text-muted-foreground">
+                                    ({asset.parameters!.length} params)
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">—</span>
+                            )}
+                          </TableCell>
+                        )}
+
+                        {/* Discovery Source */}
+                        {columns.find(c => c.key === 'source')?.visible && (
+                          <TableCell>
+                            {asset.discovery_source ? (
+                              <Badge variant="outline" className="text-xs">
+                                {asset.discovery_source}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">—</span>
+                            )}
+                          </TableCell>
+                        )}
+
+                        {/* Location */}
+                        {columns.find(c => c.key === 'location')?.visible && (
+                          <TableCell>
+                            {asset.country ? (
+                              <div className="flex items-center gap-1">
+                                <MapPin className="h-3 w-3 text-muted-foreground" />
+                                <span className="text-xs">
+                                  {asset.city ? `${asset.city}, ` : ''}{asset.country}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">—</span>
+                            )}
                           </TableCell>
                         )}
 
