@@ -594,3 +594,180 @@ async def enrich_single_asset_geolocation(
         )
     
     return asset
+
+
+from pydantic import BaseModel
+
+class HttpxProbeResult(BaseModel):
+    """Result from httpx probe."""
+    host: str  # e.g. "example.com" or "sub.example.com"
+    url: Optional[str] = None  # Full URL if available
+    status_code: Optional[int] = None
+    title: Optional[str] = None
+    webserver: Optional[str] = None  # e.g. "nginx", "IIS:10.0"
+    technologies: Optional[List[str]] = None  # e.g. ["Bootstrap", "jQuery"]
+    content_type: Optional[str] = None
+    content_length: Optional[int] = None
+    ip: Optional[str] = None
+
+
+class HttpxImportRequest(BaseModel):
+    """Request to import httpx probe results."""
+    organization_id: int
+    results: List[HttpxProbeResult]
+
+
+@router.post("/import-httpx-results")
+def import_httpx_results(
+    import_data: HttpxImportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Import httpx probe results to update asset http_status, http_title, is_live status,
+    and optionally associate technologies.
+    
+    Example httpx output that can be parsed:
+    https://example.com [200] [Example Page] [nginx,Bootstrap,jQuery]
+    
+    Expected input format:
+    {
+        "organization_id": 1,
+        "results": [
+            {"host": "example.com", "status_code": 200, "title": "Example", "technologies": ["nginx"]}
+        ]
+    }
+    """
+    if not check_org_access(current_user, import_data.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    updated_count = 0
+    not_found_count = 0
+    
+    for result in import_data.results:
+        # Strip protocol and path to get just the hostname
+        hostname = result.host
+        if hostname.startswith("https://"):
+            hostname = hostname[8:]
+        elif hostname.startswith("http://"):
+            hostname = hostname[7:]
+        hostname = hostname.split("/")[0].split(":")[0]  # Remove path and port
+        
+        # Find the asset
+        asset = db.query(Asset).filter(
+            Asset.organization_id == import_data.organization_id,
+            Asset.value == hostname
+        ).first()
+        
+        if not asset:
+            not_found_count += 1
+            continue
+        
+        # Update asset with probe results
+        if result.status_code is not None:
+            asset.http_status = result.status_code
+            # Mark as live if we got any HTTP response
+            asset.is_live = True
+        
+        if result.title:
+            asset.http_title = result.title
+        
+        if result.ip:
+            asset.ip_address = result.ip
+        
+        # Store additional HTTP info in metadata
+        if result.webserver or result.content_type:
+            http_info = asset.http_headers or {}
+            if result.webserver:
+                http_info['server'] = result.webserver
+            if result.content_type:
+                http_info['content-type'] = result.content_type
+            asset.http_headers = http_info
+        
+        asset.last_seen = datetime.utcnow()
+        updated_count += 1
+        
+        # TODO: Associate technologies if provided
+        # This would require looking up or creating Technology records
+    
+    db.commit()
+    
+    return {
+        "updated": updated_count,
+        "not_found": not_found_count,
+        "total": len(import_data.results),
+        "message": f"Updated {updated_count} assets with HTTP probe results"
+    }
+
+
+@router.post("/probe-live")
+async def probe_assets_live(
+    organization_id: int,
+    asset_type: Optional[AssetType] = Query(None, description="Filter by asset type"),
+    limit: int = Query(50, ge=1, le=200, description="Max assets to probe"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Run httpx probe on assets to check if they're live and get HTTP status.
+    Updates is_live, http_status, and http_title fields.
+    """
+    from app.services.projectdiscovery_service import get_projectdiscovery_service
+    
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    # Get assets to probe
+    query = db.query(Asset).filter(Asset.organization_id == organization_id)
+    
+    if asset_type:
+        query = query.filter(Asset.asset_type == asset_type)
+    else:
+        # Default to domains and subdomains
+        query = query.filter(Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]))
+    
+    assets = query.limit(limit).all()
+    
+    if not assets:
+        return {"probed": 0, "live": 0, "message": "No assets to probe"}
+    
+    # Extract hostnames
+    targets = [asset.value for asset in assets]
+    
+    # Run httpx probe
+    pd_service = get_projectdiscovery_service()
+    results = await pd_service.run_httpx(targets, timeout=10, follow_redirects=True)
+    
+    # Create a lookup map
+    results_map = {r.host: r for r in results}
+    
+    # Update assets
+    live_count = 0
+    for asset in assets:
+        if asset.value in results_map:
+            result = results_map[asset.value]
+            asset.is_live = True
+            asset.http_status = result.status_code
+            asset.http_title = result.title
+            if result.ip:
+                asset.ip_address = result.ip
+            asset.last_seen = datetime.utcnow()
+            live_count += 1
+        else:
+            # Asset didn't respond - could mark as not live
+            # For now, leave unchanged to allow retry
+            pass
+    
+    db.commit()
+    
+    return {
+        "probed": len(assets),
+        "live": live_count,
+        "message": f"Found {live_count} live assets out of {len(assets)} probed"
+    }
