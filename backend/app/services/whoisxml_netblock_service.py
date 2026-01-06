@@ -86,6 +86,9 @@ class WhoisXMLNetblockService:
         Convert IP range to CIDR notation and calculate IP count.
         Returns tuple of (cidr_notation, ip_count).
         Note: ip_count is capped at MAX_BIGINT for database compatibility.
+        
+        This uses precise CIDR blocks that exactly match the IP range,
+        ensuring we only scan IPs actually owned by the organization.
         """
         if not start_ip or not end_ip:
             return "", 0
@@ -395,6 +398,7 @@ class WhoisXMLNetblockService:
 def get_whoisxml_netblock_service(api_key: str) -> WhoisXMLNetblockService:
     """Get a WhoisXML netblock service instance."""
     return WhoisXMLNetblockService(api_key)
+
 
 
 

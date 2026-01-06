@@ -348,9 +348,14 @@ def trigger_scheduled_scan(
         netblock_targets = []
         for nb in netblocks:
             if nb.cidr_notation:
-                # Handle multiple CIDRs (comma-separated)
-                cidrs = [c.strip() for c in nb.cidr_notation.split(',') if c.strip()]
-                netblock_targets.extend(cidrs)
+                # Handle multiple CIDRs (semicolon or comma-separated)
+                for sep in [';', ',']:
+                    if sep in nb.cidr_notation:
+                        cidrs = [c.strip() for c in nb.cidr_notation.split(sep) if c.strip()]
+                        netblock_targets.extend(cidrs)
+                        break
+                else:
+                    netblock_targets.append(nb.cidr_notation.strip())
         
         # Combine and deduplicate
         targets = list(set(asset_targets + netblock_targets))
