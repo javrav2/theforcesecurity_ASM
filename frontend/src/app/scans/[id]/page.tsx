@@ -423,30 +423,54 @@ export default function ScanDetailPage() {
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
               <Target className="h-5 w-5" />
-              Targets ({scan.targets?.length || 0})
-              {scan.results?.targets_expanded && scan.results.targets_expanded > (scan.targets?.length || 0) && (
-                <Badge variant="outline" className="ml-2 text-xs">
-                  {scan.results.targets_expanded} IPs after CIDR expansion
+              Targets
+              {scan.results?.targets_expanded ? (
+                <Badge variant="default" className="ml-2">
+                  {scan.results.targets_expanded.toLocaleString()} IPs
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="ml-2">
+                  {scan.targets?.length || 0} entries
                 </Badge>
               )}
             </CardTitle>
             <CardDescription>
-              {scan.results?.targets_expanded && scan.results.targets_expanded > (scan.targets?.length || 0)
-                ? `${scan.targets?.length || 0} input targets expanded to ${scan.results.targets_expanded} individual IPs`
+              {scan.results?.cidr_count && scan.results.cidr_count > 0
+                ? `${scan.results.cidr_count} CIDR ranges + ${scan.results.host_count || 0} hosts = ${scan.results.targets_expanded?.toLocaleString()} total IPs`
                 : 'Assets scanned in this job'}
             </CardDescription>
           </CardHeader>
           <CardContent>
             {scan.targets && scan.targets.length > 0 ? (
               <div className="flex flex-wrap gap-2">
-                {scan.targets.map((target, index) => (
-                  <Badge key={index} variant="secondary" className="font-mono">
-                    {target}
-                    {target.includes('/') && (
-                      <span className="text-xs text-muted-foreground ml-1">(CIDR)</span>
-                    )}
-                  </Badge>
-                ))}
+                {scan.targets.map((target, index) => {
+                  // Calculate IP count for CIDR
+                  let ipCount = 1;
+                  if (target.includes('/')) {
+                    const prefixMatch = target.match(/\/(\d+)$/);
+                    if (prefixMatch) {
+                      const prefix = parseInt(prefixMatch[1]);
+                      if (target.includes(':')) {
+                        // IPv6
+                        ipCount = Math.pow(2, 128 - prefix);
+                      } else {
+                        // IPv4
+                        ipCount = Math.pow(2, 32 - prefix);
+                      }
+                    }
+                  }
+                  
+                  return (
+                    <Badge key={index} variant="secondary" className="font-mono">
+                      {target}
+                      {target.includes('/') && ipCount > 1 && (
+                        <span className="text-xs text-muted-foreground ml-1">
+                          ({ipCount.toLocaleString()} IPs)
+                        </span>
+                      )}
+                    </Badge>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-muted-foreground text-sm">

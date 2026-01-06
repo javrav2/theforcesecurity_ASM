@@ -20,6 +20,8 @@ from app.schemas.scan_schedule import (
     ManualTriggerRequest,
 )
 from app.api.deps import get_current_active_user, require_analyst
+import ipaddress
+import re
 
 router = APIRouter(prefix="/scan-schedules", tags=["Scan Schedules"])
 
@@ -28,6 +30,52 @@ def check_org_access(user: User, org_id: int) -> bool:
     """Check if user has access to organization."""
     if user.is_superuser:
         return True
+
+
+def calculate_target_stats(targets: List[str]) -> dict:
+    """
+    Calculate statistics for targets including total IPs from CIDR blocks.
+    
+    Returns:
+        {
+            "targets_original": number of target entries,
+            "targets_expanded": total number of IPs/hosts,
+            "cidr_count": number of CIDR ranges,
+            "host_count": number of individual hosts/domains
+        }
+    """
+    total_ips = 0
+    cidr_count = 0
+    host_count = 0
+    
+    cidr_pattern = re.compile(r'^[\d.:a-fA-F]+/\d+$')
+    
+    for target in targets:
+        target = target.strip()
+        if not target:
+            continue
+            
+        # Check if it's a CIDR notation
+        if cidr_pattern.match(target):
+            try:
+                network = ipaddress.ip_network(target, strict=False)
+                total_ips += network.num_addresses
+                cidr_count += 1
+            except ValueError:
+                # Invalid CIDR, count as 1
+                total_ips += 1
+                host_count += 1
+        else:
+            # It's a domain, subdomain, or single IP
+            total_ips += 1
+            host_count += 1
+    
+    return {
+        "targets_original": len(targets),
+        "targets_expanded": total_ips,
+        "cidr_count": cidr_count,
+        "host_count": host_count
+    }
     return user.organization_id == org_id
 
 
@@ -393,6 +441,10 @@ def trigger_scheduled_scan(
         config["generate_findings"] = True
         config["scanner"] = config.get("scanner", "naabu")
     
+    # Calculate target statistics (total IPs from CIDRs, etc.)
+    target_stats = calculate_target_stats(targets)
+    config["target_stats"] = target_stats
+    
     scan = Scan(
         name=f"{schedule.name} - Manual Trigger",
         scan_type=scan_type,
@@ -401,6 +453,13 @@ def trigger_scheduled_scan(
         config=config,
         started_by=current_user.username,
         status=ScanStatus.PENDING,
+        # Pre-populate results with target stats for immediate display
+        results={
+            "targets_original": target_stats["targets_original"],
+            "targets_expanded": target_stats["targets_expanded"],
+            "cidr_count": target_stats["cidr_count"],
+            "host_count": target_stats["host_count"],
+        }
     )
     
     db.add(scan)
@@ -415,8 +474,11 @@ def trigger_scheduled_scan(
     return {
         "success": True,
         "scan_id": scan.id,
-        "targets_count": len(targets),
-        "message": f"Scan '{scan.name}' created and queued with {len(targets)} targets",
+        "targets_count": target_stats["targets_original"],
+        "total_ips": target_stats["targets_expanded"],
+        "cidr_count": target_stats["cidr_count"],
+        "host_count": target_stats["host_count"],
+        "message": f"Scan '{scan.name}' created with {target_stats['targets_expanded']:,} IPs from {target_stats['targets_original']} targets",
     }
 
 
