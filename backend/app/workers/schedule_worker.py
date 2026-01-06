@@ -22,8 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES, ALL_CRITICAL_PORTS
 from app.models.scan import Scan, ScanType, ScanStatus
-from app.models.asset import Asset
+from app.models.asset import Asset, AssetType
 from app.models.label import Label
+from app.models.netblock import Netblock
 
 # Configure logging
 logging.basicConfig(
@@ -110,11 +111,15 @@ class ScheduleWorker:
         """Run a single schedule by creating a scan job."""
         logger.info(f"Running schedule: {schedule.name} (ID: {schedule.id})")
         
-        # Get targets
-        targets = schedule.targets or []
+        # Get targets from various sources
+        targets = []
         
-        # If no static targets, get from labels
-        if not targets and schedule.label_ids:
+        # 1. Check for explicit targets on the schedule
+        if schedule.targets:
+            targets = schedule.targets
+        
+        # 2. Check for label-based targeting
+        elif schedule.label_ids:
             query = db.query(Asset).filter(
                 Asset.organization_id == schedule.organization_id,
                 Asset.in_scope == True
@@ -129,9 +134,44 @@ class ScheduleWorker:
             assets = query.distinct().all()
             targets = [a.value for a in assets]
         
+        # 3. If no explicit targets, use ALL in-scope assets and netblocks for the organization
+        else:
+            # Get all in-scope assets (domains, subdomains, IPs)
+            assets = db.query(Asset).filter(
+                Asset.organization_id == schedule.organization_id,
+                Asset.in_scope == True,
+                Asset.asset_type.in_([
+                    AssetType.DOMAIN,
+                    AssetType.SUBDOMAIN,
+                    AssetType.IP_ADDRESS,
+                    AssetType.IP_RANGE,
+                ])
+            ).all()
+            
+            # Get all in-scope netblocks (CIDR ranges from WhoisXML, etc.)
+            netblocks = db.query(Netblock).filter(
+                Netblock.organization_id == schedule.organization_id,
+                Netblock.in_scope == True
+            ).all()
+            
+            # Collect targets
+            asset_targets = [a.value for a in assets]
+            
+            # Add CIDR notations from netblocks
+            netblock_targets = []
+            for nb in netblocks:
+                if nb.cidr_notation:
+                    # Handle multiple CIDRs (comma-separated)
+                    cidrs = [c.strip() for c in nb.cidr_notation.split(',') if c.strip()]
+                    netblock_targets.extend(cidrs)
+            
+            # Combine and deduplicate
+            targets = list(set(asset_targets + netblock_targets))
+            logger.info(f"Auto-targeting {len(asset_targets)} assets + {len(netblock_targets)} netblock CIDRs")
+        
         if not targets:
             logger.warning(f"No targets for schedule {schedule.id}")
-            schedule.last_error = "No targets found"
+            schedule.last_error = "No targets found - run discovery first"
             schedule.next_run_at = schedule.calculate_next_run()
             db.commit()
             return

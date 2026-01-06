@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES, CRITICAL_PORTS, ALL_CRITICAL_PORTS
 from app.models.scan import Scan, ScanType, ScanStatus
-from app.models.asset import Asset
+from app.models.asset import Asset, AssetType
 from app.models.label import Label
 from app.models.user import User
+from app.models.netblock import Netblock
 from app.schemas.scan_schedule import (
     ScanScheduleCreate,
     ScanScheduleUpdate,
@@ -293,11 +294,19 @@ def trigger_scheduled_scan(
     if not check_org_access(current_user, schedule.organization_id):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Build targets from labels if specified
-    targets = request.override_targets if request and request.override_targets else schedule.targets
+    # Build targets from various sources
+    targets = []
     
-    if schedule.label_ids and not targets:
-        # Get assets with labels
+    # 1. Check for override targets from manual trigger
+    if request and request.override_targets:
+        targets = request.override_targets
+    
+    # 2. Check for explicit targets on the schedule
+    elif schedule.targets:
+        targets = schedule.targets
+    
+    # 3. Check for label-based targeting
+    elif schedule.label_ids:
         query = db.query(Asset).filter(
             Asset.organization_id == schedule.organization_id,
             Asset.in_scope == True
@@ -312,10 +321,44 @@ def trigger_scheduled_scan(
         assets = query.distinct().all()
         targets = [a.value for a in assets]
     
+    # 4. If no explicit targets, use ALL in-scope assets and netblocks for the organization
+    else:
+        # Get all in-scope assets (domains, subdomains, IPs)
+        assets = db.query(Asset).filter(
+            Asset.organization_id == schedule.organization_id,
+            Asset.in_scope == True,
+            Asset.asset_type.in_([
+                AssetType.DOMAIN,
+                AssetType.SUBDOMAIN,
+                AssetType.IP_ADDRESS,
+                AssetType.IP_RANGE,
+            ])
+        ).all()
+        
+        # Get all in-scope netblocks (CIDR ranges from WhoisXML, etc.)
+        netblocks = db.query(Netblock).filter(
+            Netblock.organization_id == schedule.organization_id,
+            Netblock.in_scope == True
+        ).all()
+        
+        # Collect targets
+        asset_targets = [a.value for a in assets]
+        
+        # Add CIDR notations from netblocks
+        netblock_targets = []
+        for nb in netblocks:
+            if nb.cidr_notation:
+                # Handle multiple CIDRs (comma-separated)
+                cidrs = [c.strip() for c in nb.cidr_notation.split(',') if c.strip()]
+                netblock_targets.extend(cidrs)
+        
+        # Combine and deduplicate
+        targets = list(set(asset_targets + netblock_targets))
+    
     if not targets:
         raise HTTPException(
             status_code=400,
-            detail="No targets found for this schedule. Add targets or assign labels to assets."
+            detail="No targets found for this schedule. Run discovery first to populate assets and netblocks."
         )
     
     # Map schedule scan_type to ScanType enum
@@ -331,19 +374,19 @@ def trigger_scheduled_scan(
     
     scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)
     
-    # For critical_ports scans, ensure we use the critical ports list
-    if schedule.scan_type == "critical_ports":
-        config["ports"] = ",".join(str(p) for p in ALL_CRITICAL_PORTS)
-        config["generate_findings"] = True
-        config["scanner"] = config.get("scanner", "naabu")
-    
-    # Create the scan
+    # Build config
     config = {
         **(schedule.config or {}),
         **(request.override_config if request and request.override_config else {}),
         "triggered_by_schedule": schedule.id,
         "schedule_name": schedule.name,
     }
+    
+    # For critical_ports scans, ensure we use the critical ports list
+    if schedule.scan_type == "critical_ports":
+        config["ports"] = ",".join(str(p) for p in ALL_CRITICAL_PORTS)
+        config["generate_findings"] = True
+        config["scanner"] = config.get("scanner", "naabu")
     
     scan = Scan(
         name=f"{schedule.name} - Manual Trigger",
@@ -368,7 +411,7 @@ def trigger_scheduled_scan(
         "success": True,
         "scan_id": scan.id,
         "targets_count": len(targets),
-        "message": f"Scan '{scan.name}' created and queued",
+        "message": f"Scan '{scan.name}' created and queued with {len(targets)} targets",
     }
 
 

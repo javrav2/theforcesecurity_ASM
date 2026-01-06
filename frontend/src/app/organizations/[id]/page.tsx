@@ -27,10 +27,6 @@ import {
   Save,
   X,
   Server,
-  Shield,
-  AlertTriangle,
-  CheckCircle,
-  XCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -63,21 +59,6 @@ interface Asset {
   created_at: string;
 }
 
-interface DiscoveryResult {
-  domain: string;
-  total_subdomains: number;
-  total_ips: number;
-  total_cidrs: number;
-  assets_created: number;
-  source_results: Array<{
-    source: string;
-    success: boolean;
-    subdomains_found: number;
-    ips_found: number;
-    elapsed_time: number;
-    error?: string;
-  }>;
-}
 
 export default function OrganizationDetailPage() {
   const params = useParams();
@@ -91,11 +72,6 @@ export default function OrganizationDetailPage() {
   const [editData, setEditData] = useState({ name: '', description: '', domain: '' });
   const [saving, setSaving] = useState(false);
   
-  // Discovery state
-  const [discoveryDomain, setDiscoveryDomain] = useState('');
-  const [running, setRunning] = useState(false);
-  const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null);
-  
   const { toast } = useToast();
 
   const fetchOrganization = async () => {
@@ -107,7 +83,6 @@ export default function OrganizationDetailPage() {
         description: data.description || '',
         domain: data.domain || '',
       });
-      setDiscoveryDomain(data.domain || '');
     } catch (error: any) {
       if (error.response?.status === 404) {
         toast({
@@ -163,47 +138,6 @@ export default function OrganizationDetailPage() {
       });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleRunDiscovery = async () => {
-    if (!discoveryDomain) {
-      toast({
-        title: 'Error',
-        description: 'Please enter a domain to discover',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    setRunning(true);
-    setDiscoveryResult(null);
-    try {
-      const result = await api.runExternalDiscovery({
-        organization_id: orgId,
-        domain: discoveryDomain,
-        include_free_sources: true,
-        include_paid_sources: true,
-        create_assets: true,
-        skip_existing: true,
-      });
-
-      setDiscoveryResult(result);
-      toast({
-        title: 'Discovery Complete',
-        description: `Found ${result.total_subdomains} subdomains, ${result.total_ips} IPs. Created ${result.assets_created} new assets.`,
-      });
-      
-      // Refresh assets list
-      await fetchAssets();
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: error.response?.data?.detail || 'Failed to run discovery',
-        variant: 'destructive',
-      });
-    } finally {
-      setRunning(false);
     }
   };
 
@@ -347,134 +281,23 @@ export default function OrganizationDetailPage() {
               Discover subdomains, IPs, and related assets using external sources
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-4">
+          <CardContent>
+            <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
               <div className="flex-1">
-                <Input
-                  placeholder="Enter domain (e.g., rockwellautomation.com)"
-                  value={discoveryDomain}
-                  onChange={(e) => setDiscoveryDomain(e.target.value)}
-                />
+                <p className="text-sm text-muted-foreground">
+                  Run a comprehensive discovery scan to find subdomains, IP addresses, technologies, 
+                  and capture screenshots across all your assets.
+                </p>
               </div>
-              <Button onClick={handleRunDiscovery} disabled={running || !discoveryDomain}>
-                {running ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Discovering...
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-4 w-4 mr-2" />
-                    Start Discovery
-                  </>
-                )}
-              </Button>
+              <Link 
+                href={`/discovery?org=${orgId}${organization.domain ? `&domain=${organization.domain}` : ''}`}
+              >
+                <Button className="whitespace-nowrap">
+                  <Play className="h-4 w-4 mr-2" />
+                  Run Full Discovery
+                </Button>
+              </Link>
             </div>
-
-            {running && (
-              <div className="p-4 bg-muted rounded-lg">
-                <div className="flex items-center gap-3">
-                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                  <div>
-                    <p className="font-medium">Discovery in progress...</p>
-                    <p className="text-sm text-muted-foreground">
-                      Querying crt.sh, Wayback Machine, RapidDNS, and other sources...
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Discovery Results */}
-            {discoveryResult && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3">
-                        <Globe className="h-8 w-8 text-blue-500" />
-                        <div>
-                          <p className="text-2xl font-bold">{discoveryResult.total_subdomains}</p>
-                          <p className="text-sm text-muted-foreground">Subdomains</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                  
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3">
-                        <Server className="h-8 w-8 text-green-500" />
-                        <div>
-                          <p className="text-2xl font-bold">{discoveryResult.total_ips}</p>
-                          <p className="text-sm text-muted-foreground">IP Addresses</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3">
-                        <Shield className="h-8 w-8 text-orange-500" />
-                        <div>
-                          <p className="text-2xl font-bold">{discoveryResult.assets_created}</p>
-                          <p className="text-sm text-muted-foreground">Assets Created</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3">
-                        <AlertTriangle className="h-8 w-8 text-purple-500" />
-                        <div>
-                          <p className="text-2xl font-bold">{discoveryResult.total_cidrs}</p>
-                          <p className="text-sm text-muted-foreground">IP Ranges</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                {/* Source Results */}
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Source</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Subdomains</TableHead>
-                      <TableHead className="text-right">IPs</TableHead>
-                      <TableHead className="text-right">Time</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {discoveryResult.source_results.map((source) => (
-                      <TableRow key={source.source}>
-                        <TableCell className="font-medium">{source.source}</TableCell>
-                        <TableCell>
-                          {source.success ? (
-                            <Badge variant="default" className="bg-green-600">
-                              <CheckCircle className="h-3 w-3 mr-1" />
-                              Success
-                            </Badge>
-                          ) : (
-                            <Badge variant="destructive">
-                              <XCircle className="h-3 w-3 mr-1" />
-                              Failed
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">{source.subdomains_found}</TableCell>
-                        <TableCell className="text-right">{source.ips_found}</TableCell>
-                        <TableCell className="text-right">{source.elapsed_time.toFixed(2)}s</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
           </CardContent>
         </Card>
 
@@ -543,6 +366,7 @@ export default function OrganizationDetailPage() {
     </MainLayout>
   );
 }
+
 
 
 

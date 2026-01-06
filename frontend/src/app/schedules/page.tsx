@@ -437,8 +437,13 @@ export default function SchedulesPage() {
                     onChange={(e) => setFormData({ ...formData, targets: e.target.value })}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Leave empty to scan all organization assets
+                    Leave empty to automatically scan <span className="font-medium text-primary">all discovered assets</span> including:
                   </p>
+                  <ul className="text-xs text-muted-foreground list-disc list-inside pl-2 space-y-0.5">
+                    <li>Domains and subdomains from discovery</li>
+                    <li>IP addresses and ranges</li>
+                    <li>CIDR blocks from WhoisXML netblocks</li>
+                  </ul>
                 </div>
 
                 <div className="flex items-center gap-2">

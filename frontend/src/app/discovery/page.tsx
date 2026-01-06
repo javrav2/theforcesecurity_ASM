@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -115,12 +116,27 @@ interface WaybackResult {
 }
 
 export default function DiscoveryPage() {
+  const searchParams = useSearchParams();
+  
   // Common state
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrg, setSelectedOrg] = useState<string>('');
   const [domain, setDomain] = useState('');
   const { toast } = useToast();
+  
+  // Pre-fill from URL params (when coming from Organization page)
+  useEffect(() => {
+    const orgId = searchParams.get('org');
+    const domainParam = searchParams.get('domain');
+    
+    if (orgId) {
+      setSelectedOrg(orgId);
+    }
+    if (domainParam) {
+      setDomain(domainParam);
+    }
+  }, [searchParams]);
 
   // External Discovery state
   const [discoveryRunning, setDiscoveryRunning] = useState(false);
