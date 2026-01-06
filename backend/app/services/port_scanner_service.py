@@ -1100,10 +1100,16 @@ class PortScannerService:
             ).first()
             
             if not asset and create_assets:
+                # Skip CIDR ranges - they belong in netblocks table, not assets
+                if self._is_cidr(host):
+                    logger.debug(f"Skipping CIDR range {host} - belongs in netblocks, not assets")
+                    summary["hosts_skipped"] = summary.get("hosts_skipped", 0) + 1
+                    continue
+                
                 # Determine asset type
                 asset_type = AssetType.IP_ADDRESS
                 if not self._is_ip(host):
-                    asset_type = AssetType.DOMAIN
+                    asset_type = AssetType.SUBDOMAIN  # More likely a subdomain than root domain
                 
                 asset = Asset(
                     organization_id=organization_id,
@@ -1168,11 +1174,17 @@ class PortScannerService:
         return summary
     
     def _is_ip(self, value: str) -> bool:
-        """Check if value is an IP address."""
+        """Check if value is an IP address (not CIDR)."""
         import re
         ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
         ipv6_pattern = r'^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$'
         return bool(re.match(ipv4_pattern, value) or re.match(ipv6_pattern, value))
+    
+    def _is_cidr(self, value: str) -> bool:
+        """Check if value is a CIDR range (e.g., 192.168.1.0/24)."""
+        import re
+        cidr_pattern = r'^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+        return bool(re.match(cidr_pattern, value))
     
     def _build_host_results(self, ports_found: List[PortResult], all_targets: List[str]) -> List[HostScanResult]:
         """Build host results from port findings and target list."""
