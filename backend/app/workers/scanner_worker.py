@@ -402,11 +402,41 @@ class ScannerWorker:
                     {"host": p.host, "ip": p.ip, "port": p.port, "protocol": p.protocol, "state": p.state}
                     for p in result.ports_found
                 ]
+                
+                # Build host_results for frontend display
+                # Group ports by host
+                host_ports = {}
+                for p in result.ports_found:
+                    host_key = p.ip or p.host
+                    if host_key not in host_ports:
+                        host_ports[host_key] = []
+                    host_ports[host_key].append(p.port)
+                
+                # Also get host results from import_summary if available
+                host_results = import_summary.get('host_results', [])
+                if not host_results:
+                    # Build from our port data
+                    host_results = []
+                    for host, ports in host_ports.items():
+                        host_results.append({
+                            'host': host,
+                            'ip': host,
+                            'is_live': len(ports) > 0,
+                            'open_ports': sorted(set(ports)),
+                            'port_count': len(set(ports)),
+                        })
+                
                 scan.results = {
-                    'ports_found': ports_data,
-                    'ports_count': len(result.ports_found),
-                    'unique_hosts': len(unique_hosts),
+                    # Frontend expects ports_found as a NUMBER, not array
+                    'ports_found': len(result.ports_found),
+                    'ports_data': ports_data,  # Keep array data under different key
+                    'ports_imported': import_summary.get('ports_imported', 0),
+                    'ports_updated': import_summary.get('ports_updated', 0),
+                    'live_hosts': len(unique_hosts),
+                    'host_results': host_results,  # Array for frontend table display
                     'targets_scanned': result.targets_scanned,
+                    'targets_original': len(result.hosts_scanned) if hasattr(result, 'hosts_scanned') else 0,
+                    'targets_expanded': import_summary.get('hosts_processed', len(unique_hosts)),
                     'scanner': result.scanner.value,
                     'duration_seconds': result.duration_seconds,
                     'errors': result.errors,
