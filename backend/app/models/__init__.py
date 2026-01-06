@@ -1,6 +1,7 @@
 # Models module
 from app.models.user import User, UserRole
 from app.models.organization import Organization
+from app.models.netblock import Netblock  # Must be imported BEFORE Asset due to FK reference
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.vulnerability import Vulnerability, Severity, VulnerabilityStatus
 from app.models.scan import Scan, ScanType, ScanStatus
@@ -15,7 +16,8 @@ from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS
 __all__ = [
     "User",
     "UserRole",
-    "Organization", 
+    "Organization",
+    "Netblock",
     "Asset",
     "AssetType",
     "AssetStatus",
