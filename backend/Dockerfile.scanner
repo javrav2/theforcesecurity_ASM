@@ -78,20 +78,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcap0.8 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pre-built binaries from builder
+# Create app directory
+WORKDIR /app
+
+# Copy Python requirements and install FIRST (before binaries)
+# This is important because pip's httpx package installs a CLI that would overwrite our binary
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy pre-built binaries from builder AFTER pip install
+# This ensures our Go binaries aren't overwritten by Python package CLI scripts
 COPY --from=builder /tools/nuclei /usr/local/bin/
 COPY --from=builder /tools/subfinder /usr/local/bin/
-COPY --from=builder /tools/httpx /usr/local/bin/
+COPY --from=builder /tools/httpx /usr/local/bin/httpx
 COPY --from=builder /tools/naabu /usr/local/bin/
 COPY --from=builder /tools/dnsx /usr/local/bin/
 COPY --from=builder /tools/katana /usr/local/bin/
 
-# Create app directory
-WORKDIR /app
-
-# Copy Python requirements and install
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Ensure binaries are executable and not overwritten
+RUN chmod +x /usr/local/bin/nuclei /usr/local/bin/subfinder /usr/local/bin/httpx \
+    /usr/local/bin/naabu /usr/local/bin/dnsx /usr/local/bin/katana
 
 # Copy application code
 COPY . .
