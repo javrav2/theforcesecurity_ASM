@@ -564,6 +564,8 @@ async def enrich_assets_geolocation(
                 geo_data = await geo_service.lookup_hostname(asset.value, geo_provider)
             
             if geo_data:
+                from app.services.geolocation_service import get_region_from_country
+                
                 asset.ip_address = geo_data.get("ip_address")
                 asset.latitude = geo_data.get("latitude")
                 asset.longitude = geo_data.get("longitude")
@@ -572,6 +574,12 @@ async def enrich_assets_geolocation(
                 asset.country_code = geo_data.get("country_code")
                 asset.isp = geo_data.get("isp")
                 asset.asn = geo_data.get("asn")
+                
+                # Auto-assign region from country code
+                country_code = geo_data.get("country_code") or geo_data.get("country")
+                if country_code:
+                    asset.region = get_region_from_country(country_code)
+                
                 enriched_count += 1
                 
                 # Track countries
@@ -600,6 +608,8 @@ def get_assets_geo_stats(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get geo-location statistics for assets - used by the map component."""
+    from app.services.geolocation_service import get_all_regions
+    
     query = db.query(Asset)
     
     # Organization filter
@@ -608,7 +618,7 @@ def get_assets_geo_stats(
             query = query.filter(Asset.organization_id == organization_id)
     else:
         if not current_user.organization_id:
-            return {"total": 0, "with_geo": 0, "without_geo": 0, "by_country": {}}
+            return {"total": 0, "with_geo": 0, "without_geo": 0, "by_country": {}, "by_region": {}}
         query = query.filter(Asset.organization_id == current_user.organization_id)
     
     assets = query.all()
@@ -618,12 +628,17 @@ def get_assets_geo_stats(
     without_geo = 0
     by_country = {}
     by_city = {}
+    by_region = {}
     
     for asset in assets:
         if asset.latitude and asset.longitude:
             with_geo += 1
             country = asset.country or asset.country_code or "Unknown"
             by_country[country] = by_country.get(country, 0) + 1
+            
+            # Track by region
+            region = asset.region or "Unknown"
+            by_region[region] = by_region.get(region, 0) + 1
             
             if asset.city:
                 city_key = f"{asset.city}, {country}"
@@ -635,9 +650,96 @@ def get_assets_geo_stats(
         "total": total,
         "with_geo": with_geo,
         "without_geo": without_geo,
+        "by_region": dict(sorted(by_region.items(), key=lambda x: x[1], reverse=True)),
         "by_country": dict(sorted(by_country.items(), key=lambda x: x[1], reverse=True)),
         "by_city": dict(sorted(by_city.items(), key=lambda x: x[1], reverse=True)[:20]),
-        "coverage_percent": round(with_geo / total * 100, 1) if total > 0 else 0
+        "coverage_percent": round(with_geo / total * 100, 1) if total > 0 else 0,
+        "available_regions": get_all_regions()
+    }
+
+
+@router.get("/by-region")
+def get_assets_by_region(
+    region: str = Query(..., description="Region to filter by (e.g., 'North America', 'Europe', 'Asia')"),
+    organization_id: Optional[int] = None,
+    asset_type: Optional[AssetType] = None,
+    in_scope: bool = Query(True, description="Only return in-scope assets"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get assets filtered by geographic region. Useful for regional scanning."""
+    query = db.query(Asset).filter(Asset.region == region)
+    
+    # Organization filter
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Asset.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"assets": [], "count": 0, "region": region}
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    if asset_type:
+        query = query.filter(Asset.asset_type == asset_type)
+    
+    if in_scope:
+        query = query.filter(Asset.in_scope == True)
+    
+    assets = query.order_by(Asset.country_code, Asset.value).all()
+    
+    # Group by country within region
+    by_country = {}
+    for asset in assets:
+        country = asset.country or asset.country_code or "Unknown"
+        if country not in by_country:
+            by_country[country] = []
+        by_country[country].append({
+            "id": asset.id,
+            "value": asset.value,
+            "type": asset.asset_type.value,
+            "city": asset.city,
+            "is_live": asset.is_live,
+            "ip_address": asset.ip_address,
+        })
+    
+    return {
+        "region": region,
+        "count": len(assets),
+        "by_country": by_country,
+        "targets": [a.value for a in assets]  # Flat list for scanning
+    }
+
+
+@router.get("/regions")
+def get_available_regions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get list of regions that have assets."""
+    from app.services.geolocation_service import get_all_regions
+    
+    # Get regions that actually have assets
+    query = db.query(Asset.region, db.func.count(Asset.id).label('count'))
+    
+    if not current_user.is_superuser and current_user.organization_id:
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    query = query.filter(Asset.region.isnot(None))
+    results = query.group_by(Asset.region).all()
+    
+    regions_with_assets = {r.region: r.count for r in results}
+    all_regions = get_all_regions()
+    
+    return {
+        "regions": [
+            {
+                "name": region,
+                "asset_count": regions_with_assets.get(region, 0),
+                "has_assets": region in regions_with_assets
+            }
+            for region in all_regions
+        ],
+        "total_with_region": sum(regions_with_assets.values())
     }
 
 

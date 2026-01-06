@@ -109,9 +109,10 @@ class Asset(Base):
     ip_address = Column(String(45), nullable=True)  # Resolved IP address
     latitude = Column(String(20), nullable=True)
     longitude = Column(String(20), nullable=True)
+    region = Column(String(50), nullable=True, index=True)  # Geographic region (e.g., "North America", "EMEA", "APAC")
     city = Column(String(100), nullable=True)
     country = Column(String(100), nullable=True)
-    country_code = Column(String(10), nullable=True)
+    country_code = Column(String(10), nullable=True, index=True)
     isp = Column(String(200), nullable=True)
     asn = Column(String(50), nullable=True)
     

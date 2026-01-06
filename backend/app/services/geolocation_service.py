@@ -348,3 +348,128 @@ def configure_geolocation_service(
     )
     return _geo_service
 
+
+# =============================================================================
+# Region Mapping
+# =============================================================================
+
+# Standard geographic regions
+REGIONS = {
+    "NORTH_AMERICA": "North America",
+    "SOUTH_AMERICA": "South America",
+    "EUROPE": "Europe",
+    "EMEA": "EMEA",  # Europe, Middle East, Africa
+    "APAC": "APAC",  # Asia-Pacific
+    "ASIA": "Asia",
+    "AFRICA": "Africa",
+    "OCEANIA": "Oceania",
+    "MIDDLE_EAST": "Middle East",
+}
+
+# Country code to region mapping (ISO 3166-1 alpha-2)
+COUNTRY_TO_REGION: Dict[str, str] = {
+    # North America
+    "US": "North America", "CA": "North America", "MX": "North America",
+    "GT": "North America", "BZ": "North America", "HN": "North America",
+    "SV": "North America", "NI": "North America", "CR": "North America",
+    "PA": "North America", "JM": "North America", "HT": "North America",
+    "DO": "North America", "CU": "North America", "BS": "North America",
+    "TT": "North America", "BB": "North America", "PR": "North America",
+    
+    # South America
+    "BR": "South America", "AR": "South America", "CO": "South America",
+    "PE": "South America", "VE": "South America", "CL": "South America",
+    "EC": "South America", "BO": "South America", "PY": "South America",
+    "UY": "South America", "GY": "South America", "SR": "South America",
+    "GF": "South America",
+    
+    # Europe
+    "GB": "Europe", "DE": "Europe", "FR": "Europe", "IT": "Europe",
+    "ES": "Europe", "PT": "Europe", "NL": "Europe", "BE": "Europe",
+    "AT": "Europe", "CH": "Europe", "PL": "Europe", "CZ": "Europe",
+    "SK": "Europe", "HU": "Europe", "RO": "Europe", "BG": "Europe",
+    "GR": "Europe", "SE": "Europe", "NO": "Europe", "DK": "Europe",
+    "FI": "Europe", "IE": "Europe", "LU": "Europe", "EE": "Europe",
+    "LV": "Europe", "LT": "Europe", "SI": "Europe", "HR": "Europe",
+    "RS": "Europe", "BA": "Europe", "MK": "Europe", "AL": "Europe",
+    "ME": "Europe", "XK": "Europe", "UA": "Europe", "BY": "Europe",
+    "MD": "Europe", "MT": "Europe", "CY": "Europe", "IS": "Europe",
+    
+    # Middle East
+    "SA": "Middle East", "AE": "Middle East", "QA": "Middle East",
+    "KW": "Middle East", "BH": "Middle East", "OM": "Middle East",
+    "YE": "Middle East", "IQ": "Middle East", "IR": "Middle East",
+    "SY": "Middle East", "JO": "Middle East", "LB": "Middle East",
+    "IL": "Middle East", "PS": "Middle East", "TR": "Middle East",
+    
+    # Africa
+    "ZA": "Africa", "EG": "Africa", "NG": "Africa", "KE": "Africa",
+    "MA": "Africa", "DZ": "Africa", "TN": "Africa", "GH": "Africa",
+    "ET": "Africa", "TZ": "Africa", "UG": "Africa", "RW": "Africa",
+    "SN": "Africa", "CI": "Africa", "CM": "Africa", "AO": "Africa",
+    "MZ": "Africa", "ZW": "Africa", "ZM": "Africa", "BW": "Africa",
+    "NA": "Africa", "MU": "Africa", "LY": "Africa", "SD": "Africa",
+    
+    # Asia (excluding Middle East)
+    "CN": "Asia", "JP": "Asia", "KR": "Asia", "IN": "Asia",
+    "PK": "Asia", "BD": "Asia", "TH": "Asia", "VN": "Asia",
+    "MY": "Asia", "SG": "Asia", "ID": "Asia", "PH": "Asia",
+    "TW": "Asia", "HK": "Asia", "MO": "Asia", "MM": "Asia",
+    "KH": "Asia", "LA": "Asia", "NP": "Asia", "LK": "Asia",
+    "MN": "Asia", "KZ": "Asia", "UZ": "Asia", "KG": "Asia",
+    "TJ": "Asia", "TM": "Asia", "AF": "Asia", "BT": "Asia",
+    "MV": "Asia", "BN": "Asia",
+    
+    # Oceania
+    "AU": "Oceania", "NZ": "Oceania", "FJ": "Oceania", "PG": "Oceania",
+    "NC": "Oceania", "VU": "Oceania", "WS": "Oceania", "TO": "Oceania",
+    "GU": "Oceania", "PF": "Oceania",
+    
+    # Russia (spans Europe/Asia - commonly grouped with Europe for business)
+    "RU": "Europe",
+}
+
+
+def get_region_from_country(country_code: Optional[str]) -> Optional[str]:
+    """
+    Get the geographic region for a country code.
+    
+    Args:
+        country_code: ISO 3166-1 alpha-2 country code (e.g., "US", "GB", "JP")
+    
+    Returns:
+        Region name or None if country not found
+    """
+    if not country_code:
+        return None
+    return COUNTRY_TO_REGION.get(country_code.upper())
+
+
+def get_emea_region(country_code: Optional[str]) -> Optional[str]:
+    """
+    Get EMEA grouping (common in enterprise).
+    Returns "EMEA" for Europe, Middle East, and Africa.
+    Returns "Americas" for North/South America.
+    Returns "APAC" for Asia-Pacific.
+    """
+    if not country_code:
+        return None
+    
+    region = get_region_from_country(country_code)
+    if not region:
+        return None
+    
+    if region in ["Europe", "Middle East", "Africa"]:
+        return "EMEA"
+    elif region in ["North America", "South America"]:
+        return "Americas"
+    elif region in ["Asia", "Oceania"]:
+        return "APAC"
+    
+    return region
+
+
+def get_all_regions() -> list[str]:
+    """Get list of all available regions."""
+    return sorted(list(set(COUNTRY_TO_REGION.values())))
+

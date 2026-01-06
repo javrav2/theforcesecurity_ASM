@@ -52,7 +52,8 @@ class Netblock(Base):
     description = Column(Text, nullable=True)  # Description from WHOIS
     
     # Geographic information
-    country = Column(String(10), nullable=True)
+    region = Column(String(50), nullable=True, index=True)  # Geographic region (e.g., "North America", "EMEA", "APAC")
+    country = Column(String(10), nullable=True, index=True)
     city = Column(String(100), nullable=True)
     address = Column(Text, nullable=True)
     
@@ -84,6 +85,7 @@ class Netblock(Base):
     
     def __repr__(self):
         return f"<Netblock {self.cidr_notation or self.inetnum} owned={self.is_owned} scope={self.in_scope}>"
+
 
 
 

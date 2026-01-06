@@ -446,5 +446,160 @@ def get_targets_by_netblock_ids(
     }
 
 
+@router.get("/by-region")
+def get_netblocks_by_region(
+    region: str = Query(..., description="Region to filter by (e.g., 'North America', 'Europe', 'Asia')"),
+    organization_id: Optional[int] = None,
+    in_scope: bool = Query(True, description="Only return in-scope netblocks"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get netblocks filtered by geographic region. Useful for regional scanning."""
+    query = db.query(Netblock).filter(Netblock.region == region)
+    
+    # Organization filter
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Netblock.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"netblocks": [], "count": 0, "region": region}
+        query = query.filter(Netblock.organization_id == current_user.organization_id)
+    
+    if in_scope:
+        query = query.filter(Netblock.in_scope == True)
+    
+    netblocks = query.order_by(Netblock.country, Netblock.start_ip).all()
+    
+    # Group by country within region
+    by_country = {}
+    total_ips = 0
+    targets = []
+    
+    for nb in netblocks:
+        country = nb.country or nb.org_country or "Unknown"
+        if country not in by_country:
+            by_country[country] = []
+        by_country[country].append({
+            "id": nb.id,
+            "cidr": nb.cidr_notation or nb.inetnum,
+            "ip_count": nb.ip_count,
+            "org_name": nb.org_name,
+            "is_owned": nb.is_owned,
+        })
+        total_ips += nb.ip_count or 0
+        
+        # Build targets list (handle semicolon-separated CIDRs)
+        if nb.cidr_notation:
+            for cidr in nb.cidr_notation.replace(',', ';').split(';'):
+                if cidr.strip():
+                    targets.append(cidr.strip())
+    
+    return {
+        "region": region,
+        "count": len(netblocks),
+        "total_ips": total_ips,
+        "by_country": by_country,
+        "targets": targets  # Flat list of CIDRs for scanning
+    }
 
 
+@router.get("/regions")
+def get_netblock_regions(
+    organization_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get list of regions that have netblocks."""
+    from app.services.geolocation_service import get_all_regions, get_region_from_country
+    
+    query = db.query(Netblock)
+    
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Netblock.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"regions": []}
+        query = query.filter(Netblock.organization_id == current_user.organization_id)
+    
+    netblocks = query.all()
+    
+    # Count by region
+    by_region = {}
+    ips_by_region = {}
+    
+    for nb in netblocks:
+        # Try to get region from netblock.region, else derive from country
+        region = nb.region
+        if not region:
+            country = nb.country or nb.org_country
+            if country:
+                region = get_region_from_country(country)
+        
+        if not region:
+            region = "Unknown"
+        
+        by_region[region] = by_region.get(region, 0) + 1
+        ips_by_region[region] = ips_by_region.get(region, 0) + (nb.ip_count or 0)
+    
+    all_regions = get_all_regions()
+    
+    return {
+        "regions": [
+            {
+                "name": region,
+                "netblock_count": by_region.get(region, 0),
+                "ip_count": ips_by_region.get(region, 0),
+                "has_netblocks": region in by_region
+            }
+            for region in all_regions
+        ] + (
+            [{"name": "Unknown", "netblock_count": by_region.get("Unknown", 0), 
+              "ip_count": ips_by_region.get("Unknown", 0), "has_netblocks": True}]
+            if "Unknown" in by_region else []
+        ),
+        "total_netblocks": len(netblocks),
+        "total_ips": sum(ips_by_region.values())
+    }
+
+
+@router.post("/assign-regions")
+async def assign_regions_to_netblocks(
+    organization_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """Auto-assign regions to netblocks based on country codes."""
+    from app.services.geolocation_service import get_region_from_country
+    
+    query = db.query(Netblock).filter(
+        (Netblock.region == None) | (Netblock.region == "")
+    )
+    
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Netblock.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"updated": 0, "message": "No organization access"}
+        query = query.filter(Netblock.organization_id == current_user.organization_id)
+    
+    netblocks = query.all()
+    updated = 0
+    
+    for nb in netblocks:
+        country = nb.country or nb.org_country
+        if country:
+            region = get_region_from_country(country)
+            if region:
+                nb.region = region
+                updated += 1
+    
+    db.commit()
+    
+    return {
+        "updated": updated,
+        "total": len(netblocks),
+        "message": f"Assigned regions to {updated} netblocks"
+    }
