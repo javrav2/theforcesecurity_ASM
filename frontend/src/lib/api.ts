@@ -346,15 +346,41 @@ class ApiClient {
   }
 
   // Geo-location enrichment
-  async enrichAssetsGeolocation(organizationId?: number, limit: number = 50) {
-    const params: any = { limit };
-    if (organizationId) params.organization_id = organizationId;
+  async enrichAssetsGeolocation(options?: {
+    organizationId?: number;
+    limit?: number;
+    provider?: 'ip-api' | 'ipinfo' | 'whoisxml';
+    ipinfoToken?: string;
+    whoisxmlApiKey?: string;
+    force?: boolean;
+  }) {
+    const params: any = { limit: options?.limit || 50 };
+    if (options?.organizationId) params.organization_id = options.organizationId;
+    if (options?.provider) params.provider = options.provider;
+    if (options?.ipinfoToken) params.ipinfo_token = options.ipinfoToken;
+    if (options?.whoisxmlApiKey) params.whoisxml_api_key = options.whoisxmlApiKey;
+    if (options?.force) params.force = true;
     const response = await this.client.post('/assets/enrich-geolocation', null, { params });
     return response.data;
   }
 
-  async enrichAssetGeolocation(assetId: number) {
-    const response = await this.client.post(`/assets/${assetId}/enrich-geolocation`);
+  async enrichAssetGeolocation(assetId: number, options?: {
+    provider?: 'ip-api' | 'ipinfo' | 'whoisxml';
+    ipinfoToken?: string;
+    whoisxmlApiKey?: string;
+  }) {
+    const params: any = {};
+    if (options?.provider) params.provider = options.provider;
+    if (options?.ipinfoToken) params.ipinfo_token = options.ipinfoToken;
+    if (options?.whoisxmlApiKey) params.whoisxml_api_key = options.whoisxmlApiKey;
+    const response = await this.client.post(`/assets/${assetId}/enrich-geolocation`, null, { params });
+    return response.data;
+  }
+
+  async getGeoStats(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/assets/geo-stats', { params });
     return response.data;
   }
 

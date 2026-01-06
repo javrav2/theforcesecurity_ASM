@@ -485,15 +485,44 @@ async def enrich_assets_geolocation(
     organization_id: Optional[int] = None,
     force: bool = Query(False, description="Re-enrich assets that already have geo data"),
     limit: int = Query(50, ge=1, le=200, description="Maximum assets to enrich"),
+    provider: Optional[str] = Query(None, description="Geo provider: ip-api, ipinfo, whoisxml"),
+    ipinfo_token: Optional[str] = Query(None, description="IPInfo.io API token"),
+    whoisxml_api_key: Optional[str] = Query(None, description="WhoisXML API key"),
+    include_ips: bool = Query(True, description="Also enrich IP address assets"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst)
 ):
     """
     Enrich assets with geo-location data by resolving hostnames and looking up IP locations.
     
-    Uses ip-api.com (free, 45 requests/minute) to look up geo-location data.
+    Supported providers:
+    - ip-api: Free, no API key required (45 req/min)
+    - ipinfo: Free tier 50k/month, optional token for higher limits
+    - whoisxml: Requires API key (https://ip-geolocation.whoisxmlapi.com)
+    
+    Example with WhoisXML:
+    POST /api/assets/enrich-geolocation?whoisxml_api_key=at_xxx&provider=whoisxml
     """
-    from app.services.geolocation_service import get_geolocation_service
+    from app.services.geolocation_service import get_geolocation_service, GeoProvider
+    
+    geo_service = get_geolocation_service()
+    
+    # Configure API keys if provided
+    if ipinfo_token or whoisxml_api_key:
+        geo_service.set_api_keys(
+            ipinfo_token=ipinfo_token,
+            whoisxml_api_key=whoisxml_api_key
+        )
+    
+    # Parse provider
+    geo_provider = None
+    if provider:
+        provider_map = {
+            "ip-api": GeoProvider.IP_API,
+            "ipinfo": GeoProvider.IPINFO,
+            "whoisxml": GeoProvider.WHOISXML,
+        }
+        geo_provider = provider_map.get(provider.lower())
     
     query = db.query(Asset)
     
@@ -506,8 +535,11 @@ async def enrich_assets_geolocation(
             return {"enriched": 0, "total": 0, "message": "No organization access"}
         query = query.filter(Asset.organization_id == current_user.organization_id)
     
-    # Only enrich domains and subdomains (resolvable hostnames)
-    query = query.filter(Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]))
+    # Include domains, subdomains, and optionally IP addresses
+    asset_types = [AssetType.DOMAIN, AssetType.SUBDOMAIN]
+    if include_ips:
+        asset_types.append(AssetType.IP_ADDRESS)
+    query = query.filter(Asset.asset_type.in_(asset_types))
     
     # Optionally skip assets that already have geo data
     if not force:
@@ -520,12 +552,16 @@ async def enrich_assets_geolocation(
     if not assets:
         return {"enriched": 0, "total": 0, "message": "No assets to enrich"}
     
-    geo_service = get_geolocation_service()
     enriched_count = 0
+    countries_found = {}
     
     for asset in assets:
         try:
-            geo_data = await geo_service.lookup_hostname(asset.value)
+            # For IP addresses, look up directly; for hostnames, resolve first
+            if asset.asset_type == AssetType.IP_ADDRESS:
+                geo_data = await geo_service.lookup_ip(asset.value, geo_provider)
+            else:
+                geo_data = await geo_service.lookup_hostname(asset.value, geo_provider)
             
             if geo_data:
                 asset.ip_address = geo_data.get("ip_address")
@@ -537,6 +573,11 @@ async def enrich_assets_geolocation(
                 asset.isp = geo_data.get("isp")
                 asset.asn = geo_data.get("asn")
                 enriched_count += 1
+                
+                # Track countries
+                country = geo_data.get("country") or geo_data.get("country_code")
+                if country:
+                    countries_found[country] = countries_found.get(country, 0) + 1
         except Exception as e:
             # Log but continue with other assets
             pass
@@ -546,18 +587,71 @@ async def enrich_assets_geolocation(
     return {
         "enriched": enriched_count,
         "total": len(assets),
+        "countries": countries_found,
+        "provider_used": provider or "ip-api",
         "message": f"Successfully enriched {enriched_count} of {len(assets)} assets with geo-location data"
+    }
+
+
+@router.get("/geo-stats")
+def get_assets_geo_stats(
+    organization_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get geo-location statistics for assets - used by the map component."""
+    query = db.query(Asset)
+    
+    # Organization filter
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Asset.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"total": 0, "with_geo": 0, "without_geo": 0, "by_country": {}}
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    assets = query.all()
+    
+    total = len(assets)
+    with_geo = 0
+    without_geo = 0
+    by_country = {}
+    by_city = {}
+    
+    for asset in assets:
+        if asset.latitude and asset.longitude:
+            with_geo += 1
+            country = asset.country or asset.country_code or "Unknown"
+            by_country[country] = by_country.get(country, 0) + 1
+            
+            if asset.city:
+                city_key = f"{asset.city}, {country}"
+                by_city[city_key] = by_city.get(city_key, 0) + 1
+        else:
+            without_geo += 1
+    
+    return {
+        "total": total,
+        "with_geo": with_geo,
+        "without_geo": without_geo,
+        "by_country": dict(sorted(by_country.items(), key=lambda x: x[1], reverse=True)),
+        "by_city": dict(sorted(by_city.items(), key=lambda x: x[1], reverse=True)[:20]),
+        "coverage_percent": round(with_geo / total * 100, 1) if total > 0 else 0
     }
 
 
 @router.post("/{asset_id}/enrich-geolocation", response_model=AssetResponse)
 async def enrich_single_asset_geolocation(
     asset_id: int,
+    provider: Optional[str] = Query(None, description="Geo provider: ip-api, ipinfo, whoisxml"),
+    ipinfo_token: Optional[str] = Query(None, description="IPInfo.io API token"),
+    whoisxml_api_key: Optional[str] = Query(None, description="WhoisXML API key"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst)
 ):
     """Enrich a single asset with geo-location data."""
-    from app.services.geolocation_service import get_geolocation_service
+    from app.services.geolocation_service import get_geolocation_service, GeoProvider
     
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     
@@ -574,7 +668,29 @@ async def enrich_single_asset_geolocation(
         )
     
     geo_service = get_geolocation_service()
-    geo_data = await geo_service.lookup_hostname(asset.value)
+    
+    # Configure API keys if provided
+    if ipinfo_token or whoisxml_api_key:
+        geo_service.set_api_keys(
+            ipinfo_token=ipinfo_token,
+            whoisxml_api_key=whoisxml_api_key
+        )
+    
+    # Parse provider
+    geo_provider = None
+    if provider:
+        provider_map = {
+            "ip-api": GeoProvider.IP_API,
+            "ipinfo": GeoProvider.IPINFO,
+            "whoisxml": GeoProvider.WHOISXML,
+        }
+        geo_provider = provider_map.get(provider.lower())
+    
+    # For IP addresses, look up directly; for hostnames, resolve first
+    if asset.asset_type == AssetType.IP_ADDRESS:
+        geo_data = await geo_service.lookup_ip(asset.value, geo_provider)
+    else:
+        geo_data = await geo_service.lookup_hostname(asset.value, geo_provider)
     
     if geo_data:
         asset.ip_address = geo_data.get("ip_address")
