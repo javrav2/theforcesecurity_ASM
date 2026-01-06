@@ -144,6 +144,39 @@ class PortScannerService:
         self.masscan_path = masscan_path
         self.nmap_path = nmap_path
     
+    def get_port_list(self, db, name: str) -> str:
+        """
+        Get a port list from the database by name.
+        
+        Args:
+            db: Database session
+            name: Port list name (e.g., "critical", "quick", "databases")
+        
+        Returns:
+            Comma-separated port string
+        """
+        from app.models.scan_config import ScanConfig
+        
+        config = db.query(ScanConfig).filter(
+            ScanConfig.config_type == "port_list",
+            ScanConfig.name == name,
+            ScanConfig.is_active == True
+        ).first()
+        
+        if config and config.config.get("ports"):
+            return ",".join(str(p) for p in config.config["ports"])
+        
+        # Fallback to hardcoded lists
+        if name == "critical":
+            from app.models.scan_schedule import ALL_CRITICAL_PORTS
+            return ",".join(str(p) for p in ALL_CRITICAL_PORTS)
+        elif name == "quick":
+            return self.COMMON_PORTS
+        elif name == "full":
+            return self.TOP_PORTS
+        
+        return self.COMMON_PORTS
+    
     def check_tools(self) -> dict[str, bool]:
         """Check which scanning tools are available."""
         tools = {

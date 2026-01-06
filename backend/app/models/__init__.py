@@ -12,6 +12,7 @@ from app.models.screenshot import Screenshot, ScreenshotStatus, ScreenshotSchedu
 from app.models.api_config import APIConfig, ExternalService, DEFAULT_RATE_LIMITS
 from app.models.label import Label, asset_labels
 from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES
+from app.models.scan_config import ScanConfig, DEFAULT_PORT_LISTS, seed_default_port_lists
 
 __all__ = [
     "User",
@@ -49,4 +50,7 @@ __all__ = [
     "ScanSchedule",
     "ScheduleFrequency",
     "CONTINUOUS_SCAN_TYPES",
+    "ScanConfig",
+    "DEFAULT_PORT_LISTS",
+    "seed_default_port_lists",
 ]
