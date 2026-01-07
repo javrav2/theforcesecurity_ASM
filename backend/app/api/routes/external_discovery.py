@@ -376,19 +376,58 @@ async def run_external_discovery(
     created_hosts: list[str] = []
     all_hosts: list[str] = []  # ALL discovered domains and subdomains for tech scanning
     
-    # Build a mapping of asset -> discovery source(s)
-    # This tracks HOW each asset was discovered
+    # Build a mapping of asset -> discovery source(s) with DETAILED match criteria
+    # This tracks exactly HOW and WHY each asset was discovered
     asset_sources: dict[str, list[dict]] = {}
+    
     for source_name, result in results.items():
-        for domain in result.domains:
-            if domain not in asset_sources:
-                asset_sources[domain] = []
-            asset_sources[domain].append({
-                "step": len(asset_sources[domain]) + 1,
-                "source": result.source,
-                "query_domain": request.domain,
-                "timestamp": datetime.utcnow().isoformat()
-            })
+        # For Whoxy, extract the specific match criteria (email or company that matched)
+        if result.source == "whoxy" and result.raw_data:
+            domains_by_email = result.raw_data.get("domains_by_email", {})
+            domains_by_company = result.raw_data.get("domains_by_company", {})
+            
+            # Track which email caused each domain to be discovered
+            for email, domains_list in domains_by_email.items():
+                for domain in domains_list:
+                    if domain not in asset_sources:
+                        asset_sources[domain] = []
+                    asset_sources[domain].append({
+                        "step": len(asset_sources[domain]) + 1,
+                        "source": "whoxy",
+                        "match_type": "email",
+                        "match_value": email,
+                        "query_domain": request.domain,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "confidence": 90 if "@" in email and "rockwell" in email.lower() else 70
+                    })
+            
+            # Track which company caused each domain to be discovered
+            for company, domains_list in domains_by_company.items():
+                for domain in domains_list:
+                    if domain not in asset_sources:
+                        asset_sources[domain] = []
+                    asset_sources[domain].append({
+                        "step": len(asset_sources[domain]) + 1,
+                        "source": "whoxy",
+                        "match_type": "company",
+                        "match_value": company,
+                        "query_domain": request.domain,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "confidence": 85  # Company matches are generally reliable
+                    })
+        else:
+            # For other sources, just track the source
+            for domain in result.domains:
+                if domain not in asset_sources:
+                    asset_sources[domain] = []
+                asset_sources[domain].append({
+                    "step": len(asset_sources[domain]) + 1,
+                    "source": result.source,
+                    "query_domain": request.domain,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "confidence": 80
+                })
+        
         for subdomain in result.subdomains:
             if subdomain not in asset_sources:
                 asset_sources[subdomain] = []
@@ -396,7 +435,8 @@ async def run_external_discovery(
                 "step": len(asset_sources[subdomain]) + 1,
                 "source": result.source,
                 "query_domain": request.domain,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "confidence": 95  # Subdomains from DNS/certs are very reliable
             })
     
     if request.create_assets:
@@ -414,11 +454,29 @@ async def run_external_discovery(
             source_names = list(set(s["source"] for s in sources))
             primary_source = source_names[0] if source_names else "external_discovery"
             
-            # Build human-readable association reason
+            # Calculate confidence from sources (use highest confidence)
+            confidence = max([s.get("confidence", 50) for s in sources]) if sources else 50
+            
+            # Build human-readable association reason with SPECIFIC match criteria
             if domain == request.domain:
                 association_reason = f"Primary domain for organization"
+                confidence = 100
             elif "whoxy" in source_names:
-                association_reason = f"Found via Whoxy reverse WHOIS lookup on {request.domain}"
+                # Find the specific match that caused this domain to be discovered
+                whoxy_matches = [s for s in sources if s.get("source") == "whoxy"]
+                match_details = []
+                for match in whoxy_matches:
+                    match_type = match.get("match_type", "unknown")
+                    match_value = match.get("match_value", "unknown")
+                    if match_type == "email":
+                        match_details.append(f"registrant email '{match_value}'")
+                    elif match_type == "company":
+                        match_details.append(f"company name '{match_value}'")
+                
+                if match_details:
+                    association_reason = f"Found via Whoxy reverse WHOIS - matched on {', '.join(match_details)}"
+                else:
+                    association_reason = f"Found via Whoxy reverse WHOIS lookup on {request.domain}"
             elif "m365" in source_names:
                 association_reason = f"Found via Microsoft 365 federation from {request.domain}"
             elif "commoncrawl" in source_names or "commoncrawl_comprehensive" in source_names:
@@ -434,6 +492,7 @@ async def run_external_discovery(
                 if not existing.discovery_chain:
                     existing.discovery_chain = sources
                     existing.association_reason = association_reason
+                    existing.association_confidence = confidence
             else:
                 asset = Asset(
                     name=domain,
@@ -444,6 +503,7 @@ async def run_external_discovery(
                     discovery_source=primary_source,
                     discovery_chain=sources,
                     association_reason=association_reason,
+                    association_confidence=confidence,
                     tags=["external-discovery"],
                 )
                 db.add(asset)
