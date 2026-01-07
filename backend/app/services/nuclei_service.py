@@ -412,32 +412,55 @@ class NucleiService:
                 logger.info(f"Nuclei output file exists, size: {file_size} bytes")
                 
                 with open(output_file_path, 'r') as f:
-                    for line_num, line in enumerate(f, 1):
+                    file_content = f.read().strip()
+                
+                # Handle both JSON Array format and JSON Lines format
+                findings_data = []
+                if file_content.startswith('['):
+                    # JSON Array format (from -je flag)
+                    try:
+                        parsed = json.loads(file_content)
+                        if isinstance(parsed, list):
+                            findings_data = parsed
+                            logger.info(f"Parsed as JSON array with {len(findings_data)} entries")
+                        else:
+                            logger.warning(f"Expected JSON array but got {type(parsed)}")
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse as JSON array: {e}")
+                else:
+                    # JSON Lines format (one JSON object per line)
+                    for line_num, line in enumerate(file_content.split('\n'), 1):
                         line = line.strip()
                         if line:
                             try:
                                 finding_data = json.loads(line)
-                                
-                                # Skip non-dict entries (Nuclei sometimes outputs arrays or other types)
-                                if not isinstance(finding_data, dict):
-                                    logger.debug(f"Skipping non-dict finding on line {line_num}: {type(finding_data)}")
-                                    continue
-                                
-                                # Skip entries that don't have the required fields
-                                if not finding_data.get("template-id") and not finding_data.get("templateID"):
-                                    logger.debug(f"Skipping entry without template-id on line {line_num}")
-                                    continue
-                                
-                                finding = NucleiResult.from_json(finding_data)
-                                result.findings.append(finding)
-                                logger.debug(f"Parsed finding: {finding.template_id} on {finding.host}")
+                                if isinstance(finding_data, dict):
+                                    findings_data.append(finding_data)
                             except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse JSON on line {line_num}: {e} - line content: {line[:200]}")
-                            except (AttributeError, TypeError, KeyError) as e:
-                                # Handle malformed data structures in Nuclei output
-                                logger.warning(f"Failed to process finding on line {line_num}: {e} - data: {str(finding_data)[:200]}")
-                            except Exception as e:
-                                logger.warning(f"Unexpected error parsing line {line_num}: {e}")
+                                logger.warning(f"Failed to parse JSON on line {line_num}: {e}")
+                    logger.info(f"Parsed as JSON Lines with {len(findings_data)} entries")
+                
+                # Process each finding
+                for idx, finding_data in enumerate(findings_data):
+                    try:
+                        # Skip non-dict entries
+                        if not isinstance(finding_data, dict):
+                            logger.debug(f"Skipping non-dict finding at index {idx}: {type(finding_data)}")
+                            continue
+                        
+                        # Skip entries that don't have the required fields
+                        if not finding_data.get("template-id") and not finding_data.get("templateID"):
+                            logger.debug(f"Skipping entry without template-id at index {idx}")
+                            continue
+                        
+                        finding = NucleiResult.from_json(finding_data)
+                        result.findings.append(finding)
+                        logger.debug(f"Parsed finding: {finding.template_id} on {finding.host}")
+                    except (AttributeError, TypeError, KeyError) as e:
+                        # Handle malformed data structures in Nuclei output
+                        logger.warning(f"Failed to process finding at index {idx}: {e} - data: {str(finding_data)[:200]}")
+                    except Exception as e:
+                        logger.warning(f"Unexpected error parsing finding at index {idx}: {e}")
                 
                 logger.info(f"Parsed {len(result.findings)} findings from output file")
             else:
