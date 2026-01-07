@@ -44,6 +44,7 @@ import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
 import { ApplicationMap } from '@/components/assets/ApplicationMap';
+import { DiscoveryPath } from '@/components/assets/DiscoveryPath';
 
 interface Technology {
   name: string;
@@ -65,11 +66,23 @@ interface PortService {
   port_string: string;
 }
 
+interface DiscoveryStep {
+  step: number;
+  source: string;
+  match_type?: string;
+  match_value?: string;
+  query_domain?: string;
+  timestamp?: string;
+  confidence?: number;
+}
+
 interface Asset {
   id: number;
   name: string;
   asset_type: string;
   value: string;
+  root_domain?: string;
+  live_url?: string;
   organization_id: number;
   parent_id?: number;
   status: string;
@@ -77,15 +90,21 @@ interface Asset {
   tags: string[];
   metadata_: Record<string, any>;
   discovery_source?: string;
+  discovery_chain?: DiscoveryStep[];
+  association_reason?: string;
+  association_confidence?: number;
   first_seen: string;
   last_seen: string;
   risk_score: number;
   criticality: string;
   is_monitored: boolean;
+  is_live?: boolean;
   http_status?: number;
   http_title?: string;
   dns_records: Record<string, any>;
   ip_address?: string;
+  ip_addresses?: string[];
+  ip_history?: Array<{ip: string; first_seen: string; last_seen: string; removed_at?: string}>;
   latitude?: string;
   longitude?: string;
   city?: string;
@@ -383,6 +402,28 @@ export default function AssetDetailPage() {
           </Card>
         </div>
 
+        {/* Discovery Path - Visual representation of how this asset was found */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">How This Asset Was Discovered</CardTitle>
+            <CardDescription>
+              Visual path from source to this asset
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DiscoveryPath
+              value={asset.value}
+              assetType={asset.asset_type}
+              rootDomain={asset.root_domain}
+              liveUrl={asset.live_url}
+              discoverySource={asset.discovery_source}
+              discoveryChain={asset.discovery_chain}
+              associationReason={asset.association_reason}
+              associationConfidence={asset.association_confidence}
+            />
+          </CardContent>
+        </Card>
+
         {/* Details Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Asset Info */}
@@ -391,6 +432,20 @@ export default function AssetDetailPage() {
               <CardTitle className="text-lg">Asset Information</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Root Domain</span>
+                <span className="font-medium">{asset.root_domain || '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Live URL</span>
+                {asset.live_url ? (
+                  <a href={asset.live_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-mono text-sm truncate max-w-[250px]">
+                    {asset.live_url}
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Discovery Source</span>
                 <span className="font-medium">{asset.discovery_source || '—'}</span>
@@ -437,12 +492,23 @@ export default function AssetDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {asset.ip_address && (
+              {asset.ip_addresses && asset.ip_addresses.length > 0 ? (
+                <div>
+                  <span className="text-muted-foreground text-sm">IP Addresses ({asset.ip_addresses.length})</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {asset.ip_addresses.map((ip, idx) => (
+                      <Badge key={idx} variant="outline" className="font-mono text-xs">
+                        {ip}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : asset.ip_address ? (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">IP Address</span>
                   <span className="font-mono">{asset.ip_address}</span>
                 </div>
-              )}
+              ) : null}
               {asset.asn && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">ASN</span>
