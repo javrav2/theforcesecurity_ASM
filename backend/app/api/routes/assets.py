@@ -989,3 +989,54 @@ async def probe_assets_live(
         "live": live_count,
         "message": f"Found {live_count} live assets out of {len(assets)} probed"
     }
+
+
+@router.get("/domain-stats")
+def get_domain_statistics(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Get statistics grouped by root domain.
+    
+    Returns count of subdomains, live assets, and total assets per root domain.
+    This allows seeing how many assets belong to each top-level domain.
+    """
+    from sqlalchemy import func
+    
+    query = db.query(
+        Asset.root_domain,
+        func.count(Asset.id).label('total_assets'),
+        func.count(Asset.id).filter(Asset.asset_type == AssetType.SUBDOMAIN).label('subdomains'),
+        func.count(Asset.id).filter(Asset.is_live == True).label('live_assets'),
+    ).filter(
+        Asset.root_domain.isnot(None)
+    )
+    
+    if organization_id:
+        if not check_org_access(current_user, organization_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this organization"
+            )
+        query = query.filter(Asset.organization_id == organization_id)
+    elif not current_user.is_superuser:
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    query = query.group_by(Asset.root_domain).order_by(func.count(Asset.id).desc())
+    
+    results = query.all()
+    
+    return {
+        "domains": [
+            {
+                "root_domain": r.root_domain,
+                "total_assets": r.total_assets,
+                "subdomains": r.subdomains,
+                "live_assets": r.live_assets
+            }
+            for r in results
+        ],
+        "total_domains": len(results)
+    }

@@ -49,37 +49,20 @@ def _get_or_create_technology(db: Session, detected) -> Technology:
     return db_tech
 
 
-def _get_or_create_url_asset(
+def _update_asset_with_url(
     db: Session,
     *,
-    organization_id: int,
+    asset: Asset,
     url: str,
-    parent_asset_id: Optional[int],
-    discovery_source: str = "wappalyzer",
 ) -> Asset:
-    existing = (
-        db.query(Asset)
-        .filter(
-            Asset.organization_id == organization_id,
-            Asset.asset_type == AssetType.URL,
-            Asset.value == url,
-        )
-        .first()
-    )
-    if existing:
-        return existing
-
-    asset = Asset(
-        organization_id=organization_id,
-        asset_type=AssetType.URL,
-        name=url,
-        value=url,
-        parent_id=parent_asset_id,
-        discovery_source=discovery_source,
-        status=AssetStatus.DISCOVERED,
-        metadata_={},
-    )
-    db.add(asset)
+    """
+    Update an existing asset with the live URL it responded on.
+    Wappalyzer should ENRICH existing assets, not create new ones.
+    """
+    # Update the asset with the live URL (don't change discovery_source)
+    if not asset.live_url:
+        asset.live_url = url
+    asset.is_live = True
     db.flush()
     return asset
 
@@ -122,22 +105,19 @@ async def _scan_single_host(
         if not detected_techs:
             continue
 
-        url_asset = _get_or_create_url_asset(
-            db,
-            organization_id=organization_id,
-            url=url,
-            parent_asset_id=host_asset.id,
-        )
+        # Update the domain/subdomain asset with live_url (don't create separate URL asset)
+        _update_asset_with_url(db, asset=host_asset, url=url)
 
+        # Attach technologies directly to the domain/subdomain asset
         for dt in detected_techs:
             db_tech = _get_or_create_technology(db, dt)
             add_tech_to_asset(
                 db,
                 organization_id=organization_id,
-                asset=url_asset,
+                asset=host_asset,  # Attach to domain/subdomain, not a separate URL asset
                 tech=db_tech,
                 also_tag_asset=True,
-                tag_parent=True,
+                tag_parent=False,  # No parent since we're already on the host asset
             )
             techs_found += 1
 

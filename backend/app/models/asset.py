@@ -44,6 +44,7 @@ class Asset(Base):
     name = Column(String(255), index=True, nullable=False)
     asset_type = Column(Enum(AssetType), nullable=False, index=True)
     value = Column(String(500), nullable=False)  # The actual domain/IP/URL etc.
+    root_domain = Column(String(255), nullable=True, index=True)  # The root domain (e.g., "rockwellautomation.com" for "sic.rockwellautomation.com")
     
     # Organization
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)

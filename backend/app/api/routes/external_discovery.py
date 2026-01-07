@@ -10,8 +10,47 @@ Provides endpoints to:
 import time
 from datetime import datetime
 from typing import List, Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
+
+
+def extract_root_domain(hostname: str) -> str:
+    """
+    Extract the root domain from a hostname or subdomain.
+    
+    Examples:
+        - "www.rockwellautomation.com" -> "rockwellautomation.com"
+        - "sic.rockwellautomation.com" -> "rockwellautomation.com"
+        - "rockwellautomation.com" -> "rockwellautomation.com"
+        - "foo.bar.co.uk" -> "bar.co.uk" (handles common TLDs)
+    """
+    hostname = hostname.lower().strip()
+    
+    # Handle URLs by extracting hostname
+    if '://' in hostname:
+        hostname = urlparse(hostname).netloc
+    
+    # Remove port if present
+    hostname = hostname.split(':')[0]
+    
+    # Common multi-part TLDs
+    multi_tlds = {'co.uk', 'com.au', 'co.nz', 'co.jp', 'com.br', 'co.in', 'org.uk', 'gov.uk', 'ac.uk'}
+    
+    parts = hostname.split('.')
+    
+    # Check for multi-part TLD
+    if len(parts) >= 3:
+        potential_tld = '.'.join(parts[-2:])
+        if potential_tld in multi_tlds:
+            # Return domain + multi-part TLD
+            return '.'.join(parts[-3:])
+    
+    # Standard case: return last two parts
+    if len(parts) >= 2:
+        return '.'.join(parts[-2:])
+    
+    return hostname
 
 from app.api.deps import get_db, get_current_active_user, require_analyst, require_admin
 from app.models.user import User
@@ -498,6 +537,7 @@ async def run_external_discovery(
                     name=domain,
                     asset_type=AssetType.DOMAIN,
                     value=domain,
+                    root_domain=extract_root_domain(domain),  # Set root domain
                     organization_id=request.organization_id,
                     status=AssetStatus.DISCOVERED,
                     discovery_source=primary_source,
@@ -553,10 +593,13 @@ async def run_external_discovery(
                     existing.discovery_chain = sources
                     existing.association_reason = association_reason
             else:
+                # Use the helper to get the root domain
+                root = extract_root_domain(subdomain)
                 asset = Asset(
                     name=subdomain,
                     asset_type=AssetType.SUBDOMAIN,
                     value=subdomain,
+                    root_domain=root,  # Set root domain for grouping
                     organization_id=request.organization_id,
                     status=AssetStatus.DISCOVERED,
                     discovery_source=primary_source,
