@@ -343,10 +343,13 @@ class NucleiService:
         
         try:
             # Build command
+            # Note: -jsonl outputs JSON Lines format (one JSON object per line)
+            # -o writes to file, -json-export may have different behavior in v3.x
             cmd = [
                 self.nuclei_path,
                 "-list", targets_file_path,
-                "-json-export", output_file_path,
+                "-jsonl",  # JSON Lines output format
+                "-o", output_file_path,  # Write output to file
                 "-rate-limit", str(rate_limit),
                 "-bulk-size", str(bulk_size),
                 "-concurrency", str(concurrency),
