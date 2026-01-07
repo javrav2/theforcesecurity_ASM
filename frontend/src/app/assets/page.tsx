@@ -638,16 +638,26 @@ export default function AssetsPage() {
                         {columns.find(c => c.key === 'hostname')?.visible && (
                           <TableCell>
                             <div className="flex items-center gap-2">
-                              <a
-                                href={`https://${asset.value || asset.name}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-mono text-sm text-foreground hover:text-primary flex items-center gap-1"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                {asset.name || asset.value}
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
+                              {(() => {
+                                const value = asset.value || asset.name;
+                                // Build proper URL - don't double-add protocol
+                                let href = value;
+                                if (value && !value.startsWith('http://') && !value.startsWith('https://')) {
+                                  href = `https://${value}`;
+                                }
+                                return (
+                                  <a
+                                    href={href}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-mono text-sm text-foreground hover:text-primary flex items-center gap-1"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    {asset.name || asset.value}
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                );
+                              })()}
                             </div>
                           </TableCell>
                         )}
