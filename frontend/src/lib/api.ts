@@ -247,6 +247,11 @@ class ApiClient {
     return response.data;
   }
 
+  async rescan(id: number) {
+    const response = await this.client.post(`/scans/${id}/rescan`);
+    return response.data;
+  }
+
   async previewScanByLabels(labelIds: number[], organizationId: number, matchAll: boolean = false) {
     const response = await this.client.get('/scans/labels/preview', {
       params: { label_ids: labelIds, organization_id: organizationId, match_all: matchAll }

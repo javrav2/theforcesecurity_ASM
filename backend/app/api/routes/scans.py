@@ -388,6 +388,54 @@ def cancel_scan(
     return scan
 
 
+@router.post("/{scan_id}/rescan", response_model=ScanResponse)
+def rescan(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Create a new scan based on an existing scan's configuration.
+    
+    This clones the original scan's targets, type, and config, then queues it for execution.
+    Useful for re-running completed or failed scans.
+    """
+    original_scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    
+    if not original_scan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Original scan not found"
+        )
+    
+    if not check_org_access(current_user, original_scan.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    # Clone the scan configuration
+    new_scan = Scan(
+        name=f"{original_scan.name} (Rescan)",
+        scan_type=original_scan.scan_type,
+        organization_id=original_scan.organization_id,
+        targets=original_scan.targets,
+        config={
+            **(original_scan.config or {}),
+            "rescan_of": original_scan.id,
+            "original_scan_name": original_scan.name,
+        },
+        status=ScanStatus.PENDING,
+        started_by=current_user.username,
+    )
+    
+    db.add(new_scan)
+    db.commit()
+    db.refresh(new_scan)
+    
+    return new_scan
+
+
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scan(
     scan_id: int,

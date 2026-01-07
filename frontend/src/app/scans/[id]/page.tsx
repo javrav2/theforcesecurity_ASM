@@ -80,6 +80,7 @@ export default function ScanDetailPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
   const { toast } = useToast();
 
   const fetchScan = async () => {
@@ -133,6 +134,29 @@ export default function ScanDetailPage() {
       });
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handleRescan = async () => {
+    if (!scan) return;
+    
+    setRescanning(true);
+    try {
+      const newScan = await api.rescan(scan.id);
+      toast({
+        title: 'Rescan Started',
+        description: `New scan "${newScan.name}" has been queued.`,
+      });
+      // Navigate to the new scan
+      router.push(`/scans/${newScan.id}`);
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to start rescan',
+        variant: 'destructive',
+      });
+    } finally {
+      setRescanning(false);
     }
   };
 
@@ -236,6 +260,19 @@ export default function ScanDetailPage() {
                   <StopCircle className="h-4 w-4 mr-2" />
                 )}
                 Stop Scan
+              </Button>
+            )}
+            {(scan.status === 'completed' || scan.status === 'failed' || scan.status === 'cancelled') && (
+              <Button 
+                onClick={handleRescan} 
+                disabled={rescanning}
+              >
+                {rescanning ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4 mr-2" />
+                )}
+                Rescan
               </Button>
             )}
             <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>

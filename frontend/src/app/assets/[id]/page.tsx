@@ -43,6 +43,7 @@ import {
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
+import { ApplicationMap } from '@/components/assets/ApplicationMap';
 
 interface Technology {
   name: string;
@@ -531,6 +532,16 @@ export default function AssetDetailPage() {
           </Card>
         )}
 
+        {/* Application Stack Map */}
+        <ApplicationMap
+          assetValue={asset.value}
+          assetType={asset.asset_type}
+          portServices={asset.port_services || []}
+          technologies={asset.technologies || []}
+          httpStatus={asset.http_status}
+          httpTitle={asset.http_title}
+        />
+
         {/* Port Services */}
         {asset.port_services && asset.port_services.length > 0 && (
           <Card>
@@ -653,5 +664,6 @@ export default function AssetDetailPage() {
     </MainLayout>
   );
 }
+
 
 
