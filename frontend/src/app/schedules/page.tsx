@@ -226,18 +226,19 @@ export default function SchedulesPage() {
 
   const handleTrigger = async (scheduleId: number) => {
     try {
-      const result = await api.request(`/scan-schedules/${scheduleId}/trigger`, {
-        method: 'POST',
-      });
+      const result = await api.triggerScanSchedule(scheduleId);
       toast({
         title: 'Scan Triggered',
-        description: `Scan queued with ${result.targets_count} targets`,
+        description: result.total_ips 
+          ? `Scan queued with ${result.total_ips.toLocaleString()} IPs from ${result.targets_count} targets`
+          : `Scan queued with ${result.targets_count} targets`,
       });
       fetchData();
     } catch (error: any) {
+      console.error('Trigger error:', error);
       toast({
         title: 'Error',
-        description: error.response?.data?.detail || 'Failed to trigger scan',
+        description: error.response?.data?.detail || error.message || 'Failed to trigger scan',
         variant: 'destructive',
       });
     }
