@@ -414,6 +414,17 @@ class ScannerWorker:
         retries = config.get('retries', 2)  # Retry on failure
         chunk_size = config.get('chunk_size', 64)  # Chunk large scans
         
+        # Naabu-specific options
+        top_ports = config.get('top_ports', 100)  # Top N ports if no ports specified
+        exclude_cdn = config.get('exclude_cdn', True)  # Exclude CDN IPs
+        exclude_ports = config.get('exclude_ports')  # Ports to exclude (e.g., "22,23")
+        scan_type = config.get('scan_type', 'c')  # 'c' = CONNECT (no root), 's' = SYN
+        host_discovery = config.get('host_discovery', False)  # Enable host discovery
+        
+        # Masscan-specific options
+        banner_grab = config.get('banner_grab', True)  # Grab banners for service ID
+        one_port_at_a_time = config.get('one_port_at_a_time', False)  # ASM Recon mode
+        
         # IMPORTANT: Set default ports if not specified (don't scan all 65535!)
         # This prevents accidental 33+ minute scans
         if not ports or ports == "-":
@@ -461,8 +472,15 @@ class ScannerWorker:
             if selected_scanner == ScannerType.NAABU:
                 scan_kwargs["retries"] = retries
                 scan_kwargs["chunk_size"] = chunk_size
-            elif selected_scanner == ScannerType.NMAP and service_detection:
-                scan_kwargs["service_detection"] = service_detection
+                scan_kwargs["top_ports"] = top_ports
+                scan_kwargs["exclude_cdn"] = exclude_cdn
+                # Note: exclude_ports and scan_type would need naabu service updates
+            elif selected_scanner == ScannerType.MASSCAN:
+                scan_kwargs["banner_grab"] = banner_grab
+                scan_kwargs["one_port_at_a_time"] = one_port_at_a_time
+            elif selected_scanner == ScannerType.NMAP:
+                if service_detection:
+                    scan_kwargs["service_detection"] = service_detection
             
             logger.info(f"Starting port scan with rate={rate}, timeout={timeout}, retries={retries}")
             
