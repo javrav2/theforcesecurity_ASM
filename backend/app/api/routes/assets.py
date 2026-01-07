@@ -566,7 +566,9 @@ async def enrich_assets_geolocation(
             if geo_data:
                 from app.services.geolocation_service import get_region_from_country
                 
-                asset.ip_address = geo_data.get("ip_address")
+                # Update IP using multi-value method
+                if geo_data.get("ip_address"):
+                    asset.add_ip_address(geo_data.get("ip_address"))
                 asset.latitude = geo_data.get("latitude")
                 asset.longitude = geo_data.get("longitude")
                 asset.city = geo_data.get("city")
@@ -795,7 +797,9 @@ async def enrich_single_asset_geolocation(
         geo_data = await geo_service.lookup_hostname(asset.value, geo_provider)
     
     if geo_data:
-        asset.ip_address = geo_data.get("ip_address")
+        # Update IP using multi-value method
+        if geo_data.get("ip_address"):
+            asset.add_ip_address(geo_data.get("ip_address"))
         asset.latitude = geo_data.get("latitude")
         asset.longitude = geo_data.get("longitude")
         asset.city = geo_data.get("city")
@@ -894,7 +898,7 @@ def import_httpx_results(
             asset.http_title = result.title
         
         if result.ip:
-            asset.ip_address = result.ip
+            asset.add_ip_address(result.ip)
         
         # Store additional HTTP info in metadata
         if result.webserver or result.content_type:
@@ -974,7 +978,7 @@ async def probe_assets_live(
             asset.http_status = result.status_code
             asset.http_title = result.title
             if result.ip:
-                asset.ip_address = result.ip
+                asset.add_ip_address(result.ip)
             asset.last_seen = datetime.utcnow()
             live_count += 1
         else:

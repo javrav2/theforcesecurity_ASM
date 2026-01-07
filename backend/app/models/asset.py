@@ -112,8 +112,12 @@ class Asset(Base):
     parameters = Column(JSON, default=list)  # List of discovered URL parameters
     js_files = Column(JSON, default=list)  # JavaScript files found (often contain secrets/endpoints)
     
-    # Geo-location info (for IP addresses and resolved domains)
-    ip_address = Column(String(45), nullable=True)  # Resolved IP address
+    # IP Resolution - multi-value to handle load balancers, CDNs, and IP changes over time
+    ip_addresses = Column(JSON, default=list)  # Current IPs: ["1.2.3.4", "5.6.7.8"]
+    ip_history = Column(JSON, default=list)  # Historical IPs with timestamps: [{"ip": "1.2.3.4", "first_seen": "...", "last_seen": "..."}]
+    ip_address = Column(String(45), nullable=True)  # Primary/first resolved IP (for backward compatibility)
+    
+    # Geo-location info (based on primary IP)
     latitude = Column(String(20), nullable=True)
     longitude = Column(String(20), nullable=True)
     region = Column(String(50), nullable=True, index=True)  # Geographic region (e.g., "North America", "EMEA", "APAC")
@@ -138,6 +142,64 @@ class Asset(Base):
     def risky_ports_count(self) -> int:
         """Get count of risky ports."""
         return len([p for p in self.port_services if p.is_risky])
+    
+    def update_ip_addresses(self, new_ips: list) -> None:
+        """
+        Update IP addresses for this asset. Handles multi-value IPs and history tracking.
+        
+        Args:
+            new_ips: List of IP addresses currently resolving for this asset
+        """
+        now = datetime.utcnow().isoformat()
+        
+        # Initialize if needed
+        if self.ip_addresses is None:
+            self.ip_addresses = []
+        if self.ip_history is None:
+            self.ip_history = []
+        
+        # Convert to sets for comparison
+        current_ips = set(self.ip_addresses or [])
+        new_ip_set = set(new_ips)
+        
+        # Update history for IPs no longer active
+        history = list(self.ip_history or [])
+        for old_ip in current_ips - new_ip_set:
+            # Mark as last seen
+            for entry in history:
+                if entry.get('ip') == old_ip and not entry.get('removed_at'):
+                    entry['last_seen'] = now
+                    entry['removed_at'] = now
+        
+        # Add new IPs to history
+        for new_ip in new_ip_set - current_ips:
+            history.append({
+                'ip': new_ip,
+                'first_seen': now,
+                'last_seen': now,
+                'removed_at': None
+            })
+        
+        # Update last_seen for IPs still active
+        for ip in new_ip_set & current_ips:
+            for entry in history:
+                if entry.get('ip') == ip and not entry.get('removed_at'):
+                    entry['last_seen'] = now
+        
+        # Update fields
+        self.ip_addresses = list(new_ip_set)
+        self.ip_history = history
+        
+        # Set primary IP for backward compatibility
+        if new_ips:
+            self.ip_address = new_ips[0]
+    
+    def add_ip_address(self, ip: str) -> None:
+        """Add a single IP address to this asset."""
+        current = list(self.ip_addresses or [])
+        if ip not in current:
+            current.append(ip)
+            self.update_ip_addresses(current)
     
     def __repr__(self):
         return f"<Asset {self.asset_type.value}: {self.value}>"
