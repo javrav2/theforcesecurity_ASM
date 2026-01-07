@@ -1225,3 +1225,205 @@ def get_domain_statistics(
         ],
         "total_domains": len(results)
     }
+
+
+@router.get("/ip-assets")
+def get_ip_assets_for_investigation(
+    organization_id: int = Query(..., description="Organization ID"),
+    has_open_ports: Optional[bool] = Query(None, description="Filter by whether IP has open ports"),
+    has_ssl_cert: Optional[bool] = Query(None, description="Filter by whether IP has SSL certificate"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get IP address assets with their services and associated domains for investigation.
+    
+    Returns IPs with:
+    - Open ports and services
+    - Associated domains (via DNS resolution or SSL certs)
+    - Live status and other metadata
+    
+    Use this to investigate what IPs are being used for, even if they don't have domains.
+    """
+    from app.models.port_service import PortService, PortState
+    from sqlalchemy import func
+    
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Query IP assets
+    query = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type == AssetType.IP_ADDRESS
+    )
+    
+    # Get total count before pagination
+    total_count = query.count()
+    
+    # Apply pagination
+    ip_assets = query.order_by(Asset.created_at.desc()).offset(skip).limit(limit).all()
+    
+    results = []
+    for ip_asset in ip_assets:
+        # Get port services for this IP
+        port_services = db.query(PortService).filter(
+            PortService.asset_id == ip_asset.id,
+            PortService.state == PortState.OPEN
+        ).all()
+        
+        # Find associated domains (domains that resolve to this IP)
+        associated_domains = db.query(Asset).filter(
+            Asset.organization_id == organization_id,
+            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+            Asset.ip_address == ip_asset.value
+        ).all()
+        
+        # Build services summary
+        services = []
+        risky_ports = []
+        for ps in port_services:
+            service_info = {
+                "port": ps.port,
+                "protocol": ps.protocol.value if ps.protocol else "tcp",
+                "service": ps.service_name,
+                "product": ps.service_product,
+                "version": ps.service_version,
+                "banner": ps.banner[:200] if ps.banner else None,
+                "is_risky": ps.is_risky
+            }
+            services.append(service_info)
+            if ps.is_risky:
+                risky_ports.append(ps.port)
+        
+        ip_info = {
+            "id": ip_asset.id,
+            "ip": ip_asset.value,
+            "is_live": ip_asset.is_live,
+            "discovery_source": ip_asset.discovery_source,
+            "association_reason": ip_asset.association_reason,
+            "created_at": ip_asset.created_at.isoformat() if ip_asset.created_at else None,
+            "last_seen": ip_asset.last_seen.isoformat() if ip_asset.last_seen else None,
+            
+            # Geolocation
+            "geo": {
+                "country": ip_asset.country,
+                "country_code": ip_asset.country_code,
+                "city": ip_asset.city,
+                "region": ip_asset.region,
+                "isp": ip_asset.isp,
+                "asn": ip_asset.asn,
+                "latitude": ip_asset.latitude,
+                "longitude": ip_asset.longitude,
+            } if ip_asset.country or ip_asset.city else None,
+            
+            # Services/Ports
+            "open_ports_count": len(port_services),
+            "risky_ports_count": len(risky_ports),
+            "risky_ports": risky_ports,
+            "services": services,
+            
+            # Associated domains
+            "associated_domains": [
+                {
+                    "id": d.id,
+                    "value": d.value,
+                    "type": d.asset_type.value,
+                    "is_live": d.is_live
+                }
+                for d in associated_domains
+            ],
+            "has_associated_domain": len(associated_domains) > 0,
+            
+            # Investigation notes
+            "notes": ip_asset.description,
+            "tags": ip_asset.tags or [],
+            "in_scope": ip_asset.in_scope,
+            "is_owned": ip_asset.is_owned,
+        }
+        
+        # Apply filters
+        if has_open_ports is not None:
+            if has_open_ports and len(port_services) == 0:
+                continue
+            if not has_open_ports and len(port_services) > 0:
+                continue
+        
+        results.append(ip_info)
+    
+    # Summary stats
+    total_with_ports = sum(1 for r in results if r["open_ports_count"] > 0)
+    total_with_domains = sum(1 for r in results if r["has_associated_domain"])
+    total_risky = sum(1 for r in results if r["risky_ports_count"] > 0)
+    
+    return {
+        "total": total_count,
+        "returned": len(results),
+        "skip": skip,
+        "limit": limit,
+        "summary": {
+            "with_open_ports": total_with_ports,
+            "with_associated_domains": total_with_domains,
+            "with_risky_ports": total_risky,
+            "standalone_ips": len(results) - total_with_domains  # IPs without domains
+        },
+        "ips": results
+    }
+
+
+@router.post("/{asset_id}/investigate")
+def update_asset_investigation_notes(
+    asset_id: int,
+    notes: str = Query(None, description="Investigation notes"),
+    purpose: str = Query(None, description="Purpose/use of this asset"),
+    tags: List[str] = Query(None, description="Tags to add"),
+    in_scope: bool = Query(None, description="Whether asset is in scope"),
+    is_owned: bool = Query(None, description="Whether asset is owned by org"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Update investigation notes and metadata for an asset.
+    
+    Use this to document findings about what an IP/asset is used for.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Update fields if provided
+    if notes is not None:
+        asset.description = notes
+    
+    if purpose is not None:
+        if not asset.metadata_:
+            asset.metadata_ = {}
+        asset.metadata_["purpose"] = purpose
+    
+    if tags is not None:
+        existing_tags = asset.tags or []
+        asset.tags = list(set(existing_tags + tags))
+    
+    if in_scope is not None:
+        asset.in_scope = in_scope
+    
+    if is_owned is not None:
+        asset.is_owned = is_owned
+    
+    asset.updated_at = datetime.utcnow()
+    db.commit()
+    
+    return {
+        "id": asset.id,
+        "value": asset.value,
+        "description": asset.description,
+        "purpose": asset.metadata_.get("purpose") if asset.metadata_ else None,
+        "tags": asset.tags,
+        "in_scope": asset.in_scope,
+        "is_owned": asset.is_owned,
+        "message": "Investigation notes updated"
+    }

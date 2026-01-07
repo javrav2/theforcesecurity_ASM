@@ -1183,13 +1183,37 @@ class PortScannerService:
                 if not self._is_ip(host):
                     asset_type = AssetType.SUBDOMAIN  # More likely a subdomain than root domain
                 
+                # Build discovery chain for traceability
+                discovery_chain = [{
+                    "step": 1,
+                    "source": scan_result.scanner.value if hasattr(scan_result, 'scanner') else "port_scan",
+                    "method": "port_scan_discovery",
+                    "ports_found": [p.port for p in ports] if ports else [],
+                    "timestamp": datetime.utcnow().isoformat()
+                }]
+                
+                # Build association reason
+                if asset_type == AssetType.IP_ADDRESS:
+                    if ports:
+                        services = [p.service_name for p in ports if p.service_name]
+                        association_reason = f"IP discovered via port scan with {len(ports)} open port(s)"
+                        if services:
+                            association_reason += f": {', '.join(set(services))}"
+                    else:
+                        association_reason = "IP discovered during port scan (no open ports found)"
+                else:
+                    association_reason = f"Host discovered via port scan"
+                
                 asset = Asset(
                     organization_id=organization_id,
                     name=host,
                     value=host,
                     asset_type=asset_type,
                     discovery_source=scan_result.scanner.value if hasattr(scan_result, 'scanner') else "port_scan",
-                    is_live=is_live
+                    discovery_chain=discovery_chain,
+                    association_reason=association_reason,
+                    is_live=is_live,
+                    in_scope=True  # Mark as in-scope since it was scanned from our netblocks
                 )
                 db.add(asset)
                 db.flush()
