@@ -599,15 +599,49 @@ class PortScannerService:
             
             # Parse JSON output
             if os.path.exists(output_path):
+                file_size = os.path.getsize(output_path)
+                logger.info(f"Masscan output file size: {file_size} bytes")
+                
                 with open(output_path, 'r') as f:
                     content = f.read().strip()
-                    if content:
+                    
+                    if not content:
+                        logger.warning("Masscan output file is empty")
+                    elif content == "[]":
+                        logger.info("Masscan found no open ports (empty array)")
+                    else:
+                        logger.debug(f"Masscan output (first 500 chars): {content[:500]}")
+                        
+                        # Clean up masscan JSON quirks:
+                        # 1. Remove { "finished": ... } lines
+                        # 2. Fix trailing commas before ]
+                        lines = content.split("\n")
+                        clean_lines = []
+                        for line in lines:
+                            line = line.strip()
+                            # Skip finished object and empty lines
+                            if not line or '"finished"' in line:
+                                continue
+                            clean_lines.append(line)
+                        
+                        # Rejoin and fix trailing commas
+                        clean_content = "\n".join(clean_lines)
+                        # Remove trailing comma before closing bracket
+                        clean_content = re.sub(r',\s*\]', ']', clean_content)
+                        # Remove trailing comma at end of array elements
+                        clean_content = re.sub(r'},\s*\n\s*\]', '}\n]', clean_content)
+                        
                         try:
-                            # Masscan JSON is an array
-                            data = json.loads(content)
+                            # Try parsing as JSON array
+                            data = json.loads(clean_content)
+                            logger.info(f"Parsed masscan JSON array with {len(data)} entries")
+                            
                             for entry in data:
+                                if not isinstance(entry, dict):
+                                    continue
                                 ip = entry.get("ip", "")
-                                for port_info in entry.get("ports", []):
+                                ports_data = entry.get("ports", [])
+                                for port_info in ports_data:
                                     result.ports_found.append(PortResult(
                                         host=ip,
                                         ip=ip,
@@ -615,14 +649,16 @@ class PortScannerService:
                                         protocol=port_info.get("proto", "tcp"),
                                         state=port_info.get("status", "open"),
                                         reason=port_info.get("reason", ""),
-                                        banner=port_info.get("service", {}).get("banner", ""),
+                                        banner=port_info.get("service", {}).get("banner", "") if isinstance(port_info.get("service"), dict) else "",
                                         scanner="masscan"
                                     ))
-                        except json.JSONDecodeError:
-                            # Try line-by-line parsing
+                                    
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"JSON parse failed: {e}, trying line-by-line parsing")
+                            # Fallback: line-by-line parsing for malformed JSON
                             for line in content.split("\n"):
                                 line = line.strip().rstrip(",")
-                                if line and line.startswith("{"):
+                                if line and line.startswith("{") and '"ip"' in line:
                                     try:
                                         entry = json.loads(line)
                                         ip = entry.get("ip", "")
@@ -635,8 +671,11 @@ class PortScannerService:
                                                 state="open",
                                                 scanner="masscan"
                                             ))
+                                            logger.debug(f"Parsed port from line: {ip}:{port_info.get('port')}")
                                     except json.JSONDecodeError:
                                         pass
+            else:
+                logger.error(f"Masscan output file not found: {output_path}")
             
             result.success = True
             result.targets_scanned = len(targets)
