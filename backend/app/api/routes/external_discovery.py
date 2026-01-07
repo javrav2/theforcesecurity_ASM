@@ -376,6 +376,29 @@ async def run_external_discovery(
     created_hosts: list[str] = []
     all_hosts: list[str] = []  # ALL discovered domains and subdomains for tech scanning
     
+    # Build a mapping of asset -> discovery source(s)
+    # This tracks HOW each asset was discovered
+    asset_sources: dict[str, list[dict]] = {}
+    for source_name, result in results.items():
+        for domain in result.domains:
+            if domain not in asset_sources:
+                asset_sources[domain] = []
+            asset_sources[domain].append({
+                "step": len(asset_sources[domain]) + 1,
+                "source": result.source,
+                "query_domain": request.domain,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        for subdomain in result.subdomains:
+            if subdomain not in asset_sources:
+                asset_sources[subdomain] = []
+            asset_sources[subdomain].append({
+                "step": len(asset_sources[subdomain]) + 1,
+                "source": result.source,
+                "query_domain": request.domain,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+    
     if request.create_assets:
         # Create domain assets
         for domain in aggregated["domains"]:
@@ -386,10 +409,31 @@ async def run_external_discovery(
                 Asset.asset_type == AssetType.DOMAIN
             ).first()
             
+            # Build discovery chain and association reason
+            sources = asset_sources.get(domain, [])
+            source_names = list(set(s["source"] for s in sources))
+            primary_source = source_names[0] if source_names else "external_discovery"
+            
+            # Build human-readable association reason
+            if domain == request.domain:
+                association_reason = f"Primary domain for organization"
+            elif "whoxy" in source_names:
+                association_reason = f"Found via Whoxy reverse WHOIS lookup on {request.domain}"
+            elif "m365" in source_names:
+                association_reason = f"Found via Microsoft 365 federation from {request.domain}"
+            elif "commoncrawl" in source_names or "commoncrawl_comprehensive" in source_names:
+                association_reason = f"Found via Common Crawl data related to {request.domain}"
+            else:
+                association_reason = f"Discovered via {', '.join(source_names)} from {request.domain}"
+            
             if existing:
                 if request.skip_existing:
                     assets_skipped += 1
                     continue
+                # Update existing asset with discovery info if not set
+                if not existing.discovery_chain:
+                    existing.discovery_chain = sources
+                    existing.association_reason = association_reason
             else:
                 asset = Asset(
                     name=domain,
@@ -397,7 +441,9 @@ async def run_external_discovery(
                     value=domain,
                     organization_id=request.organization_id,
                     status=AssetStatus.DISCOVERED,
-                    discovery_source="external_discovery",
+                    discovery_source=primary_source,
+                    discovery_chain=sources,
+                    association_reason=association_reason,
                     tags=["external-discovery"],
                 )
                 db.add(asset)
@@ -413,10 +459,39 @@ async def run_external_discovery(
                 Asset.asset_type == AssetType.SUBDOMAIN
             ).first()
             
+            # Build discovery chain
+            sources = asset_sources.get(subdomain, [])
+            source_names = list(set(s["source"] for s in sources))
+            primary_source = source_names[0] if source_names else "external_discovery"
+            
+            # Determine parent domain
+            parts = subdomain.split('.')
+            parent_domain = '.'.join(parts[-2:]) if len(parts) > 2 else subdomain
+            
+            # Build association reason
+            if "crtsh" in source_names:
+                association_reason = f"Found in SSL certificate for {parent_domain}"
+            elif "virustotal" in source_names:
+                association_reason = f"Found via VirusTotal passive DNS for {parent_domain}"
+            elif "otx" in source_names:
+                association_reason = f"Found via AlienVault OTX for {parent_domain}"
+            elif "wayback" in source_names:
+                association_reason = f"Found in Wayback Machine archives for {parent_domain}"
+            elif "rapiddns" in source_names:
+                association_reason = f"Found via RapidDNS for {parent_domain}"
+            elif "chained_subdomain_enum" in source_names:
+                association_reason = f"Found via chained subdomain enumeration from discovered domain"
+            else:
+                association_reason = f"Subdomain of {parent_domain}, discovered via {', '.join(source_names)}"
+            
             if existing:
                 if request.skip_existing:
                     assets_skipped += 1
                     continue
+                # Update existing asset with discovery info if not set
+                if not existing.discovery_chain:
+                    existing.discovery_chain = sources
+                    existing.association_reason = association_reason
             else:
                 asset = Asset(
                     name=subdomain,
@@ -424,7 +499,9 @@ async def run_external_discovery(
                     value=subdomain,
                     organization_id=request.organization_id,
                     status=AssetStatus.DISCOVERED,
-                    discovery_source="external_discovery",
+                    discovery_source=primary_source,
+                    discovery_chain=sources,
+                    association_reason=association_reason,
                     tags=["external-discovery"],
                 )
                 db.add(asset)
@@ -432,6 +509,19 @@ async def run_external_discovery(
                 created_hosts.append(subdomain)
         
         # Create IP assets
+        # Track IP sources from results
+        ip_sources: dict[str, list[dict]] = {}
+        for source_name, result in results.items():
+            for ip in result.ip_addresses:
+                if ip not in ip_sources:
+                    ip_sources[ip] = []
+                ip_sources[ip].append({
+                    "step": len(ip_sources[ip]) + 1,
+                    "source": result.source,
+                    "query_domain": request.domain,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+        
         for ip in aggregated["ip_addresses"]:
             existing = db.query(Asset).filter(
                 Asset.organization_id == request.organization_id,
@@ -439,10 +529,18 @@ async def run_external_discovery(
                 Asset.asset_type == AssetType.IP_ADDRESS
             ).first()
             
+            sources = ip_sources.get(ip, [])
+            source_names = list(set(s["source"] for s in sources))
+            primary_source = source_names[0] if source_names else "external_discovery"
+            association_reason = f"IP address discovered via {', '.join(source_names) if source_names else 'DNS resolution'} for {request.domain}"
+            
             if existing:
                 if request.skip_existing:
                     assets_skipped += 1
                     continue
+                if not existing.discovery_chain:
+                    existing.discovery_chain = sources
+                    existing.association_reason = association_reason
             else:
                 asset = Asset(
                     name=ip,
@@ -450,13 +548,28 @@ async def run_external_discovery(
                     value=ip,
                     organization_id=request.organization_id,
                     status=AssetStatus.DISCOVERED,
-                    discovery_source="external_discovery",
+                    discovery_source=primary_source,
+                    discovery_chain=sources,
+                    association_reason=association_reason,
                     tags=["external-discovery"],
                 )
                 db.add(asset)
                 assets_created += 1
         
         # Create IP range assets
+        # Track IP range sources
+        cidr_sources: dict[str, list[dict]] = {}
+        for source_name, result in results.items():
+            for cidr in result.ip_ranges:
+                if cidr not in cidr_sources:
+                    cidr_sources[cidr] = []
+                cidr_sources[cidr].append({
+                    "step": len(cidr_sources[cidr]) + 1,
+                    "source": result.source,
+                    "query": request.organization_names[0] if request.organization_names else request.domain,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+        
         for cidr in aggregated["ip_ranges"]:
             existing = db.query(Asset).filter(
                 Asset.organization_id == request.organization_id,
@@ -464,10 +577,19 @@ async def run_external_discovery(
                 Asset.asset_type == AssetType.IP_RANGE
             ).first()
             
+            sources = cidr_sources.get(cidr, [])
+            source_names = list(set(s["source"] for s in sources))
+            primary_source = source_names[0] if source_names else "whoisxml"
+            org_name = request.organization_names[0] if request.organization_names else "organization"
+            association_reason = f"IP range registered to {org_name}, discovered via {', '.join(source_names) if source_names else 'WhoisXML'}"
+            
             if existing:
                 if request.skip_existing:
                     assets_skipped += 1
                     continue
+                if not existing.discovery_chain:
+                    existing.discovery_chain = sources
+                    existing.association_reason = association_reason
             else:
                 asset = Asset(
                     name=cidr,
@@ -475,7 +597,9 @@ async def run_external_discovery(
                     value=cidr,
                     organization_id=request.organization_id,
                     status=AssetStatus.DISCOVERED,
-                    discovery_source="external_discovery",
+                    discovery_source=primary_source,
+                    discovery_chain=sources,
+                    association_reason=association_reason,
                     tags=["external-discovery"],
                 )
                 db.add(asset)

@@ -60,7 +60,12 @@ class Asset(Base):
     metadata_ = Column("metadata", JSON, default=dict)  # Additional metadata
     
     # Discovery info
-    discovery_source = Column(String(100), nullable=True)  # How was it discovered
+    discovery_source = Column(String(100), nullable=True)  # How was it discovered (e.g., "whoxy", "subfinder", "nuclei")
+    discovery_chain = Column(JSON, default=list)  # Full path of how this asset was associated with the org
+    # Example: [{"step": 1, "source": "manual", "value": "rockwellautomation.com"}, 
+    #           {"step": 2, "source": "whoxy_reverse_whois", "query": "Rockwell Automation", "found": "raracing.com"}]
+    association_reason = Column(Text, nullable=True)  # Human-readable explanation of why this asset is associated
+    association_confidence = Column(Integer, default=100)  # 0-100 confidence in the association
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     
