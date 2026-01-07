@@ -995,6 +995,187 @@ async def probe_assets_live(
     }
 
 
+@router.post("/resolve-dns")
+async def resolve_assets_dns(
+    organization_id: int = Query(..., description="Organization ID"),
+    asset_type: Optional[AssetType] = Query(None, description="Filter by asset type"),
+    limit: int = Query(100, ge=1, le=500, description="Max assets to resolve"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Resolve DNS for domain/subdomain assets to get their IP addresses.
+    Updates ip_address and ip_addresses fields on matching assets.
+    """
+    from app.services.projectdiscovery_service import get_projectdiscovery_service
+    
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get assets to resolve
+    query = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        (Asset.ip_address.is_(None) | (Asset.ip_address == ''))
+    )
+    
+    if asset_type:
+        query = query.filter(Asset.asset_type == asset_type)
+    else:
+        query = query.filter(Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]))
+    
+    assets = query.limit(limit).all()
+    
+    if not assets:
+        return {"resolved": 0, "message": "No assets to resolve"}
+    
+    # Get hostnames
+    targets = [asset.value for asset in assets]
+    
+    try:
+        # Run dnsx
+        pd_service = get_projectdiscovery_service()
+        results = await pd_service.run_dnsx(targets, record_types=['A', 'AAAA'])
+        
+        # Build lookup
+        dns_map = {r.host: r for r in results}
+        
+        # Update assets
+        resolved_count = 0
+        for asset in assets:
+            if asset.value in dns_map:
+                dns_result = dns_map[asset.value]
+                if dns_result.a_records:
+                    asset.ip_address = dns_result.a_records[0]
+                    asset.ip_addresses = dns_result.a_records + dns_result.aaaa_records
+                    asset.last_seen = datetime.utcnow()
+                    resolved_count += 1
+        
+        db.commit()
+        
+        return {
+            "queried": len(assets),
+            "resolved": resolved_count,
+            "message": f"Resolved {resolved_count} of {len(assets)} assets to IP addresses"
+        }
+        
+    except Exception as e:
+        logger.error(f"DNS resolution failed: {e}")
+        raise HTTPException(status_code=500, detail=f"DNS resolution failed: {str(e)}")
+
+
+@router.post("/extract-ssl-certs")
+async def extract_ssl_certificates(
+    organization_id: int = Query(..., description="Organization ID"),
+    limit: int = Query(50, ge=1, le=200, description="Max IPs to scan"),
+    create_assets: bool = Query(True, description="Create new assets for discovered domains"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Extract SSL certificates from IP addresses to discover hosted domains.
+    
+    This scans IP assets and resolved IPs from domain assets, extracts SSL
+    certificates, and discovers domains from Common Name and Subject Alternative Names.
+    """
+    from app.services.ssl_certificate_service import get_ssl_certificate_service
+    
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get IPs to scan - both IP assets and resolved IPs from domains
+    ip_assets = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type == AssetType.IP_ADDRESS
+    ).limit(limit).all()
+    
+    # Also get resolved IPs from domain/subdomain assets
+    domain_assets = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+        Asset.ip_address.isnot(None),
+        Asset.ip_address != ''
+    ).limit(limit).all()
+    
+    # Collect unique IPs
+    ips_to_scan = set()
+    for asset in ip_assets:
+        ips_to_scan.add(asset.value)
+    for asset in domain_assets:
+        ips_to_scan.add(asset.ip_address)
+    
+    ips_to_scan = list(ips_to_scan)[:limit]
+    
+    if not ips_to_scan:
+        return {
+            "scanned": 0,
+            "certificates": 0,
+            "domains_found": 0,
+            "message": "No IPs to scan. Run DNS resolution first to populate IP addresses."
+        }
+    
+    # Extract SSL certificates
+    ssl_service = get_ssl_certificate_service()
+    results = await ssl_service.extract_certificates_async(ips_to_scan, port=443)
+    
+    # Collect all discovered domains
+    all_domains_found = set()
+    cert_count = 0
+    
+    for cert in results:
+        if not cert.error and cert.domains_found:
+            cert_count += 1
+            for domain in cert.domains_found:
+                # Skip wildcards
+                if not domain.startswith('*.'):
+                    all_domains_found.add(domain)
+    
+    # Create assets for new domains if requested
+    assets_created = 0
+    if create_assets and all_domains_found:
+        for domain in all_domains_found:
+            # Check if already exists
+            existing = db.query(Asset).filter(
+                Asset.organization_id == organization_id,
+                Asset.value == domain
+            ).first()
+            
+            if not existing:
+                # Determine asset type
+                parts = domain.split('.')
+                if len(parts) == 2:
+                    asset_type = AssetType.DOMAIN
+                else:
+                    asset_type = AssetType.SUBDOMAIN
+                
+                new_asset = Asset(
+                    organization_id=organization_id,
+                    name=domain,
+                    value=domain,
+                    asset_type=asset_type,
+                    discovery_source="ssl_certificate",
+                    discovery_chain=[{
+                        "step": 1,
+                        "source": "ssl_certificate",
+                        "method": "certificate_extraction",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }],
+                    association_reason="Discovered from SSL certificate on owned IP address"
+                )
+                db.add(new_asset)
+                assets_created += 1
+        
+        db.commit()
+    
+    return {
+        "ips_scanned": len(ips_to_scan),
+        "certificates_found": cert_count,
+        "domains_discovered": len(all_domains_found),
+        "assets_created": assets_created,
+        "domains": sorted(list(all_domains_found)),
+        "message": f"Extracted {cert_count} certificates, discovered {len(all_domains_found)} domains, created {assets_created} new assets"
+    }
+
+
 @router.get("/domain-stats")
 def get_domain_statistics(
     organization_id: Optional[int] = Query(None, description="Filter by organization"),
