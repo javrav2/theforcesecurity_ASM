@@ -343,18 +343,16 @@ class NucleiService:
         
         try:
             # Build command
-            # Note: -jsonl outputs JSON Lines format (one JSON object per line)
-            # -o writes to file, -json-export may have different behavior in v3.x
+            # Nuclei v3.x: use -je (json-export) to write JSON Lines to a file
+            # -o writes plain text, NOT json - so we use -je for JSON output
             cmd = [
                 self.nuclei_path,
                 "-list", targets_file_path,
-                "-jsonl",  # JSON Lines output format
-                "-o", output_file_path,  # Write output to file
+                "-je", output_file_path,  # JSON export to file (JSON Lines format)
                 "-rate-limit", str(rate_limit),
                 "-bulk-size", str(bulk_size),
                 "-concurrency", str(concurrency),
                 "-timeout", str(timeout),
-                "-silent",
                 "-no-color",
             ]
             
@@ -380,7 +378,7 @@ class NucleiService:
                 cmd.extend(["-t", self.templates_path])
             
             logger.info(f"Starting Nuclei scan on {len(targets)} targets")
-            logger.debug(f"Command: {' '.join(cmd)}")
+            logger.info(f"Nuclei command: {' '.join(cmd)}")
             
             # Run scan
             process = await asyncio.create_subprocess_exec(
@@ -391,14 +389,28 @@ class NucleiService:
             
             stdout, stderr = await process.communicate()
             
-            if process.returncode != 0 and stderr:
-                error_msg = stderr.decode()
-                if "no templates" not in error_msg.lower():
-                    logger.warning(f"Nuclei stderr: {error_msg}")
-                    result.errors.append(error_msg)
+            logger.info(f"Nuclei process completed with return code: {process.returncode}")
+            
+            if stdout:
+                stdout_text = stdout.decode()[:1000]  # Limit stdout log
+                logger.info(f"Nuclei stdout (first 1000 chars): {stdout_text}")
+            
+            if stderr:
+                stderr_text = stderr.decode()
+                # Info messages from Nuclei are normal
+                if "[INF]" in stderr_text or "Templates loaded" in stderr_text:
+                    logger.info(f"Nuclei info: {stderr_text[:500]}")
+                elif process.returncode != 0:
+                    if "no templates" not in stderr_text.lower():
+                        logger.warning(f"Nuclei stderr: {stderr_text}")
+                        result.errors.append(stderr_text)
             
             # Parse results
+            logger.info(f"Checking for Nuclei output file: {output_file_path}")
             if os.path.exists(output_file_path):
+                file_size = os.path.getsize(output_file_path)
+                logger.info(f"Nuclei output file exists, size: {file_size} bytes")
+                
                 with open(output_file_path, 'r') as f:
                     for line_num, line in enumerate(f, 1):
                         line = line.strip()
@@ -418,13 +430,18 @@ class NucleiService:
                                 
                                 finding = NucleiResult.from_json(finding_data)
                                 result.findings.append(finding)
+                                logger.debug(f"Parsed finding: {finding.template_id} on {finding.host}")
                             except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse JSON on line {line_num}: {e}")
+                                logger.warning(f"Failed to parse JSON on line {line_num}: {e} - line content: {line[:200]}")
                             except (AttributeError, TypeError, KeyError) as e:
                                 # Handle malformed data structures in Nuclei output
                                 logger.warning(f"Failed to process finding on line {line_num}: {e} - data: {str(finding_data)[:200]}")
                             except Exception as e:
                                 logger.warning(f"Unexpected error parsing line {line_num}: {e}")
+                
+                logger.info(f"Parsed {len(result.findings)} findings from output file")
+            else:
+                logger.warning(f"Nuclei output file NOT found at: {output_file_path}")
             
             result.success = True
             result.targets_scanned = expanded_count
