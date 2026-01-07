@@ -28,7 +28,9 @@ import { useToast } from '@/hooks/use-toast';
 
 interface DashboardStats {
   total_assets: number;
-  total_vulnerabilities: number;
+  total_vulnerabilities: number;  // Excludes info
+  total_all_vulnerabilities: number;  // Includes info
+  info_count: number;
   critical_count: number;
   high_count: number;
   medium_count: number;
@@ -72,7 +74,9 @@ export default function DashboardPage() {
 
       setStats({
         total_assets: assetsData.total || assetsList.length || 0,
-        total_vulnerabilities: vulnSummary.total || 0,
+        total_vulnerabilities: vulnSummary.total || 0,  // Excludes info findings
+        total_all_vulnerabilities: vulnSummary.total_all || vulnSummary.total || 0,
+        info_count: vulnSummary.info_count || vulnSummary.by_severity?.info || 0,
         critical_count: vulnSummary.by_severity?.critical || 0,
         high_count: vulnSummary.by_severity?.high || 0,
         medium_count: vulnSummary.by_severity?.medium || 0,
@@ -265,6 +269,15 @@ export default function DashboardPage() {
                     </div>
                   );
                 })}
+                {/* Info count shown separately */}
+                {stats?.info_count && stats.info_count > 0 && (
+                  <div className="pt-2 border-t border-muted">
+                    <div className="flex items-center justify-between text-sm text-muted-foreground">
+                      <span>Informational (not counted as findings)</span>
+                      <span>{stats.info_count}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

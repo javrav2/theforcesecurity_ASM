@@ -197,13 +197,17 @@ def get_vulnerabilities_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Get vulnerability statistics summary."""
+    """Get vulnerability statistics summary.
+    
+    Note: 'total' count excludes informational findings.
+    Informational findings are still included in by_severity for reference.
+    """
     query = db.query(Vulnerability).join(Asset)
     
     # Organization filter
     if not current_user.is_superuser:
         if not current_user.organization_id:
-            return {"total": 0, "by_severity": {}, "by_status": {}}
+            return {"total": 0, "by_severity": {}, "by_status": {}, "info_count": 0}
         query = query.filter(Asset.organization_id == current_user.organization_id)
     
     vulns = query.all()
@@ -211,16 +215,26 @@ def get_vulnerabilities_summary(
     # Calculate stats
     by_severity = {}
     by_status = {}
+    actionable_count = 0  # Count of non-info findings
+    info_count = 0  # Track info separately
     
     for vuln in vulns:
-        sev_key = vuln.severity.value
-        status_key = vuln.status.value
+        sev_key = vuln.severity.value.lower() if hasattr(vuln.severity, 'value') else str(vuln.severity).lower()
+        status_key = vuln.status.value if hasattr(vuln.status, 'value') else str(vuln.status)
         
         by_severity[sev_key] = by_severity.get(sev_key, 0) + 1
         by_status[status_key] = by_status.get(status_key, 0) + 1
+        
+        # Only count non-info findings toward the total
+        if sev_key != 'info' and sev_key != 'informational':
+            actionable_count += 1
+        else:
+            info_count += 1
     
     return {
-        "total": len(vulns),
+        "total": actionable_count,  # Excludes info findings
+        "total_all": len(vulns),  # Includes info findings
+        "info_count": info_count,
         "by_severity": by_severity,
         "by_status": by_status
     }
