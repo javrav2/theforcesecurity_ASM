@@ -76,6 +76,12 @@ def calculate_target_stats(targets: List[str]) -> dict:
         "cidr_count": cidr_count,
         "host_count": host_count
     }
+
+
+def check_org_access_complete(user: User, org_id: int) -> bool:
+    """Check if user has access to organization (complete version)."""
+    if user.is_superuser:
+        return True
     return user.organization_id == org_id
 
 

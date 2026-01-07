@@ -292,6 +292,38 @@ class ScannerWorker:
                 create_labels=True
             )
             
+            # Mark scanned assets as live (we got a response from Nuclei)
+            live_assets_count = 0
+            for finding in result.findings:
+                if finding.host:
+                    hostname = finding.host
+                    # Strip protocol/port if present
+                    if hostname.startswith(("http://", "https://")):
+                        from urllib.parse import urlparse
+                        hostname = urlparse(hostname).netloc.split(":")[0]
+                    else:
+                        hostname = hostname.split(":")[0]
+                    
+                    # Update asset to mark as live
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == hostname
+                    ).first()
+                    
+                    if asset and not asset.is_live:
+                        asset.is_live = True
+                        live_assets_count += 1
+            
+            if live_assets_count > 0:
+                db.commit()
+                logger.info(f"Marked {live_assets_count} assets as live from Nuclei scan")
+            
+            # Calculate unique hosts that responded
+            unique_hosts = set()
+            for finding in result.findings:
+                if finding.host:
+                    unique_hosts.add(finding.host)
+            
             # Update scan record
             if scan:
                 scan.status = ScanStatus.COMPLETED
@@ -303,12 +335,14 @@ class ScannerWorker:
                     'targets_original': result.targets_original,
                     'targets_expanded': result.targets_expanded,
                     'targets_scanned': result.targets_scanned,
+                    'live_hosts': len(unique_hosts),
+                    'findings_count': import_summary['findings_created'],
                 }
                 db.commit()
             
             logger.info(
                 f"Nuclei scan complete: {import_summary['findings_created']} findings, "
-                f"{len(import_summary.get('cves_found', []))} CVEs"
+                f"{len(import_summary.get('cves_found', []))} CVEs, {len(unique_hosts)} live hosts"
             )
             
         except Exception as e:

@@ -247,10 +247,15 @@ class NucleiFindingsService:
                 name=hostname,
                 value=hostname,
                 asset_type=asset_type,
-                discovery_source="nuclei"
+                discovery_source="nuclei",
+                is_live=True  # Mark as live since we got a response from Nuclei
             )
             self.db.add(asset)
             self.db.flush()
+        
+        # Mark existing asset as live since Nuclei got a response from it
+        if asset and not asset.is_live:
+            asset.is_live = True
         
         return asset
     

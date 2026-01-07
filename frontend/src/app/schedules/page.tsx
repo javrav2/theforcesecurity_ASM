@@ -51,6 +51,7 @@ import {
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
+import { ScanNavTabs } from '@/components/scanning/ScanNavTabs';
 
 interface ScanSchedule {
   id: number;
@@ -275,7 +276,8 @@ export default function SchedulesPage() {
 
   return (
     <MainLayout>
-      <Header title="Scan Schedules" subtitle="Configure recurring scans for continuous monitoring" />
+      <Header title="Scanning" subtitle="Manage scans and schedules" />
+      <ScanNavTabs />
 
       <div className="p-6 space-y-6">
         {/* Header Actions */}

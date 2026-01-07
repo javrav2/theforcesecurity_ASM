@@ -47,6 +47,7 @@ import {
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
+import { ScanNavTabs } from '@/components/scanning/ScanNavTabs';
 
 interface Scan {
   id: number;
@@ -243,7 +244,8 @@ export default function ScansPage() {
 
   return (
     <MainLayout>
-      <Header title="Scans" subtitle="Vulnerability and discovery scan management" />
+      <Header title="Scanning" subtitle="Manage scans and schedules" />
+      <ScanNavTabs />
 
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
