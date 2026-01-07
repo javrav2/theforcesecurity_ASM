@@ -257,9 +257,27 @@ class ScannerWorker:
         scan_id = job_data.get('scan_id')
         targets = job_data.get('targets', [])
         organization_id = job_data.get('organization_id')
-        severity = job_data.get('severity', ['critical', 'high'])
+        # Default to all meaningful severities to catch more findings
+        severity = job_data.get('severity', ['critical', 'high', 'medium'])
         tags = job_data.get('tags', [])
         exclude_tags = job_data.get('exclude_tags', [])
+        
+        # Normalize targets - ensure URLs have protocol
+        normalized_targets = []
+        for target in targets:
+            target = target.strip()
+            if not target:
+                continue
+            # If it's a domain without protocol, add https://
+            if not target.startswith(('http://', 'https://')) and '/' not in target:
+                # It's a bare domain - try https first
+                normalized_targets.append(f"https://{target}")
+            else:
+                normalized_targets.append(target)
+        
+        if normalized_targets:
+            targets = normalized_targets
+            logger.info(f"Normalized {len(targets)} targets for Nuclei scan")
         
         db = self.get_db_session()
         if not db:
@@ -275,12 +293,32 @@ class ScannerWorker:
                 db.commit()
             
             # Run Nuclei scan
+            logger.info(f"Starting Nuclei scan on {len(targets)} targets with severity: {severity}")
+            logger.debug(f"Nuclei targets: {targets[:5]}{'...' if len(targets) > 5 else ''}")
+            
             result = await self.nuclei_service.scan_targets(
                 targets=targets,
                 severity=severity,
                 tags=tags if tags else None,
                 exclude_tags=exclude_tags if exclude_tags else None
             )
+            
+            # Log Nuclei results
+            logger.info(
+                f"Nuclei scan returned: {len(result.findings)} findings, "
+                f"success={result.success}, errors={len(result.errors)}, "
+                f"duration={result.duration_seconds:.2f}s"
+            )
+            
+            if result.errors:
+                logger.warning(f"Nuclei scan errors: {result.errors}")
+            
+            if not result.findings:
+                logger.info(
+                    f"Nuclei found no vulnerabilities for targets. This could mean: "
+                    f"1) The site is secure, 2) WAF is blocking scans, or "
+                    f"3) Templates don't match the target technologies."
+                )
             
             # Import findings
             findings_service = NucleiFindingsService(db)
