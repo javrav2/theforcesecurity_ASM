@@ -129,7 +129,17 @@ class NucleiResult:
     @classmethod
     def from_json(cls, data: dict) -> "NucleiResult":
         """Create NucleiResult from Nuclei JSON output."""
+        # Ensure data is a dict
+        if not isinstance(data, dict):
+            logger.warning(f"Nuclei result data is not a dict: {type(data)}")
+            data = {}
+        
         info = data.get("info", {})
+        
+        # Ensure info is a dict (some Nuclei results may have different formats)
+        if not isinstance(info, dict):
+            logger.warning(f"Nuclei info field is not a dict: {type(info)}")
+            info = {}
         
         # Extract CVE from tags
         tags = info.get("tags", [])
@@ -387,15 +397,31 @@ class NucleiService:
             # Parse results
             if os.path.exists(output_file_path):
                 with open(output_file_path, 'r') as f:
-                    for line in f:
+                    for line_num, line in enumerate(f, 1):
                         line = line.strip()
                         if line:
                             try:
                                 finding_data = json.loads(line)
+                                
+                                # Skip non-dict entries (Nuclei sometimes outputs arrays or other types)
+                                if not isinstance(finding_data, dict):
+                                    logger.debug(f"Skipping non-dict finding on line {line_num}: {type(finding_data)}")
+                                    continue
+                                
+                                # Skip entries that don't have the required fields
+                                if not finding_data.get("template-id") and not finding_data.get("templateID"):
+                                    logger.debug(f"Skipping entry without template-id on line {line_num}")
+                                    continue
+                                
                                 finding = NucleiResult.from_json(finding_data)
                                 result.findings.append(finding)
                             except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse finding: {e}")
+                                logger.warning(f"Failed to parse JSON on line {line_num}: {e}")
+                            except (AttributeError, TypeError, KeyError) as e:
+                                # Handle malformed data structures in Nuclei output
+                                logger.warning(f"Failed to process finding on line {line_num}: {e} - data: {str(finding_data)[:200]}")
+                            except Exception as e:
+                                logger.warning(f"Unexpected error parsing line {line_num}: {e}")
             
             result.success = True
             result.targets_scanned = expanded_count
