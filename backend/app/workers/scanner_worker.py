@@ -258,9 +258,9 @@ class ScannerWorker:
         targets = job_data.get('targets', [])
         organization_id = job_data.get('organization_id')
         # Default to all severities to catch all findings (including info for asset discovery)
-        severity = job_data.get('severity', ['critical', 'high', 'medium', 'low', 'info'])
-        tags = job_data.get('tags', [])
-        exclude_tags = job_data.get('exclude_tags', [])
+        severity = job_data.get('severity') or ['critical', 'high', 'medium', 'low', 'info']
+        tags = job_data.get('tags') or []
+        exclude_tags = job_data.get('exclude_tags') or []
         
         # Normalize targets - ensure URLs have protocol
         normalized_targets = []

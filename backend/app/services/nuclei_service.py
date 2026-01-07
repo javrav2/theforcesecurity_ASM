@@ -142,9 +142,14 @@ class NucleiResult:
                 cve_id = tag.upper()
                 break
         
-        # Extract CVSS score
+        # Extract CVSS score and classification data
         cvss_score = None
         classification = info.get("classification", {})
+        
+        # Ensure classification is a dict (some Nuclei versions return different formats)
+        if not isinstance(classification, dict):
+            classification = {}
+        
         if classification:
             cvss_metrics = classification.get("cvss-metrics", "")
             cvss_score_str = classification.get("cvss-score")
@@ -153,6 +158,31 @@ class NucleiResult:
                     cvss_score = float(cvss_score_str)
                 except (ValueError, TypeError):
                     pass
+        
+        # Safely extract CVE-ID (can be string, list, or None)
+        extracted_cve_id = None
+        if classification:
+            cve_id_field = classification.get("cve-id")
+            if isinstance(cve_id_field, list) and cve_id_field:
+                extracted_cve_id = cve_id_field[0]
+            elif isinstance(cve_id_field, str):
+                extracted_cve_id = cve_id_field
+        
+        # Safely extract CWE-ID
+        extracted_cwe_id = None
+        if classification:
+            cwe_id_field = classification.get("cwe-id")
+            if isinstance(cwe_id_field, list) and cwe_id_field:
+                extracted_cwe_id = cwe_id_field[0]
+            elif isinstance(cwe_id_field, str):
+                extracted_cwe_id = cwe_id_field
+        
+        # Safely handle reference (can be list or string)
+        reference = info.get("reference", [])
+        if isinstance(reference, str):
+            reference = [reference]
+        elif not isinstance(reference, list):
+            reference = []
         
         return cls(
             template_id=data.get("template-id", data.get("templateID", "")),
@@ -167,10 +197,10 @@ class NucleiResult:
             matcher_name=data.get("matcher-name", ""),
             matcher_status=data.get("matcher-status", True),
             description=info.get("description", ""),
-            reference=info.get("reference", []),
+            reference=reference,
             cvss_score=cvss_score,
-            cve_id=cve_id or classification.get("cve-id", [None])[0] if classification else None,
-            cwe_id=classification.get("cwe-id", [None])[0] if classification else None,
+            cve_id=cve_id or extracted_cve_id,
+            cwe_id=extracted_cwe_id,
             tags=tags,
             curl_command=data.get("curl-command", ""),
         )
