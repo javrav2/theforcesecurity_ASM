@@ -31,6 +31,8 @@ from app.services.nuclei_findings_service import NucleiFindingsService
 from app.services.port_scanner_service import PortScannerService, ScannerType
 from app.services.port_findings_service import PortFindingsService
 from app.services.discovery_service import DiscoveryService
+import ipaddress
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -48,6 +50,33 @@ VISIBILITY_TIMEOUT = int(os.getenv("VISIBILITY_TIMEOUT", "3600"))
 
 # Global shutdown flag
 shutdown_requested = False
+
+
+def _calculate_targets_expanded(targets: list) -> int:
+    """
+    Calculate total number of IPs from a list of targets (CIDRs, domains, IPs).
+    """
+    if not targets:
+        return 0
+    
+    total = 0
+    cidr_pattern = re.compile(r'^[\d.:a-fA-F]+/\d+$')
+    
+    for target in targets:
+        if not target:
+            continue
+        target = str(target).strip()
+        
+        if cidr_pattern.match(target):
+            try:
+                network = ipaddress.ip_network(target, strict=False)
+                total += network.num_addresses
+            except ValueError:
+                total += 1
+        else:
+            total += 1
+    
+    return total
 
 
 def signal_handler(signum, frame):
@@ -426,6 +455,25 @@ class ScannerWorker:
                             'port_count': len(set(ports)),
                         })
                 
+                # Get pre-calculated targets stats from config (set during schedule trigger)
+                # or calculate from targets
+                config_target_stats = scan.config.get('target_stats', {}) if scan.config else {}
+                existing_results = scan.results or {}
+                
+                # Prefer pre-calculated value, then existing, then fallback
+                targets_expanded = (
+                    config_target_stats.get('targets_expanded') or 
+                    existing_results.get('targets_expanded') or
+                    _calculate_targets_expanded(scan.targets)
+                )
+                targets_original = (
+                    config_target_stats.get('targets_original') or 
+                    existing_results.get('targets_original') or
+                    len(scan.targets) if scan.targets else 0
+                )
+                cidr_count = config_target_stats.get('cidr_count', 0)
+                host_count = config_target_stats.get('host_count', 0)
+                
                 scan.results = {
                     # Frontend expects ports_found as a NUMBER, not array
                     'ports_found': len(result.ports_found),
@@ -435,8 +483,10 @@ class ScannerWorker:
                     'live_hosts': len(unique_hosts),
                     'host_results': host_results,  # Array for frontend table display
                     'targets_scanned': result.targets_scanned,
-                    'targets_original': len(result.hosts_scanned) if hasattr(result, 'hosts_scanned') else 0,
-                    'targets_expanded': import_summary.get('hosts_processed', len(unique_hosts)),
+                    'targets_original': targets_original,
+                    'targets_expanded': targets_expanded,
+                    'cidr_count': cidr_count,
+                    'host_count': host_count,
                     'scanner': result.scanner.value,
                     'duration_seconds': result.duration_seconds,
                     'errors': result.errors,
