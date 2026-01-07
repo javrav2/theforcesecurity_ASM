@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset
+from app.models.netblock import Netblock
 from app.services.nuclei_service import NucleiService
 from app.services.nuclei_findings_service import NucleiFindingsService
 from app.services.port_scanner_service import PortScannerService, ScannerType
@@ -568,6 +569,55 @@ class ScannerWorker:
                 # If there were scanner errors but scan "succeeded", note it
                 if result.errors:
                     scan.error_message = "; ".join(result.errors[:3])  # First 3 errors
+                
+                # Update netblocks that were scanned
+                # Check if any scanned targets match netblock CIDR ranges
+                scanned_netblocks = 0
+                for target in targets:
+                    # Check if target is a CIDR range
+                    if '/' in target:
+                        try:
+                            # Find matching netblock by CIDR notation
+                            netblock = db.query(Netblock).filter(
+                                Netblock.organization_id == organization_id,
+                                Netblock.cidr_notation.contains(target)
+                            ).first()
+                            
+                            if netblock:
+                                netblock.last_scanned = datetime.utcnow()
+                                netblock.scan_count = (netblock.scan_count or 0) + 1
+                                scanned_netblocks += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to update netblock for {target}: {e}")
+                    else:
+                        # Single IP - try to find containing netblock
+                        try:
+                            ip_obj = ipaddress.ip_address(target)
+                            # Find netblocks where this IP falls within the range
+                            org_netblocks = db.query(Netblock).filter(
+                                Netblock.organization_id == organization_id
+                            ).all()
+                            
+                            for netblock in org_netblocks:
+                                if netblock.cidr_notation:
+                                    for cidr in netblock.cidr_notation.split(';'):
+                                        cidr = cidr.strip()
+                                        if cidr:
+                                            try:
+                                                network = ipaddress.ip_network(cidr, strict=False)
+                                                if ip_obj in network:
+                                                    netblock.last_scanned = datetime.utcnow()
+                                                    netblock.scan_count = (netblock.scan_count or 0) + 1
+                                                    scanned_netblocks += 1
+                                                    break
+                                            except ValueError:
+                                                pass
+                        except ValueError:
+                            pass  # Not an IP address
+                
+                if scanned_netblocks > 0:
+                    logger.info(f"Updated {scanned_netblocks} netblocks as scanned")
+                
                 db.commit()
             
             logger.info(
