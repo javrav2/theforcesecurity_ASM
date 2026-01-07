@@ -248,23 +248,20 @@ class DiscoveryService:
                     asset.http_title = probe.title
                     asset.http_headers = probe.headers
                     asset.status = AssetStatus.VERIFIED
+                    asset.is_live = True
+                    asset.live_url = probe.url  # Store the live URL on the domain/subdomain asset
                     
-                    # Create URL asset
-                    url_asset = self._create_or_update_asset(
-                        organization_id=organization_id,
-                        asset_type=AssetType.URL,
-                        name=probe.url,
-                        value=probe.url,
-                        parent_id=asset.id,
-                        discovery_source="http_probe",
-                        metadata_={
-                            "status_code": probe.status_code,
-                            "title": probe.title,
-                            "server": probe.server,
-                            "response_time_ms": probe.response_time_ms
-                        }
-                    )
-                    result.assets.append(self._asset_to_dict(url_asset))
+                    # Store additional metadata
+                    if not asset.metadata_:
+                        asset.metadata_ = {}
+                    asset.metadata_["http_probe"] = {
+                        "status_code": probe.status_code,
+                        "title": probe.title,
+                        "server": probe.server,
+                        "response_time_ms": probe.response_time_ms
+                    }
+                    
+                    result.assets.append(self._asset_to_dict(asset))
                     progress.assets_found += 1
             
             self.db.commit()
@@ -288,11 +285,16 @@ class DiscoveryService:
                     try:
                         technologies = await self.wappalyzer.analyze_url(url)
                         
-                        # Find the URL asset
+                        # Extract domain/subdomain from URL and find that asset
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(url)
+                        hostname = parsed_url.netloc.split(':')[0]  # Remove port if present
+                        
+                        # Find the domain/subdomain asset (not a separate URL asset)
                         url_asset = self.db.query(Asset).filter(
                             Asset.organization_id == organization_id,
-                            Asset.asset_type == AssetType.URL,
-                            Asset.value == url
+                            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                            Asset.value == hostname
                         ).first()
                         
                         if url_asset:

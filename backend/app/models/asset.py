@@ -93,6 +93,7 @@ class Asset(Base):
     http_status = Column(Integer, nullable=True)
     http_title = Column(String(500), nullable=True)
     http_headers = Column(JSON, default=dict)
+    live_url = Column(String(500), nullable=True)  # The actual URL that responded (e.g., https://example.com)
     
     # DNS info
     dns_records = Column(JSON, default=dict)  # A, AAAA, MX, TXT, NS, etc.
