@@ -257,8 +257,8 @@ class ScannerWorker:
         scan_id = job_data.get('scan_id')
         targets = job_data.get('targets', [])
         organization_id = job_data.get('organization_id')
-        # Default to all meaningful severities to catch more findings
-        severity = job_data.get('severity', ['critical', 'high', 'medium'])
+        # Default to all severities to catch all findings (including info for asset discovery)
+        severity = job_data.get('severity', ['critical', 'high', 'medium', 'low', 'info'])
         tags = job_data.get('tags', [])
         exclude_tags = job_data.get('exclude_tags', [])
         
