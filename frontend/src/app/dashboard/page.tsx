@@ -116,11 +116,6 @@ export default function DashboardPage() {
       }));
   }, [assets]);
 
-  // Count of assets without geo data
-  const assetsWithoutGeo = useMemo(() => {
-    return assets.filter((a: any) => !a.latitude || !a.longitude).length;
-  }, [assets]);
-
   useEffect(() => {
     fetchDashboardData();
   }, []);
@@ -190,27 +185,8 @@ export default function DashboardPage() {
 
         {/* World Map */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader>
             <CardTitle className="text-lg">Asset Locations</CardTitle>
-            {assetsWithoutGeo > 0 && (
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={async () => {
-                  try {
-                    toast({ title: 'Enriching...', description: 'Looking up geo-location data for assets' });
-                    await api.enrichAssetsGeolocation();
-                    toast({ title: 'Success', description: 'Geo-location data updated. Refreshing...' });
-                    fetchDashboardData();
-                  } catch (error) {
-                    toast({ title: 'Error', description: 'Failed to enrich geo-location', variant: 'destructive' });
-                  }
-                }}
-              >
-                <Globe className="h-4 w-4 mr-2" />
-                Enrich Locations ({assetsWithoutGeo} pending)
-              </Button>
-            )}
           </CardHeader>
           <CardContent>
             {mapAssets.length > 0 ? (
@@ -226,10 +202,8 @@ export default function DashboardPage() {
             ) : (
               <div className="text-center py-12 text-muted-foreground">
                 <Globe className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>No assets with geo-location data</p>
-                {assetsWithoutGeo > 0 && (
-                  <p className="text-sm mt-2">Click "Enrich Locations" to resolve asset locations</p>
-                )}
+                <p>No assets with geo-location data yet</p>
+                <p className="text-sm mt-2">Run discovery scans to populate asset locations</p>
               </div>
             )}
           </CardContent>

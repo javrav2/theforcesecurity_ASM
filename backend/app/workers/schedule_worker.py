@@ -148,11 +148,18 @@ class ScheduleWorker:
                 ])
             ).all()
             
-            # Get all in-scope netblocks (CIDR ranges from WhoisXML, etc.)
-            netblocks = db.query(Netblock).filter(
+            # For port scans and critical_ports, only use IPv4 netblocks
+            # IPv6 has a much larger address space and requires different scanning strategies
+            netblock_query = db.query(Netblock).filter(
                 Netblock.organization_id == schedule.organization_id,
                 Netblock.in_scope == True
-            ).all()
+            )
+            
+            if schedule.scan_type in ["port_scan", "masscan", "critical_ports"]:
+                netblock_query = netblock_query.filter(Netblock.ip_version == "ipv4")
+                logger.info(f"Filtering netblocks to IPv4 only for {schedule.scan_type}")
+            
+            netblocks = netblock_query.all()
             
             # Collect targets
             asset_targets = [a.value for a in assets]

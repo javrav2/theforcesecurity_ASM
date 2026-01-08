@@ -105,6 +105,7 @@ export default function NetblocksPage() {
   const [selectedOrg, setSelectedOrg] = useState<string>('all');
   const [ownershipFilter, setOwnershipFilter] = useState<string>('all');
   const [scopeFilter, setScopeFilter] = useState<string>('all');
+  const [ipVersionFilter, setIpVersionFilter] = useState<string>('all');
   const [discoverDialogOpen, setDiscoverDialogOpen] = useState(false);
   const [searchTerms, setSearchTerms] = useState('');
   const { toast } = useToast();
@@ -129,6 +130,9 @@ export default function NetblocksPage() {
       if (scopeFilter !== 'all') {
         params.in_scope = scopeFilter === 'in_scope';
       }
+      if (ipVersionFilter !== 'all') {
+        params.ip_version = ipVersionFilter;
+      }
 
       const [netblocksData, summaryData, orgsData] = await Promise.all([
         api.getNetblocks(params),
@@ -152,7 +156,7 @@ export default function NetblocksPage() {
 
   useEffect(() => {
     fetchData();
-  }, [selectedOrg, ownershipFilter, scopeFilter]);
+  }, [selectedOrg, ownershipFilter, scopeFilter, ipVersionFilter]);
 
   const handleDiscover = async () => {
     if (!selectedOrg || selectedOrg === 'all') {
@@ -487,6 +491,17 @@ export default function NetblocksPage() {
                 <SelectItem value="all">All</SelectItem>
                 <SelectItem value="in_scope">In Scope</SelectItem>
                 <SelectItem value="out_of_scope">Out of Scope</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select value={ipVersionFilter} onValueChange={setIpVersionFilter}>
+              <SelectTrigger className="w-[120px]">
+                <SelectValue placeholder="IP Version" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All IPs</SelectItem>
+                <SelectItem value="ipv4">IPv4 Only</SelectItem>
+                <SelectItem value="ipv6">IPv6 Only</SelectItem>
               </SelectContent>
             </Select>
           </div>
