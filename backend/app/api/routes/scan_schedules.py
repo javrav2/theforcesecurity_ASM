@@ -441,11 +441,12 @@ def trigger_scheduled_scan(
         "schedule_name": schedule.name,
     }
     
-    # For critical_ports scans, ensure we use the critical ports list
+    # For critical_ports scans, use masscan for speed on CIDR blocks
     if schedule.scan_type == "critical_ports":
         config["ports"] = ",".join(str(p) for p in ALL_CRITICAL_PORTS)
         config["generate_findings"] = True
-        config["scanner"] = config.get("scanner", "naabu")
+        config["scanner"] = config.get("scanner", "masscan")  # Masscan is faster for CIDR blocks
+        config["rate"] = config.get("rate", 10000)  # 10k packets/sec default
     
     # Calculate target statistics (total IPs from CIDRs, etc.)
     target_stats = calculate_target_stats(targets)

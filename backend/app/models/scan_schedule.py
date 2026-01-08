@@ -128,10 +128,11 @@ ALL_CRITICAL_PORTS = sorted(set(
 CONTINUOUS_SCAN_TYPES = {
     "critical_ports": {
         "name": "Critical Port Monitoring",
-        "description": "Monitor for exposed critical ports (databases, remote access, file sharing, containers). Generates security findings for exposed services.",
+        "description": "Monitor for exposed critical ports (databases, remote access, file sharing, containers) using high-speed masscan. Generates security findings for exposed services.",
         "default_config": {
             "ports": ",".join(str(p) for p in ALL_CRITICAL_PORTS),
-            "scanner": "naabu",
+            "scanner": "masscan",  # Masscan is faster for CIDR blocks
+            "rate": 10000,  # 10k packets/sec - fast but safe for most networks
             "service_detection": True,
             "generate_findings": True,
             "alert_on_new": True,

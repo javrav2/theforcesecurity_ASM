@@ -226,11 +226,12 @@ class ScheduleWorker:
             "schedule_name": schedule.name,
         }
         
-        # Special handling for critical_ports
+        # Special handling for critical_ports - use masscan for speed on CIDR blocks
         if schedule.scan_type == "critical_ports":
             config["ports"] = ",".join(str(p) for p in ALL_CRITICAL_PORTS)
             config["generate_findings"] = True
-            config["scanner"] = config.get("scanner", "naabu")
+            config["scanner"] = config.get("scanner", "masscan")  # Masscan is faster for CIDR blocks
+            config["rate"] = config.get("rate", 10000)  # 10k packets/sec default
         
         # Create the scan
         scan = Scan(
