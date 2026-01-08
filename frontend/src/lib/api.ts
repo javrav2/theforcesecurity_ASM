@@ -156,7 +156,15 @@ class ApiClient {
   }
 
   // Assets
-  async getAssets(params?: { organization_id?: number; skip?: number; limit?: number; search?: string }) {
+  async getAssets(params?: { 
+    organization_id?: number; 
+    skip?: number; 
+    limit?: number; 
+    search?: string;
+    asset_type?: string;
+    status?: string;
+    include_cidr?: boolean;
+  }) {
     const response = await this.client.get('/assets/', { params });
     return response.data;
   }

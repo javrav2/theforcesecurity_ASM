@@ -191,6 +191,8 @@ export default function AssetsPage() {
       const [assetsData, orgsData] = await Promise.all([
         api.getAssets({
           organization_id: orgFilter !== 'all' ? parseInt(orgFilter) : undefined,
+          asset_type: typeFilter !== 'all' ? typeFilter : undefined,
+          status: statusFilter !== 'all' ? statusFilter : undefined,
           search: search || undefined,
           limit: PAGE_SIZE,
           skip: skip,
@@ -279,7 +281,7 @@ export default function AssetsPage() {
   useEffect(() => {
     setCurrentPage(1);
     fetchData(1);
-  }, [orgFilter]);
+  }, [orgFilter, typeFilter, statusFilter]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -462,7 +464,7 @@ export default function AssetsPage() {
     });
     
     return {
-      total: assets.length,
+      total: totalAssets, // Use server's total count, not just current page
       live: liveAssets,
       totalPorts,
       riskyPorts,
@@ -471,7 +473,7 @@ export default function AssetsPage() {
       withEndpoints,
       withFindings,
     };
-  }, [assets]);
+  }, [assets, totalAssets]);
 
   return (
     <MainLayout>

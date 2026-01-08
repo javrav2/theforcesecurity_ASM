@@ -64,7 +64,7 @@ export default function DashboardPage() {
       const [vulnSummary, orgs, assetsData, vulns, nbSummary] = await Promise.all([
         api.getVulnerabilitiesSummary(),
         api.getOrganizations(),
-        api.getAssets({ limit: 100 }),
+        api.getAssets({ limit: 500 }), // Fetch more assets for the map
         api.getVulnerabilities({ limit: 5 }),
         api.getNetblockSummary().catch(() => null),
       ]);
