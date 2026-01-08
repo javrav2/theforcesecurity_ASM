@@ -39,6 +39,8 @@ import {
   Wifi,
   AlertCircle,
   Tag,
+  Camera,
+  ImageIcon,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -74,6 +76,19 @@ interface DiscoveryStep {
   query_domain?: string;
   timestamp?: string;
   confidence?: number;
+}
+
+interface Screenshot {
+  id: number;
+  url: string;
+  status: string;
+  file_path?: string;
+  thumbnail_path?: string;
+  http_status?: number;
+  page_title?: string;
+  captured_at: string;
+  has_changed?: boolean;
+  change_percentage?: number;
 }
 
 interface Asset {
@@ -150,15 +165,21 @@ export default function AssetDetailPage() {
   const router = useRouter();
   const assetId = params.id as string;
   const [asset, setAsset] = useState<Asset | null>(null);
+  const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [capturingScreenshot, setCapturingScreenshot] = useState(false);
   const { toast } = useToast();
 
   const fetchAsset = async () => {
     try {
-      const data = await api.getAsset(parseInt(assetId));
-      setAsset(data);
+      const [assetData, screenshotData] = await Promise.all([
+        api.getAsset(parseInt(assetId)),
+        api.getAssetScreenshots(parseInt(assetId)).catch(() => ({ screenshots: [] }))
+      ]);
+      setAsset(assetData);
+      setScreenshots(screenshotData.screenshots || []);
     } catch (error) {
       toast({
         title: 'Error',
@@ -168,6 +189,26 @@ export default function AssetDetailPage() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const handleCaptureScreenshot = async () => {
+    if (!asset) return;
+    
+    setCapturingScreenshot(true);
+    try {
+      await api.captureScreenshot(asset.id);
+      toast({ title: 'Screenshot captured successfully' });
+      // Refresh to get the new screenshot
+      fetchAsset();
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to capture screenshot',
+        variant: 'destructive',
+      });
+    } finally {
+      setCapturingScreenshot(false);
     }
   };
 
@@ -350,6 +391,122 @@ export default function AssetDetailPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Screenshot Section - Show for web-accessible assets */}
+        {(asset.asset_type === 'domain' || asset.asset_type === 'subdomain' || asset.asset_type === 'url') && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Camera className="h-5 w-5" />
+                    Screenshot
+                  </CardTitle>
+                  <CardDescription>
+                    Visual capture of this asset
+                  </CardDescription>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleCaptureScreenshot}
+                  disabled={capturingScreenshot}
+                >
+                  {capturingScreenshot ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <Camera className="h-4 w-4 mr-2" />
+                  )}
+                  {capturingScreenshot ? 'Capturing...' : 'Capture New'}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {screenshots.length > 0 ? (
+                <div className="space-y-4">
+                  {/* Latest Screenshot */}
+                  <div className="relative">
+                    <a 
+                      href={api.getScreenshotImageUrl(screenshots[0].id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block"
+                    >
+                      <img
+                        src={api.getScreenshotImageUrl(screenshots[0].id)}
+                        alt={`Screenshot of ${asset.value}`}
+                        className="w-full max-h-96 object-contain rounded-lg border bg-muted"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    </a>
+                    {screenshots[0].has_changed && (
+                      <Badge className="absolute top-2 right-2 bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
+                        Changed {screenshots[0].change_percentage ? `(${screenshots[0].change_percentage}%)` : ''}
+                      </Badge>
+                    )}
+                  </div>
+                  
+                  {/* Screenshot Details */}
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    {screenshots[0].page_title && (
+                      <div>
+                        <span className="text-muted-foreground">Title: </span>
+                        <span className="font-medium">{screenshots[0].page_title}</span>
+                      </div>
+                    )}
+                    {screenshots[0].http_status && (
+                      <div>
+                        <span className="text-muted-foreground">HTTP: </span>
+                        <Badge variant="outline">{screenshots[0].http_status}</Badge>
+                      </div>
+                    )}
+                    <div>
+                      <span className="text-muted-foreground">Captured: </span>
+                      <span>{formatDate(screenshots[0].captured_at)}</span>
+                    </div>
+                  </div>
+
+                  {/* Previous Screenshots */}
+                  {screenshots.length > 1 && (
+                    <div className="mt-4">
+                      <p className="text-sm text-muted-foreground mb-2">Previous Screenshots ({screenshots.length - 1})</p>
+                      <div className="flex gap-2 overflow-x-auto pb-2">
+                        {screenshots.slice(1, 6).map((screenshot) => (
+                          <a
+                            key={screenshot.id}
+                            href={api.getScreenshotImageUrl(screenshot.id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex-shrink-0"
+                          >
+                            <img
+                              src={api.getScreenshotImageUrl(screenshot.id)}
+                              alt={`Previous screenshot`}
+                              className="h-20 w-32 object-cover rounded border hover:border-primary transition-colors"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = 'none';
+                              }}
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <ImageIcon className="h-12 w-12 text-muted-foreground mb-3" />
+                  <p className="text-muted-foreground">No screenshots captured yet</p>
+                  <p className="text-sm text-muted-foreground">
+                    Click &quot;Capture New&quot; to take a screenshot of this asset
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Stats Grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

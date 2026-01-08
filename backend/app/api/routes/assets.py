@@ -11,7 +11,7 @@ from app.models.port_service import PortService, PortState
 from app.models.user import User
 from app.schemas.asset import (
     AssetCreate, AssetUpdate, AssetResponse, 
-    AssetPortsSummary, PortServiceSummary
+    AssetPortsSummary, PortServiceSummary, PaginatedAssetsResponse
 )
 from app.api.deps import get_current_active_user, require_analyst
 
@@ -93,6 +93,7 @@ def build_asset_response(asset: Asset) -> dict:
         "http_title": safe_get("http_title"),
         "dns_records": safe_get("dns_records", {}),
         "ip_address": safe_get("ip_address"),
+        "ip_addresses": safe_get("ip_addresses", []),
         "latitude": safe_get("latitude"),
         "longitude": safe_get("longitude"),
         "city": safe_get("city"),
@@ -117,7 +118,7 @@ def build_asset_response(asset: Asset) -> dict:
     }
 
 
-@router.get("/", response_model=List[AssetResponse])
+@router.get("/", response_model=PaginatedAssetsResponse)
 def list_assets(
     organization_id: Optional[int] = None,
     asset_type: Optional[AssetType] = None,
@@ -127,7 +128,7 @@ def list_assets(
     has_risky_ports: Optional[bool] = None,
     include_cidr: bool = Query(False, description="Include IP_RANGE/CIDR assets (excluded by default)"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -140,7 +141,7 @@ def list_assets(
             query = query.filter(Asset.organization_id == organization_id)
     else:
         if not current_user.organization_id:
-            return []
+            return PaginatedAssetsResponse(items=[], total=0, skip=skip, limit=limit, has_more=False)
         query = query.filter(Asset.organization_id == current_user.organization_id)
     
     # Apply filters
@@ -159,9 +160,13 @@ def list_assets(
             (Asset.value.ilike(f"%{search}%"))
         )
     
+    # Get total count before pagination
+    total_count = query.count()
+    
+    # Apply pagination
     assets = query.order_by(Asset.created_at.desc()).offset(skip).limit(limit).all()
     
-    # Filter by port criteria if specified
+    # Filter by port criteria if specified (note: this affects total count accuracy)
     if has_open_ports is not None or has_risky_ports is not None:
         filtered_assets = []
         for asset in assets:
@@ -183,7 +188,13 @@ def list_assets(
             filtered_assets.append(asset)
         assets = filtered_assets
     
-    return assets
+    return PaginatedAssetsResponse(
+        items=assets,
+        total=total_count,
+        skip=skip,
+        limit=limit,
+        has_more=(skip + len(assets)) < total_count
+    )
 
 
 @router.post("/", response_model=AssetResponse, status_code=status.HTTP_201_CREATED)

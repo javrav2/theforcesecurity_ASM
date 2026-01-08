@@ -160,6 +160,42 @@ class ExternalDiscoveryRequest(BaseModel):
         le=120,
         description="Timeout in seconds for each screenshot",
     )
+    
+    # HTTP probing - check if sites are live and get status codes
+    run_http_probe: bool = Field(
+        default=True,
+        description="Probe discovered hosts for HTTP response (sets is_live, http_status, http_title)",
+    )
+    max_http_probe: int = Field(
+        default=500,
+        ge=1,
+        le=2000,
+        description="Maximum number of hosts to probe for HTTP (runs in background)",
+    )
+    
+    # DNS resolution - get IP addresses for discovered hosts
+    run_dns_resolution: bool = Field(
+        default=True,
+        description="Resolve DNS for discovered hosts (sets ip_address field)",
+    )
+    max_dns_resolution: int = Field(
+        default=500,
+        ge=1,
+        le=2000,
+        description="Maximum number of hosts to resolve DNS for (runs in background)",
+    )
+    
+    # Geolocation enrichment - get country, city, lat/lon for IPs
+    run_geo_enrichment: bool = Field(
+        default=True,
+        description="Enrich assets with geolocation (country, city, lat/lon) based on resolved IPs",
+    )
+    max_geo_enrichment: int = Field(
+        default=500,
+        ge=1,
+        le=2000,
+        description="Maximum number of assets to enrich with geolocation (runs in background)",
+    )
 
 
 class SourceResult(BaseModel):

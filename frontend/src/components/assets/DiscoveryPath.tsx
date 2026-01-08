@@ -40,8 +40,18 @@ interface DiscoveryPathProps {
   associationConfidence?: number;
 }
 
+// Sources that are enrichment tools, not discovery sources
+const ENRICHMENT_SOURCES = new Set([
+  'wappalyzer',
+  'http_probe',
+  'technology_scan',
+  'eyewitness',
+  'screenshot',
+]);
+
 const sourceIcons: Record<string, any> = {
   manual: Globe,
+  seed: Globe,
   whoxy: Mail,
   crtsh: Lock,
   virustotal: Shield,
@@ -54,13 +64,18 @@ const sourceIcons: Record<string, any> = {
   commoncrawl_comprehensive: Database,
   sni_ip_ranges: Server,
   external_discovery: Search,
-  http_probe: LinkIcon,
+  dns_enumeration: Globe,
+  subdomain_resolution: Server,
+  ssl_certificate: Lock,
+  whoisxml: Building,
   nuclei: Shield,
+  port_scan: Server,
   default: Search,
 };
 
 const sourceColors: Record<string, string> = {
   manual: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
+  seed: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
   whoxy: 'bg-purple-500/10 text-purple-500 border-purple-500/20',
   crtsh: 'bg-green-500/10 text-green-500 border-green-500/20',
   virustotal: 'bg-red-500/10 text-red-500 border-red-500/20',
@@ -72,13 +87,18 @@ const sourceColors: Record<string, string> = {
   commoncrawl: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
   sni_ip_ranges: 'bg-pink-500/10 text-pink-500 border-pink-500/20',
   external_discovery: 'bg-gray-500/10 text-gray-500 border-gray-500/20',
-  http_probe: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
+  dns_enumeration: 'bg-teal-500/10 text-teal-500 border-teal-500/20',
+  subdomain_resolution: 'bg-lime-500/10 text-lime-500 border-lime-500/20',
+  ssl_certificate: 'bg-green-500/10 text-green-500 border-green-500/20',
+  whoisxml: 'bg-violet-500/10 text-violet-500 border-violet-500/20',
   nuclei: 'bg-rose-500/10 text-rose-500 border-rose-500/20',
+  port_scan: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
   default: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
 };
 
 const sourceNames: Record<string, string> = {
   manual: 'Manual Entry',
+  seed: 'Seed Domain',
   whoxy: 'Whoxy Reverse WHOIS',
   crtsh: 'Certificate Transparency',
   virustotal: 'VirusTotal',
@@ -91,8 +111,12 @@ const sourceNames: Record<string, string> = {
   commoncrawl_comprehensive: 'Common Crawl',
   sni_ip_ranges: 'SNI/Cloud Discovery',
   external_discovery: 'External Discovery',
-  http_probe: 'HTTP Probe',
+  dns_enumeration: 'DNS Enumeration',
+  subdomain_resolution: 'Subdomain Resolution',
+  ssl_certificate: 'SSL Certificate',
+  whoisxml: 'WhoisXML API',
   nuclei: 'Nuclei Scan',
+  port_scan: 'Port Scan',
 };
 
 function DiscoveryNode({ 
@@ -144,7 +168,19 @@ export function DiscoveryPath({
   associationReason,
   associationConfidence
 }: DiscoveryPathProps) {
-  const source = discoverySource?.toLowerCase() || 'manual';
+  const rawSource = discoverySource?.toLowerCase() || 'manual';
+  
+  // If the discovery source is an enrichment tool, fall back to a better source
+  // from the discovery chain or use 'external_discovery' as default
+  let source = rawSource;
+  if (ENRICHMENT_SOURCES.has(rawSource)) {
+    // Try to find a real discovery source from the chain
+    const realSource = discoveryChain?.find(step => 
+      step.source && !ENRICHMENT_SOURCES.has(step.source.toLowerCase())
+    )?.source?.toLowerCase();
+    source = realSource || 'external_discovery';
+  }
+  
   const SourceIcon = sourceIcons[source] || sourceIcons.default;
   const sourceColor = sourceColors[source] || sourceColors.default;
   const sourceName = sourceNames[source] || discoverySource || 'Unknown';

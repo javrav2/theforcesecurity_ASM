@@ -87,6 +87,7 @@ class AssetResponse(AssetBase):
     
     # Geo-location info
     ip_address: Optional[str] = None
+    ip_addresses: List[str] = []  # All resolved IPs (multi-value for load balancers, CDNs)
     latitude: Optional[str] = None
     longitude: Optional[str] = None
     city: Optional[str] = None
@@ -150,3 +151,12 @@ class AssetPortsSummary(BaseModel):
     udp_ports: int
     services: List[str]
     ports: List[PortServiceSummary]
+
+
+class PaginatedAssetsResponse(BaseModel):
+    """Paginated response for assets list."""
+    items: List[AssetResponse]
+    total: int
+    skip: int
+    limit: int
+    has_more: bool

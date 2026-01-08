@@ -77,12 +77,15 @@ interface Asset {
   name: string;
   value: string;
   ip_address?: string;
+  ip_addresses?: string[];  // All resolved IPs (multi-value for load balancers, CDNs)
   asset_type: string;
   type?: string;
   status: string;
   organization_id: number;
   organization_name?: string;
   http_status?: number;
+  http_title?: string;
+  live_url?: string;
   technologies?: Array<{ name: string; slug: string; categories: string[] }>;
   tags?: string[];
   findingsCount?: number;
@@ -140,6 +143,8 @@ const assetColors: Record<string, string> = {
   other: 'text-gray-400',
 };
 
+const PAGE_SIZE = 100; // Assets per page
+
 export default function AssetsPage() {
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -155,6 +160,10 @@ export default function AssetsPage() {
   const [editingLabels, setEditingLabels] = useState<Asset | null>(null);
   const [newLabel, setNewLabel] = useState('');
   const { toast } = useToast();
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalAssets, setTotalAssets] = useState(0);
 
   const [columns, setColumns] = useState<Column[]>([
     { key: 'screenshot', label: 'Screenshot', visible: true },
@@ -162,10 +171,10 @@ export default function AssetsPage() {
     { key: 'hostname', label: 'Value', visible: true },
     { key: 'is_live', label: 'Live', visible: true },
     { key: 'http_status', label: 'HTTP', visible: true },
+    { key: 'ip_address', label: 'IP Address', visible: true },
     { key: 'ports', label: 'Ports', visible: true },
     { key: 'technologies', label: 'Technologies', visible: true },
     { key: 'labels', label: 'Labels', visible: false },
-    { key: 'ip_address', label: 'IP Address', visible: false },
     { key: 'status', label: 'Status', visible: false },
     { key: 'findings', label: 'Findings', visible: true },
     { key: 'endpoints', label: 'Endpoints', visible: false },
@@ -175,17 +184,23 @@ export default function AssetsPage() {
     { key: 'created_at', label: 'Last Seen', visible: true },
   ]);
 
-  const fetchData = async () => {
+  const fetchData = async (page: number = currentPage) => {
     setLoading(true);
     try {
+      const skip = (page - 1) * PAGE_SIZE;
       const [assetsData, orgsData] = await Promise.all([
         api.getAssets({
           organization_id: orgFilter !== 'all' ? parseInt(orgFilter) : undefined,
           search: search || undefined,
-          limit: 100,
+          limit: PAGE_SIZE,
+          skip: skip,
         }),
         api.getOrganizations(),
       ]);
+      
+      // Get total count from response
+      const total = assetsData.total || assetsData.items?.length || assetsData.length || 0;
+      setTotalAssets(total);
 
       // Transform assets to include derived properties
       const assetsList = assetsData.items || assetsData || [];
@@ -262,17 +277,24 @@ export default function AssetsPage() {
   };
 
   useEffect(() => {
-    fetchData();
+    setCurrentPage(1);
+    fetchData(1);
   }, [orgFilter]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
       if (search !== '') {
-        fetchData();
+        setCurrentPage(1);
+        fetchData(1);
       }
     }, 500);
     return () => clearTimeout(timer);
   }, [search]);
+  
+  // Initial load
+  useEffect(() => {
+    fetchData(1);
+  }, []);
 
   // Filter and sort assets
   const displayedAssets = useMemo(() => {
@@ -679,6 +701,46 @@ export default function AssetsPage() {
                           </TableCell>
                         )}
 
+                        {/* HTTP Status - must come right after Live to match column order */}
+                        {columns.find(c => c.key === 'http_status')?.visible && (
+                          <TableCell>
+                            {asset.http_status ? (
+                              <Badge
+                                variant="outline"
+                                className={
+                                  asset.http_status >= 200 && asset.http_status < 300
+                                    ? 'text-green-400'
+                                    : asset.http_status >= 400
+                                    ? 'text-red-400'
+                                    : 'text-yellow-400'
+                                }
+                              >
+                                {asset.http_status}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        )}
+
+                        {/* IP Address - must come after HTTP to match column order */}
+                        {columns.find(c => c.key === 'ip_address')?.visible && (
+                          <TableCell className="font-mono text-sm">
+                            {asset.ip_address ? (
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-foreground">{asset.ip_address}</span>
+                                {asset.ip_addresses && asset.ip_addresses.length > 1 && (
+                                  <span className="text-xs text-muted-foreground">
+                                    +{asset.ip_addresses.length - 1} more
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        )}
+
                         {/* Ports */}
                         {columns.find(c => c.key === 'ports')?.visible && (
                           <TableCell>
@@ -723,13 +785,6 @@ export default function AssetsPage() {
                             ) : (
                               <span className="text-muted-foreground text-xs">—</span>
                             )}
-                          </TableCell>
-                        )}
-
-                        {/* IP Address */}
-                        {columns.find(c => c.key === 'ip_address')?.visible && (
-                          <TableCell className="font-mono text-sm">
-                            {asset.ip_address || '—'}
                           </TableCell>
                         )}
 
@@ -787,28 +842,6 @@ export default function AssetsPage() {
                                   {asset.findingsCount}
                                 </span>
                               </div>
-                            ) : (
-                              <span className="text-muted-foreground">—</span>
-                            )}
-                          </TableCell>
-                        )}
-
-                        {/* HTTP Status */}
-                        {columns.find(c => c.key === 'http_status')?.visible && (
-                          <TableCell>
-                            {asset.http_status ? (
-                              <Badge
-                                variant="outline"
-                                className={
-                                  asset.http_status >= 200 && asset.http_status < 300
-                                    ? 'text-green-400'
-                                    : asset.http_status >= 400
-                                    ? 'text-red-400'
-                                    : 'text-yellow-400'
-                                }
-                              >
-                                {asset.http_status}
-                              </Badge>
                             ) : (
                               <span className="text-muted-foreground">—</span>
                             )}
@@ -915,9 +948,43 @@ export default function AssetsPage() {
           </Card>
         </TableCustomization>
 
-        {/* Pagination info */}
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>Showing {displayedAssets.length} of {assets.length} assets</span>
+        {/* Pagination controls */}
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-muted-foreground">
+            Showing {((currentPage - 1) * PAGE_SIZE) + 1} - {Math.min(currentPage * PAGE_SIZE, totalAssets)} of {totalAssets} assets
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const newPage = currentPage - 1;
+                setCurrentPage(newPage);
+                fetchData(newPage);
+              }}
+              disabled={currentPage === 1 || loading}
+            >
+              Previous
+            </Button>
+            <div className="flex items-center gap-1 text-sm">
+              <span>Page</span>
+              <span className="font-medium">{currentPage}</span>
+              <span>of</span>
+              <span className="font-medium">{Math.ceil(totalAssets / PAGE_SIZE) || 1}</span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const newPage = currentPage + 1;
+                setCurrentPage(newPage);
+                fetchData(newPage);
+              }}
+              disabled={currentPage >= Math.ceil(totalAssets / PAGE_SIZE) || loading}
+            >
+              Next
+            </Button>
+          </div>
         </div>
       </div>
 

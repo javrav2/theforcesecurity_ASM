@@ -74,6 +74,12 @@ from app.services.external_discovery_service import ExternalDiscoveryService
 from app.services.technology_scan_service import run_technology_scan_for_hosts
 from app.services.subdomain_service import SubdomainService
 from app.services.screenshot_service import run_screenshots_for_hosts
+from app.services.http_probe_service import (
+    run_http_probe_for_hosts,
+    run_dns_resolution_for_hosts,
+    run_geo_enrichment_for_org,
+    run_ip_assets_geo_enrichment,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -731,6 +737,45 @@ async def run_external_discovery(
                 hosts=all_hosts,
                 max_hosts=request.max_screenshots,
                 timeout=request.screenshot_timeout,
+            )
+        
+        # HTTP probing - check if sites are live and get status codes
+        # This runs FIRST since it also resolves IPs
+        if request.run_http_probe and all_hosts:
+            logger.info(f"Scheduling HTTP probe for {len(all_hosts)} hosts (max: {request.max_http_probe})")
+            background_tasks.add_task(
+                run_http_probe_for_hosts,
+                organization_id=request.organization_id,
+                hosts=all_hosts,
+                max_hosts=request.max_http_probe,
+            )
+        
+        # DNS resolution - get IP addresses (runs if HTTP probe didn't already resolve)
+        if request.run_dns_resolution and all_hosts:
+            logger.info(f"Scheduling DNS resolution for {len(all_hosts)} hosts (max: {request.max_dns_resolution})")
+            background_tasks.add_task(
+                run_dns_resolution_for_hosts,
+                organization_id=request.organization_id,
+                hosts=all_hosts,
+                max_hosts=request.max_dns_resolution,
+            )
+        
+        # Geolocation enrichment - get country data for mapping
+        # This runs AFTER HTTP probe and DNS resolution to use the resolved IPs
+        if request.run_geo_enrichment:
+            logger.info(f"Scheduling geo enrichment for organization {request.organization_id} (max: {request.max_geo_enrichment})")
+            # Enrich domain/subdomain assets with geo data based on their IPs
+            background_tasks.add_task(
+                run_geo_enrichment_for_org,
+                organization_id=request.organization_id,
+                max_assets=request.max_geo_enrichment,
+                force=False,
+            )
+            # Also enrich IP address assets (from CIDR/netblocks)
+            background_tasks.add_task(
+                run_ip_assets_geo_enrichment,
+                organization_id=request.organization_id,
+                max_assets=request.max_geo_enrichment,
             )
     
     return ExternalDiscoveryResponse(
