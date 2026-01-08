@@ -1340,8 +1340,26 @@ class PortScannerService:
         return results
     
     def parse_masscan_output(self, output: str) -> List[PortResult]:
-        """Parse Masscan JSON output from string."""
+        """
+        Parse Masscan output from string.
+        
+        Supports both JSON format (-oJ) and text format (default).
+        
+        JSON format example:
+            [{"ip": "1.2.3.4", "ports": [{"port": 80, "proto": "tcp"}]}]
+        
+        Text format example (default masscan output):
+            #masscan
+            open tcp 443 1.2.3.4 1234567890
+            open tcp 80 1.2.3.5 1234567891
+        """
         results = []
+        output = output.strip()
+        
+        if not output:
+            return results
+        
+        # Try JSON format first
         try:
             data = json.loads(output)
             for entry in data:
@@ -1355,8 +1373,46 @@ class PortScannerService:
                         state=port_info.get("status", "open"),
                         scanner="masscan"
                     ))
+            return results
         except json.JSONDecodeError:
             pass
+        
+        # Try text format (default masscan output)
+        # Format: open <proto> <port> <ip> <timestamp>
+        # or: <state> <proto> <port> <ip> <timestamp>
+        for line in output.split("\n"):
+            line = line.strip()
+            
+            # Skip comments and empty lines
+            if not line or line.startswith("#"):
+                continue
+            
+            parts = line.split()
+            if len(parts) >= 4:
+                # Expected format: open tcp 80 1.2.3.4 [timestamp]
+                state = parts[0].lower()
+                proto = parts[1].lower() if len(parts) > 1 else "tcp"
+                
+                try:
+                    port = int(parts[2])
+                    ip = parts[3]
+                    
+                    # Validate IP looks like an IP address
+                    if not ip or not (ip[0].isdigit() or ip.startswith('[') or ':' in ip):
+                        continue
+                    
+                    results.append(PortResult(
+                        host=ip,
+                        ip=ip,
+                        port=port,
+                        protocol=proto,
+                        state=state if state in ("open", "closed", "filtered") else "open",
+                        scanner="masscan"
+                    ))
+                except (ValueError, IndexError):
+                    continue
+        
+        logger.info(f"Parsed {len(results)} port results from masscan text format")
         return results
     
     def parse_nmap_output(self, xml_content: str) -> List[PortResult]:
