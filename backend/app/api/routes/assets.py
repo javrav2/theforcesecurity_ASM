@@ -189,7 +189,7 @@ def list_assets(
         assets = filtered_assets
     
     return PaginatedAssetsResponse(
-        items=assets,
+        items=[build_asset_response(asset) for asset in assets],
         total=total_count,
         skip=skip,
         limit=limit,
