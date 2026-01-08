@@ -10,7 +10,13 @@ from app.db.database import Base
 
 class ScheduleFrequency(str, enum.Enum):
     """Frequency for scheduled scans."""
+    EVERY_15_MINUTES = "every_15_minutes"
+    EVERY_30_MINUTES = "every_30_minutes"
     HOURLY = "hourly"
+    EVERY_2_HOURS = "every_2_hours"
+    EVERY_4_HOURS = "every_4_hours"
+    EVERY_6_HOURS = "every_6_hours"
+    EVERY_12_HOURS = "every_12_hours"
     DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
@@ -73,8 +79,44 @@ class ScanSchedule(Base):
         from datetime import timedelta
         now = datetime.now(timezone.utc)
         
-        if self.frequency == ScheduleFrequency.HOURLY:
+        if self.frequency == ScheduleFrequency.EVERY_15_MINUTES:
+            # Next 15-minute mark
+            minutes = (now.minute // 15 + 1) * 15
+            if minutes >= 60:
+                next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            else:
+                next_run = now.replace(minute=minutes, second=0, microsecond=0)
+        elif self.frequency == ScheduleFrequency.EVERY_30_MINUTES:
+            # Next 30-minute mark
+            if now.minute < 30:
+                next_run = now.replace(minute=30, second=0, microsecond=0)
+            else:
+                next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        elif self.frequency == ScheduleFrequency.HOURLY:
             next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        elif self.frequency == ScheduleFrequency.EVERY_2_HOURS:
+            next_hour = ((now.hour // 2) + 1) * 2
+            if next_hour >= 24:
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            else:
+                next_run = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
+        elif self.frequency == ScheduleFrequency.EVERY_4_HOURS:
+            next_hour = ((now.hour // 4) + 1) * 4
+            if next_hour >= 24:
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            else:
+                next_run = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
+        elif self.frequency == ScheduleFrequency.EVERY_6_HOURS:
+            next_hour = ((now.hour // 6) + 1) * 6
+            if next_hour >= 24:
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            else:
+                next_run = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
+        elif self.frequency == ScheduleFrequency.EVERY_12_HOURS:
+            if now.hour < 12:
+                next_run = now.replace(hour=12, minute=0, second=0, microsecond=0)
+            else:
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         elif self.frequency == ScheduleFrequency.DAILY:
             next_run = now.replace(hour=self.run_at_hour, minute=0, second=0, microsecond=0)
             if next_run <= now:

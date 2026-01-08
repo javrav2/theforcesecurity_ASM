@@ -81,7 +81,13 @@ interface ScanType {
 }
 
 const FREQUENCY_OPTIONS = [
+  { value: 'every_15_minutes', label: 'Every 15 Minutes' },
+  { value: 'every_30_minutes', label: 'Every 30 Minutes' },
   { value: 'hourly', label: 'Hourly' },
+  { value: 'every_2_hours', label: 'Every 2 Hours' },
+  { value: 'every_4_hours', label: 'Every 4 Hours' },
+  { value: 'every_6_hours', label: 'Every 6 Hours' },
+  { value: 'every_12_hours', label: 'Every 12 Hours' },
   { value: 'daily', label: 'Daily' },
   { value: 'weekly', label: 'Weekly' },
   { value: 'monthly', label: 'Monthly' },
