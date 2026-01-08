@@ -13,8 +13,10 @@ class ScanType(str, enum.Enum):
     DISCOVERY = "discovery"           # Full asset discovery from seed domain
     SUBDOMAIN_ENUM = "subdomain_enum" # Subdomain enumeration
     DNS_ENUM = "dns_enum"             # DNS record enumeration
+    DNS_RESOLUTION = "dns_resolution" # Resolve domains to IPs + geo enrichment
     PORT_SCAN = "port_scan"           # Port/service scanning
     WEB_SCAN = "web_scan"             # Web application scanning
+    HTTP_PROBE = "http_probe"         # HTTP probing for live web assets
     TECHNOLOGY = "technology"          # Wappalyzer technology fingerprinting
     CERTIFICATE = "certificate"        # SSL/TLS certificate analysis
     VULNERABILITY = "vulnerability"    # Vulnerability scanning

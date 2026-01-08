@@ -470,6 +470,167 @@ def delete_scan(
 
 
 # =============================================================================
+# Quick Action Scan Endpoints
+# =============================================================================
+
+@router.post("/quick/dns-resolution", response_model=ScanResponse)
+def quick_dns_resolution_scan(
+    organization_id: int = Query(..., description="Organization ID"),
+    include_geo: bool = Query(True, description="Include geo-enrichment"),
+    limit: int = Query(500, ge=1, le=2000, description="Max assets to process"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Quick action: Create a DNS resolution scan to resolve all domains to IPs.
+    
+    This scan will:
+    1. Find all domain/subdomain assets without IP addresses
+    2. Resolve them using dnsx
+    3. Update assets with resolved IPs
+    4. Optionally geo-enrich with lat/lon for the world map
+    
+    Use this to populate IP addresses and geolocation for the asset map.
+    """
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Count unresolved assets
+    from app.models.asset import AssetType
+    unresolved_count = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+        (Asset.ip_address.is_(None) | (Asset.ip_address == ''))
+    ).count()
+    
+    if unresolved_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No assets need DNS resolution. All domains already have IP addresses."
+        )
+    
+    # Create scan
+    scan = Scan(
+        name=f"DNS Resolution - {min(unresolved_count, limit)} assets",
+        scan_type=ScanType.DNS_RESOLUTION,
+        organization_id=organization_id,
+        targets=[],  # Will resolve all unresolved assets
+        config={
+            "include_geo": include_geo,
+            "limit": limit,
+        },
+        status=ScanStatus.PENDING,
+        started_by=current_user.username,
+    )
+    
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+    
+    return {
+        "id": scan.id,
+        "name": scan.name,
+        "scan_type": scan.scan_type,
+        "organization_id": scan.organization_id,
+        "organization_name": scan.organization.name if scan.organization else None,
+        "targets": scan.targets or [],
+        "config": scan.config or {},
+        "status": scan.status,
+        "progress": scan.progress,
+        "assets_discovered": 0,
+        "technologies_found": 0,
+        "vulnerabilities_found": 0,
+        "targets_count": min(unresolved_count, limit),
+        "findings_count": 0,
+        "started_by": scan.started_by,
+        "started_at": scan.started_at,
+        "completed_at": scan.completed_at,
+        "error_message": scan.error_message,
+        "results": {"pending_assets": min(unresolved_count, limit)},
+        "created_at": scan.created_at,
+        "updated_at": scan.updated_at,
+    }
+
+
+@router.post("/quick/http-probe", response_model=ScanResponse)
+def quick_http_probe_scan(
+    organization_id: int = Query(..., description="Organization ID"),
+    limit: int = Query(500, ge=1, le=2000, description="Max assets to probe"),
+    timeout: int = Query(30, ge=5, le=120, description="Timeout per target"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Quick action: Create an HTTP probe scan to find live web assets.
+    
+    This scan will:
+    1. Probe all domain/subdomain assets for HTTP/HTTPS
+    2. Update assets with live status, HTTP status code, and page title
+    3. Store the final URL (after redirects)
+    4. Update IP addresses if discovered
+    
+    Use this to identify which assets have live web services.
+    """
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Count assets to probe
+    from app.models.asset import AssetType
+    asset_count = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
+    ).count()
+    
+    if asset_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No domain/subdomain assets found to probe."
+        )
+    
+    # Create scan
+    scan = Scan(
+        name=f"HTTP Probe - {min(asset_count, limit)} assets",
+        scan_type=ScanType.HTTP_PROBE,
+        organization_id=organization_id,
+        targets=[],  # Will probe all assets
+        config={
+            "limit": limit,
+            "timeout": timeout,
+        },
+        status=ScanStatus.PENDING,
+        started_by=current_user.username,
+    )
+    
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+    
+    return {
+        "id": scan.id,
+        "name": scan.name,
+        "scan_type": scan.scan_type,
+        "organization_id": scan.organization_id,
+        "organization_name": scan.organization.name if scan.organization else None,
+        "targets": scan.targets or [],
+        "config": scan.config or {},
+        "status": scan.status,
+        "progress": scan.progress,
+        "assets_discovered": 0,
+        "technologies_found": 0,
+        "vulnerabilities_found": 0,
+        "targets_count": min(asset_count, limit),
+        "findings_count": 0,
+        "started_by": scan.started_by,
+        "started_at": scan.started_at,
+        "completed_at": scan.completed_at,
+        "error_message": scan.error_message,
+        "results": {"pending_assets": min(asset_count, limit)},
+        "created_at": scan.created_at,
+        "updated_at": scan.updated_at,
+    }
+
+
+# =============================================================================
 # Unified Export Endpoints
 # =============================================================================
 

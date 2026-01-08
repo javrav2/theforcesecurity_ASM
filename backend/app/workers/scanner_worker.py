@@ -25,13 +25,15 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from app.models.scan import Scan, ScanType, ScanStatus
-from app.models.asset import Asset
+from app.models.asset import Asset, AssetType
 from app.models.netblock import Netblock
 from app.services.nuclei_service import NucleiService
 from app.services.nuclei_findings_service import NucleiFindingsService
 from app.services.port_scanner_service import PortScannerService, ScannerType
 from app.services.port_findings_service import PortFindingsService
 from app.services.discovery_service import DiscoveryService
+from app.services.dns_resolution_service import DNSResolutionService
+from app.services.geolocation_service import get_geolocation_service
 import ipaddress
 import re
 
@@ -177,6 +179,9 @@ class ScannerWorker:
                 ScanType.PORT_SCAN: 'PORT_SCAN',
                 ScanType.DISCOVERY: 'DISCOVERY',
                 ScanType.SUBDOMAIN_ENUM: 'SUBDOMAIN_ENUM',
+                ScanType.DNS_RESOLUTION: 'DNS_RESOLUTION',
+                ScanType.HTTP_PROBE: 'HTTP_PROBE',
+                ScanType.DNS_ENUM: 'DNS_RESOLUTION',  # Alias
             }
             
             job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
@@ -236,6 +241,10 @@ class ScannerWorker:
                 await self.handle_discovery(body)
             elif job_type == 'SUBDOMAIN_ENUM':
                 await self.handle_subdomain_enum(body)
+            elif job_type == 'DNS_RESOLUTION':
+                await self.handle_dns_resolution(body)
+            elif job_type == 'HTTP_PROBE':
+                await self.handle_http_probe(body)
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
@@ -777,6 +786,246 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"Subdomain enum failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_dns_resolution(self, job_data: dict):
+        """
+        Handle DNS resolution scan job.
+        
+        Resolves domains/subdomains to IP addresses using dnsx and optionally
+        geo-enriches the resolved IPs. This is useful for:
+        - Populating IP addresses for newly discovered assets
+        - Getting geolocation data for the world map
+        - Understanding the infrastructure behind domains
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        include_geo = config.get('include_geo', True)
+        limit = config.get('limit', 1000)
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Resolving domains to IPs"
+                db.commit()
+            
+            dns_service = DNSResolutionService(db)
+            
+            # If specific targets provided, resolve just those
+            if targets:
+                logger.info(f"Resolving {len(targets)} specified targets")
+                dns_results = await dns_service.resolve_domains(targets)
+                
+                resolved_count = 0
+                geo_enriched = 0
+                
+                # Update assets with resolved IPs
+                for target in targets:
+                    dns_result = dns_results.get(target)
+                    if not dns_result or not dns_result.ip_addresses:
+                        continue
+                    
+                    # Find the asset
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == target
+                    ).first()
+                    
+                    if asset:
+                        primary_ip = dns_result.ip_addresses[0]
+                        asset.ip_address = primary_ip
+                        
+                        # Store all IPs
+                        if hasattr(asset, 'set_ip_addresses'):
+                            asset.set_ip_addresses(dns_result.ip_addresses)
+                        
+                        # Store DNS records
+                        if not asset.metadata_:
+                            asset.metadata_ = {}
+                        asset.metadata_['dns_records'] = {
+                            'a': dns_result.a_records,
+                            'aaaa': dns_result.aaaa_records,
+                            'cname': dns_result.cname,
+                        }
+                        asset.last_seen = datetime.utcnow()
+                        resolved_count += 1
+                        
+                        # Geo-enrich if enabled
+                        if include_geo:
+                            geo_service = get_geolocation_service()
+                            geo_data = await geo_service.lookup_ip(primary_ip)
+                            if geo_data:
+                                asset.latitude = geo_data.get('latitude')
+                                asset.longitude = geo_data.get('longitude')
+                                asset.city = geo_data.get('city')
+                                asset.country = geo_data.get('country')
+                                asset.country_code = geo_data.get('country_code')
+                                asset.isp = geo_data.get('isp')
+                                asset.asn = geo_data.get('asn')
+                                geo_enriched += 1
+                
+                db.commit()
+                
+                result_summary = {
+                    'targets': len(targets),
+                    'resolved': resolved_count,
+                    'geo_enriched': geo_enriched
+                }
+            else:
+                # Resolve all unresolved assets in the organization
+                logger.info(f"Resolving unresolved assets for org {organization_id}")
+                
+                if scan:
+                    scan.current_step = "Resolving all unresolved domains"
+                    db.commit()
+                
+                result_summary = await dns_service.resolve_and_update_assets(
+                    organization_id=organization_id,
+                    limit=limit,
+                    include_geo=include_geo
+                )
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.results = result_summary
+                scan.assets_discovered = result_summary.get('resolved', 0)
+                db.commit()
+            
+            logger.info(f"DNS resolution complete: {result_summary}")
+            
+        except Exception as e:
+            logger.error(f"DNS resolution failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_http_probe(self, job_data: dict):
+        """
+        Handle HTTP probing scan job.
+        
+        Probes domains/subdomains to check if they have live web services.
+        Updates assets with:
+        - is_live status
+        - HTTP status code
+        - Page title
+        - Live URL (final URL after redirects)
+        - IP address (if discovered)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        limit = config.get('limit', 1000)
+        timeout = config.get('timeout', 30)
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Probing HTTP services"
+                db.commit()
+            
+            dns_service = DNSResolutionService(db)
+            
+            # If specific targets provided, probe just those
+            if targets:
+                logger.info(f"Probing {len(targets)} specified targets")
+                probe_results = await dns_service.probe_http(targets, timeout=timeout)
+                
+                live_count = 0
+                
+                # Update assets
+                for target in targets:
+                    result = probe_results.get(target)
+                    
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == target
+                    ).first()
+                    
+                    if asset and result and result.is_live:
+                        asset.is_live = True
+                        asset.http_status = result.status_code
+                        asset.http_title = result.title
+                        asset.live_url = result.url
+                        if result.ip_address and not asset.ip_address:
+                            asset.ip_address = result.ip_address
+                        asset.last_seen = datetime.utcnow()
+                        live_count += 1
+                
+                db.commit()
+                
+                result_summary = {
+                    'targets': len(targets),
+                    'live': live_count,
+                    'not_live': len(targets) - live_count
+                }
+            else:
+                # Probe all assets in the organization
+                logger.info(f"Probing all assets for org {organization_id}")
+                
+                if scan:
+                    scan.current_step = "Probing all web assets"
+                    db.commit()
+                
+                result_summary = await dns_service.probe_and_update_assets(
+                    organization_id=organization_id,
+                    limit=limit
+                )
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.results = result_summary
+                scan.assets_discovered = result_summary.get('live', 0)
+                db.commit()
+            
+            logger.info(f"HTTP probe complete: {result_summary}")
+            
+        except Exception as e:
+            logger.error(f"HTTP probe failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:
