@@ -571,10 +571,17 @@ export default function SchedulesPage() {
                       <TableCell>
                         {schedule.is_enabled ? (
                           schedule.consecutive_failures > 0 ? (
-                            <Badge variant="destructive">
-                              <AlertTriangle className="h-3 w-3 mr-1" />
-                              {schedule.consecutive_failures} failures
-                            </Badge>
+                            <div className="space-y-1">
+                              <Badge variant="destructive">
+                                <AlertTriangle className="h-3 w-3 mr-1" />
+                                {schedule.consecutive_failures} failures
+                              </Badge>
+                              {schedule.last_error && (
+                                <p className="text-xs text-red-400 max-w-[200px] truncate" title={schedule.last_error}>
+                                  {schedule.last_error}
+                                </p>
+                              )}
+                            </div>
                           ) : (
                             <Badge className="bg-green-500/20 text-green-400">
                               <CheckCircle className="h-3 w-3 mr-1" />

@@ -161,8 +161,15 @@ class ScheduleWorker:
             netblock_targets = []
             for nb in netblocks:
                 if nb.cidr_notation:
-                    # Handle multiple CIDRs (comma-separated)
-                    cidrs = [c.strip() for c in nb.cidr_notation.split(',') if c.strip()]
+                    # Handle multiple CIDRs (semicolon or comma-separated)
+                    # WhoisXML uses semicolon, but also support comma for flexibility
+                    cidr_str = nb.cidr_notation
+                    if ';' in cidr_str:
+                        cidrs = [c.strip() for c in cidr_str.split(';') if c.strip()]
+                    elif ',' in cidr_str:
+                        cidrs = [c.strip() for c in cidr_str.split(',') if c.strip()]
+                    else:
+                        cidrs = [cidr_str.strip()] if cidr_str.strip() else []
                     netblock_targets.extend(cidrs)
             
             # Combine and deduplicate
@@ -170,8 +177,31 @@ class ScheduleWorker:
             logger.info(f"Auto-targeting {len(asset_targets)} assets + {len(netblock_targets)} netblock CIDRs")
         
         if not targets:
-            logger.warning(f"No targets for schedule {schedule.id}")
-            schedule.last_error = "No targets found - run discovery first"
+            # Check what's missing to give a better error message
+            all_assets_count = db.query(Asset).filter(
+                Asset.organization_id == schedule.organization_id
+            ).count()
+            
+            all_netblocks_count = db.query(Netblock).filter(
+                Netblock.organization_id == schedule.organization_id
+            ).count()
+            
+            in_scope_netblocks = db.query(Netblock).filter(
+                Netblock.organization_id == schedule.organization_id,
+                Netblock.in_scope == True
+            ).count()
+            
+            if all_assets_count == 0 and all_netblocks_count == 0:
+                error_msg = "No assets or netblocks found - run External Discovery first"
+            elif all_netblocks_count > 0 and in_scope_netblocks == 0:
+                error_msg = f"Found {all_netblocks_count} netblocks but none are marked in-scope. Go to Netblocks page and mark them as in-scope."
+            elif all_assets_count > 0:
+                error_msg = f"Found {all_assets_count} assets but none are marked in-scope"
+            else:
+                error_msg = "No in-scope targets found - check asset/netblock scope settings"
+            
+            logger.warning(f"No targets for schedule {schedule.id}: {error_msg}")
+            schedule.last_error = error_msg
             schedule.next_run_at = schedule.calculate_next_run()
             db.commit()
             return
