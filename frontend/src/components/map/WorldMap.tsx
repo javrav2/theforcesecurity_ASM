@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useMemo } from 'react';
-import { ComposableMap, Geographies, Geography, Marker } from 'react-simple-maps';
+import React, { useMemo, useState } from 'react';
+import { ComposableMap, Geographies, Geography, Marker, ZoomableGroup } from 'react-simple-maps';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { MapPin, Globe, AlertTriangle } from 'lucide-react';
+import { MapPin, Globe, Building2, Server } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 
 const geoUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
@@ -19,7 +20,7 @@ interface Asset {
   id: number;
   value: string;
   type?: string;
-  findingsCount: number;
+  findingsCount?: number;
   geoLocation?: GeoLocation;
 }
 
@@ -28,75 +29,123 @@ interface WorldMapProps {
   onAssetClick?: (asset: Asset) => void;
 }
 
+// Country code mapping for common mismatches
+const countryCodeMap: Record<string, string> = {
+  'USA': 'US',
+  'GBR': 'GB',
+  'DEU': 'DE',
+  'FRA': 'FR',
+  'CAN': 'CA',
+  'AUS': 'AU',
+  'JPN': 'JP',
+  'CHN': 'CN',
+  'IND': 'IN',
+  'BRA': 'BR',
+};
+
 export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
+  const [hoveredCountry, setHoveredCountry] = useState<string | null>(null);
+  const [position, setPosition] = useState({ coordinates: [0, 20] as [number, number], zoom: 1 });
+
   const geoAssets = useMemo(
-    () => assets.filter(asset => asset.geoLocation),
+    () => assets.filter(asset => asset.geoLocation?.latitude && asset.geoLocation?.longitude),
     [assets]
   );
 
-  // Group assets by country for heatmap effect
+  // Group assets by country for coloring
   const countryData = useMemo(() => {
-    const counts: Record<string, number> = {};
+    const data: Record<string, { count: number; assets: Asset[]; country: string }> = {};
     geoAssets.forEach(asset => {
-      const code = asset.geoLocation?.countryCode || 'Unknown';
-      counts[code] = (counts[code] || 0) + 1;
+      let code = asset.geoLocation?.countryCode || 'Unknown';
+      // Normalize country code
+      if (countryCodeMap[code]) code = countryCodeMap[code];
+      
+      if (!data[code]) {
+        data[code] = { count: 0, assets: [], country: asset.geoLocation?.country || 'Unknown' };
+      }
+      data[code].count += 1;
+      data[code].assets.push(asset);
     });
-    return counts;
+    return data;
   }, [geoAssets]);
+
+  // Get top countries by asset count
+  const topCountries = useMemo(() => {
+    return Object.entries(countryData)
+      .map(([code, data]) => ({ code, ...data }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+  }, [countryData]);
+
+  // Get unique countries count
+  const uniqueCountries = Object.keys(countryData).length;
 
   const getCountryFill = (geo: any) => {
     // Try different country code formats
-    const id = geo.id || geo.properties?.ISO_A2 || geo.properties?.ISO_A3;
-    const count = countryData[id] || 0;
+    const geoId = geo.id;
+    const iso2 = geo.properties?.ISO_A2;
+    const iso3 = geo.properties?.ISO_A3;
     
-    if (count === 0) return "hsl(220 20% 20%)"; // Dark background for empty
-    if (count >= 5) return "hsl(0 84% 60%)";    // Red - critical
-    if (count >= 3) return "hsl(25 95% 53%)";   // Orange - high  
-    if (count >= 1) return "hsl(48 96% 53%)";   // Yellow - medium
-    return "hsl(142 76% 36%)";                   // Green - low
+    // Check various formats
+    const count = countryData[geoId]?.count || 
+                  countryData[iso2]?.count || 
+                  countryData[iso3]?.count ||
+                  countryData[countryCodeMap[geoId]]?.count ||
+                  0;
+    
+    const isHovered = hoveredCountry === geoId || hoveredCountry === iso2 || hoveredCountry === iso3;
+    
+    if (isHovered) return "hsl(217 91% 60%)"; // Bright blue on hover
+    
+    if (count === 0) return "hsl(220 15% 18%)"; // Dark gray for no assets
+    if (count >= 20) return "hsl(199 89% 48%)"; // Bright cyan - many assets
+    if (count >= 10) return "hsl(199 80% 40%)"; // Cyan
+    if (count >= 5) return "hsl(199 70% 35%)";  // Medium cyan
+    if (count >= 2) return "hsl(199 60% 30%)";  // Lighter
+    return "hsl(199 50% 25%)";                   // Light cyan - few assets
   };
 
-  const getMarkerColor = (findingsCount: number) => {
-    if (findingsCount > 5) return "hsl(0 84% 60%)";     // Red
-    if (findingsCount > 2) return "hsl(25 95% 53%)";    // Orange
-    if (findingsCount > 0) return "hsl(48 96% 53%)";    // Yellow
-    return "hsl(142 76% 36%)";                           // Green
+  const getMarkerColor = (assetType?: string) => {
+    switch (assetType?.toLowerCase()) {
+      case 'domain':
+        return "hsl(142 76% 45%)"; // Green
+      case 'subdomain':
+        return "hsl(199 89% 48%)"; // Cyan
+      case 'ip_address':
+        return "hsl(280 80% 60%)"; // Purple
+      default:
+        return "hsl(48 96% 53%)"; // Yellow
+    }
   };
 
-  const getMarkerSize = (findingsCount: number) => {
-    if (findingsCount > 5) return 8;
-    if (findingsCount > 2) return 6;
-    return 4;
+  const handleMoveEnd = (position: any) => {
+    setPosition(position);
   };
 
   return (
     <Card className="bg-card border-border">
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <CardTitle className="text-sm font-medium text-foreground flex items-center gap-2">
-          <MapPin className="h-4 w-4 text-primary" />
-          Global Attack Surface Heatmap
+          <Globe className="h-4 w-4 text-cyan-400" />
+          Global Asset Distribution
         </CardTitle>
-        <div className="flex items-center gap-4 text-xs">
-          <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-red-500"></span>
-            <span className="text-muted-foreground">Critical</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-orange-500"></span>
-            <span className="text-muted-foreground">High</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
-            <span className="text-muted-foreground">Medium</span>
-          </div>
+        <div className="flex items-center gap-3 text-xs">
           <div className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-green-500"></span>
-            <span className="text-muted-foreground">Safe</span>
+            <span className="text-muted-foreground">Domain</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+            <span className="text-muted-foreground">Subdomain</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+            <span className="text-muted-foreground">IP</span>
           </div>
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="relative h-[350px] rounded-b-lg overflow-hidden bg-background/50">
+        <div className="relative h-[400px] rounded-b-lg overflow-hidden bg-slate-950">
           <ComposableMap
             projection="geoMercator"
             projectionConfig={{
@@ -106,71 +155,103 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
             className="w-full h-full"
             style={{ width: '100%', height: '100%' }}
           >
-            <Geographies geography={geoUrl}>
-              {({ geographies }) =>
-                geographies.map((geo) => (
-                  <Geography
-                    key={geo.rsmKey}
-                    geography={geo}
-                    fill={getCountryFill(geo)}
-                    stroke="hsl(220 20% 30%)"
-                    strokeWidth={0.5}
-                    style={{
-                      default: { outline: "none" },
-                      hover: { outline: "none", fill: "hsl(217 91% 60%)", cursor: "pointer" },
-                      pressed: { outline: "none" },
-                    }}
-                  />
-                ))
-              }
-            </Geographies>
-            {geoAssets.map((asset) => (
-              <Marker
-                key={asset.id}
-                coordinates={[asset.geoLocation!.longitude, asset.geoLocation!.latitude]}
-                onClick={() => onAssetClick?.(asset)}
-              >
-                <g transform={`translate(-${getMarkerSize(asset.findingsCount)}, -${getMarkerSize(asset.findingsCount)})`}>
-                  <circle
-                    r={getMarkerSize(asset.findingsCount)}
-                    fill={getMarkerColor(asset.findingsCount)}
-                    stroke="hsl(0 0% 10%)"
-                    strokeWidth={1.5}
-                    opacity={0.9}
-                  />
-                  {asset.findingsCount > 5 && (
+            <ZoomableGroup
+              zoom={position.zoom}
+              center={position.coordinates}
+              onMoveEnd={handleMoveEnd}
+            >
+              <Geographies geography={geoUrl}>
+                {({ geographies }) =>
+                  geographies.map((geo) => {
+                    const geoId = geo.id;
+                    const iso2 = geo.properties?.ISO_A2;
+                    const count = countryData[geoId]?.count || 
+                                  countryData[iso2]?.count || 
+                                  countryData[countryCodeMap[geoId]]?.count || 0;
+                    
+                    return (
+                      <Geography
+                        key={geo.rsmKey}
+                        geography={geo}
+                        fill={getCountryFill(geo)}
+                        stroke="hsl(220 20% 25%)"
+                        strokeWidth={0.5}
+                        onMouseEnter={() => setHoveredCountry(geoId)}
+                        onMouseLeave={() => setHoveredCountry(null)}
+                        style={{
+                          default: { outline: "none", transition: "fill 0.2s" },
+                          hover: { outline: "none", cursor: count > 0 ? "pointer" : "default" },
+                          pressed: { outline: "none" },
+                        }}
+                      />
+                    );
+                  })
+                }
+              </Geographies>
+              
+              {/* Asset markers */}
+              {geoAssets.map((asset) => (
+                <Marker
+                  key={asset.id}
+                  coordinates={[asset.geoLocation!.longitude, asset.geoLocation!.latitude]}
+                  onClick={() => onAssetClick?.(asset)}
+                >
+                  <g style={{ cursor: 'pointer' }}>
                     <circle
-                      r={getMarkerSize(asset.findingsCount) + 4}
-                      fill="none"
-                      stroke={getMarkerColor(asset.findingsCount)}
-                      strokeWidth={1}
-                      opacity={0.5}
-                      className="animate-ping"
+                      r={4 / position.zoom}
+                      fill={getMarkerColor(asset.type)}
+                      stroke="hsl(0 0% 100%)"
+                      strokeWidth={1 / position.zoom}
+                      opacity={0.9}
                     />
-                  )}
-                  <title>
-                    {asset.value}
-                    {asset.geoLocation?.city && `\n${asset.geoLocation.city}, ${asset.geoLocation.country}`}
-                    {`\n${asset.findingsCount} finding${asset.findingsCount !== 1 ? 's' : ''}`}
-                  </title>
-                </g>
-              </Marker>
-            ))}
+                    <title>
+                      {asset.value}
+                      {asset.geoLocation?.city && `\n📍 ${asset.geoLocation.city}, ${asset.geoLocation.country}`}
+                      {asset.type && `\n🏷️ ${asset.type}`}
+                    </title>
+                  </g>
+                </Marker>
+              ))}
+            </ZoomableGroup>
           </ComposableMap>
 
-          {/* Stats overlay */}
-          <div className="absolute bottom-2 left-2 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded flex items-center gap-2">
-            <Globe className="h-3 w-3" />
-            {geoAssets.length} geolocated asset{geoAssets.length !== 1 ? 's' : ''}
+          {/* Stats overlay - bottom left */}
+          <div className="absolute bottom-3 left-3 flex flex-col gap-2">
+            <div className="text-xs bg-slate-900/90 backdrop-blur px-3 py-2 rounded-lg border border-slate-700">
+              <div className="flex items-center gap-2 text-slate-200 font-medium mb-1">
+                <MapPin className="h-3 w-3 text-cyan-400" />
+                {geoAssets.length} Assets Mapped
+              </div>
+              <div className="text-slate-400">
+                across {uniqueCountries} {uniqueCountries === 1 ? 'country' : 'countries'}
+              </div>
+            </div>
           </div>
 
-          {/* Alert count */}
-          {geoAssets.filter(a => a.findingsCount > 0).length > 0 && (
-            <div className="absolute bottom-2 right-2 text-xs bg-red-500/10 text-red-400 px-2 py-1 rounded flex items-center gap-1">
-              <AlertTriangle className="h-3 w-3" />
-              {geoAssets.filter(a => a.findingsCount > 0).length} with findings
+          {/* Top countries - bottom right */}
+          {topCountries.length > 0 && (
+            <div className="absolute bottom-3 right-3 text-xs bg-slate-900/90 backdrop-blur px-3 py-2 rounded-lg border border-slate-700 max-w-[200px]">
+              <div className="flex items-center gap-2 text-slate-200 font-medium mb-2">
+                <Building2 className="h-3 w-3 text-cyan-400" />
+                Top Locations
+              </div>
+              <div className="space-y-1">
+                {topCountries.map((c, i) => (
+                  <div key={c.code} className="flex justify-between items-center text-slate-300">
+                    <span className="truncate">{c.country}</span>
+                    <Badge variant="secondary" className="ml-2 text-xs px-1.5 py-0 h-5 bg-cyan-500/20 text-cyan-300 border-0">
+                      {c.count}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
+
+          {/* Zoom controls hint */}
+          <div className="absolute top-3 right-3 text-xs text-slate-500">
+            Scroll to zoom • Drag to pan
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -178,6 +259,3 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
 }
 
 export default WorldMap;
-
-
-
