@@ -521,16 +521,20 @@ export default function AssetDetailPage() {
                     <span className="font-medium">{asset.operating_system || '—'}</span>
                   </div>
                   <div className="flex justify-between py-2 border-b">
-                    <span className="text-muted-foreground">Network</span>
-                    <span className="font-medium">{asset.region || 'Default'}</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">Public</span>
                     <span className="font-medium">{asset.is_public !== false ? 'Yes' : 'No'}</span>
                   </div>
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">IPv4 Addresses</span>
-                    <span className="font-mono text-sm">{asset.ip_addresses?.join(', ') || asset.ip_address || '—'}</span>
+                    <span className="font-mono text-sm">
+                      {asset.ip_addresses?.length > 0 
+                        ? asset.ip_addresses.join(', ') 
+                        : asset.ip_address 
+                          ? asset.ip_address 
+                          : asset.asset_type === 'ip_address' 
+                            ? asset.value 
+                            : '—'}
+                    </span>
                   </div>
                   {asset.acs_drivers && Object.keys(asset.acs_drivers).length > 0 && (
                     <div className="col-span-2 flex justify-between py-2 border-b">
@@ -548,23 +552,6 @@ export default function AssetDetailPage() {
                     <span className="text-muted-foreground">Device Subclasses</span>
                     <span className="font-medium">{asset.device_subclass || '—'}</span>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Remote Authenticated Scan Information */}
-            <Card>
-              <CardHeader>
-                <div className="flex items-center gap-2">
-                  <Wifi className="h-5 w-5" />
-                  <CardTitle>Remote Authenticated Scan Information</CardTitle>
-                </div>
-                <CardDescription>General information and properties</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex justify-between py-2 border-b">
-                  <span className="text-muted-foreground">Last Authentication Status</span>
-                  <span className="font-medium">{asset.last_authenticated_scan_status || 'N/A'}</span>
                 </div>
               </CardContent>
             </Card>
@@ -639,20 +626,29 @@ export default function AssetDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-                  {/* Always show IP addresses if available */}
-                  {(asset.ip_addresses && asset.ip_addresses.length > 0) || asset.ip_address ? (
-                    <div className="col-span-2 flex justify-between py-2 border-b">
-                      <span className="text-muted-foreground">IPv4 Addresses</span>
-                      <div className="flex flex-wrap gap-1 justify-end">
-                        {(asset.ip_addresses && asset.ip_addresses.length > 0 
-                          ? asset.ip_addresses 
-                          : [asset.ip_address]
-                        ).filter(Boolean).map((ip, idx) => (
-                          <Badge key={idx} variant="outline" className="font-mono text-xs">{ip}</Badge>
-                        ))}
+                  {/* Always show IP addresses - including for IP address type assets */}
+                  {(() => {
+                    // Determine which IPs to show
+                    const ips: string[] = [];
+                    if (asset.ip_addresses && asset.ip_addresses.length > 0) {
+                      ips.push(...asset.ip_addresses);
+                    } else if (asset.ip_address) {
+                      ips.push(asset.ip_address);
+                    } else if (asset.asset_type === 'ip_address' && asset.value) {
+                      ips.push(asset.value);
+                    }
+                    
+                    return ips.length > 0 ? (
+                      <div className="col-span-2 flex justify-between py-2 border-b">
+                        <span className="text-muted-foreground">IPv4 Address{ips.length > 1 ? 'es' : ''}</span>
+                        <div className="flex flex-wrap gap-1 justify-end">
+                          {ips.filter(Boolean).map((ip, idx) => (
+                            <Badge key={idx} variant="outline" className="font-mono text-xs">{ip}</Badge>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
+                    ) : null;
+                  })()}
                   
                   {/* Show netblock link if asset is linked to a netblock */}
                   {asset.netblock_id && (
@@ -695,8 +691,9 @@ export default function AssetDetailPage() {
                     </div>
                   )}
                   
-                  {/* Show message if no network info at all */}
-                  {!asset.ip_address && (!asset.ip_addresses || asset.ip_addresses.length === 0) && 
+                  {/* Show message only if truly no network info and not an IP asset */}
+                  {asset.asset_type !== 'ip_address' && 
+                   !asset.ip_address && (!asset.ip_addresses || asset.ip_addresses.length === 0) && 
                    !asset.asn && !asset.isp && !asset.city && !asset.country && !asset.netblock_id && (
                     <div className="col-span-2 text-center py-4 text-muted-foreground">
                       No network information available. Run a discovery scan to populate this data.
