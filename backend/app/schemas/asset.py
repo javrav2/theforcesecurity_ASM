@@ -72,15 +72,33 @@ class AssetResponse(AssetBase):
     tags: List[str] = []
     metadata_: dict[str, Any] = Field(default={})
     discovery_source: Optional[str] = None
+    discovery_chain: List[dict] = []
+    association_reason: Optional[str] = None
+    association_confidence: int = 100
     first_seen: datetime
     last_seen: datetime
     risk_score: int
     criticality: str
     is_monitored: bool
     
+    # ACR/AES scoring (Tenable-style)
+    acr_score: int = 5  # Asset Criticality Rating (1-10)
+    acr_drivers: dict = {}  # Key drivers for ACR
+    aes_score: int = 0  # Asset Exposure Score (0-1000)
+    
+    # Asset Classification
+    system_type: Optional[str] = None  # firewall, server, workstation, etc.
+    operating_system: Optional[str] = None  # Detected OS
+    device_class: Optional[str] = None  # Network Infrastructure, Server, etc.
+    device_subclass: Optional[str] = None  # Firewall and NGFW, Web Server, etc.
+    is_public: bool = True
+    is_licensed: bool = True
+    
     # HTTP info
     http_status: Optional[int] = None
     http_title: Optional[str] = None
+    live_url: Optional[str] = None
+    root_domain: Optional[str] = None
     
     # DNS info
     dns_records: dict = {}
@@ -88,11 +106,13 @@ class AssetResponse(AssetBase):
     # Geo-location info
     ip_address: Optional[str] = None
     ip_addresses: List[str] = []  # All resolved IPs (multi-value for load balancers, CDNs)
+    ip_history: List[dict] = []  # Historical IP tracking
     latitude: Optional[str] = None
     longitude: Optional[str] = None
     city: Optional[str] = None
     country: Optional[str] = None
     country_code: Optional[str] = None
+    region: Optional[str] = None
     isp: Optional[str] = None
     
     # Scope and ownership
@@ -101,6 +121,13 @@ class AssetResponse(AssetBase):
     is_live: bool = False
     netblock_id: Optional[int] = None
     asn: Optional[str] = None
+    
+    # Scan tracking
+    last_scan_id: Optional[str] = None
+    last_scan_name: Optional[str] = None
+    last_scan_date: Optional[datetime] = None
+    last_scan_target: Optional[str] = None
+    last_authenticated_scan_status: Optional[str] = None
     
     # Discovered endpoints and parameters
     endpoints: List[str] = []
@@ -114,6 +141,13 @@ class AssetResponse(AssetBase):
     port_services: List[PortServiceSummary] = []
     open_ports_count: int = 0
     risky_ports_count: int = 0
+    
+    # Vulnerability counts
+    vulnerability_count: int = 0
+    critical_vuln_count: int = 0
+    high_vuln_count: int = 0
+    medium_vuln_count: int = 0
+    low_vuln_count: int = 0
     
     created_at: datetime
     updated_at: datetime

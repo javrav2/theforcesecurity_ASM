@@ -74,8 +74,23 @@ class Asset(Base):
     risk_score = Column(Integer, default=0)  # 0-100
     criticality = Column(String(20), default="medium")  # low, medium, high, critical
     
+    # Asset Criticality Rating (ACR) - Tenable-style scoring
+    acr_score = Column(Integer, default=5)  # 1-10 scale
+    acr_drivers = Column(JSON, default=dict)  # Key drivers for ACR (e.g., {"device_class": "NI", "is_public": true})
+    
+    # Asset Exposure Score (AES) - Calculated from vulnerabilities
+    aes_score = Column(Integer, default=0)  # 0-1000 scale
+    
+    # Asset Classification
+    system_type = Column(String(100), nullable=True)  # firewall, server, workstation, router, switch, etc.
+    operating_system = Column(String(200), nullable=True)  # Detected OS (e.g., "Palo Alto Networks PAN-OS", "Windows Server 2019")
+    device_class = Column(String(100), nullable=True)  # Network Infrastructure, Server, Workstation, IoT, etc.
+    device_subclass = Column(String(200), nullable=True)  # Firewall and Next Generation Firewall, Web Server, etc.
+    is_public = Column(Boolean, default=True, index=True)  # Is the asset publicly accessible
+    
     # State
     is_monitored = Column(Boolean, default=True)
+    is_licensed = Column(Boolean, default=True)  # Is the asset licensed/tracked
     is_live = Column(Boolean, default=False, index=True)  # Has the asset responded to probes (port scan, HTTP, etc.)
     
     # Timestamps
@@ -131,6 +146,13 @@ class Asset(Base):
     in_scope = Column(Boolean, default=True, index=True)  # Is this asset in scope for scanning
     is_owned = Column(Boolean, default=False, index=True)  # Is this asset confirmed owned by the org
     netblock_id = Column(Integer, ForeignKey("netblocks.id"), nullable=True)  # Associated netblock if any
+    
+    # Scan tracking
+    last_scan_id = Column(String(100), nullable=True)  # ID of the last scan that touched this asset
+    last_scan_name = Column(String(255), nullable=True)  # Name of the last scan
+    last_scan_date = Column(DateTime, nullable=True)  # When the last scan occurred
+    last_scan_target = Column(String(500), nullable=True)  # The target used in the last scan
+    last_authenticated_scan_status = Column(String(50), nullable=True)  # N/A, Success, Failed
     
     @property
     def open_ports_count(self) -> int:

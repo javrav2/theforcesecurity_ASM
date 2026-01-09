@@ -29,18 +29,22 @@ import {
   Eye,
   EyeOff,
   Lock,
-  Unlock,
   ExternalLink,
   Copy,
   CheckCircle,
-  XCircle,
   Cpu,
-  Database,
-  Wifi,
   AlertCircle,
   Tag,
   Camera,
   ImageIcon,
+  Activity,
+  FileText,
+  Settings,
+  Monitor,
+  Wifi,
+  Database,
+  Calendar,
+  Hash,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -155,6 +159,7 @@ interface Asset {
   city?: string;
   country?: string;
   country_code?: string;
+  region?: string;
   isp?: string;
   in_scope: boolean;
   is_owned: boolean;
@@ -166,6 +171,26 @@ interface Asset {
   risky_ports_count: number;
   created_at: string;
   updated_at: string;
+  // New Tenable-like fields
+  acr_score?: number;
+  acr_drivers?: Record<string, any>;
+  aes_score?: number;
+  system_type?: string;
+  operating_system?: string;
+  device_class?: string;
+  device_subclass?: string;
+  is_public?: boolean;
+  is_licensed?: boolean;
+  last_scan_id?: string;
+  last_scan_name?: string;
+  last_scan_date?: string;
+  last_scan_target?: string;
+  last_authenticated_scan_status?: string;
+  vulnerability_count?: number;
+  critical_vuln_count?: number;
+  high_vuln_count?: number;
+  medium_vuln_count?: number;
+  low_vuln_count?: number;
 }
 
 const assetTypeIcons: Record<string, any> = {
@@ -179,16 +204,13 @@ const assetTypeIcons: Record<string, any> = {
   api_endpoint: Database,
 };
 
-const assetTypeColors: Record<string, string> = {
-  domain: 'text-blue-400',
-  subdomain: 'text-cyan-400',
-  ip_address: 'text-green-400',
-  url: 'text-purple-400',
-  port: 'text-orange-400',
-  service: 'text-yellow-400',
-  certificate: 'text-pink-400',
-  api_endpoint: 'text-indigo-400',
-};
+const TABS = [
+  { id: 'details', label: 'Details', icon: FileText },
+  { id: 'findings', label: 'Findings', icon: Shield },
+  { id: 'ports', label: 'Open Ports', icon: Network },
+  { id: 'activity', label: 'Activity', icon: Activity },
+  { id: 'mitigations', label: 'Mitigations', icon: Settings },
+];
 
 export default function AssetDetailPage() {
   const params = useParams();
@@ -198,6 +220,7 @@ export default function AssetDetailPage() {
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
+  const [activeTab, setActiveTab] = useState('details');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -233,7 +256,6 @@ export default function AssetDetailPage() {
     try {
       await api.captureScreenshot(asset.id);
       toast({ title: 'Screenshot captured successfully' });
-      // Refresh to get the new screenshot
       fetchAsset();
     } catch (error) {
       toast({
@@ -255,95 +277,30 @@ export default function AssetDetailPage() {
     fetchAsset();
   };
 
-  const handleCopyValue = () => {
-    if (asset?.value) {
-      navigator.clipboard.writeText(asset.value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-      toast({ title: 'Copied to clipboard' });
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status?.toLowerCase()) {
-      case 'verified':
-        return 'bg-green-500/20 text-green-400 border-green-500/30';
-      case 'discovered':
-        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
-      case 'unverified':
-        return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-      case 'inactive':
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-      case 'archived':
-        return 'bg-slate-500/20 text-slate-400 border-slate-500/30';
-      default:
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-    }
-  };
-
-  const getRiskColor = (score: number) => {
-    if (score >= 80) return 'text-red-500';
-    if (score >= 60) return 'text-orange-500';
-    if (score >= 40) return 'text-yellow-500';
-    if (score >= 20) return 'text-blue-500';
-    return 'text-green-500';
-  };
-
-  const getCriticalityColor = (criticality: string) => {
-    switch (criticality?.toLowerCase()) {
-      case 'critical':
-        return 'bg-red-500/20 text-red-400 border-red-500/30';
-      case 'high':
-        return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
-      case 'medium':
-        return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-      case 'low':
-        return 'bg-green-500/20 text-green-400 border-green-500/30';
-      default:
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-    }
-  };
-
-  const getHttpStatusColor = (status?: number) => {
-    if (!status) return 'text-gray-400';
-    if (status >= 200 && status < 300) return 'text-green-400';
-    if (status >= 300 && status < 400) return 'text-blue-400';
-    if (status >= 400 && status < 500) return 'text-yellow-400';
-    if (status >= 500) return 'text-red-400';
-    return 'text-gray-400';
+  const handleCopyValue = (value: string) => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    toast({ title: 'Copied to clipboard' });
   };
 
   const getSeverityColor = (severity: string) => {
     switch (severity?.toLowerCase()) {
-      case 'critical':
-        return 'bg-red-600 text-white';
-      case 'high':
-        return 'bg-orange-500 text-white';
-      case 'medium':
-        return 'bg-yellow-500 text-black';
-      case 'low':
-        return 'bg-green-500 text-white';
-      case 'info':
-        return 'bg-blue-500 text-white';
-      default:
-        return 'bg-gray-500 text-white';
+      case 'critical': return 'bg-red-600 text-white';
+      case 'high': return 'bg-orange-500 text-white';
+      case 'medium': return 'bg-yellow-500 text-black';
+      case 'low': return 'bg-green-500 text-white';
+      case 'info': return 'bg-blue-500 text-white';
+      default: return 'bg-gray-500 text-white';
     }
   };
 
   const getVulnStatusColor = (status: string) => {
     switch (status?.toLowerCase()) {
-      case 'open':
-        return 'bg-red-500/20 text-red-400 border-red-500/30';
-      case 'in_progress':
-        return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-      case 'resolved':
-        return 'bg-green-500/20 text-green-400 border-green-500/30';
-      case 'accepted':
-        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
-      case 'false_positive':
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-      default:
-        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+      case 'open': return 'bg-red-500/20 text-red-400 border-red-500/30';
+      case 'in_progress': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      case 'resolved': return 'bg-green-500/20 text-green-400 border-green-500/30';
+      default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
     }
   };
 
@@ -354,8 +311,14 @@ export default function AssetDetailPage() {
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return '1 day';
     if (diffDays < 30) return `${diffDays} days`;
-    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months`;
-    return `${Math.floor(diffDays / 365)} years`;
+    return `${Math.floor(diffDays / 30)} months`;
+  };
+
+  const getACRColor = (score: number) => {
+    if (score >= 8) return 'text-red-500';
+    if (score >= 6) return 'text-orange-500';
+    if (score >= 4) return 'text-yellow-500';
+    return 'text-green-500';
   };
 
   if (loading) {
@@ -383,452 +346,634 @@ export default function AssetDetailPage() {
     );
   }
 
-  const AssetIcon = assetTypeIcons[asset.asset_type] || Globe;
-  const iconColor = assetTypeColors[asset.asset_type] || 'text-gray-400';
+  const AssetIcon = assetTypeIcons[asset.asset_type] || Monitor;
+  const acrScore = asset.acr_score || 5;
+  const aesScore = asset.aes_score || 0;
+  const vulnCount = asset.vulnerability_count || vulnerabilities.length;
 
   return (
     <MainLayout>
-      <Header 
-        title={asset.name} 
-        subtitle={`${asset.asset_type?.replace(/_/g, ' ')} asset`} 
-      />
-
-      <div className="p-6 space-y-6">
-        {/* Navigation and Actions */}
-        <div className="flex items-center justify-between">
-          <Button variant="outline" onClick={() => router.push('/assets')}>
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Assets
-          </Button>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleCopyValue}>
-              {copied ? <CheckCircle className="h-4 w-4 mr-2" /> : <Copy className="h-4 w-4 mr-2" />}
-              {copied ? 'Copied!' : 'Copy Value'}
-            </Button>
-            <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
-            </Button>
-          </div>
-        </div>
-
-        {/* Main Info Card */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-4">
-              <div className={`p-3 rounded-lg bg-secondary ${iconColor}`}>
-                <AssetIcon className="h-8 w-8" />
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-3 mb-2">
-                  <h2 className="text-xl font-mono font-bold">{asset.value}</h2>
-                  {asset.value.startsWith('http') && (
-                    <a href={asset.value} target="_blank" rel="noopener noreferrer">
-                      <ExternalLink className="h-4 w-4 text-muted-foreground hover:text-primary" />
-                    </a>
-                  )}
+      {/* Header with Asset Name and ID */}
+      <div className="border-b bg-card">
+        <div className="p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Button variant="ghost" size="icon" onClick={() => router.push('/assets')}>
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+              <div className="flex items-center gap-3">
+                <AssetIcon className="h-8 w-8 text-primary" />
+                <div>
+                  <h1 className="text-2xl font-bold font-mono">{asset.value}</h1>
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <span>Asset ID: {asset.id}</span>
+                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleCopyValue(String(asset.id))}>
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge className={getStatusColor(asset.status)}>
-                    {asset.status?.toUpperCase()}
-                  </Badge>
-                  <Badge className={getCriticalityColor(asset.criticality)}>
-                    {asset.criticality?.toUpperCase()} CRITICALITY
-                  </Badge>
-                  <Badge variant="outline">
-                    {asset.asset_type?.replace(/_/g, ' ').toUpperCase()}
-                  </Badge>
-                  {asset.is_monitored ? (
-                    <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
-                      <Eye className="h-3 w-3 mr-1" /> Monitored
-                    </Badge>
-                  ) : (
-                    <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30">
-                      <EyeOff className="h-3 w-3 mr-1" /> Not Monitored
-                    </Badge>
-                  )}
-                  {asset.in_scope ? (
-                    <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">
-                      In Scope
-                    </Badge>
-                  ) : (
-                    <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30">
-                      Out of Scope
-                    </Badge>
-                  )}
-                </div>
-                {asset.description && (
-                  <p className="text-muted-foreground mt-3">{asset.description}</p>
-                )}
-              </div>
-              <div className="text-right">
-                <div className={`text-4xl font-bold ${getRiskColor(asset.risk_score)}`}>
-                  {asset.risk_score}
-                </div>
-                <div className="text-sm text-muted-foreground">Risk Score</div>
               </div>
             </div>
-          </CardContent>
-        </Card>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="gap-1">
+                <Database className="h-3 w-3" />
+                Data Sources
+              </Badge>
+              <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+                Refresh
+              </Button>
+            </div>
+          </div>
 
-        {/* Screenshot Section - Show for web-accessible assets */}
-        {(asset.asset_type === 'domain' || asset.asset_type === 'subdomain' || asset.asset_type === 'url') && (
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Camera className="h-5 w-5" />
-                    Screenshot
-                  </CardTitle>
-                  <CardDescription>
-                    Visual capture of this asset
-                  </CardDescription>
-                </div>
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={handleCaptureScreenshot}
-                  disabled={capturingScreenshot}
-                >
-                  {capturingScreenshot ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  ) : (
-                    <Camera className="h-4 w-4 mr-2" />
-                  )}
-                  {capturingScreenshot ? 'Capturing...' : 'Capture New'}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {screenshots.length > 0 ? (
-                <div className="space-y-4">
-                  {/* Latest Screenshot */}
-                  <div className="relative">
-                    <a 
-                      href={api.getScreenshotImageUrl(screenshots[0].id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block"
-                    >
-                      <img
-                        src={api.getScreenshotImageUrl(screenshots[0].id)}
-                        alt={`Screenshot of ${asset.value}`}
-                        className="w-full max-h-96 object-contain rounded-lg border bg-muted"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = 'none';
-                        }}
-                      />
-                    </a>
-                    {screenshots[0].has_changed && (
-                      <Badge className="absolute top-2 right-2 bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
-                        Changed {screenshots[0].change_percentage ? `(${screenshots[0].change_percentage}%)` : ''}
-                      </Badge>
-                    )}
-                  </div>
-                  
-                  {/* Screenshot Details */}
-                  <div className="flex flex-wrap gap-4 text-sm">
-                    {screenshots[0].page_title && (
-                      <div>
-                        <span className="text-muted-foreground">Title: </span>
-                        <span className="font-medium">{screenshots[0].page_title}</span>
-                      </div>
-                    )}
-                    {screenshots[0].http_status && (
-                      <div>
-                        <span className="text-muted-foreground">HTTP: </span>
-                        <Badge variant="outline">{screenshots[0].http_status}</Badge>
-                      </div>
-                    )}
-                    <div>
-                      <span className="text-muted-foreground">Captured: </span>
-                      <span>{formatDate(screenshots[0].captured_at)}</span>
-                    </div>
-                  </div>
-
-                  {/* Previous Screenshots */}
-                  {screenshots.length > 1 && (
-                    <div className="mt-4">
-                      <p className="text-sm text-muted-foreground mb-2">Previous Screenshots ({screenshots.length - 1})</p>
-                      <div className="flex gap-2 overflow-x-auto pb-2">
-                        {screenshots.slice(1, 6).map((screenshot) => (
-                          <a
-                            key={screenshot.id}
-                            href={api.getScreenshotImageUrl(screenshot.id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex-shrink-0"
-                          >
-                            <img
-                              src={api.getScreenshotImageUrl(screenshot.id)}
-                              alt={`Previous screenshot`}
-                              className="h-20 w-32 object-cover rounded border hover:border-primary transition-colors"
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).style.display = 'none';
-                              }}
-                            />
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <ImageIcon className="h-12 w-12 text-muted-foreground mb-3" />
-                  <p className="text-muted-foreground">No screenshots captured yet</p>
-                  <p className="text-sm text-muted-foreground">
-                    Click &quot;Capture New&quot; to take a screenshot of this asset
-                  </p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Stats Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <Network className="h-8 w-8 text-blue-400" />
-                <div>
-                  <p className="text-2xl font-bold">{asset.open_ports_count || 0}</p>
-                  <p className="text-sm text-muted-foreground">Open Ports</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <AlertCircle className="h-8 w-8 text-red-400" />
-                <div>
-                  <p className="text-2xl font-bold">{asset.risky_ports_count || 0}</p>
-                  <p className="text-sm text-muted-foreground">Risky Ports</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <Cpu className="h-8 w-8 text-purple-400" />
-                <div>
-                  <p className="text-2xl font-bold">{asset.technologies?.length || 0}</p>
-                  <p className="text-sm text-muted-foreground">Technologies</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <Clock className="h-8 w-8 text-green-400" />
-                <div>
-                  <p className="text-sm font-medium">{formatDate(asset.last_seen)}</p>
-                  <p className="text-sm text-muted-foreground">Last Seen</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Discovery Path - Visual representation of how this asset was found */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">How This Asset Was Discovered</CardTitle>
-            <CardDescription>
-              Visual path from source to this asset
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <DiscoveryPath
-              value={asset.value}
-              assetType={asset.asset_type}
-              rootDomain={asset.root_domain}
-              liveUrl={asset.live_url}
-              discoverySource={asset.discovery_source}
-              discoveryChain={asset.discovery_chain}
-              associationReason={asset.association_reason}
-              associationConfidence={asset.association_confidence}
-            />
-          </CardContent>
-        </Card>
-
-        {/* Details Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Asset Info */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Asset Information</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Root Domain</span>
-                <span className="font-medium">{asset.root_domain || '—'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Live URL</span>
-                {asset.live_url ? (
-                  <a href={asset.live_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-mono text-sm truncate max-w-[250px]">
-                    {asset.live_url}
-                  </a>
-                ) : (
-                  <span className="text-muted-foreground">—</span>
-                )}
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Discovery Source</span>
-                <span className="font-medium">{asset.discovery_source || '—'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">First Seen</span>
-                <span className="text-sm">{formatDate(asset.first_seen)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Last Seen</span>
-                <span className="text-sm">{formatDate(asset.last_seen)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Created</span>
-                <span className="text-sm">{formatDate(asset.created_at)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Updated</span>
-                <span className="text-sm">{formatDate(asset.updated_at)}</span>
-              </div>
-              {asset.http_status && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">HTTP Status</span>
-                  <span className={`font-mono ${getHttpStatusColor(asset.http_status)}`}>
-                    {asset.http_status}
+          {/* Score Cards */}
+          <div className="grid grid-cols-4 gap-4 mt-6">
+            {/* AES Score */}
+            <Card className="border-2">
+              <CardContent className="p-4">
+                <div className="text-sm text-muted-foreground mb-1">AES</div>
+                <div className="flex items-baseline gap-1">
+                  <span className={`text-3xl font-bold ${aesScore > 500 ? 'text-red-500' : aesScore > 200 ? 'text-yellow-500' : 'text-green-500'}`}>
+                    {aesScore}
                   </span>
+                  <span className="text-muted-foreground">/1000</span>
                 </div>
-              )}
-              {asset.http_title && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">HTTP Title</span>
-                  <span className="text-sm truncate max-w-[200px]">{asset.http_title}</span>
+                <div className="h-2 bg-muted rounded-full mt-2 overflow-hidden">
+                  <div 
+                    className={`h-full rounded-full ${aesScore > 500 ? 'bg-red-500' : aesScore > 200 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                    style={{ width: `${(aesScore / 1000) * 100}%` }}
+                  />
                 </div>
-              )}
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
 
-          {/* Network/Location Info */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <MapPin className="h-5 w-5" />
-                Network & Location
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {asset.ip_addresses && asset.ip_addresses.length > 0 ? (
-                <div>
-                  <span className="text-muted-foreground text-sm">IP Addresses ({asset.ip_addresses.length})</span>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {asset.ip_addresses.map((ip, idx) => (
-                      <Badge key={idx} variant="outline" className="font-mono text-xs">
-                        {ip}
+            {/* ACR Score */}
+            <Card className="border-2">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-muted-foreground">ACR</span>
+                  <Button variant="ghost" size="icon" className="h-5 w-5">
+                    <Settings className="h-3 w-3" />
+                  </Button>
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className={`text-3xl font-bold ${getACRColor(acrScore)}`}>{acrScore}</span>
+                  <span className="text-muted-foreground">/10</span>
+                </div>
+                <div className="h-2 bg-muted rounded-full mt-2 overflow-hidden">
+                  <div 
+                    className={`h-full rounded-full ${acrScore >= 8 ? 'bg-red-500' : acrScore >= 6 ? 'bg-orange-500' : acrScore >= 4 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                    style={{ width: `${(acrScore / 10) * 100}%` }}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Key Drivers */}
+            <Card className="border-2">
+              <CardContent className="p-4">
+                <div className="text-sm text-muted-foreground mb-2">Key Drivers</div>
+                <div className="flex flex-wrap gap-1">
+                  {asset.acr_drivers && Object.entries(asset.acr_drivers).slice(0, 2).map(([key, value]) => (
+                    <Badge key={key} variant="secondary" className="text-xs">
+                      {key}: {String(value).substring(0, 10)}...
+                    </Badge>
+                  ))}
+                  {asset.device_class && (
+                    <Badge variant="secondary" className="text-xs">{asset.device_class}</Badge>
+                  )}
+                  {asset.acr_drivers && Object.keys(asset.acr_drivers).length > 2 && (
+                    <Badge variant="outline" className="text-xs">+{Object.keys(asset.acr_drivers).length - 2}</Badge>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Vulnerabilities Count */}
+            <Card className="border-2">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-muted-foreground">Vulnerabilities</span>
+                  <AlertCircle className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <div className="text-3xl font-bold">{vulnCount}</div>
+                <div className="h-2 bg-muted rounded-full mt-2 overflow-hidden">
+                  <div className="h-full bg-primary rounded-full" style={{ width: vulnCount > 0 ? '100%' : '0%' }} />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Tab Navigation */}
+          <div className="flex gap-1 mt-6 border-b">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === tab.id 
+                    ? 'border-primary text-primary bg-primary/5' 
+                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                }`}
+              >
+                <tab.icon className="h-4 w-4" />
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Tab Content */}
+      <div className="p-6 space-y-6">
+        {/* Details Tab */}
+        {activeTab === 'details' && (
+          <>
+            {/* Asset Information */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Monitor className="h-5 w-5" />
+                  <CardTitle>Asset</CardTitle>
+                </div>
+                <CardDescription>General information and properties</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Licensed</span>
+                    <span className="font-medium">{asset.is_licensed !== false ? 'Yes' : 'No'}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">System Type</span>
+                    <span className="font-medium">{asset.system_type || asset.asset_type?.replace(/_/g, ' ')}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Operating System</span>
+                    <span className="font-medium">{asset.operating_system || '—'}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Network</span>
+                    <span className="font-medium">{asset.region || 'Default'}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Public</span>
+                    <span className="font-medium">{asset.is_public !== false ? 'Yes' : 'No'}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">IPv4 Addresses</span>
+                    <span className="font-mono text-sm">{asset.ip_addresses?.join(', ') || asset.ip_address || '—'}</span>
+                  </div>
+                  {asset.acr_drivers && Object.keys(asset.acr_drivers).length > 0 && (
+                    <div className="col-span-2 flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">ACR Key Drivers</span>
+                      <span className="font-mono text-xs text-right max-w-md">
+                        {Object.entries(asset.acr_drivers).map(([k, v]) => `${k}: ${v}`).join(', ')}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Device Class</span>
+                    <span className="font-medium">{asset.device_class || '—'}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Device Subclasses</span>
+                    <span className="font-medium">{asset.device_subclass || '—'}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Remote Authenticated Scan Information */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Wifi className="h-5 w-5" />
+                  <CardTitle>Remote Authenticated Scan Information</CardTitle>
+                </div>
+                <CardDescription>General information and properties</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex justify-between py-2 border-b">
+                  <span className="text-muted-foreground">Last Authentication Status</span>
+                  <span className="font-medium">{asset.last_authenticated_scan_status || 'N/A'}</span>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Last Seen Information */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Clock className="h-5 w-5" />
+                  <CardTitle>Last Seen</CardTitle>
+                </div>
+                <CardDescription>General information and properties</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Scan Name</span>
+                    <span className="font-medium">{asset.last_scan_name || asset.discovery_source || '—'}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Last Scan ID</span>
+                    <span className="font-mono text-xs">{asset.last_scan_id || '—'}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Last Seen</span>
+                    <span className="font-medium">{formatDate(asset.last_seen)}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Last Licensed Scan</span>
+                    <span className="font-medium">{asset.last_scan_date ? formatDate(asset.last_scan_date) : formatDate(asset.last_seen)}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">First Seen</span>
+                    <span className="font-medium">{formatDate(asset.first_seen)}</span>
+                  </div>
+                  <div className="flex justify-between py-2 border-b">
+                    <span className="text-muted-foreground">Last Scan Target</span>
+                    <span className="font-mono text-sm">{asset.last_scan_target || asset.value}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Tags */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Tag className="h-5 w-5" />
+                  <CardTitle>Tags</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {asset.tags && asset.tags.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {asset.tags.map((tag, idx) => (
+                      <Badge key={idx} variant="secondary">{tag}</Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-sm">No tags assigned</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Network & Location */}
+            {(asset.city || asset.country || asset.isp || asset.asn) && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-5 w-5" />
+                    <CardTitle>Network & Location</CardTitle>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                    {asset.city && (
+                      <div className="flex justify-between py-2 border-b">
+                        <span className="text-muted-foreground">City</span>
+                        <span className="font-medium">{asset.city}</span>
+                      </div>
+                    )}
+                    {asset.country && (
+                      <div className="flex justify-between py-2 border-b">
+                        <span className="text-muted-foreground">Country</span>
+                        <span className="font-medium">{asset.country} {asset.country_code && `(${asset.country_code})`}</span>
+                      </div>
+                    )}
+                    {asset.isp && (
+                      <div className="flex justify-between py-2 border-b">
+                        <span className="text-muted-foreground">ISP</span>
+                        <span className="font-medium">{asset.isp}</span>
+                      </div>
+                    )}
+                    {asset.asn && (
+                      <div className="flex justify-between py-2 border-b">
+                        <span className="text-muted-foreground">ASN</span>
+                        <span className="font-mono">{asset.asn}</span>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Technologies */}
+            {asset.technologies && asset.technologies.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Cpu className="h-5 w-5" />
+                    <CardTitle>Technologies ({asset.technologies.length})</CardTitle>
+                  </div>
+                  <CardDescription>Detected technologies and frameworks</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-2">
+                    {asset.technologies.map((tech, idx) => (
+                      <Badge key={idx} variant="outline" className="py-1.5">
+                        <span className="font-medium">{tech.name}</span>
+                        {tech.version && <span className="text-muted-foreground ml-1">v{tech.version}</span>}
                       </Badge>
                     ))}
                   </div>
-                </div>
-              ) : asset.ip_address ? (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">IP Address</span>
-                  <span className="font-mono">{asset.ip_address}</span>
-                </div>
-              ) : null}
-              {asset.asn && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">ASN</span>
-                  <span className="font-mono">{asset.asn}</span>
-                </div>
-              )}
-              {asset.isp && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">ISP</span>
-                  <span className="text-sm">{asset.isp}</span>
-                </div>
-              )}
-              {(asset.city || asset.country) && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Location</span>
-                  <span className="text-sm">
-                    {[asset.city, asset.country].filter(Boolean).join(', ')}
-                    {asset.country_code && ` (${asset.country_code})`}
-                  </span>
-                </div>
-              )}
-              {(asset.latitude && asset.longitude) && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Coordinates</span>
-                  <span className="font-mono text-xs">
-                    {asset.latitude}, {asset.longitude}
-                  </span>
-                </div>
-              )}
-              {!asset.ip_address && !asset.asn && !asset.isp && !asset.city && !asset.country && (
-                <p className="text-muted-foreground text-sm">No network information available</p>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                </CardContent>
+              </Card>
+            )}
 
-        {/* Tags */}
-        {asset.tags && asset.tags.length > 0 && (
+            {/* Screenshot */}
+            {(asset.asset_type === 'domain' || asset.asset_type === 'subdomain' || asset.asset_type === 'url') && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Camera className="h-5 w-5" />
+                      <CardTitle>Screenshot</CardTitle>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={handleCaptureScreenshot} disabled={capturingScreenshot}>
+                      {capturingScreenshot ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Camera className="h-4 w-4 mr-2" />}
+                      {capturingScreenshot ? 'Capturing...' : 'Capture New'}
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {screenshots.length > 0 ? (
+                    <a href={api.getScreenshotImageUrl(screenshots[0].id)} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={api.getScreenshotImageUrl(screenshots[0].id)}
+                        alt={`Screenshot of ${asset.value}`}
+                        className="w-full max-h-96 object-contain rounded-lg border"
+                      />
+                    </a>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-8">
+                      <ImageIcon className="h-12 w-12 text-muted-foreground mb-3" />
+                      <p className="text-muted-foreground">No screenshots captured yet</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Discovery Path */}
+            <Card>
+              <CardHeader>
+                <CardTitle>How This Asset Was Discovered</CardTitle>
+                <CardDescription>Visual path from source to this asset</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <DiscoveryPath
+                  value={asset.value}
+                  assetType={asset.asset_type}
+                  rootDomain={asset.root_domain}
+                  liveUrl={asset.live_url}
+                  discoverySource={asset.discovery_source}
+                  discoveryChain={asset.discovery_chain}
+                  associationReason={asset.association_reason}
+                  associationConfidence={asset.association_confidence}
+                />
+              </CardContent>
+            </Card>
+          </>
+        )}
+
+        {/* Findings Tab */}
+        {activeTab === 'findings' && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Tag className="h-5 w-5" />
-                Tags ({asset.tags.length})
+              <CardTitle className="flex items-center gap-2">
+                <Shield className="h-5 w-5" />
+                Security Findings ({vulnerabilities.length})
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-wrap gap-2">
-                {asset.tags.map((tag, index) => (
-                  <Badge key={index} variant="secondary">
-                    {tag}
-                  </Badge>
-                ))}
+              {vulnerabilities.length > 0 ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Vulnerability List */}
+                  <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
+                    {vulnerabilities.map((vuln) => (
+                      <div
+                        key={vuln.id}
+                        onClick={() => setSelectedVuln(vuln)}
+                        className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                          selectedVuln?.id === vuln.id ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge className={getSeverityColor(vuln.severity)}>{vuln.severity?.toUpperCase()}</Badge>
+                              <Badge className={getVulnStatusColor(vuln.status)}>{vuln.status?.replace('_', ' ').toUpperCase()}</Badge>
+                            </div>
+                            <p className="font-medium text-sm truncate">{vuln.title || vuln.name || vuln.template_id}</p>
+                            {vuln.template_id && <p className="text-xs text-muted-foreground font-mono mt-1">{vuln.template_id}</p>}
+                          </div>
+                          {vuln.cvss_score && (
+                            <div className="text-right flex-shrink-0">
+                              <div className={`text-lg font-bold ${vuln.cvss_score >= 9 ? 'text-red-500' : vuln.cvss_score >= 7 ? 'text-orange-500' : 'text-yellow-500'}`}>
+                                {vuln.cvss_score}
+                              </div>
+                              <div className="text-xs text-muted-foreground">CVSS</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Vulnerability Detail */}
+                  <div className="border rounded-lg p-4 bg-muted/20 max-h-[600px] overflow-y-auto">
+                    {selectedVuln ? (
+                      <div className="space-y-4">
+                        <div>
+                          <h3 className="font-semibold text-lg">{selectedVuln.title || selectedVuln.name}</h3>
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            <Badge className={getSeverityColor(selectedVuln.severity)}>{selectedVuln.severity?.toUpperCase()}</Badge>
+                            <Badge className={getVulnStatusColor(selectedVuln.status)}>{selectedVuln.status?.replace('_', ' ').toUpperCase()}</Badge>
+                          </div>
+                        </div>
+
+                        {selectedVuln.description && (
+                          <div>
+                            <h4 className="text-sm font-medium text-muted-foreground mb-1">Description</h4>
+                            <p className="text-sm">{selectedVuln.description}</p>
+                          </div>
+                        )}
+
+                        <div className="space-y-2 pt-2 border-t">
+                          <h4 className="text-sm font-medium text-muted-foreground">Vulnerability Information</h4>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                            {selectedVuln.cvss_score && (
+                              <>
+                                <span className="text-muted-foreground">CVSS Score</span>
+                                <span className="font-bold">{selectedVuln.cvss_score}/10</span>
+                              </>
+                            )}
+                            {selectedVuln.cve_id && (
+                              <>
+                                <span className="text-muted-foreground">CVE ID</span>
+                                <a href={`https://nvd.nist.gov/vuln/detail/${selectedVuln.cve_id}`} target="_blank" className="text-primary hover:underline font-mono">{selectedVuln.cve_id}</a>
+                              </>
+                            )}
+                            <span className="text-muted-foreground">First Seen</span>
+                            <span>{formatDate(selectedVuln.first_detected)}</span>
+                            <span className="text-muted-foreground">Last Seen</span>
+                            <span>{formatDate(selectedVuln.last_detected)}</span>
+                            <span className="text-muted-foreground">Age</span>
+                            <span>{formatVulnAge(selectedVuln.first_detected)}</span>
+                          </div>
+                        </div>
+
+                        {selectedVuln.remediation && (
+                          <div className="pt-2 border-t">
+                            <h4 className="text-sm font-medium text-muted-foreground mb-1">Solution</h4>
+                            <p className="text-sm">{selectedVuln.remediation}</p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-full py-12">
+                        <Shield className="h-12 w-12 text-muted-foreground mb-3" />
+                        <p className="text-muted-foreground">Select a finding to view details</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
+                  <p className="text-muted-foreground">No security findings detected for this asset</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Open Ports Tab */}
+        {activeTab === 'ports' && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Network className="h-5 w-5" />
+                Open Ports ({asset.port_services?.length || 0})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {asset.port_services && asset.port_services.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Port</TableHead>
+                      <TableHead>Protocol</TableHead>
+                      <TableHead>Service</TableHead>
+                      <TableHead>Product</TableHead>
+                      <TableHead>Version</TableHead>
+                      <TableHead>State</TableHead>
+                      <TableHead>Risk</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {asset.port_services.map((port) => (
+                      <TableRow key={port.id}>
+                        <TableCell className="font-mono font-bold">{port.port}</TableCell>
+                        <TableCell className="uppercase text-muted-foreground">{port.protocol}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {port.service || '—'}
+                            {port.is_ssl && <Lock className="h-3 w-3 text-green-400" />}
+                          </div>
+                        </TableCell>
+                        <TableCell>{port.product || '—'}</TableCell>
+                        <TableCell className="font-mono text-sm">{port.version || '—'}</TableCell>
+                        <TableCell>
+                          <Badge className={port.state === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}>
+                            {port.state}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {port.is_risky ? (
+                            <Badge className="bg-red-500/20 text-red-400"><AlertTriangle className="h-3 w-3 mr-1" />Risky</Badge>
+                          ) : '—'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="text-center py-12">
+                  <Network className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">No open ports detected for this asset</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Activity Tab */}
+        {activeTab === 'activity' && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Activity className="h-5 w-5" />
+                Activity Timeline
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {asset.last_scan_date && (
+                  <div className="flex items-start gap-4 p-4 border rounded-lg">
+                    <div className="p-2 rounded-full bg-primary/10">
+                      <Shield className="h-4 w-4 text-primary" />
+                    </div>
+                    <div>
+                      <p className="font-medium">Last Scan</p>
+                      <p className="text-sm text-muted-foreground">{asset.last_scan_name || 'Security scan'}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{formatDate(asset.last_scan_date)}</p>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-start gap-4 p-4 border rounded-lg">
+                  <div className="p-2 rounded-full bg-blue-500/10">
+                    <Eye className="h-4 w-4 text-blue-500" />
+                  </div>
+                  <div>
+                    <p className="font-medium">Last Seen</p>
+                    <p className="text-sm text-muted-foreground">Asset was last observed</p>
+                    <p className="text-xs text-muted-foreground mt-1">{formatDate(asset.last_seen)}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4 p-4 border rounded-lg">
+                  <div className="p-2 rounded-full bg-green-500/10">
+                    <Calendar className="h-4 w-4 text-green-500" />
+                  </div>
+                  <div>
+                    <p className="font-medium">First Discovered</p>
+                    <p className="text-sm text-muted-foreground">Asset was first discovered via {asset.discovery_source || 'external discovery'}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{formatDate(asset.first_seen)}</p>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
         )}
 
-        {/* Technologies */}
-        {asset.technologies && asset.technologies.length > 0 && (
+        {/* Mitigations Tab */}
+        {activeTab === 'mitigations' && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Cpu className="h-5 w-5" />
-                Technologies ({asset.technologies.length})
+              <CardTitle className="flex items-center gap-2">
+                <Settings className="h-5 w-5" />
+                Mitigations
               </CardTitle>
-              <CardDescription>
-                Detected technologies and frameworks
-              </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-wrap gap-2">
-                {asset.technologies.map((tech, index) => (
-                  <Badge key={index} variant="outline" className="py-1.5">
-                    <span className="font-medium">{tech.name}</span>
-                    {tech.version && (
-                      <span className="text-muted-foreground ml-1">v{tech.version}</span>
-                    )}
-                    {tech.categories?.length > 0 && (
-                      <span className="text-xs text-muted-foreground ml-2">
-                        ({tech.categories.join(', ')})
-                      </span>
-                    )}
-                  </Badge>
-                ))}
+              <div className="text-center py-12">
+                <Settings className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground">No mitigations configured for this asset</p>
+                <p className="text-sm text-muted-foreground mt-2">Mitigations can be added to document remediation steps</p>
               </div>
             </CardContent>
           </Card>
@@ -843,384 +988,7 @@ export default function AssetDetailPage() {
           httpStatus={asset.http_status}
           httpTitle={asset.http_title}
         />
-
-        {/* Port Services */}
-        {asset.port_services && asset.port_services.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Network className="h-5 w-5" />
-                Open Ports ({asset.port_services.length})
-              </CardTitle>
-              <CardDescription>
-                Discovered network services
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Port</TableHead>
-                    <TableHead>Protocol</TableHead>
-                    <TableHead>Service</TableHead>
-                    <TableHead>Product</TableHead>
-                    <TableHead>Version</TableHead>
-                    <TableHead>State</TableHead>
-                    <TableHead>Risk</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {asset.port_services.map((port) => (
-                    <TableRow key={port.id}>
-                      <TableCell className="font-mono font-bold">{port.port}</TableCell>
-                      <TableCell className="uppercase text-muted-foreground">{port.protocol}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          {port.service || '—'}
-                          {port.is_ssl && (
-                            <span title="SSL/TLS">
-                              <Lock className="h-3 w-3 text-green-400" />
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>{port.product || '—'}</TableCell>
-                      <TableCell className="font-mono text-sm">{port.version || '—'}</TableCell>
-                      <TableCell>
-                        <Badge 
-                          className={port.state === 'open' 
-                            ? 'bg-green-500/20 text-green-400' 
-                            : 'bg-yellow-500/20 text-yellow-400'}
-                        >
-                          {port.state}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {port.is_risky ? (
-                          <Badge className="bg-red-500/20 text-red-400">
-                            <AlertTriangle className="h-3 w-3 mr-1" />
-                            Risky
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* DNS Records */}
-        {asset.dns_records && Object.keys(asset.dns_records).length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Globe className="h-5 w-5" />
-                DNS Records
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {Object.entries(asset.dns_records).map(([recordType, records]) => (
-                  <div key={recordType}>
-                    <span className="text-sm font-medium text-muted-foreground uppercase">
-                      {recordType}
-                    </span>
-                    <div className="flex flex-wrap gap-2 mt-1">
-                      {Array.isArray(records) ? (
-                        records.map((record: string, idx: number) => (
-                          <Badge key={idx} variant="secondary" className="font-mono">
-                            {record}
-                          </Badge>
-                        ))
-                      ) : (
-                        <Badge variant="secondary" className="font-mono">
-                          {String(records)}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Vulnerabilities/Findings Section */}
-        {vulnerabilities.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Shield className="h-5 w-5 text-red-500" />
-                Security Findings ({vulnerabilities.length})
-              </CardTitle>
-              <CardDescription>
-                Vulnerabilities and security issues detected on this asset
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Vulnerability List */}
-                <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
-                  {vulnerabilities.map((vuln) => (
-                    <div
-                      key={vuln.id}
-                      onClick={() => setSelectedVuln(vuln)}
-                      className={`p-3 rounded-lg border cursor-pointer transition-colors ${
-                        selectedVuln?.id === vuln.id 
-                          ? 'border-primary bg-primary/5' 
-                          : 'border-border hover:border-primary/50 bg-muted/30'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <Badge className={getSeverityColor(vuln.severity)}>
-                              {vuln.severity?.toUpperCase()}
-                            </Badge>
-                            <Badge className={getVulnStatusColor(vuln.status)}>
-                              {vuln.status?.replace('_', ' ').toUpperCase()}
-                            </Badge>
-                          </div>
-                          <p className="font-medium text-sm truncate">
-                            {vuln.title || vuln.name || vuln.template_id || 'Unknown Finding'}
-                          </p>
-                          {vuln.template_id && (
-                            <p className="text-xs text-muted-foreground font-mono mt-1">
-                              {vuln.template_id}
-                            </p>
-                          )}
-                        </div>
-                        {vuln.cvss_score && (
-                          <div className="text-right flex-shrink-0">
-                            <div className={`text-lg font-bold ${
-                              vuln.cvss_score >= 9 ? 'text-red-500' :
-                              vuln.cvss_score >= 7 ? 'text-orange-500' :
-                              vuln.cvss_score >= 4 ? 'text-yellow-500' : 'text-green-500'
-                            }`}>
-                              {vuln.cvss_score}
-                            </div>
-                            <div className="text-xs text-muted-foreground">CVSS</div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Vulnerability Detail Panel */}
-                <div className="border rounded-lg p-4 bg-muted/20 max-h-[600px] overflow-y-auto">
-                  {selectedVuln ? (
-                    <div className="space-y-4">
-                      {/* Header */}
-                      <div>
-                        <h3 className="font-semibold text-lg">
-                          {selectedVuln.title || selectedVuln.name || selectedVuln.template_id}
-                        </h3>
-                        {selectedVuln.template_id && selectedVuln.template_id !== selectedVuln.title && (
-                          <Badge variant="outline" className="mt-1 font-mono text-xs">
-                            {selectedVuln.template_id}
-                          </Badge>
-                        )}
-                        <div className="flex flex-wrap gap-2 mt-2">
-                          <Badge className={getSeverityColor(selectedVuln.severity)}>
-                            {selectedVuln.severity?.toUpperCase()}
-                          </Badge>
-                          <Badge className={getVulnStatusColor(selectedVuln.status)}>
-                            {selectedVuln.status?.replace('_', ' ').toUpperCase()}
-                          </Badge>
-                        </div>
-                      </div>
-
-                      {/* Description */}
-                      {selectedVuln.description && (
-                        <div>
-                          <h4 className="text-sm font-medium text-muted-foreground mb-1">Description</h4>
-                          <p className="text-sm">{selectedVuln.description}</p>
-                        </div>
-                      )}
-
-                      {/* Vulnerability Information */}
-                      <div className="space-y-2 pt-2 border-t">
-                        <h4 className="text-sm font-medium text-muted-foreground">Vulnerability Information</h4>
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                          {selectedVuln.cvss_score && (
-                            <>
-                              <span className="text-muted-foreground">CVSS Score</span>
-                              <span className={`font-bold ${
-                                selectedVuln.cvss_score >= 9 ? 'text-red-500' :
-                                selectedVuln.cvss_score >= 7 ? 'text-orange-500' :
-                                selectedVuln.cvss_score >= 4 ? 'text-yellow-500' : 'text-green-500'
-                              }`}>{selectedVuln.cvss_score}/10</span>
-                            </>
-                          )}
-                          {selectedVuln.cvss_vector && (
-                            <>
-                              <span className="text-muted-foreground">CVSS Vector</span>
-                              <span className="font-mono text-xs break-all">{selectedVuln.cvss_vector}</span>
-                            </>
-                          )}
-                          {selectedVuln.cve_id && (
-                            <>
-                              <span className="text-muted-foreground">CVE ID</span>
-                              <a 
-                                href={`https://nvd.nist.gov/vuln/detail/${selectedVuln.cve_id}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary hover:underline font-mono"
-                              >
-                                {selectedVuln.cve_id}
-                              </a>
-                            </>
-                          )}
-                          {selectedVuln.cwe_id && (
-                            <>
-                              <span className="text-muted-foreground">CWE ID</span>
-                              <a 
-                                href={`https://cwe.mitre.org/data/definitions/${selectedVuln.cwe_id.replace('CWE-', '')}.html`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary hover:underline font-mono"
-                              >
-                                {selectedVuln.cwe_id}
-                              </a>
-                            </>
-                          )}
-                          <span className="text-muted-foreground">Detected By</span>
-                          <span>{selectedVuln.detected_by || 'Unknown'}</span>
-                          
-                          <span className="text-muted-foreground">Host</span>
-                          <span className="font-mono text-xs">{selectedVuln.host || asset.value}</span>
-                        </div>
-                      </div>
-
-                      {/* Evidence / Found At */}
-                      {selectedVuln.evidence && (
-                        <div className="pt-2 border-t">
-                          <h4 className="text-sm font-medium text-muted-foreground mb-1">Evidence / Found At</h4>
-                          <div className="bg-secondary/50 p-2 rounded font-mono text-xs overflow-x-auto whitespace-pre-wrap">
-                            {selectedVuln.evidence}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Detection Timeline */}
-                      <div className="space-y-2 pt-2 border-t">
-                        <h4 className="text-sm font-medium text-muted-foreground">Detection Timeline</h4>
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                          <span className="text-muted-foreground">First Seen</span>
-                          <span>{formatDate(selectedVuln.first_detected)}</span>
-                          
-                          <span className="text-muted-foreground">Last Seen</span>
-                          <span>{formatDate(selectedVuln.last_detected)}</span>
-                          
-                          {selectedVuln.resolved_at && (
-                            <>
-                              <span className="text-muted-foreground">Resolved At</span>
-                              <span>{formatDate(selectedVuln.resolved_at)}</span>
-                            </>
-                          )}
-                          
-                          <span className="text-muted-foreground">Vulnerability Age</span>
-                          <span>{formatVulnAge(selectedVuln.first_detected)}</span>
-                          
-                          {selectedVuln.remediation_deadline && (
-                            <>
-                              <span className="text-muted-foreground">SLA Deadline</span>
-                              <span className={new Date(selectedVuln.remediation_deadline) < new Date() ? 'text-red-500 font-medium' : ''}>
-                                {formatDate(selectedVuln.remediation_deadline)}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Remediation */}
-                      {selectedVuln.remediation && (
-                        <div className="pt-2 border-t">
-                          <h4 className="text-sm font-medium text-muted-foreground mb-1">Solution / Remediation</h4>
-                          <p className="text-sm">{selectedVuln.remediation}</p>
-                        </div>
-                      )}
-
-                      {/* References */}
-                      {selectedVuln.references && selectedVuln.references.length > 0 && (
-                        <div className="pt-2 border-t">
-                          <h4 className="text-sm font-medium text-muted-foreground mb-1">References</h4>
-                          <div className="space-y-1">
-                            {selectedVuln.references.map((ref, idx) => (
-                              <a
-                                key={idx}
-                                href={ref}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="block text-sm text-primary hover:underline truncate"
-                              >
-                                {ref}
-                              </a>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* IDs */}
-                      <div className="pt-2 border-t">
-                        <h4 className="text-sm font-medium text-muted-foreground mb-1">Identifiers</h4>
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                          <span className="text-muted-foreground">Finding ID</span>
-                          <span className="font-mono text-xs">{selectedVuln.id}</span>
-                          
-                          {selectedVuln.template_id && (
-                            <>
-                              <span className="text-muted-foreground">Template ID</span>
-                              <span className="font-mono text-xs">{selectedVuln.template_id}</span>
-                            </>
-                          )}
-                          
-                          {selectedVuln.scan_id && (
-                            <>
-                              <span className="text-muted-foreground">Scan ID</span>
-                              <span className="font-mono text-xs">{selectedVuln.scan_id}</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-full py-12 text-center">
-                      <Shield className="h-12 w-12 text-muted-foreground mb-3" />
-                      <p className="text-muted-foreground">Select a finding to view details</p>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        Click on any vulnerability from the list
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Metadata */}
-        {asset.metadata_ && Object.keys(asset.metadata_).length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Additional Metadata</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <pre className="bg-secondary/50 p-4 rounded-lg overflow-x-auto text-sm">
-                {JSON.stringify(asset.metadata_, null, 2)}
-              </pre>
-            </CardContent>
-          </Card>
-        )}
       </div>
     </MainLayout>
   );
 }
-
-
-

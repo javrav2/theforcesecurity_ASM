@@ -71,6 +71,28 @@ def build_asset_response(asset: Asset) -> dict:
         except Exception:
             return default
     
+    # Calculate vulnerability counts
+    vuln_count = 0
+    critical_vulns = 0
+    high_vulns = 0
+    medium_vulns = 0
+    low_vulns = 0
+    try:
+        from app.models.vulnerability import Severity
+        for vuln in asset.vulnerabilities:
+            if vuln.status.value != 'resolved':
+                vuln_count += 1
+                if vuln.severity == Severity.CRITICAL:
+                    critical_vulns += 1
+                elif vuln.severity == Severity.HIGH:
+                    high_vulns += 1
+                elif vuln.severity == Severity.MEDIUM:
+                    medium_vulns += 1
+                elif vuln.severity == Severity.LOW:
+                    low_vulns += 1
+    except Exception:
+        pass
+    
     # Build response explicitly to avoid _sa_instance_state and missing columns
     return {
         "id": asset.id,
@@ -84,27 +106,56 @@ def build_asset_response(asset: Asset) -> dict:
         "tags": safe_get("tags", []),
         "metadata_": safe_get("metadata_", {}),
         "discovery_source": safe_get("discovery_source"),
+        "discovery_chain": safe_get("discovery_chain", []),
+        "association_reason": safe_get("association_reason"),
+        "association_confidence": safe_get("association_confidence", 100),
         "first_seen": safe_get("first_seen"),
         "last_seen": safe_get("last_seen"),
         "risk_score": safe_get("risk_score", 0),
         "criticality": safe_get("criticality", "medium"),
         "is_monitored": safe_get("is_monitored", True),
+        # ACR/AES scoring (Tenable-style)
+        "acr_score": safe_get("acr_score", 5),
+        "acr_drivers": safe_get("acr_drivers", {}),
+        "aes_score": safe_get("aes_score", 0),
+        # Asset classification
+        "system_type": safe_get("system_type"),
+        "operating_system": safe_get("operating_system"),
+        "device_class": safe_get("device_class"),
+        "device_subclass": safe_get("device_subclass"),
+        "is_public": safe_get("is_public", True),
+        "is_licensed": safe_get("is_licensed", True),
+        # HTTP info
         "http_status": safe_get("http_status"),
         "http_title": safe_get("http_title"),
+        "live_url": safe_get("live_url"),
+        "root_domain": safe_get("root_domain"),
+        # DNS info
         "dns_records": safe_get("dns_records", {}),
+        # IP/Geo info
         "ip_address": safe_get("ip_address"),
         "ip_addresses": safe_get("ip_addresses", []),
+        "ip_history": safe_get("ip_history", []),
         "latitude": safe_get("latitude"),
         "longitude": safe_get("longitude"),
         "city": safe_get("city"),
         "country": safe_get("country"),
         "country_code": safe_get("country_code"),
+        "region": safe_get("region"),
         "isp": safe_get("isp"),
         "asn": safe_get("asn"),
+        # Scope and ownership
         "in_scope": safe_get("in_scope", True),
         "is_owned": safe_get("is_owned", False),
         "is_live": safe_get("is_live", False),
         "netblock_id": safe_get("netblock_id"),
+        # Scan tracking
+        "last_scan_id": safe_get("last_scan_id"),
+        "last_scan_name": safe_get("last_scan_name"),
+        "last_scan_date": safe_get("last_scan_date"),
+        "last_scan_target": safe_get("last_scan_target"),
+        "last_authenticated_scan_status": safe_get("last_authenticated_scan_status"),
+        # Discovered endpoints
         "endpoints": safe_get("endpoints", []),
         "parameters": safe_get("parameters", []),
         "js_files": safe_get("js_files", []),
@@ -115,6 +166,12 @@ def build_asset_response(asset: Asset) -> dict:
         "technologies": tech_summaries,
         "open_ports_count": len([p for p in port_summaries if hasattr(p, 'state') and p.state == 'open']),
         "risky_ports_count": len([p for p in port_summaries if hasattr(p, 'is_risky') and p.is_risky]),
+        # Vulnerability counts
+        "vulnerability_count": vuln_count,
+        "critical_vuln_count": critical_vulns,
+        "high_vuln_count": high_vulns,
+        "medium_vuln_count": medium_vulns,
+        "low_vuln_count": low_vulns,
     }
 
 
