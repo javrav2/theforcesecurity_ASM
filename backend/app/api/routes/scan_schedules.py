@@ -426,7 +426,7 @@ def trigger_scheduled_scan(
         "port_scan": ScanType.PORT_SCAN,
         "masscan": ScanType.PORT_SCAN,
         "critical_ports": ScanType.PORT_SCAN,
-        "discovery": ScanType.FULL_DISCOVERY,
+        "discovery": ScanType.DISCOVERY,
         "screenshot": ScanType.SCREENSHOT,
         "technology": ScanType.TECHNOLOGY,
     }

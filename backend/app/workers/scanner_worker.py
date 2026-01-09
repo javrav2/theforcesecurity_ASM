@@ -668,9 +668,29 @@ class ScannerWorker:
     
     async def handle_discovery(self, job_data: dict):
         """Handle full asset discovery job."""
+        import re
+        import ipaddress
+        
         scan_id = job_data.get('scan_id')
+        targets = job_data.get('targets', [])
         domain = job_data.get('domain')
         organization_id = job_data.get('organization_id')
+        
+        # Filter targets to only include valid domains (not IPs or CIDRs)
+        valid_domains = []
+        
+        # If single domain provided, use it
+        if domain and not self._is_ip_or_cidr(domain):
+            valid_domains.append(domain)
+        
+        # If targets list provided, filter for domains only
+        for target in targets:
+            if target and not self._is_ip_or_cidr(target):
+                # Looks like a domain
+                valid_domains.append(target)
+        
+        # Deduplicate
+        valid_domains = list(set(valid_domains))
         
         db = self.get_db_session()
         if not db:
@@ -685,29 +705,57 @@ class ScannerWorker:
                 scan.started_at = datetime.utcnow()
                 db.commit()
             
-            # Run discovery
+            if not valid_domains:
+                logger.warning(f"No valid domains found for discovery scan {scan_id}. Targets were: {targets[:5]}...")
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    scan.completed_at = datetime.utcnow()
+                    scan.results = {
+                        'message': 'No valid domains to discover (IPs/CIDRs are not valid for domain discovery)',
+                        'targets_received': len(targets),
+                        'valid_domains': 0
+                    }
+                    db.commit()
+                return
+            
+            logger.info(f"Running discovery for {len(valid_domains)} domains: {valid_domains[:3]}...")
+            
+            # Run discovery for each domain
             discovery_service = self.get_discovery_service(db)
-            result = await discovery_service.full_discovery(
-                domain=domain,
-                organization_id=organization_id,
-                enable_subdomain_enum=True,
-                enable_dns_enum=True,
-                enable_http_probe=True,
-                enable_tech_detection=True
-            )
+            total_assets = 0
+            total_subdomains = 0
+            total_technologies = 0
+            
+            for domain_target in valid_domains:
+                try:
+                    result = await discovery_service.full_discovery(
+                        domain=domain_target,
+                        organization_id=organization_id,
+                        enable_subdomain_enum=True,
+                        enable_dns_enum=True,
+                        enable_http_probe=True,
+                        enable_tech_detection=True
+                    )
+                    total_assets += result.get('assets_created', 0)
+                    total_subdomains += result.get('subdomains_found', 0)
+                    total_technologies += result.get('technologies_detected', 0)
+                    logger.info(f"Discovery for {domain_target}: {result.get('assets_created', 0)} assets")
+                except Exception as domain_error:
+                    logger.error(f"Discovery failed for {domain_target}: {domain_error}")
             
             # Update scan record
             if scan:
                 scan.status = ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
                 scan.results = {
-                    'assets_created': result.get('assets_created', 0),
-                    'subdomains_found': result.get('subdomains_found', 0),
-                    'technologies_detected': result.get('technologies_detected', 0)
+                    'assets_created': total_assets,
+                    'subdomains_found': total_subdomains,
+                    'technologies_detected': total_technologies,
+                    'domains_processed': len(valid_domains)
                 }
                 db.commit()
             
-            logger.info(f"Discovery complete: {result.get('assets_created', 0)} assets")
+            logger.info(f"Discovery complete: {total_assets} assets from {len(valid_domains)} domains")
             
         except Exception as e:
             logger.error(f"Discovery failed: {e}", exc_info=True)
@@ -722,6 +770,25 @@ class ScannerWorker:
         finally:
             if db:
                 db.close()
+    
+    def _is_ip_or_cidr(self, value: str) -> bool:
+        """Check if a value is an IP address or CIDR block."""
+        import ipaddress
+        try:
+            # Try to parse as IP address
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            pass
+        
+        try:
+            # Try to parse as network/CIDR
+            ipaddress.ip_network(value, strict=False)
+            return True
+        except ValueError:
+            pass
+        
+        return False
     
     async def handle_subdomain_enum(self, job_data: dict):
         """Handle subdomain enumeration job."""
