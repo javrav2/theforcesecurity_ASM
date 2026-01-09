@@ -404,7 +404,7 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">MTTR (Mean Time to Remediate)</span>
                   <span className="font-medium">
-                    {remediationStats?.mttr_days !== null 
+                    {remediationStats?.mttr_days != null 
                       ? `${remediationStats.mttr_days} days`
                       : '—'}
                   </span>
