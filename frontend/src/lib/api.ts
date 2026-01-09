@@ -164,6 +164,7 @@ class ApiClient {
     asset_type?: string;
     status?: string;
     include_cidr?: boolean;
+    has_geo?: boolean;
   }) {
     const response = await this.client.get('/assets/', { params });
     return response.data;

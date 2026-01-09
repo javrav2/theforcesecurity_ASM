@@ -101,21 +101,23 @@ export default function DashboardPage() {
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      const [vulnSummary, orgs, assetsData, vulns, nbSummary, remediationData, exposureData] = await Promise.all([
+      const [vulnSummary, orgs, assetsData, geoAssetsData, vulns, nbSummary, remediationData, exposureData] = await Promise.all([
         api.getVulnerabilitiesSummary(),
         api.getOrganizations(),
-        api.getAssets({ limit: 500 }), // Fetch more assets for the map
+        api.getAssets({ limit: 100 }), // Fetch sample for stats
+        api.getAssets({ limit: 500, has_geo: true }), // Fetch assets with geo data specifically for the map
         api.getVulnerabilities({ limit: 5 }),
         api.getNetblockSummary().catch(() => null),
         api.getRemediationEfficiency(30).catch(() => null),
         api.getVulnerabilityExposure().catch(() => null),
       ]);
 
-      const assetsList = assetsData.items || assetsData || [];
-      setAssets(assetsList);
+      // Use geo assets for the map
+      const geoAssetsList = geoAssetsData.items || geoAssetsData || [];
+      setAssets(geoAssetsList);
 
       setStats({
-        total_assets: assetsData.total || assetsList.length || 0,
+        total_assets: assetsData.total || (assetsData.items || assetsData || []).length || 0,
         total_vulnerabilities: vulnSummary.total || 0,  // Excludes info findings
         total_all_vulnerabilities: vulnSummary.total_all || vulnSummary.total || 0,
         info_count: vulnSummary.info_count || vulnSummary.by_severity?.info || 0,

@@ -183,6 +183,7 @@ def list_assets(
     search: Optional[str] = None,
     has_open_ports: Optional[bool] = None,
     has_risky_ports: Optional[bool] = None,
+    has_geo: Optional[bool] = Query(None, description="Filter for assets with geo data (latitude/longitude)"),
     include_cidr: bool = Query(False, description="Include IP_RANGE/CIDR assets (excluded by default)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
@@ -215,6 +216,19 @@ def list_assets(
         query = query.filter(
             (Asset.name.ilike(f"%{search}%")) | 
             (Asset.value.ilike(f"%{search}%"))
+        )
+    
+    # Filter for assets with geo data (for map display)
+    if has_geo is True:
+        query = query.filter(
+            Asset.latitude != None,
+            Asset.latitude != '',
+            Asset.longitude != None,
+            Asset.longitude != ''
+        )
+    elif has_geo is False:
+        query = query.filter(
+            (Asset.latitude == None) | (Asset.latitude == '')
         )
     
     # Get total count before pagination
