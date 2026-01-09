@@ -630,44 +630,81 @@ export default function AssetDetailPage() {
             </Card>
 
             {/* Network & Location */}
-            {(asset.city || asset.country || asset.isp || asset.asn) && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center gap-2">
-                    <MapPin className="h-5 w-5" />
-                    <CardTitle>Network & Location</CardTitle>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-                    {asset.city && (
-                      <div className="flex justify-between py-2 border-b">
-                        <span className="text-muted-foreground">City</span>
-                        <span className="font-medium">{asset.city}</span>
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <MapPin className="h-5 w-5" />
+                  <CardTitle>Network & Location</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                  {/* Always show IP addresses if available */}
+                  {(asset.ip_addresses && asset.ip_addresses.length > 0) || asset.ip_address ? (
+                    <div className="col-span-2 flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">IPv4 Addresses</span>
+                      <div className="flex flex-wrap gap-1 justify-end">
+                        {(asset.ip_addresses && asset.ip_addresses.length > 0 
+                          ? asset.ip_addresses 
+                          : [asset.ip_address]
+                        ).filter(Boolean).map((ip, idx) => (
+                          <Badge key={idx} variant="outline" className="font-mono text-xs">{ip}</Badge>
+                        ))}
                       </div>
-                    )}
-                    {asset.country && (
-                      <div className="flex justify-between py-2 border-b">
-                        <span className="text-muted-foreground">Country</span>
-                        <span className="font-medium">{asset.country} {asset.country_code && `(${asset.country_code})`}</span>
-                      </div>
-                    )}
-                    {asset.isp && (
-                      <div className="flex justify-between py-2 border-b">
-                        <span className="text-muted-foreground">ISP</span>
-                        <span className="font-medium">{asset.isp}</span>
-                      </div>
-                    )}
-                    {asset.asn && (
-                      <div className="flex justify-between py-2 border-b">
-                        <span className="text-muted-foreground">ASN</span>
-                        <span className="font-mono">{asset.asn}</span>
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            )}
+                    </div>
+                  ) : null}
+                  
+                  {/* Show netblock link if asset is linked to a netblock */}
+                  {asset.netblock_id && (
+                    <div className="flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">Netblock</span>
+                      <a href={`/netblocks/${asset.netblock_id}`} className="text-primary hover:underline font-mono text-sm">
+                        View CIDR Block →
+                      </a>
+                    </div>
+                  )}
+                  
+                  {asset.asn && (
+                    <div className="flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">ASN</span>
+                      <span className="font-mono">{asset.asn}</span>
+                    </div>
+                  )}
+                  {asset.isp && (
+                    <div className="flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">ISP</span>
+                      <span className="font-medium">{asset.isp}</span>
+                    </div>
+                  )}
+                  {asset.city && (
+                    <div className="flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">City</span>
+                      <span className="font-medium">{asset.city}</span>
+                    </div>
+                  )}
+                  {asset.country && (
+                    <div className="flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">Country</span>
+                      <span className="font-medium">{asset.country} {asset.country_code && `(${asset.country_code})`}</span>
+                    </div>
+                  )}
+                  {asset.region && (
+                    <div className="flex justify-between py-2 border-b">
+                      <span className="text-muted-foreground">Region</span>
+                      <span className="font-medium">{asset.region}</span>
+                    </div>
+                  )}
+                  
+                  {/* Show message if no network info at all */}
+                  {!asset.ip_address && (!asset.ip_addresses || asset.ip_addresses.length === 0) && 
+                   !asset.asn && !asset.isp && !asset.city && !asset.country && !asset.netblock_id && (
+                    <div className="col-span-2 text-center py-4 text-muted-foreground">
+                      No network information available. Run a discovery scan to populate this data.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
 
             {/* Technologies */}
             {asset.technologies && asset.technologies.length > 0 && (
