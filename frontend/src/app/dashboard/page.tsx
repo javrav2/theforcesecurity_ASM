@@ -20,6 +20,11 @@ import {
   Network,
   CheckCircle,
   XCircle,
+  Clock,
+  Target,
+  Zap,
+  BarChart3,
+  AlertCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { formatNumber } from '@/lib/utils';
@@ -50,9 +55,44 @@ interface NetblockStats {
   unscanned_netblocks: number;
 }
 
+interface RemediationStats {
+  period_days: number;
+  new_findings: number;
+  resolved_findings: number;
+  resolution_rate: number;
+  avg_resolution_time_days: number | null;
+  mttr_days: number | null;
+  open_critical: number;
+  open_high: number;
+  overdue_count: number;
+}
+
+interface ExposureStats {
+  total_exposure_score: number;
+  assets_with_vulnerabilities: number;
+  total_assets: number;
+  exposure_percentage: number;
+  severity_distribution: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+  top_vulnerable_assets: Array<{
+    asset_id: number;
+    asset_name: string;
+    asset_value: string;
+    vulnerability_count: number;
+    asset_type: string;
+  }>;
+  exposure_trend: 'increasing' | 'decreasing' | 'stable';
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [netblockStats, setNetblockStats] = useState<NetblockStats | null>(null);
+  const [remediationStats, setRemediationStats] = useState<RemediationStats | null>(null);
+  const [exposureStats, setExposureStats] = useState<ExposureStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [recentVulns, setRecentVulns] = useState<any[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
@@ -61,12 +101,14 @@ export default function DashboardPage() {
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      const [vulnSummary, orgs, assetsData, vulns, nbSummary] = await Promise.all([
+      const [vulnSummary, orgs, assetsData, vulns, nbSummary, remediationData, exposureData] = await Promise.all([
         api.getVulnerabilitiesSummary(),
         api.getOrganizations(),
         api.getAssets({ limit: 500 }), // Fetch more assets for the map
         api.getVulnerabilities({ limit: 5 }),
         api.getNetblockSummary().catch(() => null),
+        api.getRemediationEfficiency(30).catch(() => null),
+        api.getVulnerabilityExposure().catch(() => null),
       ]);
 
       const assetsList = assetsData.items || assetsData || [];
@@ -87,6 +129,14 @@ export default function DashboardPage() {
 
       if (nbSummary) {
         setNetblockStats(nbSummary);
+      }
+
+      if (remediationData) {
+        setRemediationStats(remediationData);
+      }
+
+      if (exposureData) {
+        setExposureStats(exposureData);
       }
 
       setRecentVulns(vulns.items || vulns || []);
@@ -302,6 +352,190 @@ export default function DashboardPage() {
                   ))
                 )}
               </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Remediation Efficiency & Vulnerability Exposure */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Remediation Efficiency */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Zap className="h-5 w-5 text-green-500" />
+                  Remediation Efficiency
+                </CardTitle>
+                <p className="text-sm text-muted-foreground mt-1">Last 30 days</p>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="p-4 bg-muted/50 rounded-lg">
+                  <div className="flex items-center gap-2 mb-1">
+                    <AlertCircle className="h-4 w-4 text-orange-500" />
+                    <span className="text-sm text-muted-foreground">New Findings</span>
+                  </div>
+                  <p className="text-2xl font-bold">{remediationStats?.new_findings || 0}</p>
+                </div>
+                <div className="p-4 bg-muted/50 rounded-lg">
+                  <div className="flex items-center gap-2 mb-1">
+                    <CheckCircle className="h-4 w-4 text-green-500" />
+                    <span className="text-sm text-muted-foreground">Resolved</span>
+                  </div>
+                  <p className="text-2xl font-bold">{remediationStats?.resolved_findings || 0}</p>
+                </div>
+              </div>
+              
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Resolution Rate</span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-24 h-2 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-green-500 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.min(remediationStats?.resolution_rate || 0, 100)}%` }}
+                      />
+                    </div>
+                    <span className="font-medium text-sm">{remediationStats?.resolution_rate || 0}%</span>
+                  </div>
+                </div>
+                
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">MTTR (Mean Time to Remediate)</span>
+                  <span className="font-medium">
+                    {remediationStats?.mttr_days !== null 
+                      ? `${remediationStats.mttr_days} days`
+                      : '—'}
+                  </span>
+                </div>
+                
+                <div className="pt-3 border-t border-muted flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="text-center">
+                      <Badge variant="critical" className="mb-1">Critical</Badge>
+                      <p className="text-lg font-bold">{remediationStats?.open_critical || 0}</p>
+                    </div>
+                    <div className="text-center">
+                      <Badge variant="high" className="mb-1">High</Badge>
+                      <p className="text-lg font-bold">{remediationStats?.open_high || 0}</p>
+                    </div>
+                  </div>
+                  {(remediationStats?.overdue_count || 0) > 0 && (
+                    <div className="flex items-center gap-2 text-red-500">
+                      <Clock className="h-4 w-4" />
+                      <span className="text-sm font-medium">{remediationStats?.overdue_count} overdue</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Vulnerability Exposure */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Target className="h-5 w-5 text-red-500" />
+                  Vulnerability Exposure
+                </CardTitle>
+                <p className="text-sm text-muted-foreground mt-1">Current attack surface risk</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {exposureStats?.exposure_trend === 'increasing' && (
+                  <Badge className="bg-red-500/20 text-red-400 border-red-500/30">
+                    <TrendingUp className="h-3 w-3 mr-1" /> Increasing
+                  </Badge>
+                )}
+                {exposureStats?.exposure_trend === 'decreasing' && (
+                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                    <TrendingDown className="h-3 w-3 mr-1" /> Decreasing
+                  </Badge>
+                )}
+                {exposureStats?.exposure_trend === 'stable' && (
+                  <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">
+                    Stable
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div className="p-4 bg-muted/50 rounded-lg text-center">
+                  <p className="text-3xl font-bold text-red-500">{exposureStats?.total_exposure_score || 0}</p>
+                  <p className="text-xs text-muted-foreground">Exposure Score</p>
+                </div>
+                <div className="p-4 bg-muted/50 rounded-lg text-center">
+                  <p className="text-3xl font-bold">{exposureStats?.assets_with_vulnerabilities || 0}</p>
+                  <p className="text-xs text-muted-foreground">Vulnerable Assets</p>
+                </div>
+                <div className="p-4 bg-muted/50 rounded-lg text-center">
+                  <p className="text-3xl font-bold">{exposureStats?.exposure_percentage || 0}%</p>
+                  <p className="text-xs text-muted-foreground">Asset Exposure</p>
+                </div>
+              </div>
+              
+              {/* Severity Distribution */}
+              <div className="mb-4">
+                <p className="text-sm text-muted-foreground mb-2">Open Vulnerabilities by Severity</p>
+                <div className="flex gap-2">
+                  <div className="flex-1 h-4 bg-red-600 rounded" 
+                    style={{ 
+                      flex: exposureStats?.severity_distribution?.critical || 0.1 
+                    }} 
+                    title={`Critical: ${exposureStats?.severity_distribution?.critical || 0}`}
+                  />
+                  <div className="flex-1 h-4 bg-orange-500 rounded" 
+                    style={{ 
+                      flex: exposureStats?.severity_distribution?.high || 0.1 
+                    }}
+                    title={`High: ${exposureStats?.severity_distribution?.high || 0}`}
+                  />
+                  <div className="flex-1 h-4 bg-yellow-500 rounded" 
+                    style={{ 
+                      flex: exposureStats?.severity_distribution?.medium || 0.1 
+                    }}
+                    title={`Medium: ${exposureStats?.severity_distribution?.medium || 0}`}
+                  />
+                  <div className="flex-1 h-4 bg-green-500 rounded" 
+                    style={{ 
+                      flex: exposureStats?.severity_distribution?.low || 0.1 
+                    }}
+                    title={`Low: ${exposureStats?.severity_distribution?.low || 0}`}
+                  />
+                </div>
+                <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                  <span>Critical: {exposureStats?.severity_distribution?.critical || 0}</span>
+                  <span>High: {exposureStats?.severity_distribution?.high || 0}</span>
+                  <span>Medium: {exposureStats?.severity_distribution?.medium || 0}</span>
+                  <span>Low: {exposureStats?.severity_distribution?.low || 0}</span>
+                </div>
+              </div>
+
+              {/* Top Vulnerable Assets */}
+              {exposureStats?.top_vulnerable_assets && exposureStats.top_vulnerable_assets.length > 0 && (
+                <div>
+                  <p className="text-sm text-muted-foreground mb-2">Most Vulnerable Assets</p>
+                  <div className="space-y-2">
+                    {exposureStats.top_vulnerable_assets.slice(0, 5).map((asset) => (
+                      <Link 
+                        key={asset.asset_id} 
+                        href={`/assets/${asset.asset_id}`}
+                        className="flex items-center justify-between p-2 rounded bg-muted/50 hover:bg-muted transition-colors"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Globe className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                          <span className="text-sm truncate">{asset.asset_name}</span>
+                        </div>
+                        <Badge variant="destructive" className="flex-shrink-0">
+                          {asset.vulnerability_count}
+                        </Badge>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

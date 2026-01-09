@@ -213,6 +213,40 @@ class ApiClient {
     return this.getFindingsSummary(organizationId);
   }
 
+  async getVulnerabilitiesForAsset(assetId: number, params?: { skip?: number; limit?: number }) {
+    const response = await this.client.get('/vulnerabilities/', {
+      params: { asset_id: assetId, ...params }
+    });
+    return response.data;
+  }
+
+  async getRemediationEfficiency(days: number = 30) {
+    const response = await this.client.get('/vulnerabilities/stats/remediation-efficiency', {
+      params: { days }
+    });
+    return response.data;
+  }
+
+  async getVulnerabilityExposure() {
+    const response = await this.client.get('/vulnerabilities/stats/exposure');
+    return response.data;
+  }
+
+  async getVulnerability(vulnId: number) {
+    const response = await this.client.get(`/vulnerabilities/${vulnId}`);
+    return response.data;
+  }
+
+  async updateVulnerability(vulnId: number, data: {
+    status?: string;
+    assigned_to?: string;
+    remediation?: string;
+    remediation_deadline?: string;
+  }) {
+    const response = await this.client.put(`/vulnerabilities/${vulnId}`, data);
+    return response.data;
+  }
+
   // Scans
   async getScans(params?: { organization_id?: number; skip?: number; limit?: number }) {
     const response = await this.client.get('/scans/', { params });

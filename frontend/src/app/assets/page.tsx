@@ -746,7 +746,29 @@ export default function AssetsPage() {
                         {/* Ports */}
                         {columns.find(c => c.key === 'ports')?.visible && (
                           <TableCell>
-                            {(asset.open_ports_count || 0) > 0 ? (
+                            {asset.port_services && asset.port_services.length > 0 ? (
+                              <div className="flex items-center gap-1 flex-wrap max-w-[200px]">
+                                {asset.port_services.slice(0, 5).map((port, i) => (
+                                  <Badge
+                                    key={i}
+                                    variant="outline"
+                                    className={`text-[10px] px-1.5 py-0 h-5 font-mono ${
+                                      port.is_risky 
+                                        ? 'bg-red-500/10 text-red-400 border-red-500/30' 
+                                        : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                                    }`}
+                                  >
+                                    {port.port}
+                                    {port.service && <span className="text-muted-foreground">/{port.service}</span>}
+                                  </Badge>
+                                ))}
+                                {asset.port_services.length > 5 && (
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 h-5">
+                                    +{asset.port_services.length - 5}
+                                  </Badge>
+                                )}
+                              </div>
+                            ) : (asset.open_ports_count || 0) > 0 ? (
                               <div className="flex items-center gap-1">
                                 <Network className="h-4 w-4 text-blue-400" />
                                 <span className="font-mono text-sm text-blue-400">

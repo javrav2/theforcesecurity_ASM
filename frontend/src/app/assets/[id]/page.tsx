@@ -91,6 +91,36 @@ interface Screenshot {
   change_percentage?: number;
 }
 
+interface Vulnerability {
+  id: number;
+  title: string;
+  name?: string;
+  description?: string;
+  severity: string;
+  cvss_score?: number;
+  cvss_vector?: string;
+  cve_id?: string;
+  cwe_id?: string;
+  references?: string[];
+  asset_id: number;
+  scan_id?: number;
+  detected_by?: string;
+  template_id?: string;
+  matcher_name?: string;
+  status: string;
+  assigned_to?: string;
+  evidence?: string;
+  proof_of_concept?: string;
+  remediation?: string;
+  remediation_deadline?: string;
+  first_detected: string;
+  last_detected: string;
+  resolved_at?: string;
+  tags?: string[];
+  host?: string;
+  matched_at?: string;
+}
+
 interface Asset {
   id: number;
   name: string;
@@ -166,6 +196,8 @@ export default function AssetDetailPage() {
   const assetId = params.id as string;
   const [asset, setAsset] = useState<Asset | null>(null);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
+  const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
+  const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -174,12 +206,14 @@ export default function AssetDetailPage() {
 
   const fetchAsset = async () => {
     try {
-      const [assetData, screenshotData] = await Promise.all([
+      const [assetData, screenshotData, vulnData] = await Promise.all([
         api.getAsset(parseInt(assetId)),
-        api.getAssetScreenshots(parseInt(assetId)).catch(() => ({ screenshots: [] }))
+        api.getAssetScreenshots(parseInt(assetId)).catch(() => ({ screenshots: [] })),
+        api.getVulnerabilitiesForAsset(parseInt(assetId), { limit: 50 }).catch(() => [])
       ]);
       setAsset(assetData);
       setScreenshots(screenshotData.screenshots || []);
+      setVulnerabilities(Array.isArray(vulnData) ? vulnData : []);
     } catch (error) {
       toast({
         title: 'Error',
@@ -277,6 +311,51 @@ export default function AssetDetailPage() {
     if (status >= 400 && status < 500) return 'text-yellow-400';
     if (status >= 500) return 'text-red-400';
     return 'text-gray-400';
+  };
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity?.toLowerCase()) {
+      case 'critical':
+        return 'bg-red-600 text-white';
+      case 'high':
+        return 'bg-orange-500 text-white';
+      case 'medium':
+        return 'bg-yellow-500 text-black';
+      case 'low':
+        return 'bg-green-500 text-white';
+      case 'info':
+        return 'bg-blue-500 text-white';
+      default:
+        return 'bg-gray-500 text-white';
+    }
+  };
+
+  const getVulnStatusColor = (status: string) => {
+    switch (status?.toLowerCase()) {
+      case 'open':
+        return 'bg-red-500/20 text-red-400 border-red-500/30';
+      case 'in_progress':
+        return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      case 'resolved':
+        return 'bg-green-500/20 text-green-400 border-green-500/30';
+      case 'accepted':
+        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+      case 'false_positive':
+        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+      default:
+        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+    }
+  };
+
+  const formatVulnAge = (firstDetected: string) => {
+    const start = new Date(firstDetected);
+    const now = new Date();
+    const diffDays = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return '1 day';
+    if (diffDays < 30) return `${diffDays} days`;
+    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months`;
+    return `${Math.floor(diffDays / 365)} years`;
   };
 
   if (loading) {
@@ -865,6 +944,261 @@ export default function AssetDetailPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Vulnerabilities/Findings Section */}
+        {vulnerabilities.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Shield className="h-5 w-5 text-red-500" />
+                Security Findings ({vulnerabilities.length})
+              </CardTitle>
+              <CardDescription>
+                Vulnerabilities and security issues detected on this asset
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Vulnerability List */}
+                <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
+                  {vulnerabilities.map((vuln) => (
+                    <div
+                      key={vuln.id}
+                      onClick={() => setSelectedVuln(vuln)}
+                      className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                        selectedVuln?.id === vuln.id 
+                          ? 'border-primary bg-primary/5' 
+                          : 'border-border hover:border-primary/50 bg-muted/30'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <Badge className={getSeverityColor(vuln.severity)}>
+                              {vuln.severity?.toUpperCase()}
+                            </Badge>
+                            <Badge className={getVulnStatusColor(vuln.status)}>
+                              {vuln.status?.replace('_', ' ').toUpperCase()}
+                            </Badge>
+                          </div>
+                          <p className="font-medium text-sm truncate">
+                            {vuln.title || vuln.name || vuln.template_id || 'Unknown Finding'}
+                          </p>
+                          {vuln.template_id && (
+                            <p className="text-xs text-muted-foreground font-mono mt-1">
+                              {vuln.template_id}
+                            </p>
+                          )}
+                        </div>
+                        {vuln.cvss_score && (
+                          <div className="text-right flex-shrink-0">
+                            <div className={`text-lg font-bold ${
+                              vuln.cvss_score >= 9 ? 'text-red-500' :
+                              vuln.cvss_score >= 7 ? 'text-orange-500' :
+                              vuln.cvss_score >= 4 ? 'text-yellow-500' : 'text-green-500'
+                            }`}>
+                              {vuln.cvss_score}
+                            </div>
+                            <div className="text-xs text-muted-foreground">CVSS</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Vulnerability Detail Panel */}
+                <div className="border rounded-lg p-4 bg-muted/20 max-h-[600px] overflow-y-auto">
+                  {selectedVuln ? (
+                    <div className="space-y-4">
+                      {/* Header */}
+                      <div>
+                        <h3 className="font-semibold text-lg">
+                          {selectedVuln.title || selectedVuln.name || selectedVuln.template_id}
+                        </h3>
+                        {selectedVuln.template_id && selectedVuln.template_id !== selectedVuln.title && (
+                          <Badge variant="outline" className="mt-1 font-mono text-xs">
+                            {selectedVuln.template_id}
+                          </Badge>
+                        )}
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          <Badge className={getSeverityColor(selectedVuln.severity)}>
+                            {selectedVuln.severity?.toUpperCase()}
+                          </Badge>
+                          <Badge className={getVulnStatusColor(selectedVuln.status)}>
+                            {selectedVuln.status?.replace('_', ' ').toUpperCase()}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      {/* Description */}
+                      {selectedVuln.description && (
+                        <div>
+                          <h4 className="text-sm font-medium text-muted-foreground mb-1">Description</h4>
+                          <p className="text-sm">{selectedVuln.description}</p>
+                        </div>
+                      )}
+
+                      {/* Vulnerability Information */}
+                      <div className="space-y-2 pt-2 border-t">
+                        <h4 className="text-sm font-medium text-muted-foreground">Vulnerability Information</h4>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                          {selectedVuln.cvss_score && (
+                            <>
+                              <span className="text-muted-foreground">CVSS Score</span>
+                              <span className={`font-bold ${
+                                selectedVuln.cvss_score >= 9 ? 'text-red-500' :
+                                selectedVuln.cvss_score >= 7 ? 'text-orange-500' :
+                                selectedVuln.cvss_score >= 4 ? 'text-yellow-500' : 'text-green-500'
+                              }`}>{selectedVuln.cvss_score}/10</span>
+                            </>
+                          )}
+                          {selectedVuln.cvss_vector && (
+                            <>
+                              <span className="text-muted-foreground">CVSS Vector</span>
+                              <span className="font-mono text-xs break-all">{selectedVuln.cvss_vector}</span>
+                            </>
+                          )}
+                          {selectedVuln.cve_id && (
+                            <>
+                              <span className="text-muted-foreground">CVE ID</span>
+                              <a 
+                                href={`https://nvd.nist.gov/vuln/detail/${selectedVuln.cve_id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline font-mono"
+                              >
+                                {selectedVuln.cve_id}
+                              </a>
+                            </>
+                          )}
+                          {selectedVuln.cwe_id && (
+                            <>
+                              <span className="text-muted-foreground">CWE ID</span>
+                              <a 
+                                href={`https://cwe.mitre.org/data/definitions/${selectedVuln.cwe_id.replace('CWE-', '')}.html`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline font-mono"
+                              >
+                                {selectedVuln.cwe_id}
+                              </a>
+                            </>
+                          )}
+                          <span className="text-muted-foreground">Detected By</span>
+                          <span>{selectedVuln.detected_by || 'Unknown'}</span>
+                          
+                          <span className="text-muted-foreground">Host</span>
+                          <span className="font-mono text-xs">{selectedVuln.host || asset.value}</span>
+                        </div>
+                      </div>
+
+                      {/* Evidence / Found At */}
+                      {selectedVuln.evidence && (
+                        <div className="pt-2 border-t">
+                          <h4 className="text-sm font-medium text-muted-foreground mb-1">Evidence / Found At</h4>
+                          <div className="bg-secondary/50 p-2 rounded font-mono text-xs overflow-x-auto whitespace-pre-wrap">
+                            {selectedVuln.evidence}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Detection Timeline */}
+                      <div className="space-y-2 pt-2 border-t">
+                        <h4 className="text-sm font-medium text-muted-foreground">Detection Timeline</h4>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                          <span className="text-muted-foreground">First Seen</span>
+                          <span>{formatDate(selectedVuln.first_detected)}</span>
+                          
+                          <span className="text-muted-foreground">Last Seen</span>
+                          <span>{formatDate(selectedVuln.last_detected)}</span>
+                          
+                          {selectedVuln.resolved_at && (
+                            <>
+                              <span className="text-muted-foreground">Resolved At</span>
+                              <span>{formatDate(selectedVuln.resolved_at)}</span>
+                            </>
+                          )}
+                          
+                          <span className="text-muted-foreground">Vulnerability Age</span>
+                          <span>{formatVulnAge(selectedVuln.first_detected)}</span>
+                          
+                          {selectedVuln.remediation_deadline && (
+                            <>
+                              <span className="text-muted-foreground">SLA Deadline</span>
+                              <span className={new Date(selectedVuln.remediation_deadline) < new Date() ? 'text-red-500 font-medium' : ''}>
+                                {formatDate(selectedVuln.remediation_deadline)}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Remediation */}
+                      {selectedVuln.remediation && (
+                        <div className="pt-2 border-t">
+                          <h4 className="text-sm font-medium text-muted-foreground mb-1">Solution / Remediation</h4>
+                          <p className="text-sm">{selectedVuln.remediation}</p>
+                        </div>
+                      )}
+
+                      {/* References */}
+                      {selectedVuln.references && selectedVuln.references.length > 0 && (
+                        <div className="pt-2 border-t">
+                          <h4 className="text-sm font-medium text-muted-foreground mb-1">References</h4>
+                          <div className="space-y-1">
+                            {selectedVuln.references.map((ref, idx) => (
+                              <a
+                                key={idx}
+                                href={ref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block text-sm text-primary hover:underline truncate"
+                              >
+                                {ref}
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* IDs */}
+                      <div className="pt-2 border-t">
+                        <h4 className="text-sm font-medium text-muted-foreground mb-1">Identifiers</h4>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                          <span className="text-muted-foreground">Finding ID</span>
+                          <span className="font-mono text-xs">{selectedVuln.id}</span>
+                          
+                          {selectedVuln.template_id && (
+                            <>
+                              <span className="text-muted-foreground">Template ID</span>
+                              <span className="font-mono text-xs">{selectedVuln.template_id}</span>
+                            </>
+                          )}
+                          
+                          {selectedVuln.scan_id && (
+                            <>
+                              <span className="text-muted-foreground">Scan ID</span>
+                              <span className="font-mono text-xs">{selectedVuln.scan_id}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full py-12 text-center">
+                      <Shield className="h-12 w-12 text-muted-foreground mb-3" />
+                      <p className="text-muted-foreground">Select a finding to view details</p>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Click on any vulnerability from the list
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
