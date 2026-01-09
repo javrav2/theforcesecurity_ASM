@@ -81,10 +81,10 @@ class AssetResponse(AssetBase):
     criticality: str
     is_monitored: bool
     
-    # ACR/AES scoring (Tenable-style)
-    acr_score: int = 5  # Asset Criticality Rating (1-10)
-    acr_drivers: dict = {}  # Key drivers for ACR
-    aes_score: int = 0  # Asset Exposure Score (0-1000)
+    # ACS/ARS scoring
+    acs_score: int = 5  # Asset Criticality Score (0-10)
+    acs_drivers: dict = {}  # Key drivers for ACS
+    ars_score: int = 0  # Asset Risk Score (0-100)
     
     # Asset Classification
     system_type: Optional[str] = None  # firewall, server, workstation, etc.

@@ -74,12 +74,12 @@ class Asset(Base):
     risk_score = Column(Integer, default=0)  # 0-100
     criticality = Column(String(20), default="medium")  # low, medium, high, critical
     
-    # Asset Criticality Rating (ACR) - Tenable-style scoring
-    acr_score = Column(Integer, default=5)  # 1-10 scale
-    acr_drivers = Column(JSON, default=dict)  # Key drivers for ACR (e.g., {"device_class": "NI", "is_public": true})
+    # Asset Criticality Score (ACS) - Business criticality rating
+    acs_score = Column(Integer, default=5)  # 0-10 scale
+    acs_drivers = Column(JSON, default=dict)  # Key drivers for ACS (e.g., {"device_class": "NI", "is_public": true})
     
-    # Asset Exposure Score (AES) - Calculated from vulnerabilities
-    aes_score = Column(Integer, default=0)  # 0-1000 scale
+    # Asset Risk Score (ARS) - Calculated from vulnerabilities and exposure
+    ars_score = Column(Integer, default=0)  # 0-100 scale
     
     # Asset Classification
     system_type = Column(String(100), nullable=True)  # firewall, server, workstation, router, switch, etc.

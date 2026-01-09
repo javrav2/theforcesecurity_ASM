@@ -114,10 +114,10 @@ def build_asset_response(asset: Asset) -> dict:
         "risk_score": safe_get("risk_score", 0),
         "criticality": safe_get("criticality", "medium"),
         "is_monitored": safe_get("is_monitored", True),
-        # ACR/AES scoring (Tenable-style)
-        "acr_score": safe_get("acr_score", 5),
-        "acr_drivers": safe_get("acr_drivers", {}),
-        "aes_score": safe_get("aes_score", 0),
+        # ACS/ARS scoring
+        "acs_score": safe_get("acs_score", 5),
+        "acs_drivers": safe_get("acs_drivers", {}),
+        "ars_score": safe_get("ars_score", 0),
         # Asset classification
         "system_type": safe_get("system_type"),
         "operating_system": safe_get("operating_system"),

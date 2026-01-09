@@ -171,10 +171,10 @@ interface Asset {
   risky_ports_count: number;
   created_at: string;
   updated_at: string;
-  // New Tenable-like fields
-  acr_score?: number;
-  acr_drivers?: Record<string, any>;
-  aes_score?: number;
+  // Risk and Criticality scores
+  acs_score?: number;
+  acs_drivers?: Record<string, any>;
+  ars_score?: number;
   system_type?: string;
   operating_system?: string;
   device_class?: string;
@@ -314,10 +314,18 @@ export default function AssetDetailPage() {
     return `${Math.floor(diffDays / 30)} months`;
   };
 
-  const getACRColor = (score: number) => {
+  const getACSColor = (score: number) => {
     if (score >= 8) return 'text-red-500';
     if (score >= 6) return 'text-orange-500';
     if (score >= 4) return 'text-yellow-500';
+    return 'text-green-500';
+  };
+
+  const getARSColor = (score: number) => {
+    if (score >= 80) return 'text-red-500';
+    if (score >= 60) return 'text-orange-500';
+    if (score >= 40) return 'text-yellow-500';
+    if (score >= 20) return 'text-blue-500';
     return 'text-green-500';
   };
 
@@ -347,8 +355,8 @@ export default function AssetDetailPage() {
   }
 
   const AssetIcon = assetTypeIcons[asset.asset_type] || Monitor;
-  const acrScore = asset.acr_score || 5;
-  const aesScore = asset.aes_score || 0;
+  const acsScore = asset.acs_score || 5;
+  const arsScore = asset.ars_score || asset.risk_score || 0;
   const vulnCount = asset.vulnerability_count || vulnerabilities.length;
 
   return (
@@ -388,42 +396,42 @@ export default function AssetDetailPage() {
 
           {/* Score Cards */}
           <div className="grid grid-cols-4 gap-4 mt-6">
-            {/* AES Score */}
+            {/* ARS Score - Asset Risk Score */}
             <Card className="border-2">
               <CardContent className="p-4">
-                <div className="text-sm text-muted-foreground mb-1">AES</div>
+                <div className="text-sm text-muted-foreground mb-1">ARS</div>
                 <div className="flex items-baseline gap-1">
-                  <span className={`text-3xl font-bold ${aesScore > 500 ? 'text-red-500' : aesScore > 200 ? 'text-yellow-500' : 'text-green-500'}`}>
-                    {aesScore}
+                  <span className={`text-3xl font-bold ${getARSColor(arsScore)}`}>
+                    {arsScore}
                   </span>
-                  <span className="text-muted-foreground">/1000</span>
+                  <span className="text-muted-foreground">/100</span>
                 </div>
                 <div className="h-2 bg-muted rounded-full mt-2 overflow-hidden">
                   <div 
-                    className={`h-full rounded-full ${aesScore > 500 ? 'bg-red-500' : aesScore > 200 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                    style={{ width: `${(aesScore / 1000) * 100}%` }}
+                    className={`h-full rounded-full ${arsScore >= 80 ? 'bg-red-500' : arsScore >= 60 ? 'bg-orange-500' : arsScore >= 40 ? 'bg-yellow-500' : arsScore >= 20 ? 'bg-blue-500' : 'bg-green-500'}`}
+                    style={{ width: `${arsScore}%` }}
                   />
                 </div>
               </CardContent>
             </Card>
 
-            {/* ACR Score */}
+            {/* ACS Score - Asset Criticality Score */}
             <Card className="border-2">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-muted-foreground">ACR</span>
+                  <span className="text-sm text-muted-foreground">ACS</span>
                   <Button variant="ghost" size="icon" className="h-5 w-5">
                     <Settings className="h-3 w-3" />
                   </Button>
                 </div>
                 <div className="flex items-baseline gap-1">
-                  <span className={`text-3xl font-bold ${getACRColor(acrScore)}`}>{acrScore}</span>
+                  <span className={`text-3xl font-bold ${getACSColor(acsScore)}`}>{acsScore}</span>
                   <span className="text-muted-foreground">/10</span>
                 </div>
                 <div className="h-2 bg-muted rounded-full mt-2 overflow-hidden">
                   <div 
-                    className={`h-full rounded-full ${acrScore >= 8 ? 'bg-red-500' : acrScore >= 6 ? 'bg-orange-500' : acrScore >= 4 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                    style={{ width: `${(acrScore / 10) * 100}%` }}
+                    className={`h-full rounded-full ${acsScore >= 8 ? 'bg-red-500' : acsScore >= 6 ? 'bg-orange-500' : acsScore >= 4 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                    style={{ width: `${(acsScore / 10) * 100}%` }}
                   />
                 </div>
               </CardContent>
@@ -434,7 +442,7 @@ export default function AssetDetailPage() {
               <CardContent className="p-4">
                 <div className="text-sm text-muted-foreground mb-2">Key Drivers</div>
                 <div className="flex flex-wrap gap-1">
-                  {asset.acr_drivers && Object.entries(asset.acr_drivers).slice(0, 2).map(([key, value]) => (
+                  {asset.acs_drivers && Object.entries(asset.acs_drivers).slice(0, 2).map(([key, value]) => (
                     <Badge key={key} variant="secondary" className="text-xs">
                       {key}: {String(value).substring(0, 10)}...
                     </Badge>
@@ -442,8 +450,8 @@ export default function AssetDetailPage() {
                   {asset.device_class && (
                     <Badge variant="secondary" className="text-xs">{asset.device_class}</Badge>
                   )}
-                  {asset.acr_drivers && Object.keys(asset.acr_drivers).length > 2 && (
-                    <Badge variant="outline" className="text-xs">+{Object.keys(asset.acr_drivers).length - 2}</Badge>
+                  {asset.acs_drivers && Object.keys(asset.acs_drivers).length > 2 && (
+                    <Badge variant="outline" className="text-xs">+{Object.keys(asset.acs_drivers).length - 2}</Badge>
                   )}
                 </div>
               </CardContent>
@@ -524,11 +532,11 @@ export default function AssetDetailPage() {
                     <span className="text-muted-foreground">IPv4 Addresses</span>
                     <span className="font-mono text-sm">{asset.ip_addresses?.join(', ') || asset.ip_address || '—'}</span>
                   </div>
-                  {asset.acr_drivers && Object.keys(asset.acr_drivers).length > 0 && (
+                  {asset.acs_drivers && Object.keys(asset.acs_drivers).length > 0 && (
                     <div className="col-span-2 flex justify-between py-2 border-b">
-                      <span className="text-muted-foreground">ACR Key Drivers</span>
+                      <span className="text-muted-foreground">ACS Key Drivers</span>
                       <span className="font-mono text-xs text-right max-w-md">
-                        {Object.entries(asset.acr_drivers).map(([k, v]) => `${k}: ${v}`).join(', ')}
+                        {Object.entries(asset.acs_drivers).map(([k, v]) => `${k}: ${v}`).join(', ')}
                       </span>
                     </div>
                   )}
