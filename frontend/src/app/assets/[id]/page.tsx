@@ -509,10 +509,6 @@ export default function AssetDetailPage() {
               <CardContent>
                 <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                   <div className="flex justify-between py-2 border-b">
-                    <span className="text-muted-foreground">Licensed</span>
-                    <span className="font-medium">{asset.is_licensed !== false ? 'Yes' : 'No'}</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">System Type</span>
                     <span className="font-medium">{asset.system_type || asset.asset_type?.replace(/_/g, ' ')}</span>
                   </div>
