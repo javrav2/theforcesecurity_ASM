@@ -175,6 +175,17 @@ class ApiClient {
     return response.data;
   }
 
+  async updateAsset(id: number, data: { 
+    in_scope?: boolean; 
+    is_monitored?: boolean;
+    criticality?: string;
+    tags?: string[];
+    description?: string;
+  }) {
+    const response = await this.client.put(`/assets/${id}`, data);
+    return response.data;
+  }
+
   async getAssetsByOrganization(orgId: number) {
     const response = await this.client.get(`/organizations/${orgId}/assets`);
     return response.data;

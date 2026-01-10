@@ -38,6 +38,8 @@ class AssetUpdate(BaseModel):
     risk_score: Optional[int] = Field(None, ge=0, le=100)
     criticality: Optional[str] = None
     is_monitored: Optional[bool] = None
+    in_scope: Optional[bool] = None
+    is_owned: Optional[bool] = None
 
 
 class TechnologySummary(BaseModel):

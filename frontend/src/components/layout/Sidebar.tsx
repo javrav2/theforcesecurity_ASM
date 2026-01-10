@@ -28,6 +28,7 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Organizations', href: '/organizations', icon: Building2 },
   { name: 'Assets', href: '/assets', icon: Globe },
+  { name: 'Domains', href: '/domains', icon: Globe },
   { name: 'CIDR Blocks', href: '/netblocks', icon: ServerCrash },
   { name: 'Findings', href: '/findings', icon: Shield },
   { name: 'Screenshots', href: '/screenshots', icon: Camera },
