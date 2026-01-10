@@ -11,11 +11,19 @@ API Docs: https://www.whoxy.com/#api
 import logging
 import re
 import time
+import random
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple, Any
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Cache bypass headers to avoid stale API responses
+CACHE_BYPASS_HEADERS = {
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+}
 
 
 class WhoxyService:
@@ -159,60 +167,118 @@ class WhoxyService:
         param_value: str, 
         max_pages: int = 10
     ) -> List[Dict]:
-        """Generic reverse WHOIS query handler."""
+        """
+        Generic reverse WHOIS query handler with cache bypass and retry logic.
+        
+        Implements multiple techniques to ensure we get fresh, complete results:
+        - Cache bypass headers
+        - Cache-busting URL parameters
+        - Random delays between requests
+        - Retry logic with different URL variations
+        """
         base_url = f"{self.BASE_URL}?key={self.api_key}&reverse=whois&{param_type}={param_value}&mode=micro"
         
         all_results = []
         page = 1
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         
         while page <= max_pages:
-            url = f"{base_url}&page={page}"
+            success = False
             
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(url)
+            # Try multiple URL variations to bypass caching
+            urls_to_try = [
+                f"{base_url}&page={page}",
+                f"{base_url}&page={page}&_={int(time.time())}",  # Timestamp cache buster
+                f"{base_url}&page={page}&nocache={random.randint(1000, 9999)}"  # Random param
+            ]
+            
+            for attempt, url in enumerate(urls_to_try):
+                try:
+                    # Random delay between 1-3 seconds to avoid rate limiting
+                    await self._async_sleep(random.uniform(1.0, 3.0))
                     
-                    if response.status_code == 429:
-                        logger.warning("Whoxy rate limited, waiting 10s...")
-                        time.sleep(10)
-                        continue
-                    
-                    if response.status_code != 200:
-                        logger.error(f"Whoxy HTTP error {response.status_code}")
-                        break
-                    
-                    data = response.json()
-                    
-                    if data.get('status') != 1:
-                        logger.warning(f"Whoxy API error: {data.get('status_reason')}")
-                        break
-                    
-                    search_results = data.get("search_result", [])
-                    
-                    if not search_results:
-                        break
-                    
-                    all_results.extend(search_results)
-                    
-                    total_pages = data.get('total_pages', 1)
-                    logger.debug(f"Page {page}/{total_pages}: got {len(search_results)} domains (total: {len(all_results)})")
-                    
-                    if page >= total_pages:
-                        break
-                    
-                    page += 1
-                    time.sleep(self.RATE_LIMIT_DELAY)
-                    
-            except httpx.TimeoutException:
-                logger.warning("Timeout, retrying...")
-                time.sleep(5)
-                continue
-            except Exception as e:
-                logger.error(f"Error during reverse WHOIS: {e}")
-                break
+                    async with httpx.AsyncClient(timeout=30.0, headers=CACHE_BYPASS_HEADERS) as client:
+                        response = await client.get(url)
+                        
+                        if response.status_code == 429:
+                            logger.warning(f"Whoxy rate limited on page {page}, waiting 10s...")
+                            await self._async_sleep(10)
+                            continue
+                        
+                        if response.status_code != 200:
+                            logger.warning(f"Whoxy HTTP error {response.status_code} on page {page}")
+                            continue
+                        
+                        data = response.json()
+                        
+                        # Handle status as both string and int (API inconsistency)
+                        status = data.get('status')
+                        if status != 1 and status != "1":
+                            logger.warning(f"Whoxy API error on page {page}: {data.get('status_reason')}")
+                            continue
+                        
+                        search_results = data.get("search_result", [])
+                        total_results = data.get('total_results', 0)
+                        total_pages = data.get('total_pages', 1)
+                        
+                        # Convert string to int if needed
+                        if isinstance(total_results, str) and total_results.isdigit():
+                            total_results = int(total_results)
+                        if isinstance(total_pages, str) and total_pages.isdigit():
+                            total_pages = int(total_pages)
+                        
+                        # Log progress on first page
+                        if page == 1 and search_results:
+                            logger.info(f"Whoxy reports {total_results} total results in {total_pages} pages for {param_type}={param_value}")
+                        
+                        if not search_results:
+                            if page == 1:
+                                # No results on first page - try next URL variation
+                                logger.debug(f"No results on first page, attempt {attempt + 1}")
+                                continue
+                            else:
+                                # End of results
+                                success = True
+                                break
+                        
+                        all_results.extend(search_results)
+                        logger.debug(f"Page {page}/{total_pages}: got {len(search_results)} domains (total: {len(all_results)})")
+                        
+                        success = True
+                        consecutive_failures = 0
+                        
+                        # Check if we've reached the last page
+                        if page >= total_pages:
+                            logger.info(f"Reached last page ({page}/{total_pages})")
+                            page = max_pages + 1  # Exit outer loop
+                        
+                        break  # Success, exit URL retry loop
+                        
+                except httpx.TimeoutException:
+                    logger.warning(f"Timeout on page {page}, attempt {attempt + 1}")
+                    await self._async_sleep(5)
+                    continue
+                except Exception as e:
+                    logger.error(f"Error during reverse WHOIS page {page}: {e}")
+                    continue
+            
+            if not success:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(f"Too many consecutive failures, stopping at page {page}")
+                    break
+                logger.warning(f"Failed to get page {page} after all attempts, continuing...")
+            
+            page += 1
         
         logger.info(f"Reverse WHOIS found {len(all_results)} domains for {param_type}={param_value}")
         return all_results
+    
+    async def _async_sleep(self, seconds: float):
+        """Async-compatible sleep."""
+        import asyncio
+        await asyncio.sleep(seconds)
     
     async def discover_related_domains(
         self, 
