@@ -951,6 +951,101 @@ async def test_api_config(
     }
 
 
+@router.post("/validate-domains")
+async def validate_domains(
+    organization_id: int,
+    domains: Optional[List[str]] = None,
+    validate_all_whoxy: bool = False,
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Validate domains for suspicious indicators (parking, privacy, squatting).
+    
+    - If domains list provided, validates those specific domains
+    - If validate_all_whoxy=True, validates all domains discovered via Whoxy
+    
+    Returns suspicion scores and recommendations (keep, flag, review, remove).
+    """
+    from app.services.domain_validation_service import get_domain_validation_service
+    from app.models.asset import Asset, AssetType
+    
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get Whoxy API key for WHOIS lookups
+    whoxy_config = db.query(APIConfig).filter(
+        APIConfig.organization_id == organization_id,
+        APIConfig.service_name == "whoxy"
+    ).first()
+    
+    # Get domains to validate
+    domains_to_validate = []
+    
+    if domains:
+        domains_to_validate = domains[:limit]
+    elif validate_all_whoxy:
+        # Get all domains discovered via Whoxy
+        assets = db.query(Asset).filter(
+            Asset.organization_id == organization_id,
+            Asset.discovery_source.ilike('%whoxy%'),
+            Asset.in_scope == True
+        ).limit(limit).all()
+        domains_to_validate = [a.value for a in assets]
+    
+    if not domains_to_validate:
+        return {
+            "message": "No domains to validate",
+            "total": 0,
+            "results": []
+        }
+    
+    # Initialize validation service
+    validation_service = get_domain_validation_service()
+    if whoxy_config and whoxy_config.api_key:
+        validation_service.set_whoxy_key(whoxy_config.api_key)
+    
+    # Validate domains
+    validation_results = await validation_service.validate_domains_batch(domains_to_validate)
+    
+    # Optionally update assets in database
+    updated_count = 0
+    for result in validation_results.get("results", []):
+        if result.get("is_suspicious"):
+            # Find and update the asset
+            asset = db.query(Asset).filter(
+                Asset.organization_id == organization_id,
+                Asset.value == result.get("domain")
+            ).first()
+            
+            if asset:
+                # Add suspicion metadata
+                metadata = asset.metadata_ or {}
+                metadata["suspicion_score"] = result.get("suspicion_score", 0)
+                metadata["suspicion_reasons"] = result.get("reasons", [])
+                metadata["is_parked"] = result.get("is_parked", False)
+                metadata["is_private"] = result.get("is_private", False)
+                metadata["validation_recommendation"] = result.get("recommendation", "review")
+                metadata["validated_at"] = result.get("checked_at")
+                asset.metadata_ = metadata
+                
+                # Auto-mark as out-of-scope if highly suspicious
+                if result.get("suspicion_score", 0) >= 75:
+                    asset.in_scope = False
+                    updated_count += 1
+    
+    db.commit()
+    
+    return {
+        "message": f"Validated {len(domains_to_validate)} domains",
+        "total": validation_results.get("total", 0),
+        "suspicious": validation_results.get("suspicious", 0),
+        "parked": validation_results.get("parked", 0),
+        "private": validation_results.get("private", 0),
+        "auto_removed": updated_count,
+        "results": validation_results.get("results", [])
+    }
 
 
 
