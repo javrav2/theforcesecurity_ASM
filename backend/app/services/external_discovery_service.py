@@ -288,11 +288,12 @@ class ExternalDiscoveryService:
             whoxy_service = get_whoxy_service(api_key)
             
             # Full discovery workflow
+            # Increased to 20 pages to capture more domains (2000 per query)
             discovery_data = await whoxy_service.discover_related_domains(
                 domain=domain or "",
                 additional_emails=emails,
                 additional_companies=companies,
-                max_pages_per_query=5  # Limit pages to control API usage
+                max_pages_per_query=20  # Increased from 5 to get more domains
             )
             
             result.success = True
