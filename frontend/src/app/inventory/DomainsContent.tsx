@@ -276,10 +276,6 @@ export default function DomainsContent() {
 
   return (
     <>
-        title="Domain Inventory" 
-        subtitle="Manage and validate discovered domains from Whoxy and other sources"
-      />
-      
       <div className="p-6 space-y-6">
         {/* Stats Cards */}
         <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
