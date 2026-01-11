@@ -184,8 +184,9 @@ export default function DomainsContent() {
     if (selectedDomains.size === 0) return;
     
     try {
-      for (const domainId of selectedDomains) {
-        await api.updateAsset(domainId, { in_scope: inScope });
+      const domainIds = Array.from(selectedDomains);
+      for (let i = 0; i < domainIds.length; i++) {
+        await api.updateAsset(domainIds[i], { in_scope: inScope });
       }
       
       toast({
