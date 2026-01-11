@@ -236,7 +236,15 @@ export default function AssetDetailPage() {
       ]);
       setAsset(assetData);
       setScreenshots(screenshotData.screenshots || []);
-      setVulnerabilities(Array.isArray(vulnData) ? vulnData : []);
+      
+      // Sort vulnerabilities by severity: critical, high, medium, low, info
+      const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+      const sortedVulns = (Array.isArray(vulnData) ? vulnData : []).sort((a: Vulnerability, b: Vulnerability) => {
+        const orderA = severityOrder[a.severity?.toLowerCase()] ?? 5;
+        const orderB = severityOrder[b.severity?.toLowerCase()] ?? 5;
+        return orderA - orderB;
+      });
+      setVulnerabilities(sortedVulns);
     } catch (error) {
       toast({
         title: 'Error',

@@ -210,17 +210,32 @@ export default function FindingsPage() {
     });
   };
 
+  // Severity order for sorting (lower = higher priority)
+  const severityOrder: Record<string, number> = {
+    critical: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
+    info: 4,
+  };
+
   // Filter findings by search query
-  const filteredFindings = findings.filter((f) => {
-    const searchLower = searchQuery.toLowerCase();
-    return (
-      (f.title || f.name || '').toLowerCase().includes(searchLower) ||
-      (f.host || '').toLowerCase().includes(searchLower) ||
-      (f.template_id || '').toLowerCase().includes(searchLower) ||
-      (f.description || '').toLowerCase().includes(searchLower) ||
-      (f.cve_id || '').toLowerCase().includes(searchLower)
-    );
-  });
+  const filteredFindings = findings
+    .filter((f) => {
+      const searchLower = searchQuery.toLowerCase();
+      return (
+        (f.title || f.name || '').toLowerCase().includes(searchLower) ||
+        (f.host || '').toLowerCase().includes(searchLower) ||
+        (f.template_id || '').toLowerCase().includes(searchLower) ||
+        (f.description || '').toLowerCase().includes(searchLower) ||
+        (f.cve_id || '').toLowerCase().includes(searchLower)
+      );
+    })
+    .sort((a, b) => {
+      const orderA = severityOrder[a.severity?.toLowerCase()] ?? 5;
+      const orderB = severityOrder[b.severity?.toLowerCase()] ?? 5;
+      return orderA - orderB;
+    });
 
   // Calculate severity counts
   const severityCounts: Record<Severity, number> = {
