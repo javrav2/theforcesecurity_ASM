@@ -523,8 +523,8 @@ export default function AssetDetailPage() {
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">IPv4 Addresses</span>
                     <span className="font-mono text-sm">
-                      {asset.ip_addresses?.length > 0 
-                        ? asset.ip_addresses.join(', ') 
+                      {(asset.ip_addresses?.length ?? 0) > 0 
+                        ? asset.ip_addresses!.join(', ') 
                         : asset.ip_address 
                           ? asset.ip_address 
                           : asset.asset_type === 'ip_address' 
