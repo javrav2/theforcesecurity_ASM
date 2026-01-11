@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -162,7 +162,7 @@ export default function DomainsContent() {
     try {
       await api.updateAsset(domain.id, { in_scope: !domain.in_scope });
       
-      setDomains(prev => prev.map(d => 
+      setDomains((prev: Domain[]) => prev.map((d: Domain) => 
         d.id === domain.id ? { ...d, in_scope: !d.in_scope } : d
       ));
       
@@ -184,7 +184,7 @@ export default function DomainsContent() {
     if (selectedDomains.size === 0) return;
     
     try {
-      const domainIds = Array.from(selectedDomains);
+      const domainIds: number[] = Array.from(selectedDomains);
       for (let i = 0; i < domainIds.length; i++) {
         await api.updateAsset(domainIds[i], { in_scope: inScope });
       }
@@ -217,7 +217,7 @@ export default function DomainsContent() {
   };
 
   const selectAllVisible = () => {
-    const visibleIds = filteredDomains.map(d => d.id);
+    const visibleIds = filteredDomains.map((d: Domain) => d.id);
     setSelectedDomains(new Set(visibleIds));
   };
 
@@ -226,7 +226,7 @@ export default function DomainsContent() {
   };
 
   // Filter domains
-  const filteredDomains = domains.filter(domain => {
+  const filteredDomains = domains.filter((domain: Domain) => {
     // Search filter
     if (searchTerm && !domain.value.toLowerCase().includes(searchTerm.toLowerCase())) {
       return false;
@@ -327,7 +327,7 @@ export default function DomainsContent() {
                   <Input
                     placeholder="Search domains..."
                     value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
                     className="pl-9 w-64"
                   />
                 </div>
@@ -427,7 +427,7 @@ export default function DomainsContent() {
                         <input
                           type="checkbox"
                           checked={selectedDomains.size === filteredDomains.length && filteredDomains.length > 0}
-                          onChange={(e) => e.target.checked ? selectAllVisible() : deselectAll()}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => e.target.checked ? selectAllVisible() : deselectAll()}
                           className="rounded"
                         />
                       </TableHead>
@@ -441,7 +441,7 @@ export default function DomainsContent() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredDomains.map((domain) => (
+                    {filteredDomains.map((domain: Domain) => (
                       <TableRow key={domain.id} className={!domain.in_scope ? 'opacity-60' : ''}>
                         <TableCell>
                           <input
