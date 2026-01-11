@@ -134,7 +134,7 @@ export default function DomainsContent() {
   const handleValidateAll = async () => {
     try {
       setValidating(true);
-      const response = await api.client.post('/external-discovery/validate-domains', {
+      const response = await api.post('/external-discovery/validate-domains', {
         organization_id: 1,
         validate_all_whoxy: true,
         limit: 100,
@@ -142,7 +142,7 @@ export default function DomainsContent() {
       
       toast({
         title: 'Validation Complete',
-        description: `Validated ${response.data.total} domains. ${response.data.suspicious} suspicious, ${response.data.auto_removed} auto-removed.`,
+        description: `Validated ${response.data?.total ?? 0} domains. ${response.data?.suspicious ?? 0} suspicious, ${response.data?.auto_removed ?? 0} auto-removed.`,
       });
       
       fetchDomains();
