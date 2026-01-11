@@ -488,9 +488,9 @@ export default function DomainsContent() {
                           {formatDate(domain.created_at)}
                         </TableCell>
                         <TableCell className="max-w-xs">
-                          {domain.metadata_?.suspicion_reasons?.length > 0 ? (
+                          {(domain.metadata_?.suspicion_reasons?.length ?? 0) > 0 ? (
                             <span className="text-xs text-muted-foreground">
-                              {domain.metadata_.suspicion_reasons.join('; ')}
+                              {domain.metadata_!.suspicion_reasons!.join('; ')}
                             </span>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
