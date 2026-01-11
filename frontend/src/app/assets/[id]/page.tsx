@@ -45,6 +45,7 @@ import {
   Database,
   Calendar,
   Hash,
+  Mail,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -707,6 +708,138 @@ export default function AssetDetailPage() {
               </CardContent>
             </Card>
 
+            {/* DNS Records */}
+            {asset.asset_type === 'domain' && asset.metadata_?.dns_records && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Globe className="h-5 w-5" />
+                    <CardTitle>DNS Records</CardTitle>
+                  </div>
+                  <CardDescription>
+                    {asset.metadata_?.dns_fetched_at 
+                      ? `Last fetched: ${formatDate(asset.metadata_.dns_fetched_at)}`
+                      : 'DNS information for this domain'}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Summary badges */}
+                  {asset.metadata_?.dns_analysis && (
+                    <div className="flex flex-wrap gap-2">
+                      {asset.metadata_.dns_summary?.has_mail && (
+                        <Badge className="bg-blue-500/20 text-blue-600">
+                          <Mail className="h-3 w-3 mr-1" />
+                          {asset.metadata_.dns_summary?.mail_providers?.join(', ') || 'Email Enabled'}
+                        </Badge>
+                      )}
+                      {asset.metadata_.dns_analysis?.uses_cdn && (
+                        <Badge className="bg-purple-500/20 text-purple-600">
+                          CDN: {asset.metadata_.dns_analysis.uses_cdn}
+                        </Badge>
+                      )}
+                      {asset.metadata_.dns_analysis?.security_features?.map((feature: string) => (
+                        <Badge key={feature} className="bg-green-500/20 text-green-600">
+                          {feature}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* A Records */}
+                  {asset.metadata_.dns_records?.A?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">A Records (IPv4)</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {asset.metadata_.dns_records.A.map((record: any, idx: number) => (
+                          <Badge key={idx} variant="outline" className="font-mono">
+                            {record.address}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* AAAA Records */}
+                  {asset.metadata_.dns_records?.AAAA?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">AAAA Records (IPv6)</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {asset.metadata_.dns_records.AAAA.map((record: any, idx: number) => (
+                          <Badge key={idx} variant="outline" className="font-mono text-xs">
+                            {record.address}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* MX Records */}
+                  {asset.metadata_.dns_records?.MX?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">MX Records (Mail)</h4>
+                      <div className="space-y-1">
+                        {asset.metadata_.dns_records.MX
+                          .sort((a: any, b: any) => a.priority - b.priority)
+                          .map((record: any, idx: number) => (
+                          <div key={idx} className="flex items-center gap-2 text-sm">
+                            <span className="text-muted-foreground w-8">{record.priority}</span>
+                            <span className="font-mono">{record.target}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* NS Records */}
+                  {asset.metadata_.dns_records?.NS?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">NS Records (Nameservers)</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {asset.metadata_.dns_records.NS.map((record: any, idx: number) => (
+                          <Badge key={idx} variant="outline" className="font-mono">
+                            {record.target}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* TXT Records */}
+                  {asset.metadata_.dns_records?.TXT?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">TXT Records ({asset.metadata_.dns_records.TXT.length})</h4>
+                      <div className="space-y-2 max-h-40 overflow-y-auto">
+                        {asset.metadata_.dns_records.TXT.slice(0, 10).map((record: any, idx: number) => (
+                          <div key={idx} className="p-2 bg-muted/50 rounded text-xs font-mono break-all">
+                            {record.value?.substring(0, 100)}{record.value?.length > 100 ? '...' : ''}
+                          </div>
+                        ))}
+                        {asset.metadata_.dns_records.TXT.length > 10 && (
+                          <p className="text-xs text-muted-foreground">
+                            +{asset.metadata_.dns_records.TXT.length - 10} more records
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* TXT Verifications Summary */}
+                  {asset.metadata_.dns_summary?.txt_verifications?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Detected Services</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {asset.metadata_.dns_summary.txt_verifications.map((svc: string, idx: number) => (
+                          <Badge key={idx} variant="secondary" className="text-xs">
+                            {svc}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             {/* Technologies */}
             {asset.technologies && asset.technologies.length > 0 && (
               <Card>
@@ -719,7 +852,7 @@ export default function AssetDetailPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
-                    {asset.technologies.map((tech, idx) => (
+                    {asset.technologies.map((tech: Technology, idx: number) => (
                       <Badge key={idx} variant="outline" className="py-1.5">
                         <span className="font-medium">{tech.name}</span>
                         {tech.version && <span className="text-muted-foreground ml-1">v{tech.version}</span>}

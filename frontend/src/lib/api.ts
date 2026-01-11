@@ -548,6 +548,29 @@ class ApiClient {
     return response.data;
   }
 
+  async enrichDomainsDns(options?: {
+    organizationId?: number;
+    domainIds?: number[];
+    limit?: number;
+  }) {
+    const params: any = {};
+    if (options?.organizationId) params.organization_id = options.organizationId;
+    if (options?.limit) params.limit = options.limit;
+    
+    const body: any = {};
+    if (options?.domainIds) body.domain_ids = options.domainIds;
+    
+    const response = await this.client.post('/external-discovery/enrich-dns', body, { params });
+    return response.data;
+  }
+
+  async getAssetDnsRecords(assetId: number, refresh: boolean = false) {
+    const response = await this.client.get(`/external-discovery/dns/${assetId}`, {
+      params: { refresh }
+    });
+    return response.data;
+  }
+
   // Ports
   async getPorts(params?: { organization_id?: number; asset_id?: number; skip?: number; limit?: number }) {
     const response = await this.client.get('/ports/', { params });

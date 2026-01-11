@@ -1048,6 +1048,178 @@ async def validate_domains(
     }
 
 
+@router.post("/enrich-dns")
+async def enrich_domains_dns(
+    organization_id: int = 1,
+    domain_ids: Optional[List[int]] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Enrich domain assets with DNS records from WhoisXML API.
+    
+    Fetches A, AAAA, MX, NS, TXT, SOA records and stores them on the asset.
+    Also detects mail providers, CDN usage, and security features (SPF, DMARC, DKIM).
+    """
+    from app.services.dns_enrichment_service import DNSEnrichmentService
+    
+    # Get WhoisXML API key from config
+    whoisxml_config = db.query(ApiConfig).filter(
+        ApiConfig.organization_id == organization_id,
+        ApiConfig.service_name == "whoisxml"
+    ).first()
+    
+    if not whoisxml_config or not whoisxml_config.api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="WhoisXML API key not configured. Add it in Settings > External Discovery."
+        )
+    
+    # Get domains to enrich
+    query = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type == 'domain',
+        Asset.in_scope == True
+    )
+    
+    if domain_ids:
+        query = query.filter(Asset.id.in_(domain_ids))
+    
+    domains = query.limit(limit).all()
+    
+    if not domains:
+        return {
+            "message": "No domains found to enrich",
+            "enriched": 0,
+            "results": []
+        }
+    
+    # Initialize DNS service
+    dns_service = DNSEnrichmentService(whoisxml_config.api_key)
+    
+    results = []
+    enriched_count = 0
+    
+    for domain_asset in domains:
+        try:
+            dns_data = await dns_service.enrich_domain(domain_asset.value)
+            
+            if "error" not in dns_data:
+                # Update asset with DNS data
+                metadata = domain_asset.metadata_ or {}
+                metadata["dns_records"] = dns_data.get("records", {})
+                metadata["dns_summary"] = dns_data.get("summary", {})
+                metadata["dns_analysis"] = dns_data.get("analysis", {})
+                metadata["dns_fetched_at"] = dns_data.get("fetched_at")
+                domain_asset.metadata_ = metadata
+                
+                # Update IP addresses if found
+                ips = dns_data.get("summary", {}).get("ip_addresses", [])
+                if ips:
+                    domain_asset.ip_address = ips[0]
+                    if hasattr(domain_asset, 'ip_addresses'):
+                        domain_asset.ip_addresses = ips
+                
+                enriched_count += 1
+                results.append({
+                    "domain": domain_asset.value,
+                    "asset_id": domain_asset.id,
+                    "status": "enriched",
+                    "records_found": {
+                        "A": len(dns_data.get("records", {}).get("A", [])),
+                        "AAAA": len(dns_data.get("records", {}).get("AAAA", [])),
+                        "MX": len(dns_data.get("records", {}).get("MX", [])),
+                        "NS": len(dns_data.get("records", {}).get("NS", [])),
+                        "TXT": len(dns_data.get("records", {}).get("TXT", [])),
+                    },
+                    "has_mail": dns_data.get("summary", {}).get("has_mail", False),
+                    "mail_providers": dns_data.get("summary", {}).get("mail_providers", []),
+                    "security_features": dns_data.get("analysis", {}).get("security_features", []),
+                })
+            else:
+                results.append({
+                    "domain": domain_asset.value,
+                    "asset_id": domain_asset.id,
+                    "status": "error",
+                    "error": dns_data.get("error")
+                })
+                
+        except Exception as e:
+            results.append({
+                "domain": domain_asset.value,
+                "asset_id": domain_asset.id,
+                "status": "error",
+                "error": str(e)
+            })
+    
+    db.commit()
+    
+    return {
+        "message": f"DNS enrichment complete",
+        "total_domains": len(domains),
+        "enriched": enriched_count,
+        "results": results
+    }
+
+
+@router.get("/dns/{asset_id}")
+async def get_asset_dns_records(
+    asset_id: int,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Get DNS records for a specific asset.
+    
+    If refresh=True and WhoisXML API is configured, fetches fresh data.
+    """
+    from app.services.dns_enrichment_service import DNSEnrichmentService
+    
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if asset.asset_type != 'domain':
+        raise HTTPException(status_code=400, detail="Asset is not a domain")
+    
+    if refresh:
+        # Get WhoisXML API key
+        whoisxml_config = db.query(ApiConfig).filter(
+            ApiConfig.organization_id == asset.organization_id,
+            ApiConfig.service_name == "whoisxml"
+        ).first()
+        
+        if whoisxml_config and whoisxml_config.api_key:
+            dns_service = DNSEnrichmentService(whoisxml_config.api_key)
+            dns_data = await dns_service.enrich_domain(asset.value)
+            
+            if "error" not in dns_data:
+                metadata = asset.metadata_ or {}
+                metadata["dns_records"] = dns_data.get("records", {})
+                metadata["dns_summary"] = dns_data.get("summary", {})
+                metadata["dns_analysis"] = dns_data.get("analysis", {})
+                metadata["dns_fetched_at"] = dns_data.get("fetched_at")
+                asset.metadata_ = metadata
+                
+                ips = dns_data.get("summary", {}).get("ip_addresses", [])
+                if ips:
+                    asset.ip_address = ips[0]
+                
+                db.commit()
+                db.refresh(asset)
+    
+    metadata = asset.metadata_ or {}
+    
+    return {
+        "asset_id": asset.id,
+        "domain": asset.value,
+        "dns_records": metadata.get("dns_records", {}),
+        "dns_summary": metadata.get("dns_summary", {}),
+        "dns_analysis": metadata.get("dns_analysis", {}),
+        "dns_fetched_at": metadata.get("dns_fetched_at"),
+    }
 
 
 

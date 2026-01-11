@@ -39,6 +39,9 @@ import {
   Trash2,
   Check,
   X,
+  Database,
+  Mail,
+  Server,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -54,6 +57,7 @@ interface Domain {
   is_live: boolean;
   http_status: number | null;
   created_at: string;
+  ip_address?: string;
   metadata_: {
     suspicion_score?: number;
     suspicion_reasons?: string[];
@@ -61,6 +65,28 @@ interface Domain {
     is_private?: boolean;
     validation_recommendation?: string;
     validated_at?: string;
+    dns_records?: {
+      A?: { address: string; ttl: number }[];
+      AAAA?: { address: string; ttl: number }[];
+      MX?: { target: string; priority: number; ttl: number }[];
+      NS?: { target: string; ttl: number }[];
+      TXT?: { value: string; ttl: number }[];
+      SOA?: { admin: string; host: string; serial: number };
+    };
+    dns_summary?: {
+      has_mail?: boolean;
+      mail_providers?: string[];
+      nameservers?: string[];
+      ip_addresses?: string[];
+      txt_verifications?: string[];
+    };
+    dns_analysis?: {
+      is_active?: boolean;
+      has_email?: boolean;
+      uses_cdn?: string;
+      security_features?: string[];
+    };
+    dns_fetched_at?: string;
   };
 }
 
@@ -71,12 +97,15 @@ interface Stats {
   validated: number;
   suspicious: number;
   parked: number;
+  dns_enriched: number;
+  has_mail: number;
 }
 
 export default function DomainsContent() {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [loading, setLoading] = useState(true);
   const [validating, setValidating] = useState(false);
+  const [enrichingDns, setEnrichingDns] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [scopeFilter, setScopeFilter] = useState<string>('all');
@@ -88,6 +117,8 @@ export default function DomainsContent() {
     validated: 0,
     suspicious: 0,
     parked: 0,
+    dns_enriched: 0,
+    has_mail: 0,
   });
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
   const { toast } = useToast();
@@ -112,6 +143,8 @@ export default function DomainsContent() {
         validated: domainAssets.filter((d: Domain) => d.metadata_?.validated_at).length,
         suspicious: domainAssets.filter((d: Domain) => (d.metadata_?.suspicion_score || 0) >= 50).length,
         parked: domainAssets.filter((d: Domain) => d.metadata_?.is_parked).length,
+        dns_enriched: domainAssets.filter((d: Domain) => d.metadata_?.dns_fetched_at).length,
+        has_mail: domainAssets.filter((d: Domain) => d.metadata_?.dns_summary?.has_mail).length,
       };
       setStats(newStats);
       
@@ -155,6 +188,33 @@ export default function DomainsContent() {
       });
     } finally {
       setValidating(false);
+    }
+  };
+
+  const handleEnrichDns = async () => {
+    try {
+      setEnrichingDns(true);
+      const response = await api.enrichDomainsDns({
+        organizationId: 1,
+        limit: 50,
+      });
+      
+      toast({
+        title: 'DNS Enrichment Complete',
+        description: `Enriched ${response.enriched} of ${response.total_domains} domains with DNS records.`,
+      });
+      
+      fetchDomains();
+    } catch (error: any) {
+      console.error('Error enriching DNS:', error);
+      const message = error.response?.data?.detail || 'Failed to enrich DNS records';
+      toast({
+        title: 'Error',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setEnrichingDns(false);
     }
   };
 
@@ -278,7 +338,7 @@ export default function DomainsContent() {
     <>
       <div className="p-6 space-y-6">
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
           <Card>
             <CardContent className="pt-4">
               <div className="text-2xl font-bold">{stats.total}</div>
@@ -313,6 +373,18 @@ export default function DomainsContent() {
             <CardContent className="pt-4">
               <div className="text-2xl font-bold text-red-600">{stats.parked}</div>
               <div className="text-xs text-muted-foreground">Parked</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4">
+              <div className="text-2xl font-bold text-purple-600">{stats.dns_enriched}</div>
+              <div className="text-xs text-muted-foreground">DNS Enriched</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4">
+              <div className="text-2xl font-bold text-cyan-600">{stats.has_mail}</div>
+              <div className="text-xs text-muted-foreground">Has Email</div>
             </CardContent>
           </Card>
         </div>
@@ -371,6 +443,18 @@ export default function DomainsContent() {
               <div className="flex gap-2">
                 <Button 
                   variant="outline" 
+                  onClick={handleEnrichDns}
+                  disabled={enrichingDns}
+                >
+                  {enrichingDns ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Database className="h-4 w-4 mr-2" />
+                  )}
+                  Enrich DNS
+                </Button>
+                <Button 
+                  variant="outline" 
                   onClick={handleValidateAll}
                   disabled={validating}
                 >
@@ -379,7 +463,7 @@ export default function DomainsContent() {
                   ) : (
                     <Shield className="h-4 w-4 mr-2" />
                   )}
-                  Validate Whoxy Domains
+                  Validate Whoxy
                 </Button>
                 <Button variant="outline" onClick={fetchDomains} disabled={loading}>
                   <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -432,11 +516,10 @@ export default function DomainsContent() {
                         />
                       </TableHead>
                       <TableHead>Domain</TableHead>
-                      <TableHead>Source</TableHead>
+                      <TableHead>IP / DNS</TableHead>
+                      <TableHead>Mail / Security</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Scope</TableHead>
-                      <TableHead>Discovered</TableHead>
-                      <TableHead>Suspicion Reasons</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -466,9 +549,44 @@ export default function DomainsContent() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="text-xs">
-                            {domain.discovery_source || 'unknown'}
-                          </Badge>
+                          <div className="flex flex-col gap-1">
+                            {domain.ip_address || (domain.metadata_?.dns_summary?.ip_addresses?.length ?? 0) > 0 ? (
+                              <span className="font-mono text-xs">
+                                {domain.ip_address || domain.metadata_?.dns_summary?.ip_addresses?.[0]}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">No DNS</span>
+                            )}
+                            {(domain.metadata_?.dns_summary?.nameservers?.length ?? 0) > 0 && (
+                              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Server className="h-3 w-3" />
+                                {domain.metadata_!.dns_summary!.nameservers![0].split('.').slice(-2).join('.')}
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-1">
+                            {domain.metadata_?.dns_summary?.has_mail ? (
+                              <span className="text-xs flex items-center gap-1 text-green-600">
+                                <Mail className="h-3 w-3" />
+                                {(domain.metadata_.dns_summary.mail_providers?.length ?? 0) > 0 
+                                  ? domain.metadata_.dns_summary.mail_providers![0]
+                                  : 'Email'}
+                              </span>
+                            ) : domain.metadata_?.dns_fetched_at ? (
+                              <span className="text-xs text-muted-foreground">No email</span>
+                            ) : null}
+                            {(domain.metadata_?.dns_analysis?.security_features?.length ?? 0) > 0 && (
+                              <div className="flex gap-1 flex-wrap">
+                                {domain.metadata_!.dns_analysis!.security_features!.map((f: string) => (
+                                  <Badge key={f} variant="outline" className="text-[10px] px-1 py-0">
+                                    {f}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           {getSuspicionBadge(domain)}
@@ -480,20 +598,8 @@ export default function DomainsContent() {
                             </Badge>
                           ) : (
                             <Badge variant="secondary">
-                              <XCircle className="h-3 w-3 mr-1" /> Out of Scope
+                              <XCircle className="h-3 w-3 mr-1" /> Out
                             </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {formatDate(domain.created_at)}
-                        </TableCell>
-                        <TableCell className="max-w-xs">
-                          {(domain.metadata_?.suspicion_reasons?.length ?? 0) > 0 ? (
-                            <span className="text-xs text-muted-foreground">
-                              {domain.metadata_!.suspicion_reasons!.join('; ')}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </TableCell>
                         <TableCell className="text-right">
