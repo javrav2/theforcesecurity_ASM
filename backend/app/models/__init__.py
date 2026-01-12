@@ -13,6 +13,7 @@ from app.models.api_config import APIConfig, ExternalService, DEFAULT_RATE_LIMIT
 from app.models.label import Label, asset_labels
 from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES
 from app.models.scan_config import ScanConfig, DEFAULT_PORT_LISTS, seed_default_port_lists
+from app.models.acquisition import Acquisition, AcquisitionStatus, AcquisitionType
 
 __all__ = [
     "User",
@@ -53,4 +54,7 @@ __all__ = [
     "ScanConfig",
     "DEFAULT_PORT_LISTS",
     "seed_default_port_lists",
+    "Acquisition",
+    "AcquisitionStatus",
+    "AcquisitionType",
 ]

@@ -571,6 +571,83 @@ class ApiClient {
     return response.data;
   }
 
+  // Acquisitions / M&A
+  async getAcquisitions(params?: { 
+    organization_id?: number; 
+    status?: string;
+    skip?: number; 
+    limit?: number 
+  }) {
+    const response = await this.client.get('/acquisitions/', { params });
+    return response.data;
+  }
+
+  async getAcquisitionsSummary(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/acquisitions/summary', { params });
+    return response.data;
+  }
+
+  async getAcquisition(acquisitionId: number) {
+    const response = await this.client.get(`/acquisitions/${acquisitionId}`);
+    return response.data;
+  }
+
+  async createAcquisition(data: {
+    organization_id: number;
+    target_name: string;
+    target_domain?: string;
+    target_domains?: string[];
+    target_description?: string;
+    target_industry?: string;
+    target_country?: string;
+    acquisition_type?: string;
+    status?: string;
+    announced_date?: string;
+    closed_date?: string;
+    deal_value?: number;
+    website_url?: string;
+    linkedin_url?: string;
+  }) {
+    const response = await this.client.post('/acquisitions/', data);
+    return response.data;
+  }
+
+  async updateAcquisition(acquisitionId: number, data: Record<string, any>) {
+    const response = await this.client.put(`/acquisitions/${acquisitionId}`, data);
+    return response.data;
+  }
+
+  async deleteAcquisition(acquisitionId: number) {
+    const response = await this.client.delete(`/acquisitions/${acquisitionId}`);
+    return response.data;
+  }
+
+  async importAcquisitionsFromTracxn(organizationName: string, organizationId: number = 1, limit: number = 20) {
+    const response = await this.client.post('/acquisitions/import-from-tracxn', null, {
+      params: { organization_id: organizationId, organization_name: organizationName, limit }
+    });
+    return response.data;
+  }
+
+  async discoverDomainsForAcquisition(acquisitionId: number) {
+    const response = await this.client.post(`/acquisitions/${acquisitionId}/discover-domains`);
+    return response.data;
+  }
+
+  async getAcquisitionAssets(acquisitionId: number) {
+    const response = await this.client.get(`/acquisitions/${acquisitionId}/assets`);
+    return response.data;
+  }
+
+  async addDomainToAcquisition(acquisitionId: number, domain: string) {
+    const response = await this.client.post(`/acquisitions/${acquisitionId}/add-domain`, null, {
+      params: { domain }
+    });
+    return response.data;
+  }
+
   // Ports
   async getPorts(params?: { organization_id?: number; asset_id?: number; skip?: number; limit?: number }) {
     const response = await this.client.get('/ports/', { params });

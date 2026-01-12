@@ -27,6 +27,7 @@ class Organization(Base):
     users = relationship("User", back_populates="organization")
     assets = relationship("Asset", back_populates="organization", cascade="all, delete-orphan")
     scans = relationship("Scan", back_populates="organization", cascade="all, delete-orphan")
+    acquisitions = relationship("Acquisition", back_populates="organization", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Organization {self.name}>"
