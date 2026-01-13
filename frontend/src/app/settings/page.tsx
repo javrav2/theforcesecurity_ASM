@@ -58,7 +58,7 @@ const API_SERVICES = [
   { 
     name: 'whoisxml', 
     label: 'WhoisXML API', 
-    description: 'Discover IP ranges and CIDRs by organization name',
+    description: 'Discover IP ranges and CIDRs by organization name, DNS enrichment',
     free: false,
     hasUser: false,
     needsOrgNames: true,
@@ -80,6 +80,14 @@ const API_SERVICES = [
     hasUser: false,
     needsEmails: true,
     link: 'https://www.whoxy.com/'
+  },
+  { 
+    name: 'tracxn', 
+    label: 'Tracxn', 
+    description: 'Import M&A and acquisition history to discover domains from acquired companies',
+    free: false,
+    hasUser: false,
+    link: 'https://platform.tracxn.com/'
   },
 ];
 
