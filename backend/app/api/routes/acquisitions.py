@@ -325,7 +325,8 @@ async def import_from_tracxn(
         APIConfig.service_name == "tracxn"
     ).first()
     
-    if not tracxn_config or not tracxn_config.api_key:
+    api_key = tracxn_config.get_api_key() if tracxn_config else None
+    if not api_key:
         raise HTTPException(
             status_code=400,
             detail="Tracxn API key not configured. Add it in Settings > External Discovery."
@@ -334,7 +335,7 @@ async def import_from_tracxn(
     # Fetch acquisitions from Tracxn
     result = await fetch_acquisitions_for_org(
         org_name=organization_name,
-        api_key=tracxn_config.api_key,
+        api_key=api_key,
         limit=limit
     )
     
@@ -431,7 +432,8 @@ async def discover_domains_for_acquisition(
         APIConfig.service_name == "whoxy"
     ).first()
     
-    if not whoxy_config or not whoxy_config.api_key:
+    whoxy_api_key = whoxy_config.get_api_key() if whoxy_config else None
+    if not whoxy_api_key:
         raise HTTPException(
             status_code=400,
             detail="Whoxy API key not configured. Add it in Settings > External Discovery."
@@ -439,7 +441,7 @@ async def discover_domains_for_acquisition(
     
     from app.services.whoxy_service import WhoxyService
     
-    service = WhoxyService(whoxy_config.api_key)
+    service = WhoxyService(whoxy_api_key)
     
     # First get WHOIS data for the target domain
     whois_data = await service.get_domain_whois(acquisition.target_domain)
