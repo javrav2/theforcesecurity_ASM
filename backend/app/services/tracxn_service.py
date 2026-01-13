@@ -1,7 +1,6 @@
 """Tracxn API Service for M&A / Acquisition data.
 
-Based on Tracxn API v2.2 documentation:
-https://www.postman.com/tracxnapi/tracxn-api/documentation/210lc69/tracxnapi-playground
+Attempts multiple API endpoint variations to find the correct one.
 """
 
 import httpx
@@ -15,176 +14,140 @@ logger = logging.getLogger(__name__)
 class TracxnService:
     """Service to fetch M&A data from Tracxn API."""
     
-    BASE_URL = "https://tracxn.com/api/2.2"
+    # Try multiple possible API base URLs
+    POSSIBLE_BASE_URLS = [
+        "https://api.tracxn.com/2.2",
+        "https://api.tracxn.com/v2",
+        "https://api.tracxn.com",
+        "https://tracxn.com/api/2.2",
+        "https://platform.tracxn.com/api/2.2",
+    ]
     
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.headers = {
-            "accessToken": api_key,
-            "Content-Type": "application/json"
+        # Try different auth header formats
+        self.auth_headers = [
+            {"accessToken": api_key, "Content-Type": "application/json"},
+            {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            {"X-API-Key": api_key, "Content-Type": "application/json"},
+            {"api-key": api_key, "Content-Type": "application/json"},
+        ]
+    
+    async def _try_request(self, method: str, endpoint: str, payload: dict = None) -> Dict[str, Any]:
+        """Try request against multiple base URLs and auth methods."""
+        all_errors = []
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for base_url in self.POSSIBLE_BASE_URLS:
+                for headers in self.auth_headers:
+                    url = f"{base_url}/{endpoint}"
+                    try:
+                        if method == "POST":
+                            response = await client.post(url, headers=headers, json=payload)
+                        else:
+                            response = await client.get(url, headers=headers, params=payload)
+                        
+                        logger.info(f"Tracxn API: {method} {url} -> {response.status_code}")
+                        
+                        if response.status_code == 200:
+                            return {"success": True, "data": response.json(), "url": url}
+                        elif response.status_code == 401:
+                            all_errors.append(f"{url}: Unauthorized (401)")
+                        elif response.status_code == 403:
+                            all_errors.append(f"{url}: Forbidden (403)")
+                        elif response.status_code == 404:
+                            all_errors.append(f"{url}: Not Found (404)")
+                        else:
+                            all_errors.append(f"{url}: {response.status_code} - {response.text[:200]}")
+                            
+                    except Exception as e:
+                        all_errors.append(f"{url}: {str(e)}")
+        
+        return {
+            "success": False,
+            "error": "All API endpoints failed",
+            "attempts": all_errors
         }
     
     async def search_company(self, company_name: str) -> Dict[str, Any]:
-        """
-        Search for a company by name to get its Tracxn ID.
+        """Search for a company by name."""
+        # Try different payload formats
+        payloads = [
+            {"companyName": company_name},
+            {"name": company_name},
+            {"query": company_name},
+            {"search": company_name},
+        ]
         
-        Args:
-            company_name: Name of the company to search
-            
-        Returns:
-            Company search results
-        """
-        try:
-            payload = {
-                "companyName": company_name
-            }
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.BASE_URL}/company/search",
-                    headers=self.headers,
-                    json=payload
-                )
-                
-                logger.info(f"Tracxn search response: {response.status_code}")
-                
-                if response.status_code == 401:
-                    return {"error": "Invalid API key or unauthorized", "status_code": 401}
-                elif response.status_code == 403:
-                    return {"error": "Access forbidden - check API key permissions", "status_code": 403}
-                elif response.status_code == 404:
-                    return {"error": "Company not found", "status_code": 404}
-                elif response.status_code != 200:
-                    return {
-                        "error": f"API error: {response.status_code}",
-                        "status_code": response.status_code,
-                        "detail": response.text
-                    }
-                
-                return response.json()
-                
-        except httpx.TimeoutException:
-            logger.error(f"Timeout searching company: {company_name}")
-            return {"error": "Request timeout"}
-        except Exception as e:
-            logger.error(f"Error searching company: {e}")
-            return {"error": str(e)}
-    
-    async def get_company_profile(self, company_id: str) -> Dict[str, Any]:
-        """
-        Get detailed company profile including acquisitions.
+        endpoints = [
+            "company/search",
+            "companies/search",
+            "search/company",
+            "search",
+        ]
         
-        Args:
-            company_id: Tracxn company ID
-            
-        Returns:
-            Company profile with acquisitions data
-        """
-        try:
-            payload = {
-                "id": company_id,
-                "fields": [
-                    "name",
-                    "domain",
-                    "website",
-                    "description",
-                    "hqLocation",
-                    "foundedYear",
-                    "employeeCount",
-                    "acquisitions",
-                    "acquiredBy"
-                ]
-            }
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.BASE_URL}/company/profile",
-                    headers=self.headers,
-                    json=payload
-                )
-                
-                if response.status_code != 200:
-                    return {"error": f"API error: {response.status_code}", "detail": response.text}
-                
-                return response.json()
-                
-        except Exception as e:
-            logger.error(f"Error getting company profile: {e}")
-            return {"error": str(e)}
+        for endpoint in endpoints:
+            for payload in payloads:
+                result = await self._try_request("POST", endpoint, payload)
+                if result.get("success"):
+                    return result.get("data", {})
+        
+        # If all POST requests fail, try GET
+        for endpoint in endpoints:
+            result = await self._try_request("GET", f"{endpoint}?q={company_name}", None)
+            if result.get("success"):
+                return result.get("data", {})
+        
+        return {"error": "Could not find company via Tracxn API", "details": result.get("attempts", [])}
     
     async def search_acquisitions_by_acquirer(
         self,
         acquirer_name: str,
         limit: int = 50
     ) -> Dict[str, Any]:
-        """
-        Search for acquisitions by an acquirer company.
+        """Search for acquisitions by an acquirer company."""
         
-        This works by:
-        1. Finding the company ID
-        2. Getting company profile with acquisitions field
-        
-        Args:
-            acquirer_name: Name of the acquiring company
-            limit: Maximum acquisitions to return
-            
-        Returns:
-            Dictionary containing acquisition data
-        """
-        # First, search for the company
+        # First try to search for the company
         search_result = await self.search_company(acquirer_name)
         
         if "error" in search_result:
-            return search_result
+            # Return helpful error with API test results
+            return {
+                "error": f"Tracxn API integration issue. The API endpoints are not responding as expected. "
+                         f"Please verify your Tracxn API key and subscription includes API access. "
+                         f"You can still add acquisitions manually.",
+                "details": search_result.get("details", []),
+                "acquisitions": []
+            }
         
-        # Get company ID from search results
-        companies = search_result.get("result", [])
-        if not companies:
-            return {"error": "Company not found", "acquisitions": []}
-        
-        # Find best match
-        company = None
-        for c in companies:
-            if c.get("name", "").lower() == acquirer_name.lower():
-                company = c
-                break
-        
-        if not company:
-            company = companies[0]  # Take first result
-        
-        company_id = company.get("id")
-        if not company_id:
-            return {"error": "No company ID found", "acquisitions": []}
-        
-        # Get company profile with acquisitions
-        profile = await self.get_company_profile(company_id)
-        
-        if "error" in profile:
-            return profile
-        
-        # Parse acquisitions from profile
+        # Parse acquisitions from response
         acquisitions = []
-        raw_acquisitions = profile.get("result", {}).get("acquisitions", [])
         
-        for acq in raw_acquisitions[:limit]:
-            parsed = self._parse_acquisition(acq)
-            if parsed:
-                acquisitions.append(parsed)
+        # Try to extract acquisitions from various response formats
+        data = search_result
+        if isinstance(data, dict):
+            # Try different possible response structures
+            acq_data = (
+                data.get("acquisitions", []) or
+                data.get("result", {}).get("acquisitions", []) or
+                data.get("data", {}).get("acquisitions", []) or
+                data.get("companies", [{}])[0].get("acquisitions", []) if data.get("companies") else []
+            )
+            
+            for acq in acq_data[:limit]:
+                parsed = self._parse_acquisition(acq)
+                if parsed:
+                    acquisitions.append(parsed)
         
         return {
             "total": len(acquisitions),
             "acquisitions": acquisitions,
-            "acquirer": {
-                "name": company.get("name"),
-                "id": company_id,
-                "domain": company.get("domain")
-            }
+            "organization": acquirer_name
         }
     
     def _parse_acquisition(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Parse a single acquisition record from Tracxn response."""
+        """Parse a single acquisition record."""
         try:
-            # Handle different response structures
             if isinstance(item, str):
                 return {"target_name": item, "source": "tracxn"}
             
@@ -192,7 +155,7 @@ class TracxnService:
                 item.get("name") or 
                 item.get("companyName") or 
                 item.get("targetName") or
-                item.get("company", {}).get("name")
+                item.get("company", {}).get("name") if isinstance(item.get("company"), dict) else None
             )
             
             if not target_name:
@@ -200,8 +163,8 @@ class TracxnService:
             
             # Parse dates
             announced_date = None
-            if item.get("date") or item.get("announcedDate"):
-                date_str = item.get("date") or item.get("announcedDate")
+            date_str = item.get("date") or item.get("announcedDate")
+            if date_str:
                 try:
                     if isinstance(date_str, str):
                         announced_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
@@ -246,14 +209,11 @@ class TracxnService:
         
         url = url.lower().strip()
         
-        # Remove protocol
         if "://" in url:
             url = url.split("://")[1]
         
-        # Remove path and query
         url = url.split("/")[0].split("?")[0]
         
-        # Remove www prefix
         if url.startswith("www."):
             url = url[4:]
         
@@ -265,17 +225,7 @@ async def fetch_acquisitions_for_org(
     api_key: str,
     limit: int = 50
 ) -> Dict[str, Any]:
-    """
-    Fetch all acquisitions for an organization.
-    
-    Args:
-        org_name: Name of the acquiring organization
-        api_key: Tracxn API key
-        limit: Maximum acquisitions to fetch
-        
-    Returns:
-        Dictionary with acquisitions and stats
-    """
+    """Fetch all acquisitions for an organization."""
     service = TracxnService(api_key)
     
     result = await service.search_acquisitions_by_acquirer(
@@ -283,12 +233,10 @@ async def fetch_acquisitions_for_org(
         limit=limit
     )
     
-    if "error" in result:
-        return result
-    
     return {
         "total": result.get("total", 0),
         "acquisitions": result.get("acquisitions", []),
         "organization": org_name,
-        "acquirer": result.get("acquirer")
+        "error": result.get("error"),
+        "details": result.get("details")
     }
