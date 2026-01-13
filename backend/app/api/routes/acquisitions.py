@@ -10,7 +10,7 @@ from app.db.database import get_db
 from app.models.acquisition import Acquisition, AcquisitionStatus, AcquisitionType
 from app.models.organization import Organization
 from app.models.asset import Asset
-from app.models.api_config import ApiConfig
+from app.models.api_config import APIConfig
 from app.models.user import User
 from app.api.deps import get_current_active_user, require_analyst
 
@@ -320,9 +320,9 @@ async def import_from_tracxn(
     from app.services.tracxn_service import fetch_acquisitions_for_org
     
     # Get Tracxn API key
-    tracxn_config = db.query(ApiConfig).filter(
-        ApiConfig.organization_id == organization_id,
-        ApiConfig.service_name == "tracxn"
+    tracxn_config = db.query(APIConfig).filter(
+        APIConfig.organization_id == organization_id,
+        APIConfig.service_name == "tracxn"
     ).first()
     
     if not tracxn_config or not tracxn_config.api_key:
@@ -426,9 +426,9 @@ async def discover_domains_for_acquisition(
         )
     
     # Get Whoxy API key
-    whoxy_config = db.query(ApiConfig).filter(
-        ApiConfig.organization_id == acquisition.organization_id,
-        ApiConfig.service_name == "whoxy"
+    whoxy_config = db.query(APIConfig).filter(
+        APIConfig.organization_id == acquisition.organization_id,
+        APIConfig.service_name == "whoxy"
     ).first()
     
     if not whoxy_config or not whoxy_config.api_key:
