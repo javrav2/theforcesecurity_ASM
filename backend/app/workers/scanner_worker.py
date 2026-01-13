@@ -1114,6 +1114,8 @@ class ScannerWorker:
         
         Detects login pages, admin panels, and authentication endpoints.
         Uses subfinder, httpx, waybackurls, and pattern matching.
+        
+        Flags parent domain/subdomain assets with has_login_portal=True.
         """
         scan_id = job_data.get('scan_id')
         organization_id = job_data.get('organization_id')
@@ -1138,10 +1140,12 @@ class ScannerWorker:
                 db.commit()
             
             from app.services.login_portal_service import LoginPortalService
+            from urllib.parse import urlparse
             portal_service = LoginPortalService()
             
             total_portals = 0
             all_portals = []
+            assets_flagged = 0
             
             # Process each target domain
             for target in targets:
@@ -1160,7 +1164,48 @@ class ScannerWorker:
                 total_portals += len(portals)
                 all_portals.extend(portals)
                 
-                # Store discovered portals as assets
+                # Group portals by their host (domain/subdomain)
+                portals_by_host = {}
+                for portal in portals:
+                    url = portal.get("url", "")
+                    try:
+                        parsed = urlparse(url)
+                        host = parsed.netloc.split(":")[0]  # Remove port
+                        if host:
+                            if host not in portals_by_host:
+                                portals_by_host[host] = []
+                            portals_by_host[host].append({
+                                "url": url,
+                                "type": portal.get("portal_type"),
+                                "status": portal.get("status_code"),
+                                "title": portal.get("title"),
+                                "verified": portal.get("verified", False)
+                            })
+                    except Exception:
+                        pass
+                
+                # Flag parent domain/subdomain assets
+                for host, host_portals in portals_by_host.items():
+                    # Find the asset for this host
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == host
+                    ).first()
+                    
+                    if asset:
+                        asset.has_login_portal = True
+                        # Merge with existing portals
+                        existing_portals = asset.login_portals or []
+                        existing_urls = {p.get("url") for p in existing_portals}
+                        for p in host_portals:
+                            if p["url"] not in existing_urls:
+                                existing_portals.append(p)
+                        asset.login_portals = existing_portals
+                        asset.last_seen = datetime.utcnow()
+                        assets_flagged += 1
+                        logger.info(f"Flagged {host} with {len(host_portals)} login portals")
+                
+                # Also create URL assets for discovered portals (optional - for detailed tracking)
                 for portal in portals:
                     existing = db.query(Asset).filter(
                         Asset.organization_id == organization_id,
@@ -1170,11 +1215,13 @@ class ScannerWorker:
                     if not existing:
                         asset = Asset(
                             organization_id=organization_id,
+                            name=portal.get("url", "")[:255],
                             value=portal.get("url"),
                             asset_type=AssetType.URL,
                             hostname=target,
-                            is_active=portal.get("verified", False),
-                            discovery_method="login_portal_scan",
+                            is_live=portal.get("verified", False),
+                            has_login_portal=True,
+                            discovery_source="login_portal_scan",
                             metadata_={
                                 "portal_type": portal.get("portal_type"),
                                 "status_code": portal.get("status_code"),
@@ -1186,7 +1233,7 @@ class ScannerWorker:
                         db.add(asset)
                 
                 db.commit()
-                logger.info(f"Found {len(portals)} login portals for {target}")
+                logger.info(f"Found {len(portals)} login portals for {target}, flagged {assets_flagged} assets")
             
             # Update scan record
             if scan:
@@ -1196,12 +1243,13 @@ class ScannerWorker:
                 scan.assets_discovered = total_portals
                 scan.results = {
                     'portals_found': total_portals,
+                    'assets_flagged': assets_flagged,
                     'domains_scanned': len(targets),
                     'portals': all_portals[:100]  # Limit stored results
                 }
                 db.commit()
             
-            logger.info(f"Login portal scan complete: {total_portals} portals found")
+            logger.info(f"Login portal scan complete: {total_portals} portals found, {assets_flagged} assets flagged")
             
         except Exception as e:
             logger.error(f"Login portal scan failed: {e}", exc_info=True)

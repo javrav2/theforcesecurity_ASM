@@ -92,6 +92,8 @@ class Asset(Base):
     is_monitored = Column(Boolean, default=True)
     is_licensed = Column(Boolean, default=True)  # Is the asset licensed/tracked
     is_live = Column(Boolean, default=False, index=True)  # Has the asset responded to probes (port scan, HTTP, etc.)
+    has_login_portal = Column(Boolean, default=False, index=True)  # Has detected login/admin pages
+    login_portals = Column(JSON, default=list)  # List of detected login URLs [{"url": "...", "type": "...", "status": 200}]
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

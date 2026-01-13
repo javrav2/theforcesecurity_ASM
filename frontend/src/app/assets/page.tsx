@@ -58,6 +58,7 @@ import {
   MapPin,
   Code,
   Zap,
+  KeyRound,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -109,6 +110,8 @@ interface Asset {
   asn?: string;
   country?: string;
   city?: string;
+  has_login_portal?: boolean;
+  login_portals?: Array<{ url: string; type: string; status?: number; title?: string }>;
 }
 
 // Asset type icons - matching AssetType enum values
@@ -170,6 +173,7 @@ export default function AssetsPage() {
     { key: 'type', label: 'Type', visible: true },
     { key: 'hostname', label: 'Value', visible: true },
     { key: 'is_live', label: 'Live', visible: true },
+    { key: 'has_login_portal', label: 'Login', visible: true },
     { key: 'http_status', label: 'HTTP', visible: true },
     { key: 'ip_address', label: 'IP Address', visible: true },
     { key: 'ports', label: 'Ports', visible: true },
@@ -451,6 +455,7 @@ export default function AssetsPage() {
   // Calculate attack surface stats
   const attackSurfaceStats = useMemo(() => {
     const liveAssets = assets.filter(a => a.is_live).length;
+    const loginPortals = assets.filter(a => a.has_login_portal).length;
     const totalPorts = assets.reduce((sum, a) => sum + (a.open_ports_count || 0), 0);
     const riskyPorts = assets.reduce((sum, a) => sum + (a.risky_ports_count || 0), 0);
     const withTech = assets.filter(a => a.technologies && a.technologies.length > 0).length;
@@ -466,6 +471,7 @@ export default function AssetsPage() {
     return {
       total: totalAssets, // Use server's total count, not just current page
       live: liveAssets,
+      loginPortals,
       totalPorts,
       riskyPorts,
       withTech,
@@ -506,6 +512,20 @@ export default function AssetsPage() {
                 </div>
               </div>
             </Card>
+            
+            {attackSurfaceStats.loginPortals > 0 && (
+              <Card className="p-4 bg-gradient-to-br from-amber-500/10 to-amber-600/5 border-amber-500/20">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-amber-500/20">
+                    <KeyRound className="h-5 w-5 text-amber-400" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.loginPortals}</p>
+                    <p className="text-xs text-muted-foreground">Login Portals</p>
+                  </div>
+                </div>
+              </Card>
+            )}
             
             <Card className="p-4 bg-gradient-to-br from-cyan-500/10 to-cyan-600/5 border-cyan-500/20">
               <div className="flex items-center gap-3">
@@ -699,6 +719,22 @@ export default function AssetsPage() {
                                 <XCircle className="h-4 w-4 text-muted-foreground/50" />
                                 <span className="text-xs text-muted-foreground">—</span>
                               </div>
+                            )}
+                          </TableCell>
+                        )}
+
+                        {/* Login Portal Flag */}
+                        {columns.find(c => c.key === 'has_login_portal')?.visible && (
+                          <TableCell>
+                            {asset.has_login_portal ? (
+                              <div className="flex items-center gap-1">
+                                <KeyRound className="h-4 w-4 text-amber-500" />
+                                <span className="text-xs text-amber-500 font-medium">
+                                  {asset.login_portals?.length || 1}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
                             )}
                           </TableCell>
                         )}
