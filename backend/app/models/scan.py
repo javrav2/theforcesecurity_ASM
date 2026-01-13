@@ -20,6 +20,7 @@ class ScanType(str, enum.Enum):
     TECHNOLOGY = "technology"          # Wappalyzer technology fingerprinting
     CERTIFICATE = "certificate"        # SSL/TLS certificate analysis
     VULNERABILITY = "vulnerability"    # Vulnerability scanning
+    LOGIN_PORTAL = "login_portal"      # Login portal & admin panel detection
     FULL = "full"                      # Complete discovery + all scans
 
 

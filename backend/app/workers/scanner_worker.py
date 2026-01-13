@@ -182,6 +182,7 @@ class ScannerWorker:
                 ScanType.DNS_RESOLUTION: 'DNS_RESOLUTION',
                 ScanType.HTTP_PROBE: 'HTTP_PROBE',
                 ScanType.DNS_ENUM: 'DNS_RESOLUTION',  # Alias
+                ScanType.LOGIN_PORTAL: 'LOGIN_PORTAL',
             }
             
             job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
@@ -245,6 +246,8 @@ class ScannerWorker:
                 await self.handle_dns_resolution(body)
             elif job_type == 'HTTP_PROBE':
                 await self.handle_http_probe(body)
+            elif job_type == 'LOGIN_PORTAL':
+                await self.handle_login_portal_scan(body)
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
@@ -1093,6 +1096,115 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"HTTP probe failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_login_portal_scan(self, job_data: dict):
+        """
+        Handle login portal detection scan job.
+        
+        Detects login pages, admin panels, and authentication endpoints.
+        Uses subfinder, httpx, waybackurls, and pattern matching.
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        include_subdomains = config.get('include_subdomains', True)
+        use_wayback = config.get('use_wayback', True)
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Detecting login portals"
+                db.commit()
+            
+            from app.services.login_portal_service import LoginPortalService
+            portal_service = LoginPortalService()
+            
+            total_portals = 0
+            all_portals = []
+            
+            # Process each target domain
+            for target in targets:
+                if self._is_ip_or_cidr(target):
+                    continue  # Skip IPs/CIDRs
+                
+                logger.info(f"Scanning {target} for login portals")
+                
+                result = await portal_service.detect_login_portals(
+                    domain=target,
+                    include_subdomains=include_subdomains,
+                    use_wayback=use_wayback
+                )
+                
+                portals = result.get("portals", [])
+                total_portals += len(portals)
+                all_portals.extend(portals)
+                
+                # Store discovered portals as assets
+                for portal in portals:
+                    existing = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == portal.get("url")
+                    ).first()
+                    
+                    if not existing:
+                        asset = Asset(
+                            organization_id=organization_id,
+                            value=portal.get("url"),
+                            asset_type=AssetType.URL,
+                            hostname=target,
+                            is_active=portal.get("verified", False),
+                            discovery_method="login_portal_scan",
+                            metadata_={
+                                "portal_type": portal.get("portal_type"),
+                                "status_code": portal.get("status_code"),
+                                "title": portal.get("title"),
+                                "detected_at": portal.get("detected_at"),
+                                "is_login_portal": True
+                            }
+                        )
+                        db.add(asset)
+                
+                db.commit()
+                logger.info(f"Found {len(portals)} login portals for {target}")
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.assets_discovered = total_portals
+                scan.results = {
+                    'portals_found': total_portals,
+                    'domains_scanned': len(targets),
+                    'portals': all_portals[:100]  # Limit stored results
+                }
+                db.commit()
+            
+            logger.info(f"Login portal scan complete: {total_portals} portals found")
+            
+        except Exception as e:
+            logger.error(f"Login portal scan failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:

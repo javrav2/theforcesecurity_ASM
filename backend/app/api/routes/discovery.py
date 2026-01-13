@@ -318,3 +318,129 @@ def _count_asset_types(assets: list) -> dict:
         asset_type = asset.get("type", "unknown")
         counts[asset_type] = counts.get(asset_type, 0) + 1
     return counts
+
+
+@router.post("/login-portals")
+async def detect_login_portals(
+    domain: str,
+    organization_id: int = 1,
+    include_subdomains: bool = True,
+    use_wayback: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Detect login portals, admin panels, and authentication endpoints.
+    
+    This scans a domain for:
+    - Login pages (/login, /signin, /auth)
+    - Admin panels (/admin, /wp-admin, /administrator)
+    - Webmail portals (/webmail, /owa)
+    - API authentication endpoints
+    - Database admin tools (phpMyAdmin, etc.)
+    
+    Uses:
+    - Subfinder for subdomain enumeration
+    - HTTPX for probing live hosts
+    - Waybackurls for historical URL discovery
+    - Pattern matching for login-related paths
+    """
+    from app.services.login_portal_service import scan_domain_for_login_portals
+    
+    # Verify organization exists
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    
+    # Run the scan
+    result = await scan_domain_for_login_portals(
+        domain=domain,
+        include_subdomains=include_subdomains,
+        use_wayback=use_wayback
+    )
+    
+    # Store detected portals as assets with metadata
+    if result.get("portals"):
+        for portal in result["portals"]:
+            # Check if asset already exists
+            existing = db.query(Asset).filter(
+                Asset.organization_id == organization_id,
+                Asset.value == portal.get("url")
+            ).first()
+            
+            if not existing:
+                asset = Asset(
+                    organization_id=organization_id,
+                    value=portal.get("url"),
+                    asset_type=AssetType.URL,
+                    hostname=domain,
+                    is_active=portal.get("verified", False),
+                    discovery_method="login_portal_scan",
+                    metadata_={
+                        "portal_type": portal.get("portal_type"),
+                        "status_code": portal.get("status_code"),
+                        "title": portal.get("title"),
+                        "detected_at": portal.get("detected_at"),
+                        "is_login_portal": True
+                    }
+                )
+                db.add(asset)
+        
+        db.commit()
+    
+    return {
+        "success": True,
+        "domain": domain,
+        "portals_found": result.get("login_portals_found", 0),
+        "portals": result.get("portals", []),
+        "stats": {
+            "subdomains_checked": result.get("total_subdomains", 0),
+            "live_hosts": result.get("live_hosts", 0),
+            "wayback_urls_checked": result.get("wayback_urls", 0),
+            "elapsed_seconds": result.get("elapsed_seconds", 0)
+        }
+    }
+
+
+@router.get("/login-portals/{organization_id}")
+async def get_login_portals(
+    organization_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all detected login portals for an organization.
+    """
+    portals = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.metadata_.contains({"is_login_portal": True})
+    ).all()
+    
+    result = []
+    for portal in portals:
+        metadata = portal.metadata_ or {}
+        result.append({
+            "id": portal.id,
+            "url": portal.value,
+            "hostname": portal.hostname,
+            "portal_type": metadata.get("portal_type", "Unknown"),
+            "status_code": metadata.get("status_code"),
+            "title": metadata.get("title"),
+            "is_active": portal.is_active,
+            "detected_at": metadata.get("detected_at"),
+            "first_seen": portal.first_seen.isoformat() if portal.first_seen else None
+        })
+    
+    # Group by portal type
+    by_type = {}
+    for p in result:
+        ptype = p["portal_type"]
+        if ptype not in by_type:
+            by_type[ptype] = []
+        by_type[ptype].append(p)
+    
+    return {
+        "total": len(result),
+        "by_type": by_type,
+        "portals": result
+    }
