@@ -42,6 +42,7 @@ import {
   Database,
   Mail,
   Server,
+  Trash2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -469,6 +470,34 @@ export default function DomainsContent() {
                   <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
                   Refresh
                 </Button>
+                {stats.out_of_scope > 0 && (
+                  <Button 
+                    variant="outline"
+                    className="text-red-500 border-red-500/50 hover:bg-red-500/10"
+                    onClick={async () => {
+                      if (confirm(`Delete ${stats.out_of_scope} out-of-scope domains? This cannot be undone.`)) {
+                        try {
+                          const outOfScopeIds = domains.filter((d: Domain) => !d.in_scope).map((d: Domain) => d.id);
+                          const result = await api.bulkDeleteAssets(outOfScopeIds);
+                          toast({
+                            title: 'Domains Deleted',
+                            description: `Deleted ${result.deleted} out-of-scope domains.`,
+                          });
+                          fetchDomains();
+                        } catch (error) {
+                          toast({
+                            title: 'Error',
+                            description: 'Failed to delete domains',
+                            variant: 'destructive',
+                          });
+                        }
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete {stats.out_of_scope} Out of Scope
+                  </Button>
+                )}
               </div>
             </div>
           </CardHeader>
@@ -482,6 +511,32 @@ export default function DomainsContent() {
               </Button>
               <Button size="sm" variant="outline" onClick={() => handleBulkScope(false)}>
                 <X className="h-4 w-4 mr-1" /> Remove from Scope
+              </Button>
+              <Button 
+                size="sm" 
+                variant="outline"
+                className="text-red-500 border-red-500/50 hover:bg-red-500/10"
+                onClick={async () => {
+                  if (confirm(`Delete ${selectedDomains.size} selected domains? This cannot be undone.`)) {
+                    try {
+                      const result = await api.bulkDeleteAssets(Array.from(selectedDomains));
+                      toast({
+                        title: 'Domains Deleted',
+                        description: `Deleted ${result.deleted} domains.`,
+                      });
+                      setSelectedDomains(new Set());
+                      fetchDomains();
+                    } catch (error) {
+                      toast({
+                        title: 'Error',
+                        description: 'Failed to delete domains',
+                        variant: 'destructive',
+                      });
+                    }
+                  }
+                }}
+              >
+                <Trash2 className="h-4 w-4 mr-1" /> Delete Selected
               </Button>
               <Button size="sm" variant="ghost" onClick={deselectAll}>
                 Clear Selection
@@ -560,7 +615,7 @@ export default function DomainsContent() {
                             {(domain.metadata_?.dns_summary?.nameservers?.length ?? 0) > 0 && (
                               <span className="text-xs text-muted-foreground flex items-center gap-1">
                                 <Server className="h-3 w-3" />
-                                {domain.metadata_!.dns_summary!.nameservers![0].split('.').slice(-2).join('.')}
+                                {domain.metadata_?.dns_summary?.nameservers?.[0]?.split('.').slice(-2).join('.') || 'NS'}
                               </span>
                             )}
                           </div>

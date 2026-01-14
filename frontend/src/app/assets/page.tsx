@@ -59,6 +59,7 @@ import {
   Code,
   Zap,
   KeyRound,
+  Trash2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -456,6 +457,7 @@ export default function AssetsPage() {
   const attackSurfaceStats = useMemo(() => {
     const liveAssets = assets.filter(a => a.is_live).length;
     const loginPortals = assets.filter(a => a.has_login_portal).length;
+    const outOfScope = assets.filter(a => !a.in_scope).length;
     const totalPorts = assets.reduce((sum, a) => sum + (a.open_ports_count || 0), 0);
     const riskyPorts = assets.reduce((sum, a) => sum + (a.risky_ports_count || 0), 0);
     const withTech = assets.filter(a => a.technologies && a.technologies.length > 0).length;
@@ -472,6 +474,7 @@ export default function AssetsPage() {
       total: totalAssets, // Use server's total count, not just current page
       live: liveAssets,
       loginPortals,
+      outOfScope,
       totalPorts,
       riskyPorts,
       withTech,
@@ -522,6 +525,41 @@ export default function AssetsPage() {
                   <div>
                     <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.loginPortals}</p>
                     <p className="text-xs text-muted-foreground">Login Portals</p>
+                  </div>
+                </div>
+              </Card>
+            )}
+            
+            {attackSurfaceStats.outOfScope > 0 && (
+              <Card 
+                className="p-4 bg-gradient-to-br from-red-500/10 to-red-600/5 border-red-500/20 cursor-pointer hover:border-red-500/40 transition-colors"
+                onClick={async () => {
+                  if (confirm(`Delete ${attackSurfaceStats.outOfScope} out-of-scope assets? This cannot be undone.`)) {
+                    try {
+                      const outOfScopeIds = assets.filter(a => !a.in_scope).map(a => a.id);
+                      const result = await api.bulkDeleteAssets(outOfScopeIds);
+                      toast({
+                        title: 'Assets Deleted',
+                        description: `Deleted ${result.deleted} out-of-scope assets.`,
+                      });
+                      fetchData();
+                    } catch (error) {
+                      toast({
+                        title: 'Error',
+                        description: 'Failed to delete assets',
+                        variant: 'destructive',
+                      });
+                    }
+                  }
+                }}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-red-500/20">
+                    <Trash2 className="h-5 w-5 text-red-400" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.outOfScope}</p>
+                    <p className="text-xs text-muted-foreground">Out of Scope (click to delete)</p>
                   </div>
                 </div>
               </Card>
@@ -995,6 +1033,31 @@ export default function AssetsPage() {
                               <DropdownMenuItem onClick={() => setEditingLabels(asset)}>
                                 <Tag className="h-4 w-4 mr-2" />
                                 Manage Labels
+                              </DropdownMenuItem>
+                              <DropdownMenuItem 
+                                className="text-red-500 focus:text-red-500"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`Delete asset "${asset.value}"? This cannot be undone.`)) {
+                                    try {
+                                      await api.deleteAsset(asset.id);
+                                      toast({
+                                        title: 'Asset Deleted',
+                                        description: `${asset.value} has been deleted.`,
+                                      });
+                                      fetchData();
+                                    } catch (error) {
+                                      toast({
+                                        title: 'Error',
+                                        description: 'Failed to delete asset',
+                                        variant: 'destructive',
+                                      });
+                                    }
+                                  }
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4 mr-2" />
+                                Delete Asset
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>

@@ -497,6 +497,94 @@ def delete_asset(
     return None
 
 
+@router.post("/bulk-delete")
+def bulk_delete_assets(
+    asset_ids: List[int],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Bulk delete assets by ID.
+    
+    Only deletes assets the user has access to.
+    """
+    deleted = 0
+    failed = 0
+    errors = []
+    
+    for asset_id in asset_ids:
+        try:
+            asset = db.query(Asset).filter(Asset.id == asset_id).first()
+            if not asset:
+                failed += 1
+                errors.append(f"Asset {asset_id} not found")
+                continue
+            
+            if not check_org_access(current_user, asset.organization_id):
+                failed += 1
+                errors.append(f"Asset {asset_id} access denied")
+                continue
+            
+            db.delete(asset)
+            deleted += 1
+        except Exception as e:
+            failed += 1
+            errors.append(f"Asset {asset_id}: {str(e)}")
+    
+    db.commit()
+    
+    return {
+        "deleted": deleted,
+        "failed": failed,
+        "errors": errors[:10]  # Limit error messages
+    }
+
+
+@router.delete("/out-of-scope")
+def delete_out_of_scope_assets(
+    organization_id: int = Query(1, ge=1),
+    confirm: bool = Query(False, description="Must be true to actually delete"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Delete all out-of-scope assets for an organization.
+    
+    Pass confirm=true to actually delete. Without it, just returns count.
+    """
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    # Find out-of-scope assets
+    out_of_scope = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.in_scope == False
+    ).all()
+    
+    count = len(out_of_scope)
+    
+    if not confirm:
+        return {
+            "would_delete": count,
+            "message": f"Found {count} out-of-scope assets. Set confirm=true to delete.",
+            "preview": [{"id": a.id, "value": a.value, "type": a.asset_type.value if a.asset_type else None} for a in out_of_scope[:20]]
+        }
+    
+    # Actually delete
+    for asset in out_of_scope:
+        db.delete(asset)
+    
+    db.commit()
+    
+    return {
+        "deleted": count,
+        "message": f"Deleted {count} out-of-scope assets"
+    }
+
+
 @router.get("/stats/summary")
 def get_assets_summary(
     organization_id: Optional[int] = None,

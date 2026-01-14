@@ -576,6 +576,24 @@ class ApiClient {
     return response.data;
   }
 
+  async deleteAsset(assetId: number) {
+    await this.client.delete(`/assets/${assetId}`);
+  }
+
+  async bulkDeleteAssets(assetIds: number[]) {
+    const results = { deleted: 0, failed: 0, errors: [] as string[] };
+    for (const id of assetIds) {
+      try {
+        await this.client.delete(`/assets/${id}`);
+        results.deleted++;
+      } catch (error: any) {
+        results.failed++;
+        results.errors.push(`Asset ${id}: ${error?.response?.data?.detail || error.message}`);
+      }
+    }
+    return results;
+  }
+
   // Acquisitions / M&A
   async getAcquisitions(params?: { 
     organization_id?: number; 
