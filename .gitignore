@@ -84,6 +84,9 @@ temp/
 # Alembic
 alembic/versions/*.pyc
 
+# Large data files (SNI downloads)
+data/sni-downloads/*.txt
+
 
 
 
