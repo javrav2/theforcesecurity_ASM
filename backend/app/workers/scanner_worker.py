@@ -1273,11 +1273,13 @@ class ScannerWorker:
         """
         Handle screenshot capture scan job.
         
-        Captures screenshots of web assets using eyewitness or similar tools.
+        Captures screenshots of web assets using EyeWitness.
+        Screenshots are stored and linked to assets for visual monitoring.
         """
         scan_id = job_data.get('scan_id')
         organization_id = job_data.get('organization_id')
         targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
         
         db = self.get_db_session()
         if not db:
@@ -1293,22 +1295,30 @@ class ScannerWorker:
                 scan.current_step = "Capturing screenshots"
                 db.commit()
             
-            from app.services.screenshot_service import ScreenshotService
-            screenshot_service = ScreenshotService(db)
+            from app.services.screenshot_service import _capture_screenshots_async
             
-            screenshots_captured = 0
+            # If no specific targets, get live assets from the organization
+            if not targets:
+                live_assets = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.is_live == True,
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
+                ).limit(config.get('max_hosts', 200)).all()
+                targets = [a.value for a in live_assets]
             
-            # Process each target
-            for target in targets:
-                try:
-                    result = await screenshot_service.capture_screenshot(
-                        url=target if target.startswith('http') else f"https://{target}",
-                        organization_id=organization_id
-                    )
-                    if result:
-                        screenshots_captured += 1
-                except Exception as e:
-                    logger.warning(f"Screenshot failed for {target}: {e}")
+            logger.info(f"Starting screenshot capture for {len(targets)} targets")
+            
+            # Use the async capture function
+            result = await _capture_screenshots_async(
+                db,
+                organization_id=organization_id,
+                hosts=targets,
+                max_hosts=config.get('max_hosts', 200),
+                timeout=config.get('timeout', 30)
+            )
+            
+            screenshots_captured = result.get('screenshots_captured', 0)
+            screenshots_failed = result.get('screenshots_failed', 0)
             
             # Update scan record
             if scan:
@@ -1318,11 +1328,13 @@ class ScannerWorker:
                 scan.assets_discovered = screenshots_captured
                 scan.results = {
                     'screenshots_captured': screenshots_captured,
-                    'targets_processed': len(targets)
+                    'screenshots_failed': screenshots_failed,
+                    'targets_processed': len(targets),
+                    'assets_updated': result.get('assets_updated', 0),
                 }
                 db.commit()
             
-            logger.info(f"Screenshot scan complete: {screenshots_captured} screenshots captured")
+            logger.info(f"Screenshot scan complete: {screenshots_captured} captured, {screenshots_failed} failed")
             
         except Exception as e:
             logger.error(f"Screenshot scan failed: {e}", exc_info=True)

@@ -216,18 +216,48 @@ CONTINUOUS_SCAN_TYPES = {
         }
     },
     "screenshot": {
-        "name": "Web Screenshot",
-        "description": "Capture screenshots of web assets",
+        "name": "Web Screenshot Capture",
+        "description": "Capture screenshots of web assets for visual monitoring and change detection. Run daily to track website changes.",
         "default_config": {
             "timeout": 30,
             "viewport_width": 1920,
             "viewport_height": 1080,
-        }
+            "threads": 5,
+        },
+        "recommended_frequency": "daily",
+    },
+    "subdomain_enum": {
+        "name": "Subdomain Enumeration",
+        "description": "Discover new subdomains using Subfinder. Run daily to find newly created subdomains and expand attack surface visibility.",
+        "default_config": {
+            "sources": ["all"],
+            "recursive": False,
+            "timeout": 300,
+        },
+        "recommended_frequency": "daily",
     },
     "technology": {
         "name": "Technology Detection",
-        "description": "Detect web technologies and frameworks",
+        "description": "Detect web technologies and frameworks using Wappalyzer fingerprinting",
         "default_config": {}
+    },
+    "http_probe": {
+        "name": "HTTP Probe",
+        "description": "Check which assets are live and responding to HTTP requests. Updates is_live status and discovers web services.",
+        "default_config": {
+            "timeout": 30,
+            "follow_redirects": True,
+        },
+        "recommended_frequency": "daily",
+    },
+    "dns_resolution": {
+        "name": "DNS Resolution",
+        "description": "Resolve domains to IP addresses and enrich with geolocation data. Detects infrastructure changes.",
+        "default_config": {
+            "include_geo": True,
+            "limit": 1000,
+        },
+        "recommended_frequency": "daily",
     },
     "login_portal": {
         "name": "Login Portal Detection",
