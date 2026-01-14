@@ -187,6 +187,7 @@ class ScannerWorker:
                 ScanType.SCREENSHOT: 'SCREENSHOT',
                 ScanType.PARAMSPIDER: 'PARAMSPIDER',
                 ScanType.WAYBACKURLS: 'WAYBACKURLS',
+                ScanType.KATANA: 'KATANA',
             }
             
             job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
@@ -258,6 +259,8 @@ class ScannerWorker:
                 await self.handle_paramspider_scan(body)
             elif job_type == 'WAYBACKURLS':
                 await self.handle_waybackurls_scan(body)
+            elif job_type == 'KATANA':
+                await self.handle_katana_scan(body)
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
@@ -1577,6 +1580,159 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"WaybackURLs scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_katana_scan(self, job_data: dict):
+        """
+        Handle Katana deep web crawling scan.
+        
+        Actively crawls websites to discover:
+        - All reachable URLs and endpoints
+        - JavaScript files (for secret scanning)
+        - URL parameters (for injection testing)
+        - Form actions
+        - API endpoints
+        
+        Results are stored directly on each asset.
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Deep crawling with Katana"
+                db.commit()
+            
+            from app.services.katana_service import KatanaService
+            katana = KatanaService()
+            
+            if not katana.is_available():
+                raise Exception("Katana not installed. Install: go install github.com/projectdiscovery/katana/cmd/katana@latest")
+            
+            # If no specific targets, get live domains from the organization
+            if not targets:
+                live_assets = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                    Asset.is_live == True
+                ).limit(config.get('max_targets', 50)).all()
+                targets = [a.value for a in live_assets]
+            
+            logger.info(f"Running Katana on {len(targets)} targets with depth={config.get('depth', 5)}")
+            
+            total_urls = 0
+            total_endpoints = 0
+            total_params = 0
+            total_js = 0
+            assets_updated = 0
+            
+            # Process each target
+            for target in targets:
+                try:
+                    result = await katana.crawl(
+                        target=target,
+                        depth=config.get('depth', 5),
+                        js_crawl=config.get('js_crawl', True),
+                        form_extraction=config.get('form_extraction', True),
+                        timeout=config.get('timeout', 600),
+                        rate_limit=config.get('rate_limit', 150),
+                        concurrency=config.get('concurrency', 10),
+                    )
+                    
+                    if result.success:
+                        total_urls += len(result.urls)
+                        total_endpoints += len(result.endpoints)
+                        total_params += len(result.parameters)
+                        total_js += len(result.js_files)
+                        
+                        # Update the asset with discovered data
+                        asset = db.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.value == target
+                        ).first()
+                        
+                        if asset:
+                            # Merge with existing data (deduplicate)
+                            existing_endpoints = set(asset.endpoints or [])
+                            existing_params = set(asset.parameters or [])
+                            existing_js = set(asset.js_files or [])
+                            
+                            # Add new discoveries
+                            existing_endpoints.update(result.endpoints)
+                            existing_params.update(result.parameters)
+                            existing_js.update(result.js_files)
+                            
+                            # Update asset (limit to prevent huge JSON)
+                            asset.endpoints = sorted(list(existing_endpoints))[:1000]
+                            asset.parameters = sorted(list(existing_params))[:500]
+                            asset.js_files = sorted(list(existing_js))[:500]
+                            
+                            # Store additional metadata
+                            if not asset.metadata_:
+                                asset.metadata_ = {}
+                            asset.metadata_['katana_last_scan'] = datetime.utcnow().isoformat()
+                            asset.metadata_['katana_urls_found'] = len(result.urls)
+                            asset.metadata_['katana_api_endpoints'] = result.api_endpoints[:50]
+                            
+                            asset.last_seen = datetime.utcnow()
+                            assets_updated += 1
+                        
+                        logger.info(
+                            f"Katana crawl of {target}: {len(result.endpoints)} endpoints, "
+                            f"{len(result.parameters)} params, {len(result.js_files)} JS files"
+                        )
+                    else:
+                        logger.warning(f"Katana failed for {target}: {result.error}")
+                        
+                except Exception as e:
+                    logger.warning(f"Katana error for {target}: {e}")
+            
+            db.commit()
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.assets_discovered = total_endpoints
+                scan.results = {
+                    'targets_crawled': len(targets),
+                    'total_urls': total_urls,
+                    'total_endpoints': total_endpoints,
+                    'total_parameters': total_params,
+                    'total_js_files': total_js,
+                    'assets_updated': assets_updated,
+                }
+                db.commit()
+            
+            logger.info(
+                f"Katana scan complete: {total_endpoints} endpoints, "
+                f"{total_params} params, {total_js} JS files from {len(targets)} targets"
+            )
+            
+        except Exception as e:
+            logger.error(f"Katana scan failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:

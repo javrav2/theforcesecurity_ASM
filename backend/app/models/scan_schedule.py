@@ -296,6 +296,19 @@ CONTINUOUS_SCAN_TYPES = {
         },
         "recommended_frequency": "weekly",
     },
+    "katana": {
+        "name": "Deep Web Crawling (Katana)",
+        "description": "Active deep crawling with JS parsing. Discovers endpoints, parameters, JS files, and forms. Stores all findings on assets.",
+        "default_config": {
+            "depth": 5,
+            "js_crawl": True,
+            "form_extraction": True,
+            "rate_limit": 150,
+            "concurrency": 10,
+            "timeout": 600,
+        },
+        "recommended_frequency": "weekly",
+    },
 }
 
 

@@ -231,6 +231,7 @@ class ScheduleWorker:
             "screenshot": ScanType.SCREENSHOT,
             "paramspider": ScanType.PARAMSPIDER,
             "waybackurls": ScanType.WAYBACKURLS,
+            "katana": ScanType.KATANA,
         }
         
         scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)

@@ -24,6 +24,7 @@ class ScanType(str, enum.Enum):
     SCREENSHOT = "screenshot"          # Web screenshot capture
     PARAMSPIDER = "paramspider"        # URL parameter discovery
     WAYBACKURLS = "waybackurls"        # Historical URL discovery
+    KATANA = "katana"                  # Deep web crawling with JS parsing
     FULL = "full"                      # Complete discovery + all scans
 
 
