@@ -160,7 +160,7 @@ class ExternalDiscoveryRequest(BaseModel):
         le=120,
         description="Timeout in seconds for each screenshot",
     )
-    
+
     # HTTP probing - check if sites are live and get status codes
     run_http_probe: bool = Field(
         default=True,

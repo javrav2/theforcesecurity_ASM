@@ -21,6 +21,11 @@ from app.services.sni_scanner_service import (
     SNIScannerService,
     CLOUD_PROVIDERS,
 )
+from app.services.sni_s3_service import (
+    get_sni_s3_service,
+    SNIS3Service,
+    SNIIndexBuilder,
+)
 
 router = APIRouter(prefix="/sni-discovery", tags=["SNI Discovery"])
 
@@ -464,4 +469,167 @@ async def import_sni_results_to_assets(
         },
         "organization_id": org.id,
     }
+
+
+# =============================================================================
+# S3-Backed Index Routes (Fast Lookups)
+# =============================================================================
+
+@router.get("/s3/stats")
+async def get_s3_stats(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get statistics about the S3-backed SNI index.
+    
+    This is the pre-processed index for fast lookups.
+    """
+    service = get_sni_s3_service()
+    return await service.get_stats()
+
+
+@router.post("/s3/sync")
+async def sync_s3_index(
+    force: bool = False,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Sync the S3 index to local cache.
+    
+    Downloads the pre-processed index from S3 for fast local searches.
+    """
+    service = get_sni_s3_service()
+    success = await service.sync_from_s3(force=force)
+    
+    if success:
+        stats = await service.get_stats()
+        return {
+            "status": "synced",
+            "message": "S3 index synced to local cache",
+            "stats": stats
+        }
+    else:
+        return {
+            "status": "failed",
+            "message": "Failed to sync S3 index. Check S3 configuration.",
+        }
+
+
+@router.post("/s3/search", response_model=SNISearchResponse)
+async def search_s3_index(
+    request: SNISearchRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fast search on S3-backed index (binary search, <100ms).
+    
+    This uses the pre-processed index stored in S3 for fast lookups.
+    Call /s3/sync first if index is not loaded.
+    """
+    service = get_sni_s3_service()
+    
+    result = await service.search(
+        query=request.query,
+        search_type=request.search_type,
+        max_results=request.max_results,
+    )
+    
+    return SNISearchResponse(
+        query=result.query,
+        success=result.error is None,
+        total_records=result.total_records,
+        domains=result.domains,
+        subdomains=result.subdomains,
+        ips=result.ips,
+        by_cloud_provider={p: len(d) for p, d in result.by_provider.items()},
+        elapsed_time=result.elapsed_time,
+        error=result.error,
+    )
+
+
+@router.post("/s3/search/organization", response_model=SNISearchResponse)
+async def search_s3_organization(
+    request: SNIOrgSearchRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fast organization search on S3-backed index.
+    
+    Searches for:
+    1. Subdomains of primary domain
+    2. Domains containing org name
+    3. Domains matching keywords
+    
+    All with fast binary search on cached index.
+    """
+    service = get_sni_s3_service()
+    
+    result = await service.search_organization(
+        org_name=request.organization_name,
+        primary_domain=request.primary_domain,
+        keywords=request.keywords,
+    )
+    
+    return SNISearchResponse(
+        query=result.query,
+        success=result.error is None,
+        total_records=result.total_records,
+        domains=result.domains,
+        subdomains=result.subdomains,
+        ips=result.ips,
+        by_cloud_provider={p: len(d) for p, d in result.by_provider.items()},
+        elapsed_time=result.elapsed_time,
+        error=result.error,
+    )
+
+
+@router.post("/s3/build-index")
+async def build_s3_index(
+    providers: Optional[List[str]] = None,
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Build the S3 index from source data (kaeferjaeger.gay).
+    
+    Downloads data from all cloud providers, processes into searchable index,
+    and uploads to S3. This is typically run weekly.
+    
+    Runs in background as it takes 5-15 minutes.
+    """
+    import os
+    
+    s3_bucket = os.getenv("SNI_S3_BUCKET") or os.getenv("CC_S3_BUCKET")
+    if not s3_bucket:
+        raise HTTPException(
+            status_code=400,
+            detail="SNI_S3_BUCKET or CC_S3_BUCKET environment variable not set"
+        )
+    
+    if providers:
+        invalid = [p for p in providers if p not in CLOUD_PROVIDERS]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid providers: {invalid}"
+            )
+    
+    async def do_build():
+        builder = SNIIndexBuilder(s3_bucket=s3_bucket)
+        return await builder.build_and_upload(providers=providers)
+    
+    if background_tasks:
+        background_tasks.add_task(do_build)
+        return {
+            "status": "building",
+            "message": "S3 index build started in background",
+            "s3_bucket": s3_bucket,
+            "providers": providers or list(CLOUD_PROVIDERS.keys()),
+        }
+    else:
+        result = await do_build()
+        return {
+            "status": "completed",
+            "result": result
+        }
 

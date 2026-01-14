@@ -288,9 +288,9 @@ export default function AssetDetailPage() {
 
   const handleCopyValue = (value: string) => {
     navigator.clipboard.writeText(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    toast({ title: 'Copied to clipboard' });
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      toast({ title: 'Copied to clipboard' });
   };
 
   const getSeverityColor = (severity: string) => {
@@ -373,11 +373,11 @@ export default function AssetDetailPage() {
       {/* Header with Asset Name and ID */}
       <div className="border-b bg-card">
         <div className="p-6">
-          <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Button variant="ghost" size="icon" onClick={() => router.push('/assets')}>
                 <ArrowLeft className="h-5 w-5" />
-              </Button>
+          </Button>
               <div className="flex items-center gap-3">
                 <AssetIcon className="h-8 w-8 text-primary" />
                 <div>
@@ -386,7 +386,7 @@ export default function AssetDetailPage() {
                     <span>Asset ID: {asset.id}</span>
                     <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleCopyValue(String(asset.id))}>
                       <Copy className="h-3 w-3" />
-                    </Button>
+            </Button>
                   </div>
                 </div>
               </div>
@@ -396,12 +396,12 @@ export default function AssetDetailPage() {
                 <Database className="h-3 w-3" />
                 Data Sources
               </Badge>
-              <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
-                <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-                Refresh
-              </Button>
-            </div>
+            <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
           </div>
+        </div>
 
           {/* Score Cards */}
           <div className="grid grid-cols-4 gap-4 mt-6">
@@ -414,15 +414,15 @@ export default function AssetDetailPage() {
                     {arsScore}
                   </span>
                   <span className="text-muted-foreground">/100</span>
-                </div>
+              </div>
                 <div className="h-2 bg-muted rounded-full mt-2 overflow-hidden">
                   <div 
                     className={`h-full rounded-full ${arsScore >= 80 ? 'bg-red-500' : arsScore >= 60 ? 'bg-orange-500' : arsScore >= 40 ? 'bg-yellow-500' : arsScore >= 20 ? 'bg-blue-500' : 'bg-green-500'}`}
                     style={{ width: `${arsScore}%` }}
                   />
-                </div>
-              </CardContent>
-            </Card>
+            </div>
+          </CardContent>
+        </Card>
 
             {/* ACS Score - Asset Criticality Score */}
             <Card className="border-2">
@@ -442,9 +442,9 @@ export default function AssetDetailPage() {
                     className={`h-full rounded-full ${acsScore >= 8 ? 'bg-red-500' : acsScore >= 6 ? 'bg-orange-500' : acsScore >= 4 ? 'bg-yellow-500' : 'bg-green-500'}`}
                     style={{ width: `${(acsScore / 10) * 100}%` }}
                   />
-                </div>
-              </CardContent>
-            </Card>
+              </div>
+            </CardContent>
+          </Card>
 
             {/* Key Drivers */}
             <Card className="border-2">
@@ -462,9 +462,9 @@ export default function AssetDetailPage() {
                   {asset.acs_drivers && Object.keys(asset.acs_drivers).length > 2 && (
                     <Badge variant="outline" className="text-xs">+{Object.keys(asset.acs_drivers).length - 2}</Badge>
                   )}
-                </div>
-              </CardContent>
-            </Card>
+              </div>
+            </CardContent>
+          </Card>
 
             {/* Vulnerabilities Count */}
             <Card className="border-2">
@@ -476,9 +476,9 @@ export default function AssetDetailPage() {
                 <div className="text-3xl font-bold">{vulnCount}</div>
                 <div className="h-2 bg-muted rounded-full mt-2 overflow-hidden">
                   <div className="h-full bg-primary rounded-full" style={{ width: vulnCount > 0 ? '100%' : '0%' }} />
-                </div>
-              </CardContent>
-            </Card>
+              </div>
+            </CardContent>
+          </Card>
           </div>
 
           {/* Tab Navigation */}
@@ -497,9 +497,9 @@ export default function AssetDetailPage() {
                 {tab.label}
               </button>
             ))}
-          </div>
+                </div>
+              </div>
         </div>
-      </div>
 
       {/* Tab Content */}
       <div className="p-6 space-y-6">
@@ -507,15 +507,15 @@ export default function AssetDetailPage() {
         {activeTab === 'details' && (
           <>
             {/* Asset Information */}
-            <Card>
-              <CardHeader>
+        <Card>
+          <CardHeader>
                 <div className="flex items-center gap-2">
                   <Monitor className="h-5 w-5" />
                   <CardTitle>Asset</CardTitle>
                 </div>
                 <CardDescription>General information and properties</CardDescription>
-              </CardHeader>
-              <CardContent>
+          </CardHeader>
+          <CardContent>
                 <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">System Type</span>
@@ -558,45 +558,45 @@ export default function AssetDetailPage() {
                     <span className="font-medium">{asset.device_subclass || '—'}</span>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+          </CardContent>
+        </Card>
 
             {/* Last Seen Information */}
-            <Card>
-              <CardHeader>
+          <Card>
+            <CardHeader>
                 <div className="flex items-center gap-2">
                   <Clock className="h-5 w-5" />
                   <CardTitle>Last Seen</CardTitle>
                 </div>
                 <CardDescription>General information and properties</CardDescription>
-              </CardHeader>
+            </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">Scan Name</span>
                     <span className="font-medium">{asset.last_scan_name || asset.discovery_source || '—'}</span>
-                  </div>
+              </div>
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">Last Scan ID</span>
                     <span className="font-mono text-xs">{asset.last_scan_id || '—'}</span>
-                  </div>
+              </div>
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">Last Seen</span>
                     <span className="font-medium">{formatDate(asset.last_seen)}</span>
-                  </div>
+              </div>
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">Last Licensed Scan</span>
                     <span className="font-medium">{asset.last_scan_date ? formatDate(asset.last_scan_date) : formatDate(asset.last_seen)}</span>
                   </div>
                   <div className="flex justify-between py-2 border-b">
-                    <span className="text-muted-foreground">First Seen</span>
+                <span className="text-muted-foreground">First Seen</span>
                     <span className="font-medium">{formatDate(asset.first_seen)}</span>
-                  </div>
+              </div>
                   <div className="flex justify-between py-2 border-b">
                     <span className="text-muted-foreground">Last Scan Target</span>
                     <span className="font-mono text-sm">{asset.last_scan_target || asset.value}</span>
-                  </div>
-                </div>
+              </div>
+              </div>
               </CardContent>
             </Card>
 
@@ -606,7 +606,7 @@ export default function AssetDetailPage() {
                 <div className="flex items-center gap-2">
                   <Tag className="h-5 w-5" />
                   <CardTitle>Tags</CardTitle>
-                </div>
+              </div>
               </CardHeader>
               <CardContent>
                 {asset.tags && asset.tags.length > 0 ? (
@@ -614,21 +614,21 @@ export default function AssetDetailPage() {
                     {asset.tags.map((tag, idx) => (
                       <Badge key={idx} variant="secondary">{tag}</Badge>
                     ))}
-                  </div>
+                </div>
                 ) : (
                   <p className="text-muted-foreground text-sm">No tags assigned</p>
-                )}
-              </CardContent>
-            </Card>
+              )}
+            </CardContent>
+          </Card>
 
             {/* Network & Location */}
-            <Card>
-              <CardHeader>
+          <Card>
+            <CardHeader>
                 <div className="flex items-center gap-2">
-                  <MapPin className="h-5 w-5" />
+                <MapPin className="h-5 w-5" />
                   <CardTitle>Network & Location</CardTitle>
                 </div>
-              </CardHeader>
+            </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                   {/* Always show IP addresses - including for IP address type assets */}
@@ -649,9 +649,9 @@ export default function AssetDetailPage() {
                         <div className="flex flex-wrap gap-1 justify-end">
                           {ips.filter(Boolean).map((ip, idx) => (
                             <Badge key={idx} variant="outline" className="font-mono text-xs">{ip}</Badge>
-                          ))}
-                        </div>
-                      </div>
+                    ))}
+                  </div>
+                </div>
                     ) : null;
                   })()}
                   
@@ -662,33 +662,33 @@ export default function AssetDetailPage() {
                       <a href={`/netblocks/${asset.netblock_id}`} className="text-primary hover:underline font-mono text-sm">
                         View CIDR Block →
                       </a>
-                    </div>
+                </div>
                   )}
                   
-                  {asset.asn && (
+              {asset.asn && (
                     <div className="flex justify-between py-2 border-b">
-                      <span className="text-muted-foreground">ASN</span>
-                      <span className="font-mono">{asset.asn}</span>
-                    </div>
-                  )}
-                  {asset.isp && (
+                  <span className="text-muted-foreground">ASN</span>
+                  <span className="font-mono">{asset.asn}</span>
+                </div>
+              )}
+              {asset.isp && (
                     <div className="flex justify-between py-2 border-b">
-                      <span className="text-muted-foreground">ISP</span>
+                  <span className="text-muted-foreground">ISP</span>
                       <span className="font-medium">{asset.isp}</span>
-                    </div>
-                  )}
+                </div>
+              )}
                   {asset.city && (
                     <div className="flex justify-between py-2 border-b">
                       <span className="text-muted-foreground">City</span>
                       <span className="font-medium">{asset.city}</span>
-                    </div>
-                  )}
+                </div>
+              )}
                   {asset.country && (
                     <div className="flex justify-between py-2 border-b">
                       <span className="text-muted-foreground">Country</span>
                       <span className="font-medium">{asset.country} {asset.country_code && `(${asset.country_code})`}</span>
-                    </div>
-                  )}
+                </div>
+              )}
                   {asset.region && (
                     <div className="flex justify-between py-2 border-b">
                       <span className="text-muted-foreground">Region</span>
@@ -703,15 +703,15 @@ export default function AssetDetailPage() {
                     <div className="col-span-2 text-center py-4 text-muted-foreground">
                       No network information available. Run a discovery scan to populate this data.
                     </div>
-                  )}
+              )}
                 </div>
-              </CardContent>
-            </Card>
+            </CardContent>
+          </Card>
 
             {/* DNS Records */}
             {asset.asset_type === 'domain' && asset.metadata_?.dns_records && (
-              <Card>
-                <CardHeader>
+          <Card>
+            <CardHeader>
                   <div className="flex items-center gap-2">
                     <Globe className="h-5 w-5" />
                     <CardTitle>DNS Records</CardTitle>
@@ -721,11 +721,11 @@ export default function AssetDetailPage() {
                       ? `Last fetched: ${formatDate(asset.metadata_.dns_fetched_at)}`
                       : 'DNS information for this domain'}
                   </CardDescription>
-                </CardHeader>
+            </CardHeader>
                 <CardContent className="space-y-4">
                   {/* Summary badges */}
                   {asset.metadata_?.dns_analysis && (
-                    <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2">
                       {asset.metadata_.dns_summary?.has_mail && (
                         <Badge className="bg-blue-500/20 text-blue-600">
                           <Mail className="h-3 w-3 mr-1" />
@@ -740,9 +740,9 @@ export default function AssetDetailPage() {
                       {asset.metadata_.dns_analysis?.security_features?.map((feature: string) => (
                         <Badge key={feature} className="bg-green-500/20 text-green-600">
                           {feature}
-                        </Badge>
-                      ))}
-                    </div>
+                  </Badge>
+                ))}
+              </div>
                   )}
                   
                   {/* A Records */}
@@ -836,32 +836,32 @@ export default function AssetDetailPage() {
                       </div>
                     </div>
                   )}
-                </CardContent>
-              </Card>
-            )}
+            </CardContent>
+          </Card>
+        )}
 
-            {/* Technologies */}
-            {asset.technologies && asset.technologies.length > 0 && (
-              <Card>
-                <CardHeader>
+        {/* Technologies */}
+        {asset.technologies && asset.technologies.length > 0 && (
+          <Card>
+            <CardHeader>
                   <div className="flex items-center gap-2">
-                    <Cpu className="h-5 w-5" />
+                <Cpu className="h-5 w-5" />
                     <CardTitle>Technologies ({asset.technologies.length})</CardTitle>
                   </div>
                   <CardDescription>Detected technologies and frameworks</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-2">
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-2">
                     {asset.technologies.map((tech: Technology, idx: number) => (
                       <Badge key={idx} variant="outline" className="py-1.5">
-                        <span className="font-medium">{tech.name}</span>
+                    <span className="font-medium">{tech.name}</span>
                         {tech.version && <span className="text-muted-foreground ml-1">v{tech.version}</span>}
-                      </Badge>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            )}
+                  </Badge>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
             {/* Screenshot */}
             {(asset.asset_type === 'domain' || asset.asset_type === 'subdomain' || asset.asset_type === 'url') && (
@@ -906,14 +906,14 @@ export default function AssetDetailPage() {
               <CardContent>
                 <DiscoveryPath
                   value={asset.value}
-                  assetType={asset.asset_type}
+          assetType={asset.asset_type}
                   rootDomain={asset.root_domain}
                   liveUrl={asset.live_url}
                   discoverySource={asset.discovery_source}
                   discoveryChain={asset.discovery_chain}
                   associationReason={asset.association_reason}
                   associationConfidence={asset.association_confidence}
-                />
+        />
               </CardContent>
             </Card>
           </>
@@ -1042,45 +1042,45 @@ export default function AssetDetailPage() {
             </CardHeader>
             <CardContent>
               {asset.port_services && asset.port_services.length > 0 ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Port</TableHead>
-                      <TableHead>Protocol</TableHead>
-                      <TableHead>Service</TableHead>
-                      <TableHead>Product</TableHead>
-                      <TableHead>Version</TableHead>
-                      <TableHead>State</TableHead>
-                      <TableHead>Risk</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {asset.port_services.map((port) => (
-                      <TableRow key={port.id}>
-                        <TableCell className="font-mono font-bold">{port.port}</TableCell>
-                        <TableCell className="uppercase text-muted-foreground">{port.protocol}</TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {port.service || '—'}
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Port</TableHead>
+                    <TableHead>Protocol</TableHead>
+                    <TableHead>Service</TableHead>
+                    <TableHead>Product</TableHead>
+                    <TableHead>Version</TableHead>
+                    <TableHead>State</TableHead>
+                    <TableHead>Risk</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {asset.port_services.map((port) => (
+                    <TableRow key={port.id}>
+                      <TableCell className="font-mono font-bold">{port.port}</TableCell>
+                      <TableCell className="uppercase text-muted-foreground">{port.protocol}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          {port.service || '—'}
                             {port.is_ssl && <Lock className="h-3 w-3 text-green-400" />}
-                          </div>
-                        </TableCell>
-                        <TableCell>{port.product || '—'}</TableCell>
-                        <TableCell className="font-mono text-sm">{port.version || '—'}</TableCell>
-                        <TableCell>
+                        </div>
+                      </TableCell>
+                      <TableCell>{port.product || '—'}</TableCell>
+                      <TableCell className="font-mono text-sm">{port.version || '—'}</TableCell>
+                      <TableCell>
                           <Badge className={port.state === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}>
-                            {port.state}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {port.is_risky ? (
+                          {port.state}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {port.is_risky ? (
                             <Badge className="bg-red-500/20 text-red-400"><AlertTriangle className="h-3 w-3 mr-1" />Risky</Badge>
                           ) : '—'}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
               ) : (
                 <div className="text-center py-12">
                   <Network className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
@@ -1117,7 +1117,7 @@ export default function AssetDetailPage() {
                 <div className="flex items-start gap-4 p-4 border rounded-lg">
                   <div className="p-2 rounded-full bg-blue-500/10">
                     <Eye className="h-4 w-4 text-blue-500" />
-                  </div>
+                    </div>
                   <div>
                     <p className="font-medium">Last Seen</p>
                     <p className="text-sm text-muted-foreground">Asset was last observed</p>
