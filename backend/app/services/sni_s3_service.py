@@ -501,9 +501,21 @@ class SNIIndexBuilder:
             self._s3_client = boto3.client("s3", region_name=self.aws_region)
         return self._s3_client
     
-    async def build_and_upload(self, providers: Optional[List[str]] = None) -> dict:
+    async def build_and_upload(
+        self, 
+        providers: Optional[List[str]] = None,
+        use_txt_files: bool = True,
+        from_s3_prefix: Optional[str] = None
+    ) -> dict:
         """
-        Download SNI data from source, process, and upload to S3.
+        Download SNI data from source (or S3), process, and upload to S3.
+        
+        Args:
+            providers: List of cloud providers to process
+            use_txt_files: If True, use the large .txt files (streaming download)
+                          If False, use smaller .json.gz files
+            from_s3_prefix: If set, read raw files from this S3 prefix instead of source URL
+                           e.g., "sni-ip-ranges/raw/" to read from s3://bucket/sni-ip-ranges/raw/amazon_ipv4_merged_sni.txt
         
         Returns:
             Summary of the build process
@@ -511,76 +523,42 @@ class SNIIndexBuilder:
         providers = providers or CLOUD_PROVIDERS
         
         logger.info(f"Building SNI index for providers: {providers}")
+        if from_s3_prefix:
+            logger.info(f"Reading from S3: s3://{self.s3_bucket}/{from_s3_prefix}")
+        else:
+            logger.info(f"Using {'TXT' if use_txt_files else 'JSON'} source files from kaeferjaeger.gay")
         start_time = datetime.utcnow()
         
         all_domains: Set[str] = set()
         domain_ip_map: Dict[str, Dict[str, Any]] = {}
         by_provider: Dict[str, int] = {}
         
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            for provider in providers:
-                try:
-                    url = f"{SNI_SOURCE_BASE}/{provider}/ipv4_merged_sni.json.gz"
-                    logger.info(f"Downloading {url}")
-                    
-                    response = await client.get(url)
-                    
-                    if response.status_code != 200:
-                        logger.warning(f"Failed to download {provider}: HTTP {response.status_code}")
-                        continue
-                    
-                    # Decompress and parse
-                    content = gzip.decompress(response.content)
-                    data = json.loads(content)
-                    
-                    provider_count = 0
-                    
-                    # Parse format: {ip: [sni1, sni2, ...]} or {ip: {sni, port, ...}}
-                    if isinstance(data, dict):
-                        for ip, snis in data.items():
-                            if isinstance(snis, list):
-                                for sni in snis:
-                                    if isinstance(sni, str):
-                                        domain = sni.lower().strip()
-                                    elif isinstance(sni, dict):
-                                        domain = sni.get("sni", "").lower().strip()
-                                    else:
-                                        continue
-                                    
-                                    if domain and "." in domain:
-                                        # Store reversed for binary search
-                                        reversed_d = self._reverse_domain(domain)
-                                        all_domains.add(reversed_d)
-                                        
-                                        # Store mapping
-                                        if domain not in domain_ip_map:
-                                            domain_ip_map[domain] = {
-                                                "ips": [],
-                                                "provider": provider
-                                            }
-                                        if ip not in domain_ip_map[domain]["ips"]:
-                                            domain_ip_map[domain]["ips"].append(ip)
-                                        
-                                        provider_count += 1
-                            elif isinstance(snis, str):
-                                domain = snis.lower().strip()
-                                if domain and "." in domain:
-                                    reversed_d = self._reverse_domain(domain)
-                                    all_domains.add(reversed_d)
-                                    
-                                    if domain not in domain_ip_map:
-                                        domain_ip_map[domain] = {"ips": [ip], "provider": provider}
-                                    
-                                    provider_count += 1
-                    
-                    by_provider[provider] = provider_count
-                    logger.info(f"{provider}: {provider_count:,} domains")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing {provider}: {e}")
+        for provider in providers:
+            try:
+                if from_s3_prefix:
+                    # Read from S3 bucket
+                    domains, mapping = await self._read_from_s3(provider, from_s3_prefix)
+                elif use_txt_files:
+                    # Use streaming download for large .txt files
+                    domains, mapping = await self._download_txt_streaming(provider)
+                else:
+                    # Use the smaller JSON files (original method)
+                    domains, mapping = await self._download_json_gz(provider)
+                
+                all_domains.update(domains)
+                domain_ip_map.update(mapping)
+                by_provider[provider] = len(domains)
+                logger.info(f"{provider}: {len(domains):,} domains")
+                
+            except Exception as e:
+                logger.error(f"Error processing {provider}: {e}")
+                import traceback
+                traceback.print_exc()
         
         if not all_domains:
             return {"error": "No domains collected", "success": False}
+        
+        logger.info(f"Total domains collected: {len(all_domains):,}")
         
         # Sort domains for binary search
         sorted_domains = sorted(all_domains)
@@ -612,9 +590,32 @@ class SNIIndexBuilder:
         
         mapping_size = os.path.getsize(mapping_gz)
         
-        # Upload to S3
-        self.s3.upload_file(domains_gz, self.s3_bucket, f"{self.s3_prefix}domains.txt.gz")
-        self.s3.upload_file(mapping_gz, self.s3_bucket, f"{self.s3_prefix}domain-ip-map.json.gz")
+        # Upload to S3 using multipart upload for large files
+        from boto3.s3.transfer import TransferConfig
+        
+        # Configure multipart upload: 100MB chunks, 10 concurrent threads
+        transfer_config = TransferConfig(
+            multipart_threshold=100 * 1024 * 1024,  # 100MB threshold
+            max_concurrency=10,
+            multipart_chunksize=100 * 1024 * 1024,  # 100MB chunks
+            use_threads=True
+        )
+        
+        logger.info(f"Uploading domains.txt.gz ({domains_size / 1024 / 1024:.1f} MB)...")
+        self.s3.upload_file(
+            domains_gz, 
+            self.s3_bucket, 
+            f"{self.s3_prefix}domains.txt.gz",
+            Config=transfer_config
+        )
+        
+        logger.info(f"Uploading domain-ip-map.json.gz ({mapping_size / 1024 / 1024:.1f} MB)...")
+        self.s3.upload_file(
+            mapping_gz, 
+            self.s3_bucket, 
+            f"{self.s3_prefix}domain-ip-map.json.gz",
+            Config=transfer_config
+        )
         
         # Create and upload metadata
         metadata = SNIIndexMetadata(
@@ -655,6 +656,247 @@ class SNIIndexBuilder:
         
         logger.info(f"SNI index uploaded: {result}")
         return result
+    
+    async def _download_txt_streaming(self, provider: str) -> tuple:
+        """
+        Stream download large .txt files to avoid memory issues.
+        
+        The .txt files are ~100-500MB each and contain lines like:
+        IP_ADDRESS DOMAIN1 DOMAIN2 DOMAIN3 ...
+        
+        Returns:
+            Tuple of (set of reversed domains, dict of domain->ip mapping)
+        """
+        url = f"{SNI_SOURCE_BASE}/{provider}/ipv4_merged_sni.txt"
+        logger.info(f"Streaming download: {url}")
+        
+        domains: Set[str] = set()
+        mapping: Dict[str, Dict[str, Any]] = {}
+        
+        # Use longer timeout and streaming for large files
+        timeout = httpx.Timeout(
+            connect=60.0,      # 60s to connect
+            read=600.0,        # 10 minutes read timeout per chunk
+            write=60.0,
+            pool=60.0
+        )
+        
+        # Create limits for connection pooling
+        limits = httpx.Limits(
+            max_keepalive_connections=5,
+            max_connections=10,
+            keepalive_expiry=30.0
+        )
+        
+        line_count = 0
+        domain_count = 0
+        
+        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    raise Exception(f"HTTP {response.status_code} for {url}")
+                
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    logger.info(f"File size: {int(content_length) / 1024 / 1024:.1f} MB")
+                
+                buffer = ""
+                bytes_received = 0
+                last_log = datetime.utcnow()
+                
+                async for chunk in response.aiter_text(chunk_size=1024 * 1024):  # 1MB chunks
+                    bytes_received += len(chunk.encode('utf-8'))
+                    buffer += chunk
+                    
+                    # Process complete lines
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        
+                        if not line:
+                            continue
+                        
+                        line_count += 1
+                        
+                        # Parse line: IP DOMAIN1 DOMAIN2 ...
+                        parts = line.split()
+                        if len(parts) < 2:
+                            continue
+                        
+                        ip = parts[0]
+                        
+                        for domain in parts[1:]:
+                            domain = domain.lower().strip()
+                            if domain and "." in domain:
+                                reversed_d = self._reverse_domain(domain)
+                                domains.add(reversed_d)
+                                
+                                if domain not in mapping:
+                                    mapping[domain] = {
+                                        "ips": [],
+                                        "provider": provider
+                                    }
+                                if ip not in mapping[domain]["ips"]:
+                                    mapping[domain]["ips"].append(ip)
+                                
+                                domain_count += 1
+                    
+                    # Log progress every 30 seconds
+                    now = datetime.utcnow()
+                    if (now - last_log).total_seconds() > 30:
+                        mb_received = bytes_received / 1024 / 1024
+                        logger.info(f"  {provider}: {mb_received:.1f} MB, {line_count:,} lines, {domain_count:,} domains")
+                        last_log = now
+                
+                # Process any remaining buffer
+                if buffer.strip():
+                    line = buffer.strip()
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        ip = parts[0]
+                        for domain in parts[1:]:
+                            domain = domain.lower().strip()
+                            if domain and "." in domain:
+                                reversed_d = self._reverse_domain(domain)
+                                domains.add(reversed_d)
+                                if domain not in mapping:
+                                    mapping[domain] = {"ips": [ip], "provider": provider}
+        
+        logger.info(f"  {provider} complete: {line_count:,} lines, {len(domains):,} unique domains")
+        return domains, mapping
+    
+    async def _download_json_gz(self, provider: str) -> tuple:
+        """
+        Download the smaller .json.gz files (original method).
+        
+        Returns:
+            Tuple of (set of reversed domains, dict of domain->ip mapping)
+        """
+        url = f"{SNI_SOURCE_BASE}/{provider}/ipv4_merged_sni.json.gz"
+        logger.info(f"Downloading {url}")
+        
+        domains: Set[str] = set()
+        mapping: Dict[str, Dict[str, Any]] = {}
+        
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.get(url)
+            
+            if response.status_code != 200:
+                raise Exception(f"HTTP {response.status_code} for {url}")
+            
+            # Decompress and parse
+            content = gzip.decompress(response.content)
+            data = json.loads(content)
+            
+            # Parse format: {ip: [sni1, sni2, ...]} or {ip: {sni, port, ...}}
+            if isinstance(data, dict):
+                for ip, snis in data.items():
+                    if isinstance(snis, list):
+                        for sni in snis:
+                            if isinstance(sni, str):
+                                domain = sni.lower().strip()
+                            elif isinstance(sni, dict):
+                                domain = sni.get("sni", "").lower().strip()
+                            else:
+                                continue
+                            
+                            if domain and "." in domain:
+                                reversed_d = self._reverse_domain(domain)
+                                domains.add(reversed_d)
+                                
+                                if domain not in mapping:
+                                    mapping[domain] = {"ips": [], "provider": provider}
+                                if ip not in mapping[domain]["ips"]:
+                                    mapping[domain]["ips"].append(ip)
+                    
+                    elif isinstance(snis, str):
+                        domain = snis.lower().strip()
+                        if domain and "." in domain:
+                            reversed_d = self._reverse_domain(domain)
+                            domains.add(reversed_d)
+                            
+                            if domain not in mapping:
+                                mapping[domain] = {"ips": [ip], "provider": provider}
+        
+        return domains, mapping
+    
+    async def _read_from_s3(self, provider: str, s3_prefix: str) -> tuple:
+        """
+        Read SNI data from S3 bucket (pre-uploaded raw files).
+        
+        Expects files at: s3://bucket/{s3_prefix}{provider}_ipv4_merged_sni.txt
+        
+        Returns:
+            Tuple of (set of reversed domains, dict of domain->ip mapping)
+        """
+        s3_key = f"{s3_prefix}{provider}_ipv4_merged_sni.txt"
+        logger.info(f"Reading from S3: s3://{self.s3_bucket}/{s3_key}")
+        
+        domains: Set[str] = set()
+        mapping: Dict[str, Dict[str, Any]] = {}
+        
+        # Download to temp file and process
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".txt") as tmp:
+            tmp_path = tmp.name
+        
+        try:
+            # Download from S3
+            logger.info(f"Downloading {s3_key} to {tmp_path}...")
+            self.s3.download_file(self.s3_bucket, s3_key, tmp_path)
+            
+            file_size = os.path.getsize(tmp_path)
+            logger.info(f"Downloaded {file_size / 1024 / 1024:.1f} MB")
+            
+            # Process the file line by line
+            line_count = 0
+            domain_count = 0
+            last_log = datetime.utcnow()
+            
+            with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    line_count += 1
+                    
+                    # Parse line: IP DOMAIN1 DOMAIN2 ...
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+                    
+                    ip = parts[0]
+                    
+                    for domain in parts[1:]:
+                        domain = domain.lower().strip()
+                        if domain and "." in domain:
+                            reversed_d = self._reverse_domain(domain)
+                            domains.add(reversed_d)
+                            
+                            if domain not in mapping:
+                                mapping[domain] = {
+                                    "ips": [],
+                                    "provider": provider
+                                }
+                            if ip not in mapping[domain]["ips"]:
+                                mapping[domain]["ips"].append(ip)
+                            
+                            domain_count += 1
+                    
+                    # Log progress every 30 seconds
+                    now = datetime.utcnow()
+                    if (now - last_log).total_seconds() > 30:
+                        logger.info(f"  {provider}: {line_count:,} lines, {domain_count:,} domains")
+                        last_log = now
+            
+            logger.info(f"  {provider} complete: {line_count:,} lines, {len(domains):,} unique domains")
+            
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        
+        return domains, mapping
     
     def _reverse_domain(self, domain: str) -> str:
         parts = domain.lower().split(".")

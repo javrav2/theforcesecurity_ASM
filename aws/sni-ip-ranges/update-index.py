@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 async def build_index(
     s3_bucket: str,
     providers: list = None,
-    s3_prefix: str = "sni-ip-ranges/"
+    s3_prefix: str = "sni-ip-ranges/",
+    use_txt_files: bool = True,
+    from_s3_prefix: str = None
 ):
     """Build and upload SNI index to S3."""
     from backend.app.services.sni_s3_service import SNIIndexBuilder, CLOUD_PROVIDERS
@@ -50,10 +52,15 @@ async def build_index(
     logger.info("=" * 60)
     logger.info("SNI IP Ranges Index Builder")
     logger.info("=" * 60)
-    logger.info(f"Source: https://kaeferjaeger.gay/?dir=sni-ip-ranges")
     logger.info(f"S3 Bucket: {s3_bucket}")
-    logger.info(f"S3 Prefix: {s3_prefix}")
+    logger.info(f"Output Prefix: {s3_prefix}")
     logger.info(f"Providers: {providers or 'all'}")
+    
+    if from_s3_prefix:
+        logger.info(f"Source: S3 (s3://{s3_bucket}/{from_s3_prefix})")
+    else:
+        logger.info(f"Source: https://kaeferjaeger.gay/?dir=sni-ip-ranges")
+        logger.info(f"Source files: {'TXT (large, streaming)' if use_txt_files else 'JSON.GZ (smaller)'}")
     
     if providers:
         invalid = [p for p in providers if p not in CLOUD_PROVIDERS]
@@ -67,7 +74,11 @@ async def build_index(
         s3_prefix=s3_prefix
     )
     
-    result = await builder.build_and_upload(providers=providers)
+    result = await builder.build_and_upload(
+        providers=providers, 
+        use_txt_files=use_txt_files,
+        from_s3_prefix=from_s3_prefix
+    )
     
     if result.get("success"):
         logger.info("\n" + "=" * 60)
@@ -170,8 +181,28 @@ def main():
         type=str,
         help="Primary domain for test search"
     )
+    parser.add_argument(
+        "--use-txt",
+        action="store_true",
+        default=True,
+        help="Use large .txt files with streaming (default: True)"
+    )
+    parser.add_argument(
+        "--use-json",
+        action="store_true",
+        help="Use smaller .json.gz files instead of .txt"
+    )
+    parser.add_argument(
+        "--from-s3",
+        type=str,
+        metavar="PREFIX",
+        help="Read raw files from S3 instead of source URL (e.g., 'sni-ip-ranges/raw/')"
+    )
     
     args = parser.parse_args()
+    
+    # Determine which source files to use
+    use_txt = not args.use_json
     
     if args.test_search:
         asyncio.run(test_search(
@@ -184,7 +215,9 @@ def main():
         asyncio.run(build_index(
             s3_bucket=args.bucket,
             providers=providers,
-            s3_prefix=args.prefix
+            s3_prefix=args.prefix,
+            use_txt_files=use_txt,
+            from_s3_prefix=args.from_s3
         ))
 
 

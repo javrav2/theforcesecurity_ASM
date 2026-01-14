@@ -68,11 +68,25 @@ AWS_SECRET_ACCESS_KEY=your-secret
 # Install dependencies
 pip install boto3 httpx
 
-# Run the update script
+# Run the update script (uses large .txt files by default)
 python update-index.py --bucket my-asm-data
 
-# This takes 5-15 minutes depending on network speed
+# Use smaller JSON files instead (faster but less complete data)
+python update-index.py --bucket my-asm-data --use-json
+
+# Process only specific providers
+python update-index.py --bucket my-asm-data --providers amazon,google
 ```
+
+**Expected Duration:**
+- With `--use-txt` (default): 30-60 minutes per provider (large files ~100-500MB each)
+- With `--use-json`: 5-15 minutes total (smaller files)
+
+**Source Files:**
+| File Type | Size | Data |
+|-----------|------|------|
+| `ipv4_merged_sni.txt` | 100-500 MB each | IP + all domains on same line |
+| `ipv4_merged_sni.json.gz` | 10-50 MB each | Compressed JSON structure |
 
 ### 4. Schedule Weekly Updates
 
@@ -214,12 +228,41 @@ aws s3 cp s3://your-bucket/sni-ip-ranges/metadata.json -
 
 ### Download failures
 ```bash
-# Test direct download from source
+# Test direct download from source (JSON - smaller)
 curl -I https://kaeferjaeger.gay/sni-ip-ranges/amazon/ipv4_merged_sni.json.gz
+
+# Test TXT file (large - check headers only)
+curl -I https://kaeferjaeger.gay/sni-ip-ranges/amazon/ipv4_merged_sni.txt
 ```
+
+### Large file download timeouts
+The `.txt` files can be 100-500MB each. If downloads fail:
+
+1. **Check network speed** - Need stable connection for 30-60 minute downloads
+2. **Use EC2 in same region** - Download from an EC2 instance for faster speeds
+3. **Try one provider at a time**:
+   ```bash
+   python update-index.py --bucket my-bucket --providers amazon
+   python update-index.py --bucket my-bucket --providers google
+   # etc.
+   ```
+4. **Fall back to JSON files** (less data but much faster):
+   ```bash
+   python update-index.py --bucket my-bucket --use-json
+   ```
 
 ### Memory issues
 Increase container memory or use streaming search instead of loading all into memory.
+
+### Large file sizes
+The TXT source files are:
+- `amazon/ipv4_merged_sni.txt` - ~200-400 MB
+- `google/ipv4_merged_sni.txt` - ~100-200 MB  
+- `microsoft/ipv4_merged_sni.txt` - ~150-300 MB
+- `oracle/ipv4_merged_sni.txt` - ~50-100 MB
+- `digitalocean/ipv4_merged_sni.txt` - ~20-50 MB
+
+The script uses streaming downloads to avoid memory issues.
 
 ## Source Data
 
