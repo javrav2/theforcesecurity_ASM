@@ -276,6 +276,26 @@ CONTINUOUS_SCAN_TYPES = {
             "dns_bruteforce": False,
         }
     },
+    "paramspider": {
+        "name": "Parameter Discovery (ParamSpider)",
+        "description": "Discover URL parameters from web archives for vulnerability testing. Finds XSS, SQLi, and other injection points.",
+        "default_config": {
+            "level": "high",
+            "timeout": 300,
+            "exclude_extensions": ["css", "js", "png", "jpg", "jpeg", "gif", "svg", "ico", "woff", "woff2"],
+        },
+        "recommended_frequency": "weekly",
+    },
+    "waybackurls": {
+        "name": "Historical URL Discovery (WaybackURLs)",
+        "description": "Fetch historical URLs from Wayback Machine to find forgotten endpoints, old configs, and sensitive files.",
+        "default_config": {
+            "include_subdomains": True,
+            "timeout_per_domain": 120,
+            "max_concurrent": 3,
+        },
+        "recommended_frequency": "weekly",
+    },
 }
 
 

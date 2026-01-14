@@ -185,6 +185,8 @@ class ScannerWorker:
                 ScanType.DNS_ENUM: 'DNS_RESOLUTION',  # Alias
                 ScanType.LOGIN_PORTAL: 'LOGIN_PORTAL',
                 ScanType.SCREENSHOT: 'SCREENSHOT',
+                ScanType.PARAMSPIDER: 'PARAMSPIDER',
+                ScanType.WAYBACKURLS: 'WAYBACKURLS',
             }
             
             job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
@@ -252,6 +254,10 @@ class ScannerWorker:
                 await self.handle_login_portal_scan(body)
             elif job_type == 'SCREENSHOT':
                 await self.handle_screenshot_scan(body)
+            elif job_type == 'PARAMSPIDER':
+                await self.handle_paramspider_scan(body)
+            elif job_type == 'WAYBACKURLS':
+                await self.handle_waybackurls_scan(body)
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
@@ -1338,6 +1344,239 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"Screenshot scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_paramspider_scan(self, job_data: dict):
+        """
+        Handle ParamSpider parameter discovery scan.
+        
+        Discovers URL parameters from web archives for vulnerability testing.
+        Updates assets with discovered parameters, endpoints, and JS files.
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Discovering URL parameters"
+                db.commit()
+            
+            from app.services.paramspider_service import ParamSpiderService
+            paramspider = ParamSpiderService()
+            
+            # If no specific targets, get domains from the organization
+            if not targets:
+                domain_assets = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                    Asset.is_live == True
+                ).limit(config.get('max_domains', 50)).all()
+                targets = [a.value for a in domain_assets]
+            
+            logger.info(f"Running ParamSpider on {len(targets)} targets")
+            
+            total_urls = 0
+            total_params = 0
+            total_endpoints = 0
+            total_js_files = 0
+            assets_updated = 0
+            
+            for target in targets:
+                try:
+                    result = await paramspider.scan_domain(
+                        domain=target,
+                        level=config.get('level', 'high'),
+                        timeout=config.get('timeout', 300)
+                    )
+                    
+                    if result.success:
+                        total_urls += len(result.urls)
+                        total_params += len(result.parameters)
+                        total_endpoints += len(result.endpoints)
+                        total_js_files += len(result.js_files)
+                        
+                        # Update the asset with discovered data
+                        asset = db.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.value == target
+                        ).first()
+                        
+                        if asset:
+                            # Merge with existing data
+                            existing_endpoints = asset.endpoints or []
+                            existing_params = asset.parameters or []
+                            existing_js = asset.js_files or []
+                            
+                            asset.endpoints = list(set(existing_endpoints + result.endpoints[:500]))
+                            asset.parameters = list(set(existing_params + result.parameters))
+                            asset.js_files = list(set(existing_js + result.js_files[:100]))
+                            asset.last_seen = datetime.utcnow()
+                            assets_updated += 1
+                        
+                        logger.info(f"ParamSpider for {target}: {len(result.parameters)} params, {len(result.endpoints)} endpoints")
+                    else:
+                        logger.warning(f"ParamSpider failed for {target}: {result.error}")
+                        
+                except Exception as e:
+                    logger.warning(f"ParamSpider error for {target}: {e}")
+            
+            db.commit()
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.assets_discovered = total_params
+                scan.results = {
+                    'domains_scanned': len(targets),
+                    'total_urls': total_urls,
+                    'total_parameters': total_params,
+                    'total_endpoints': total_endpoints,
+                    'total_js_files': total_js_files,
+                    'assets_updated': assets_updated,
+                }
+                db.commit()
+            
+            logger.info(f"ParamSpider scan complete: {total_params} params, {total_endpoints} endpoints from {len(targets)} domains")
+            
+        except Exception as e:
+            logger.error(f"ParamSpider scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_waybackurls_scan(self, job_data: dict):
+        """
+        Handle WaybackURLs historical URL discovery scan.
+        
+        Fetches historical URLs from Wayback Machine to find:
+        - Forgotten endpoints
+        - Old config files
+        - Sensitive files
+        - API endpoints
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Fetching historical URLs"
+                db.commit()
+            
+            from app.services.waybackurls_service import WaybackURLsService
+            wayback = WaybackURLsService(db)
+            
+            # If no specific targets, get domains from the organization
+            if not targets:
+                domain_assets = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
+                ).limit(config.get('max_domains', 100)).all()
+                targets = [a.value for a in domain_assets]
+            
+            logger.info(f"Running WaybackURLs on {len(targets)} targets")
+            
+            # Use the batch fetch
+            results = await wayback.fetch_urls_batch(
+                domains=targets,
+                no_subs=not config.get('include_subdomains', True),
+                timeout=config.get('timeout_per_domain', 120),
+                max_concurrent=config.get('max_concurrent', 3)
+            )
+            
+            total_urls = 0
+            total_interesting = 0
+            assets_updated = 0
+            
+            for result in results:
+                if result.success:
+                    total_urls += len(result.urls)
+                    total_interesting += len(result.interesting_urls)
+                    
+                    # Update the asset with discovered data
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == result.domain
+                    ).first()
+                    
+                    if asset:
+                        # Store in metadata
+                        if not asset.metadata_:
+                            asset.metadata_ = {}
+                        
+                        asset.metadata_['wayback_urls_count'] = len(result.urls)
+                        asset.metadata_['wayback_interesting_count'] = len(result.interesting_urls)
+                        asset.metadata_['wayback_extensions'] = result.file_extensions
+                        asset.metadata_['wayback_last_scan'] = datetime.utcnow().isoformat()
+                        
+                        # Store unique paths as endpoints
+                        existing_endpoints = asset.endpoints or []
+                        asset.endpoints = list(set(existing_endpoints + result.unique_paths[:500]))
+                        
+                        asset.last_seen = datetime.utcnow()
+                        assets_updated += 1
+            
+            db.commit()
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.assets_discovered = total_interesting
+                scan.results = {
+                    'domains_scanned': len(targets),
+                    'total_urls': total_urls,
+                    'interesting_urls': total_interesting,
+                    'assets_updated': assets_updated,
+                }
+                db.commit()
+            
+            logger.info(f"WaybackURLs scan complete: {total_urls} URLs, {total_interesting} interesting from {len(targets)} domains")
+            
+        except Exception as e:
+            logger.error(f"WaybackURLs scan failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:

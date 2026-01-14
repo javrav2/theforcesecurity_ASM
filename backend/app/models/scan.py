@@ -22,6 +22,8 @@ class ScanType(str, enum.Enum):
     VULNERABILITY = "vulnerability"    # Vulnerability scanning
     LOGIN_PORTAL = "login_portal"      # Login portal & admin panel detection
     SCREENSHOT = "screenshot"          # Web screenshot capture
+    PARAMSPIDER = "paramspider"        # URL parameter discovery
+    WAYBACKURLS = "waybackurls"        # Historical URL discovery
     FULL = "full"                      # Complete discovery + all scans
 
 

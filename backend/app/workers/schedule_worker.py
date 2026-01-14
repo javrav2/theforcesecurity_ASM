@@ -229,6 +229,8 @@ class ScheduleWorker:
             "subdomain_enum": ScanType.SUBDOMAIN_ENUM,
             "login_portal": ScanType.LOGIN_PORTAL,
             "screenshot": ScanType.SCREENSHOT,
+            "paramspider": ScanType.PARAMSPIDER,
+            "waybackurls": ScanType.WAYBACKURLS,
         }
         
         scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)
