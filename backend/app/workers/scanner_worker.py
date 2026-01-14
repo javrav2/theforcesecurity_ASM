@@ -226,6 +226,7 @@ class ScannerWorker:
                 ScanType.WAYBACKURLS: 'WAYBACKURLS',
                 ScanType.KATANA: 'KATANA',
                 ScanType.CLEANUP: 'CLEANUP',
+                ScanType.TECHNOLOGY: 'TECHNOLOGY_SCAN',
             }
             
             messages = []
@@ -308,6 +309,8 @@ class ScannerWorker:
                 await self.handle_katana_scan(body)
             elif job_type == 'CLEANUP':
                 await self.handle_cleanup(body)
+            elif job_type == 'TECHNOLOGY_SCAN':
+                await self.handle_technology_scan(body)
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
@@ -1863,6 +1866,127 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"Cleanup failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_technology_scan(self, job_data: dict):
+        """
+        Handle technology detection scan job.
+        
+        Detects web technologies on domains/subdomains using:
+        - Wappalyzer (local fingerprinting - fast, 150+ technologies)
+        - WhatRuns API (comprehensive - CMS, JS libs, fonts, analytics, security)
+        
+        Results are stored:
+        - In the technologies table
+        - Associated with assets via asset_technologies
+        - As tech:xxx labels for filtering
+        
+        Config options:
+        - source: "wappalyzer", "whatruns", or "both" (default: "both")
+        - max_hosts: Maximum hosts to scan (default: 500)
+        - only_live: Only scan assets marked as is_live (default: false)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        source = config.get('source', 'both')  # wappalyzer, whatruns, or both
+        max_hosts = config.get('max_hosts', 500)
+        only_live = config.get('only_live', False)
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = f"Detecting technologies using {source}"
+                db.commit()
+            
+            from app.services.technology_scan_service import run_technology_scan_for_hosts
+            
+            # If no specific targets, get domains/subdomains from the organization
+            if not targets:
+                query = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
+                )
+                
+                if only_live:
+                    query = query.filter(Asset.is_live == True)
+                
+                domain_assets = query.limit(max_hosts).all()
+                targets = [a.value for a in domain_assets]
+            
+            if not targets:
+                logger.warning(f"No targets found for technology scan {scan_id}")
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    scan.completed_at = datetime.utcnow()
+                    scan.results = {
+                        'message': 'No domains/subdomains to scan',
+                        'targets': 0
+                    }
+                    db.commit()
+                return
+            
+            logger.info(f"Starting technology scan for {len(targets)} targets with source={source}")
+            
+            # Close db before running the scan (it creates its own session)
+            db.close()
+            db = None
+            
+            # Run technology scan
+            result = run_technology_scan_for_hosts(
+                organization_id=organization_id,
+                hosts=targets,
+                max_hosts=max_hosts,
+                source=source
+            )
+            
+            # Reopen db for final update
+            db = self.get_db_session()
+            
+            # Update scan record
+            if db:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    scan.completed_at = datetime.utcnow()
+                    scan.current_step = None
+                    scan.technologies_found = result.get('technologies_found', 0)
+                    scan.assets_discovered = result.get('hosts_scanned', 0)
+                    scan.results = {
+                        'total_hosts': result.get('total_hosts', 0),
+                        'hosts_scanned': result.get('hosts_scanned', 0),
+                        'technologies_found': result.get('technologies_found', 0),
+                        'source': source,
+                    }
+                    db.commit()
+            
+            logger.info(
+                f"Technology scan complete: {result.get('technologies_found', 0)} technologies "
+                f"on {result.get('hosts_scanned', 0)}/{result.get('total_hosts', 0)} hosts"
+            )
+            
+        except Exception as e:
+            logger.error(f"Technology scan failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:
