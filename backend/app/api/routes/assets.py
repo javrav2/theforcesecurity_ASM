@@ -1,8 +1,9 @@
 """Asset routes for attack surface management."""
 
-from typing import List, Optional
+import logging
+from typing import List, Optional, Literal
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -14,6 +15,8 @@ from app.schemas.asset import (
     AssetPortsSummary, PortServiceSummary, PaginatedAssetsResponse
 )
 from app.api.deps import get_current_active_user, require_analyst
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
 
@@ -1596,4 +1599,380 @@ def update_asset_investigation_notes(
         "in_scope": asset.in_scope,
         "is_owned": asset.is_owned,
         "message": "Investigation notes updated"
+    }
+
+
+# =============================================================================
+# Technology Detection Endpoints
+# =============================================================================
+
+TechSource = Literal["wappalyzer", "whatruns", "both"]
+
+
+@router.post("/scan-technologies")
+async def scan_assets_technologies(
+    organization_id: int = Query(..., description="Organization ID"),
+    source: TechSource = Query("both", description="Technology detection source: wappalyzer, whatruns, or both"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum assets to scan"),
+    only_live: bool = Query(False, description="Only scan assets marked as is_live"),
+    background_tasks: BackgroundTasks = None,
+    run_in_background: bool = Query(False, description="Run scan in background"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Scan assets for technologies using Wappalyzer, WhatRuns, or both.
+    
+    Technology detection sources:
+    - **wappalyzer**: Local fingerprint matching (fast, limited signatures)
+    - **whatruns**: WhatRuns API (comprehensive, includes CMS, JS libs, fonts, analytics, security headers)
+    - **both**: Use both sources for maximum coverage (recommended)
+    
+    The scan will:
+    1. Detect technologies on each domain/subdomain
+    2. Associate technologies with the asset
+    3. Create tech:xxx labels for filtering
+    
+    Example:
+    ```
+    POST /api/v1/assets/scan-technologies?organization_id=1&source=both&limit=50
+    ```
+    """
+    from app.services.technology_scan_service import run_technology_scan_for_hosts
+    
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get assets to scan
+    query = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
+    )
+    
+    if only_live:
+        query = query.filter(Asset.is_live == True)
+    
+    assets = query.limit(limit).all()
+    
+    if not assets:
+        return {"scanned": 0, "message": "No assets to scan"}
+    
+    hosts = [asset.value for asset in assets]
+    
+    if run_in_background and background_tasks:
+        # Run in background
+        background_tasks.add_task(
+            run_technology_scan_for_hosts,
+            organization_id=organization_id,
+            hosts=hosts,
+            max_hosts=limit,
+            source=source,
+        )
+        return {
+            "status": "queued",
+            "hosts_queued": len(hosts),
+            "source": source,
+            "message": f"Technology scan queued for {len(hosts)} hosts in background"
+        }
+    
+    # Run synchronously
+    result = run_technology_scan_for_hosts(
+        organization_id=organization_id,
+        hosts=hosts,
+        max_hosts=limit,
+        source=source,
+    )
+    
+    return result
+
+
+@router.post("/{asset_id}/scan-technologies")
+async def scan_single_asset_technologies(
+    asset_id: int,
+    source: TechSource = Query("both", description="Technology detection source"),
+    url: Optional[str] = Query(None, description="Specific URL to scan (defaults to https://{asset})"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Scan a single asset for technologies.
+    
+    Use this to manually trigger technology detection for a specific asset.
+    
+    Returns the list of detected technologies.
+    """
+    from app.services.wappalyzer_service import WappalyzerService
+    from app.services.whatruns_service import get_whatruns_service
+    from app.services.technology_scan_service import _get_or_create_technology
+    from app.services.asset_labeling_service import add_tech_to_asset
+    
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if asset.asset_type not in [AssetType.DOMAIN, AssetType.SUBDOMAIN]:
+        raise HTTPException(
+            status_code=400, 
+            detail="Technology scanning is only available for domain and subdomain assets"
+        )
+    
+    hostname = asset.value
+    scan_url = url or f"https://{hostname}/"
+    
+    all_techs = []
+    
+    # Wappalyzer detection
+    if source in ("wappalyzer", "both"):
+        try:
+            wappalyzer = WappalyzerService()
+            wap_techs = await wappalyzer.analyze_url(scan_url)
+            if wap_techs:
+                all_techs.extend(wap_techs)
+                logger.info(f"Wappalyzer found {len(wap_techs)} technologies for {hostname}")
+        except Exception as e:
+            logger.warning(f"Wappalyzer scan failed for {hostname}: {e}")
+    
+    # WhatRuns detection
+    if source in ("whatruns", "both"):
+        try:
+            whatruns = get_whatruns_service()
+            wr_techs = await whatruns.detect_technologies(hostname, scan_url)
+            if wr_techs:
+                # Convert to DetectedTechnology format
+                for wt in wr_techs:
+                    all_techs.append(wt.to_detected_technology())
+                logger.info(f"WhatRuns found {len(wr_techs)} technologies for {hostname}")
+        except Exception as e:
+            logger.warning(f"WhatRuns scan failed for {hostname}: {e}")
+    
+    if not all_techs:
+        return {
+            "asset_id": asset_id,
+            "hostname": hostname,
+            "technologies": [],
+            "count": 0,
+            "message": "No technologies detected"
+        }
+    
+    # Deduplicate by slug
+    seen_slugs = set()
+    unique_techs = []
+    for dt in all_techs:
+        if dt.slug not in seen_slugs:
+            seen_slugs.add(dt.slug)
+            unique_techs.append(dt)
+    
+    # Save technologies to database
+    saved_techs = []
+    for dt in unique_techs:
+        db_tech = _get_or_create_technology(db, dt)
+        add_tech_to_asset(
+            db,
+            organization_id=asset.organization_id,
+            asset=asset,
+            tech=db_tech,
+            also_tag_asset=True,
+            tag_parent=False,
+        )
+        saved_techs.append({
+            "name": dt.name,
+            "slug": dt.slug,
+            "categories": dt.categories,
+            "confidence": dt.confidence,
+            "version": dt.version,
+            "website": dt.website,
+        })
+    
+    # Update asset live_url
+    asset.live_url = scan_url
+    asset.is_live = True
+    
+    db.commit()
+    
+    return {
+        "asset_id": asset_id,
+        "hostname": hostname,
+        "url_scanned": scan_url,
+        "source": source,
+        "technologies": saved_techs,
+        "count": len(saved_techs),
+        "message": f"Detected {len(saved_techs)} technologies"
+    }
+
+
+@router.get("/{asset_id}/technologies")
+def get_asset_technologies(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all technologies associated with an asset.
+    
+    Returns the list of detected technologies with their categories and metadata.
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get technologies through the relationship
+    technologies = []
+    for tech in asset.technologies:
+        technologies.append({
+            "id": tech.id,
+            "name": tech.name,
+            "slug": tech.slug,
+            "categories": tech.categories or [],
+            "website": tech.website,
+            "icon": tech.icon,
+            "cpe": tech.cpe,
+        })
+    
+    # Group by category
+    by_category = {}
+    for tech in technologies:
+        for cat in tech.get("categories", ["Other"]):
+            if cat not in by_category:
+                by_category[cat] = []
+            by_category[cat].append(tech["name"])
+    
+    return {
+        "asset_id": asset_id,
+        "hostname": asset.value,
+        "technologies": technologies,
+        "by_category": by_category,
+        "count": len(technologies)
+    }
+
+
+@router.post("/whatruns-test")
+async def test_whatruns_api(
+    hostname: str = Query(..., description="Hostname to test (e.g., example.com)"),
+    url: Optional[str] = Query(None, description="Specific URL to scan"),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Test the WhatRuns API with a specific hostname.
+    
+    This is useful for testing WhatRuns integration without saving results to database.
+    
+    Example:
+    ```
+    POST /api/v1/assets/whatruns-test?hostname=plex.my.site.com&url=https://plex.my.site.com/community/s/login/
+    ```
+    """
+    from app.services.whatruns_service import get_whatruns_service
+    
+    whatruns = get_whatruns_service()
+    
+    try:
+        techs = await whatruns.detect_technologies(hostname, url)
+        
+        # Group by category
+        by_category = {}
+        results = []
+        
+        for tech in techs:
+            results.append({
+                "name": tech.name,
+                "category": tech.category,
+                "website": tech.website,
+                "icon": tech.icon,
+                "is_theme": tech.is_theme,
+                "is_plugin": tech.is_plugin,
+            })
+            
+            cat = tech.category
+            if cat not in by_category:
+                by_category[cat] = []
+            by_category[cat].append(tech.name)
+        
+        return {
+            "hostname": hostname,
+            "url": url or f"https://{hostname}/",
+            "technologies": results,
+            "by_category": by_category,
+            "count": len(techs),
+            "status": "success"
+        }
+        
+    except Exception as e:
+        logger.error(f"WhatRuns test failed for {hostname}: {e}")
+        return {
+            "hostname": hostname,
+            "url": url,
+            "technologies": [],
+            "count": 0,
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@router.get("/technology-stats")
+def get_technology_statistics(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get technology statistics across assets.
+    
+    Returns counts of technologies grouped by category and name.
+    """
+    from sqlalchemy import func
+    from app.models.technology import Technology, asset_technologies
+    
+    # Build query based on organization access
+    if organization_id:
+        if not check_org_access(current_user, organization_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        org_filter = Asset.organization_id == organization_id
+    elif not current_user.is_superuser:
+        org_filter = Asset.organization_id == current_user.organization_id
+    else:
+        org_filter = True
+    
+    # Get all assets with technologies for this org
+    assets_with_tech = db.query(Asset).filter(
+        org_filter,
+        Asset.technologies.any()
+    ).all()
+    
+    # Count technologies
+    tech_counts = {}
+    category_counts = {}
+    
+    for asset in assets_with_tech:
+        for tech in asset.technologies:
+            # Count by tech name
+            if tech.name not in tech_counts:
+                tech_counts[tech.name] = {"count": 0, "slug": tech.slug, "categories": tech.categories or []}
+            tech_counts[tech.name]["count"] += 1
+            
+            # Count by category
+            for cat in (tech.categories or ["Other"]):
+                if cat not in category_counts:
+                    category_counts[cat] = 0
+                category_counts[cat] += 1
+    
+    # Sort by count
+    sorted_techs = sorted(tech_counts.items(), key=lambda x: x[1]["count"], reverse=True)
+    sorted_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    return {
+        "total_assets_with_technology": len(assets_with_tech),
+        "unique_technologies": len(tech_counts),
+        "technologies": [
+            {"name": name, **data}
+            for name, data in sorted_techs[:50]  # Top 50
+        ],
+        "by_category": dict(sorted_categories),
     }

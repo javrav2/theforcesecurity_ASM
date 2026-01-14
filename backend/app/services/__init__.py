@@ -2,6 +2,7 @@
 from app.services.dns_service import DNSService
 from app.services.subdomain_service import SubdomainService
 from app.services.wappalyzer_service import WappalyzerService
+from app.services.whatruns_service import WhatRunsService, get_whatruns_service
 from app.services.discovery_service import DiscoveryService
 from app.services.http_service import HTTPService
 from app.services.nuclei_service import NucleiService
@@ -20,6 +21,8 @@ __all__ = [
     "DNSService",
     "SubdomainService",
     "WappalyzerService",
+    "WhatRunsService",
+    "get_whatruns_service",
     "DiscoveryService",
     "HTTPService",
     "NucleiService",

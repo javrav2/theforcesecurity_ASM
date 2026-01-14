@@ -142,7 +142,14 @@ TOOLS = {
     },
     "wappalyzer": {
         "name": "Wappalyzer",
-        "description": "Technology detection for web applications",
+        "description": "Technology detection for web applications (local fingerprinting)",
+        "category": "technology",
+        "type": "builtin",
+        "configured": True,
+    },
+    "whatruns": {
+        "name": "WhatRuns",
+        "description": "Enhanced technology detection via WhatRuns API (CMS, JS frameworks, analytics, fonts, security)",
         "category": "technology",
         "type": "builtin",
         "configured": True,
