@@ -309,6 +309,18 @@ CONTINUOUS_SCAN_TYPES = {
         },
         "recommended_frequency": "weekly",
     },
+    "cleanup": {
+        "name": "System Cleanup",
+        "description": "Clean up old scan files, temporary files, and orphaned data. Frees disk space and maintains system health.",
+        "default_config": {
+            "screenshots_retention_days": 90,
+            "scan_files_retention_days": 30,
+            "temp_files_retention_days": 1,
+            "failed_scans_retention_days": 14,
+            "dry_run": False,
+        },
+        "recommended_frequency": "weekly",
+    },
 }
 
 

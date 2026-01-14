@@ -25,6 +25,7 @@ class ScanType(str, enum.Enum):
     PARAMSPIDER = "paramspider"        # URL parameter discovery
     WAYBACKURLS = "waybackurls"        # Historical URL discovery
     KATANA = "katana"                  # Deep web crawling with JS parsing
+    CLEANUP = "cleanup"                # System maintenance and file cleanup
     FULL = "full"                      # Complete discovery + all scans
 
 

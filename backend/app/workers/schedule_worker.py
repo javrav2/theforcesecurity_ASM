@@ -232,6 +232,7 @@ class ScheduleWorker:
             "paramspider": ScanType.PARAMSPIDER,
             "waybackurls": ScanType.WAYBACKURLS,
             "katana": ScanType.KATANA,
+            "cleanup": ScanType.CLEANUP,
         }
         
         scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)

@@ -188,6 +188,7 @@ class ScannerWorker:
                 ScanType.PARAMSPIDER: 'PARAMSPIDER',
                 ScanType.WAYBACKURLS: 'WAYBACKURLS',
                 ScanType.KATANA: 'KATANA',
+                ScanType.CLEANUP: 'CLEANUP',
             }
             
             job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
@@ -261,6 +262,8 @@ class ScannerWorker:
                 await self.handle_waybackurls_scan(body)
             elif job_type == 'KATANA':
                 await self.handle_katana_scan(body)
+            elif job_type == 'CLEANUP':
+                await self.handle_cleanup(body)
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
@@ -1733,6 +1736,89 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"Katana scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_cleanup(self, job_data: dict):
+        """
+        Handle system cleanup and maintenance task.
+        
+        Cleans up:
+        - Old scan result files
+        - Temporary files from scanning tools
+        - Old/orphaned screenshots
+        - Failed scan records
+        """
+        scan_id = job_data.get('scan_id')
+        config = job_data.get('config', {})
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running system cleanup"
+                db.commit()
+            
+            from app.services.cleanup_service import CleanupService
+            
+            cleanup = CleanupService(db)
+            
+            # Build retention config
+            retention_days = {
+                'screenshots': config.get('screenshots_retention_days', 90),
+                'scan_results': config.get('scan_files_retention_days', 30),
+                'temp_files': config.get('temp_files_retention_days', 1),
+                'failed_scans': config.get('failed_scans_retention_days', 14),
+            }
+            
+            dry_run = config.get('dry_run', False)
+            
+            logger.info(f"Running cleanup with retention: {retention_days}, dry_run={dry_run}")
+            
+            # Run full cleanup
+            stats = await cleanup.run_full_cleanup(
+                retention_days=retention_days,
+                dry_run=dry_run
+            )
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.results = {
+                    'files_deleted': stats.get('files_deleted', 0),
+                    'bytes_freed': stats.get('bytes_freed', 0),
+                    'mb_freed': round(stats.get('bytes_freed', 0) / 1024 / 1024, 2),
+                    'records_cleaned': stats.get('records_cleaned', 0),
+                    'errors': stats.get('errors', [])[:10],  # Limit errors in results
+                    'dry_run': dry_run,
+                }
+                db.commit()
+            
+            logger.info(
+                f"Cleanup complete: {stats.get('files_deleted', 0)} files deleted, "
+                f"{stats.get('bytes_freed', 0) / 1024 / 1024:.2f} MB freed"
+            )
+            
+        except Exception as e:
+            logger.error(f"Cleanup failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:
