@@ -42,7 +42,6 @@ import {
   Database,
   Mail,
   Server,
-  Trash2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
