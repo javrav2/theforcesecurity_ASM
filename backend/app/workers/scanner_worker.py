@@ -178,11 +178,13 @@ class ScannerWorker:
                 ScanType.VULNERABILITY: 'NUCLEI_SCAN',
                 ScanType.PORT_SCAN: 'PORT_SCAN',
                 ScanType.DISCOVERY: 'DISCOVERY',
+                ScanType.FULL: 'DISCOVERY',  # FULL uses the same discovery handler
                 ScanType.SUBDOMAIN_ENUM: 'SUBDOMAIN_ENUM',
                 ScanType.DNS_RESOLUTION: 'DNS_RESOLUTION',
                 ScanType.HTTP_PROBE: 'HTTP_PROBE',
                 ScanType.DNS_ENUM: 'DNS_RESOLUTION',  # Alias
                 ScanType.LOGIN_PORTAL: 'LOGIN_PORTAL',
+                ScanType.SCREENSHOT: 'SCREENSHOT',
             }
             
             job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
@@ -248,6 +250,8 @@ class ScannerWorker:
                 await self.handle_http_probe(body)
             elif job_type == 'LOGIN_PORTAL':
                 await self.handle_login_portal_scan(body)
+            elif job_type == 'SCREENSHOT':
+                await self.handle_screenshot_scan(body)
             else:
                 logger.warning(f"Unknown job type: {job_type}")
             
@@ -1253,6 +1257,75 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"Login portal scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = str(e)
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_screenshot_scan(self, job_data: dict):
+        """
+        Handle screenshot capture scan job.
+        
+        Captures screenshots of web assets using eyewitness or similar tools.
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Capturing screenshots"
+                db.commit()
+            
+            from app.services.screenshot_service import ScreenshotService
+            screenshot_service = ScreenshotService(db)
+            
+            screenshots_captured = 0
+            
+            # Process each target
+            for target in targets:
+                try:
+                    result = await screenshot_service.capture_screenshot(
+                        url=target if target.startswith('http') else f"https://{target}",
+                        organization_id=organization_id
+                    )
+                    if result:
+                        screenshots_captured += 1
+                except Exception as e:
+                    logger.warning(f"Screenshot failed for {target}: {e}")
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.assets_discovered = screenshots_captured
+                scan.results = {
+                    'screenshots_captured': screenshots_captured,
+                    'targets_processed': len(targets)
+                }
+                db.commit()
+            
+            logger.info(f"Screenshot scan complete: {screenshots_captured} screenshots captured")
+            
+        except Exception as e:
+            logger.error(f"Screenshot scan failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:

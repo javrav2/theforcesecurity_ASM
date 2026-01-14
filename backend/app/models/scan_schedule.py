@@ -229,6 +229,23 @@ CONTINUOUS_SCAN_TYPES = {
         "description": "Detect web technologies and frameworks",
         "default_config": {}
     },
+    "login_portal": {
+        "name": "Login Portal Detection",
+        "description": "Detect login pages, admin panels, and authentication endpoints using waybackurls and pattern matching",
+        "default_config": {
+            "include_subdomains": True,
+            "use_wayback": True,
+        }
+    },
+    "full_discovery": {
+        "name": "Full Asset Discovery",
+        "description": "Complete discovery including subdomains, DNS, HTTP probing, and technology detection",
+        "default_config": {
+            "passive": True,
+            "active": True,
+            "dns_bruteforce": False,
+        }
+    },
 }
 
 

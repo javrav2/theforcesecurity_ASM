@@ -216,12 +216,19 @@ class ScheduleWorker:
         # Map schedule scan_type to ScanType enum
         scan_type_map = {
             "nuclei": ScanType.VULNERABILITY,
+            "vulnerability": ScanType.VULNERABILITY,
             "port_scan": ScanType.PORT_SCAN,
             "masscan": ScanType.PORT_SCAN,
             "critical_ports": ScanType.PORT_SCAN,
             "discovery": ScanType.DISCOVERY,
-            "screenshot": ScanType.SCREENSHOT,
+            "full_discovery": ScanType.DISCOVERY,  # Alias for discovery
+            "full": ScanType.FULL,
             "technology": ScanType.TECHNOLOGY,
+            "http_probe": ScanType.HTTP_PROBE,
+            "dns_resolution": ScanType.DNS_RESOLUTION,
+            "subdomain_enum": ScanType.SUBDOMAIN_ENUM,
+            "login_portal": ScanType.LOGIN_PORTAL,
+            "screenshot": ScanType.SCREENSHOT,
         }
         
         scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)

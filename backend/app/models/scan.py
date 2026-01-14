@@ -21,6 +21,7 @@ class ScanType(str, enum.Enum):
     CERTIFICATE = "certificate"        # SSL/TLS certificate analysis
     VULNERABILITY = "vulnerability"    # Vulnerability scanning
     LOGIN_PORTAL = "login_portal"      # Login portal & admin panel detection
+    SCREENSHOT = "screenshot"          # Web screenshot capture
     FULL = "full"                      # Complete discovery + all scans
 
 
