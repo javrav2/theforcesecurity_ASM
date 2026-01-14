@@ -51,8 +51,16 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "20"))
 VISIBILITY_TIMEOUT = int(os.getenv("VISIBILITY_TIMEOUT", "3600"))
 
+# Multi-scan configuration
+MAX_CONCURRENT_SCANS = int(os.getenv("MAX_CONCURRENT_SCANS", "3"))  # Max parallel scans
+PRIORITY_AD_HOC = True  # Prioritize ad-hoc scans over scheduled
+
 # Global shutdown flag
 shutdown_requested = False
+
+# Active scans tracking
+active_scans = set()
+scan_semaphore = None  # Initialized in worker
 
 
 def _calculate_targets_expanded(targets: list) -> int:
@@ -91,17 +99,25 @@ def signal_handler(signum, frame):
 
 class ScannerWorker:
     """
-    Scanner worker that processes scan jobs from SQS.
+    Scanner worker that processes scan jobs from SQS or database.
+    
+    Features:
+    - Concurrent scan execution (configurable via MAX_CONCURRENT_SCANS)
+    - Priority handling (ad-hoc scans run before scheduled scans)
+    - Graceful shutdown with active scan tracking
     
     Job Types:
     - NUCLEI_SCAN: Run Nuclei vulnerability scan
     - PORT_SCAN: Run port scan (naabu/nmap/masscan)
     - DISCOVERY: Full asset discovery
     - SUBDOMAIN_ENUM: Subdomain enumeration
+    - And more...
     """
     
     def __init__(self):
         """Initialize the scanner worker."""
+        global scan_semaphore
+        
         # Database connection
         if DATABASE_URL:
             self.engine = create_engine(DATABASE_URL)
@@ -125,7 +141,11 @@ class ScannerWorker:
         self.port_scanner_service = PortScannerService()
         self._discovery_service = None  # Lazy initialized with db session
         
-        logger.info("Scanner worker initialized")
+        # Initialize semaphore for concurrent scan limiting
+        scan_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCANS)
+        self.scan_semaphore = scan_semaphore
+        
+        logger.info(f"Scanner worker initialized (max_concurrent={MAX_CONCURRENT_SCANS})")
     
     def get_discovery_service(self, db):
         """Get or create discovery service with db session."""
@@ -158,18 +178,35 @@ class ScannerWorker:
         return await self.poll_database_for_jobs()
     
     async def poll_database_for_jobs(self):
-        """Poll database for pending scans (local development mode)."""
+        """
+        Poll database for pending scans.
+        
+        Supports concurrent execution by fetching multiple scans.
+        Prioritizes ad-hoc scans (not triggered by scheduler) over scheduled scans.
+        """
         db = self.get_db_session()
         if not db:
             return []
         
         try:
-            # Find pending scans
-            pending_scan = db.query(Scan).filter(
-                Scan.status == ScanStatus.PENDING
-            ).order_by(Scan.created_at.asc()).first()
+            # Calculate how many more scans we can run
+            available_slots = MAX_CONCURRENT_SCANS - len(active_scans)
+            if available_slots <= 0:
+                await asyncio.sleep(5)  # Brief wait when at capacity
+                return []
             
-            if not pending_scan:
+            # Find pending scans, prioritizing ad-hoc over scheduled
+            # Ad-hoc scans don't have 'triggered_by_schedule' in config
+            pending_scans = db.query(Scan).filter(
+                Scan.status == ScanStatus.PENDING,
+                ~Scan.id.in_(active_scans)  # Exclude already active
+            ).order_by(
+                # Prioritize non-scheduled scans (ad-hoc)
+                Scan.config['triggered_by_schedule'].astext.is_(None).desc(),
+                Scan.created_at.asc()
+            ).limit(available_slots).all()
+            
+            if not pending_scans:
                 await asyncio.sleep(POLL_INTERVAL)
                 return []
             
@@ -191,34 +228,41 @@ class ScannerWorker:
                 ScanType.CLEANUP: 'CLEANUP',
             }
             
-            job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
-            config = pending_scan.config or {}
+            messages = []
+            for pending_scan in pending_scans:
+                job_type = job_type_map.get(pending_scan.scan_type, 'NUCLEI_SCAN')
+                config = pending_scan.config or {}
+                is_scheduled = config.get('triggered_by_schedule') is not None
+                
+                # Build job data with config values extracted
+                job_data = {
+                    'job_type': job_type,
+                    'scan_id': pending_scan.id,
+                    'organization_id': pending_scan.organization_id,
+                    'targets': pending_scan.targets or [],
+                    'config': config,
+                    'is_scheduled': is_scheduled,
+                    # Extract common config fields for easier access
+                    'scanner': config.get('scanner', 'naabu'),
+                    'ports': config.get('ports'),
+                    'severity': config.get('severity'),
+                    'tags': config.get('tags'),
+                    'exclude_tags': config.get('exclude_tags'),
+                    'service_detection': config.get('service_detection', True),
+                    'domain': pending_scan.targets[0] if pending_scan.targets else None,
+                }
+                
+                message = {
+                    'MessageId': f'db-{pending_scan.id}',
+                    'ReceiptHandle': f'db-{pending_scan.id}',
+                    'Body': json.dumps(job_data)
+                }
+                messages.append(message)
+                
+                scan_type_str = 'scheduled' if is_scheduled else 'ad-hoc'
+                logger.info(f"Found {scan_type_str} scan {pending_scan.id} ({pending_scan.scan_type.value})")
             
-            # Build job data with config values extracted
-            job_data = {
-                'job_type': job_type,
-                'scan_id': pending_scan.id,
-                'organization_id': pending_scan.organization_id,
-                'targets': pending_scan.targets or [],
-                'config': config,
-                # Extract common config fields for easier access
-                'scanner': config.get('scanner', 'naabu'),
-                'ports': config.get('ports'),
-                'severity': config.get('severity'),
-                'tags': config.get('tags'),
-                'exclude_tags': config.get('exclude_tags'),
-                'service_detection': config.get('service_detection', True),
-                'domain': pending_scan.targets[0] if pending_scan.targets else None,
-            }
-            
-            message = {
-                'MessageId': f'db-{pending_scan.id}',
-                'ReceiptHandle': f'db-{pending_scan.id}',
-                'Body': json.dumps(job_data)
-            }
-            
-            logger.info(f"Found pending scan {pending_scan.id} ({pending_scan.scan_type.value})")
-            return [message]
+            return messages
             
         except Exception as e:
             logger.error(f"Error polling database: {e}")
@@ -1831,22 +1875,67 @@ class ScannerWorker:
             if db:
                 db.close()
     
+    async def _process_with_semaphore(self, message: dict):
+        """Process a message with semaphore limiting."""
+        scan_id = None
+        try:
+            body = json.loads(message.get('Body', '{}'))
+            scan_id = body.get('scan_id')
+            
+            # Track active scan
+            if scan_id:
+                active_scans.add(scan_id)
+            
+            async with self.scan_semaphore:
+                await self.process_message(message)
+                
+        except Exception as e:
+            logger.error(f"Error processing scan {scan_id}: {e}", exc_info=True)
+        finally:
+            # Remove from active scans
+            if scan_id:
+                active_scans.discard(scan_id)
+    
     async def run(self):
-        """Main worker loop."""
-        logger.info("Starting scanner worker...")
+        """
+        Main worker loop with concurrent scan processing.
+        
+        Features:
+        - Runs up to MAX_CONCURRENT_SCANS in parallel
+        - Prioritizes ad-hoc scans over scheduled scans
+        - Graceful shutdown with active scan tracking
+        """
+        logger.info(f"Starting scanner worker (max_concurrent={MAX_CONCURRENT_SCANS})...")
+        
+        pending_tasks = set()
         
         while not shutdown_requested:
             try:
                 messages = await self.poll_for_jobs()
                 
+                # Create tasks for each message
                 for message in messages:
                     if shutdown_requested:
                         break
-                    await self.process_message(message)
+                    
+                    # Create task for concurrent processing
+                    task = asyncio.create_task(self._process_with_semaphore(message))
+                    pending_tasks.add(task)
+                    task.add_done_callback(pending_tasks.discard)
+                
+                # Clean up completed tasks
+                done_tasks = [t for t in pending_tasks if t.done()]
+                for task in done_tasks:
+                    pending_tasks.discard(task)
                     
             except Exception as e:
                 logger.error(f"Error in worker loop: {e}", exc_info=True)
                 await asyncio.sleep(5)  # Back off on error
+        
+        # Wait for active scans to complete on shutdown
+        if pending_tasks:
+            logger.info(f"Waiting for {len(pending_tasks)} active scans to complete...")
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
         
         logger.info("Scanner worker shutting down...")
 

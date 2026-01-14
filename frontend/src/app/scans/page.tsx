@@ -83,6 +83,22 @@ interface Scan {
   };
 }
 
+interface QueueStatus {
+  max_concurrent: number;
+  running: number;
+  pending: number;
+  available_slots: number;
+  can_start_immediately: boolean;
+  running_scans: Array<{
+    id: number;
+    name: string;
+    scan_type: string;
+    started_at: string;
+    current_step?: string;
+    is_scheduled: boolean;
+  }>;
+}
+
 export default function ScansPage() {
   const router = useRouter();
   const [scans, setScans] = useState<Scan[]>([]);
@@ -90,6 +106,7 @@ export default function ScansPage() {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     organization_id: '',
@@ -103,13 +120,15 @@ export default function ScansPage() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [scansData, orgsData] = await Promise.all([
+      const [scansData, orgsData, queueData] = await Promise.all([
         api.getScans({ limit: 50 }),
         api.getOrganizations(),
+        api.getScanQueueStatus().catch(() => null),
       ]);
 
       setScans(scansData.items || scansData || []);
       setOrganizations(orgsData);
+      setQueueStatus(queueData);
     } catch (error) {
       toast({
         title: 'Error',
@@ -248,6 +267,40 @@ export default function ScansPage() {
       <ScanNavTabs />
 
       <div className="p-6">
+        {/* Queue Status Indicator */}
+        {queueStatus && (
+          <div className="mb-4 p-3 rounded-lg border bg-card">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-2">
+                  <div className={`h-2 w-2 rounded-full ${queueStatus.can_start_immediately ? 'bg-green-500' : 'bg-amber-500'} animate-pulse`} />
+                  <span className="text-sm text-muted-foreground">
+                    {queueStatus.can_start_immediately ? 'Ready for scans' : 'Queue busy'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  <span className="text-muted-foreground">
+                    Running: <span className="text-foreground font-medium">{queueStatus.running}/{queueStatus.max_concurrent}</span>
+                  </span>
+                  <span className="text-muted-foreground">
+                    Pending: <span className="text-foreground font-medium">{queueStatus.pending}</span>
+                  </span>
+                  <span className="text-muted-foreground">
+                    Available: <span className={`font-medium ${queueStatus.available_slots > 0 ? 'text-green-500' : 'text-amber-500'}`}>
+                      {queueStatus.available_slots} slot{queueStatus.available_slots !== 1 ? 's' : ''}
+                    </span>
+                  </span>
+                </div>
+              </div>
+              {queueStatus.running_scans.length > 0 && (
+                <div className="text-xs text-muted-foreground">
+                  Active: {queueStatus.running_scans.map(s => s.name).join(', ')}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-4">
             <Button variant="outline" size="sm" onClick={fetchData}>

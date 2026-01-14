@@ -265,6 +265,11 @@ class ApiClient {
     return response.data;
   }
 
+  async getScanQueueStatus() {
+    const response = await this.client.get('/scans/queue/status');
+    return response.data;
+  }
+
   async getScan(id: number) {
     const response = await this.client.get(`/scans/${id}`);
     return response.data;

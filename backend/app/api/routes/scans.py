@@ -85,6 +85,69 @@ def list_scans(
     return result
 
 
+@router.get("/queue/status")
+def get_queue_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get scan queue status including pending, running, and capacity info.
+    
+    Useful for understanding if ad-hoc scans can run immediately.
+    """
+    import os
+    max_concurrent = int(os.getenv("MAX_CONCURRENT_SCANS", "3"))
+    
+    # Count scans by status
+    pending_count = db.query(Scan).filter(Scan.status == ScanStatus.PENDING).count()
+    running_count = db.query(Scan).filter(Scan.status == ScanStatus.RUNNING).count()
+    
+    # Get running scans details
+    running_scans = db.query(Scan).filter(
+        Scan.status == ScanStatus.RUNNING
+    ).order_by(Scan.started_at.asc()).all()
+    
+    running_details = []
+    for scan in running_scans:
+        is_scheduled = (scan.config or {}).get('triggered_by_schedule') is not None
+        running_details.append({
+            "id": scan.id,
+            "name": scan.name,
+            "scan_type": scan.scan_type.value if scan.scan_type else None,
+            "started_at": scan.started_at.isoformat() if scan.started_at else None,
+            "current_step": scan.current_step,
+            "is_scheduled": is_scheduled,
+        })
+    
+    # Get next pending scans
+    pending_scans = db.query(Scan).filter(
+        Scan.status == ScanStatus.PENDING
+    ).order_by(Scan.created_at.asc()).limit(5).all()
+    
+    pending_details = []
+    for scan in pending_scans:
+        is_scheduled = (scan.config or {}).get('triggered_by_schedule') is not None
+        pending_details.append({
+            "id": scan.id,
+            "name": scan.name,
+            "scan_type": scan.scan_type.value if scan.scan_type else None,
+            "created_at": scan.created_at.isoformat() if scan.created_at else None,
+            "is_scheduled": is_scheduled,
+        })
+    
+    available_slots = max(0, max_concurrent - running_count)
+    
+    return {
+        "max_concurrent": max_concurrent,
+        "running": running_count,
+        "pending": pending_count,
+        "available_slots": available_slots,
+        "can_start_immediately": available_slots > 0,
+        "running_scans": running_details,
+        "next_pending": pending_details,
+    }
+
+
 @router.post("/", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
 def create_scan(
     scan_data: ScanCreate,
