@@ -229,15 +229,21 @@ export default function DomainsContent() {
         limit: 50,
       });
       
-      toast({
-        title: 'DNS Enrichment Complete',
-        description: `Enriched ${response.enriched} of ${response.total_domains} domains with DNS records.`,
-      });
-      
-      fetchDomains();
+      if (response) {
+        toast({
+          title: 'DNS Enrichment Complete',
+          description: `Enriched ${response.enriched ?? 0} of ${response.total_domains ?? 0} domains with DNS records.`,
+        });
+        fetchDomains();
+      } else {
+        toast({
+          title: 'Warning',
+          description: 'DNS enrichment completed but returned no data.',
+        });
+      }
     } catch (error: any) {
       console.error('Error enriching DNS:', error);
-      const message = error.response?.data?.detail || 'Failed to enrich DNS records';
+      const message = error?.response?.data?.detail || error?.message || 'Failed to enrich DNS records';
       toast({
         title: 'Error',
         description: message,
@@ -256,15 +262,21 @@ export default function DomainsContent() {
         limit: 50,
       });
 
-      toast({
-        title: 'WHOIS Enrichment Complete',
-        description: `Enriched ${response.enriched} of ${response.total_domains} domains. ${response.ownership_matches} ownership matches, ${response.privacy_protected} privacy protected.`,
-      });
-
-      fetchDomains();
+      if (response) {
+        toast({
+          title: 'WHOIS Enrichment Complete',
+          description: `Enriched ${response.enriched ?? 0} of ${response.total_domains ?? 0} domains. ${response.ownership_matches ?? 0} ownership matches, ${response.privacy_protected ?? 0} privacy protected.`,
+        });
+        fetchDomains();
+      } else {
+        toast({
+          title: 'Warning',
+          description: 'WHOIS enrichment completed but returned no data.',
+        });
+      }
     } catch (error: any) {
       console.error('Error enriching WHOIS:', error);
-      const message = error.response?.data?.detail || 'Failed to enrich WHOIS records';
+      const message = error?.response?.data?.detail || error?.message || 'Failed to enrich WHOIS records';
       toast({
         title: 'Error',
         description: message,
@@ -778,20 +790,20 @@ export default function DomainsContent() {
                           {domain.asset_type === 'domain' ? (
                             domain.metadata_?.whois ? (
                               <div className="flex flex-col gap-0.5">
-                                <span className="text-xs font-medium truncate max-w-32" title={domain.metadata_.whois.registrant_org || domain.metadata_.whois.registrant_name}>
-                                  {domain.metadata_.whois.registrant_org || domain.metadata_.whois.registrant_name || 'Unknown'}
+                                <span className="text-xs font-medium truncate max-w-32" title={domain.metadata_?.whois?.registrant_org || domain.metadata_?.whois?.registrant_name || ''}>
+                                  {domain.metadata_?.whois?.registrant_org || domain.metadata_?.whois?.registrant_name || 'Unknown'}
                                 </span>
-                                {domain.metadata_.whois.is_private && (
+                                {domain.metadata_?.whois?.is_private && (
                                   <Badge variant="outline" className="text-[10px] px-1 py-0 w-fit bg-gray-500/20 text-gray-600">
                                     Private
                                   </Badge>
                                 )}
-                                {domain.metadata_.whois.ownership_status === 'confirmed' && (
+                                {domain.metadata_?.whois?.ownership_status === 'confirmed' && (
                                   <Badge variant="outline" className="text-[10px] px-1 py-0 w-fit bg-green-500/20 text-green-700">
                                     <CheckCircle className="h-2.5 w-2.5 mr-0.5" /> Confirmed
                                   </Badge>
                                 )}
-                                {domain.metadata_.whois.ownership_status === 'mismatch' && (
+                                {domain.metadata_?.whois?.ownership_status === 'mismatch' && (
                                   <Badge variant="outline" className="text-[10px] px-1 py-0 w-fit bg-red-500/20 text-red-700">
                                     <AlertTriangle className="h-2.5 w-2.5 mr-0.5" /> Mismatch
                                   </Badge>
@@ -826,8 +838,8 @@ export default function DomainsContent() {
                             {domain.metadata_?.dns_summary?.has_mail ? (
                               <span className="text-xs flex items-center gap-1 text-green-600">
                                 <Mail className="h-3 w-3" />
-                                {(domain.metadata_.dns_summary.mail_providers?.length ?? 0) > 0 
-                                  ? domain.metadata_.dns_summary.mail_providers![0]
+                                {(domain.metadata_?.dns_summary?.mail_providers?.length ?? 0) > 0 
+                                  ? domain.metadata_?.dns_summary?.mail_providers?.[0]
                                   : 'Email'}
                               </span>
                             ) : domain.metadata_?.dns_fetched_at ? (
