@@ -243,7 +243,7 @@ class SingleSourceRequest(BaseModel):
     domain: str
     organization_id: int
     source: str = Field(..., description="Source to use (e.g., virustotal, wayback, crtsh)")
-    create_assets: bool = Field(default=False, description="Create assets from results")
+    create_assets: bool = Field(default=True, description="Automatically create discovered assets")
 
 
 class SingleSourceResponse(BaseModel):

@@ -10,7 +10,7 @@ from app.db.database import get_db
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.scan import Scan, ScanType, ScanStatus
-from app.models.asset import Asset, AssetType
+from app.models.asset import Asset, AssetType, AssetStatus
 from app.schemas.discovery import (
     DiscoveryRequest,
     DiscoveryResultResponse,
@@ -190,6 +190,8 @@ def enumerate_dns(
 async def enumerate_subdomains(
     domain: str,
     use_crtsh: bool = True,
+    organization_id: Optional[int] = None,
+    create_assets: bool = True,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst)
 ):
@@ -197,12 +199,78 @@ async def enumerate_subdomains(
     Enumerate subdomains for a domain.
     
     Uses certificate transparency logs (crt.sh) and common subdomain brute-forcing.
+    
+    If organization_id is provided and create_assets is True (default), discovered
+    subdomains will be automatically added to the assets table.
     """
+    from app.api.routes.external_discovery import extract_root_domain
+    
     subdomain_service = SubdomainService()
     results = await subdomain_service.enumerate_subdomains(
         domain=domain,
         use_crtsh=use_crtsh
     )
+    
+    # Create assets for discovered subdomains if organization_id is provided
+    assets_created = 0
+    if organization_id and create_assets:
+        # First, ensure the parent domain exists as an asset
+        parent_domain_asset = db.query(Asset).filter(
+            Asset.organization_id == organization_id,
+            Asset.value == domain,
+            Asset.asset_type == AssetType.DOMAIN
+        ).first()
+        
+        if not parent_domain_asset:
+            # Create the parent domain asset
+            parent_domain_asset = Asset(
+                name=domain,
+                asset_type=AssetType.DOMAIN,
+                value=domain,
+                root_domain=extract_root_domain(domain),
+                organization_id=organization_id,
+                status=AssetStatus.DISCOVERED,
+                discovery_source="subdomain_enumeration",
+                tags=["discovery"],
+            )
+            db.add(parent_domain_asset)
+            db.commit()
+            db.refresh(parent_domain_asset)
+            assets_created += 1
+        
+        # Create subdomain assets
+        for r in results:
+            if r.subdomain == domain:
+                continue  # Skip the parent domain itself
+                
+            existing = db.query(Asset).filter(
+                Asset.organization_id == organization_id,
+                Asset.value == r.subdomain,
+                Asset.asset_type == AssetType.SUBDOMAIN
+            ).first()
+            
+            if not existing:
+                subdomain_asset = Asset(
+                    name=r.subdomain,
+                    asset_type=AssetType.SUBDOMAIN,
+                    value=r.subdomain,
+                    root_domain=extract_root_domain(r.subdomain),
+                    organization_id=organization_id,
+                    parent_id=parent_domain_asset.id,
+                    status=AssetStatus.VERIFIED if r.is_alive else AssetStatus.DISCOVERED,
+                    discovery_source=r.source,
+                    tags=["discovery", "subdomain-enum"],
+                )
+                # Store resolved IPs in metadata
+                if r.ip_addresses:
+                    subdomain_asset.ip_address = r.ip_addresses[0]
+                    subdomain_asset.metadata_ = {"ip_addresses": r.ip_addresses}
+                
+                db.add(subdomain_asset)
+                assets_created += 1
+        
+        if assets_created > 0:
+            db.commit()
     
     return [
         SubdomainResponse(

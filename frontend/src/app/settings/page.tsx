@@ -278,10 +278,10 @@ export default function SettingsPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Building2 className="h-5 w-5" />
-              Organization & Email Discovery Settings
+              Default Discovery Settings
             </CardTitle>
             <CardDescription>
-              Configure organization names for IP range discovery and registration emails for reverse WHOIS lookups
+              These are saved as defaults for your organization. You can override them per-discovery in the Discovery page's Advanced Options.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">

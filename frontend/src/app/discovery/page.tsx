@@ -551,6 +551,13 @@ export default function DiscoveryPage() {
                       </div>
                     )}
 
+                    <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg mb-4">
+                      <p className="text-xs text-blue-400">
+                        These settings override your organization defaults from <a href="/settings" className="underline">Settings</a>. 
+                        Leave empty to use saved defaults.
+                      </p>
+                    </div>
+
                     <div className="space-y-2">
                       <Label className="flex items-center gap-2">
                         <Building2 className="h-4 w-4" />
@@ -558,7 +565,7 @@ export default function DiscoveryPage() {
                       </Label>
                       <div className="flex gap-2">
                         <Input
-                          placeholder="e.g., Acme Corporation"
+                          placeholder="e.g., Acme Corporation (leave empty to use defaults)"
                           value={newOrgName}
                           onChange={(e) => setNewOrgName(e.target.value)}
                           onKeyDown={(e) => e.key === 'Enter' && addOrgName()}
@@ -586,7 +593,7 @@ export default function DiscoveryPage() {
                       </Label>
                       <div className="flex gap-2">
                         <Input
-                          placeholder="e.g., domains@company.com"
+                          placeholder="e.g., domains@company.com (leave empty to use defaults)"
                           value={newRegEmail}
                           onChange={(e) => setNewRegEmail(e.target.value)}
                           onKeyDown={(e) => e.key === 'Enter' && addRegEmail()}
@@ -812,7 +819,8 @@ export default function DiscoveryPage() {
                     </div>
 
                     <p className="text-xs text-muted-foreground">
-                      💡 Configure API keys in <a href="/settings" className="text-primary underline">Settings</a> for VirusTotal, WhoisXML, OTX, and Whoxy.
+                      💡 Configure API keys and default org names/emails in <a href="/settings" className="text-primary underline">Settings</a>. 
+                      Discovery may take several minutes when using Common Crawl or SNI scanning.
                     </p>
                   </div>
                 )}
@@ -825,6 +833,9 @@ export default function DiscoveryPage() {
                         <p className="font-medium">Discovery in progress...</p>
                         <p className="text-sm text-muted-foreground">
                           Querying crt.sh, Wayback, RapidDNS, OTX, and other sources...
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          This may take 1-5 minutes depending on enabled sources. Do not close this page.
                         </p>
                       </div>
                     </div>

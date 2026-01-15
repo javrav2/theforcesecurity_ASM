@@ -42,6 +42,11 @@ import {
   Database,
   Mail,
   Server,
+  Radar,
+  Cloud,
+  Lock,
+  FileText,
+  Building,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -87,17 +92,32 @@ interface Domain {
       security_features?: string[];
     };
     dns_fetched_at?: string;
+    whois?: {
+      registrant_name?: string;
+      registrant_org?: string;
+      registrant_email?: string;
+      registrant_country?: string;
+      registrar?: string;
+      creation_date?: string;
+      expiry_date?: string;
+      is_private?: boolean;
+      ownership_status?: string;
+    };
+    whois_fetched_at?: string;
   };
 }
 
 interface Stats {
   total: number;
+  domains: number;
+  subdomains: number;
   in_scope: number;
   out_of_scope: number;
   validated: number;
   suspicious: number;
   parked: number;
   dns_enriched: number;
+  whois_enriched: number;
   has_mail: number;
 }
 
@@ -106,18 +126,23 @@ export default function DomainsContent() {
   const [loading, setLoading] = useState(true);
   const [validating, setValidating] = useState(false);
   const [enrichingDns, setEnrichingDns] = useState(false);
+  const [enrichingWhois, setEnrichingWhois] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [scopeFilter, setScopeFilter] = useState<string>('all');
   const [suspicionFilter, setSuspicionFilter] = useState<string>('all');
   const [stats, setStats] = useState<Stats>({
     total: 0,
+    domains: 0,
+    subdomains: 0,
     in_scope: 0,
     out_of_scope: 0,
     validated: 0,
     suspicious: 0,
     parked: 0,
     dns_enriched: 0,
+    whois_enriched: 0,
     has_mail: 0,
   });
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
@@ -126,25 +151,30 @@ export default function DomainsContent() {
   const fetchDomains = async () => {
     try {
       setLoading(true);
-      // Fetch domains (asset_type = domain)
-      const response = await api.getAssets({ 
-        asset_type: 'domain',
-        limit: 500 
-      });
+      // Fetch both domains and subdomains
+      const [domainsResponse, subdomainsResponse] = await Promise.all([
+        api.getAssets({ asset_type: 'domain', limit: 500 }),
+        api.getAssets({ asset_type: 'subdomain', limit: 1000 })
+      ]);
       
-      const domainAssets = response.items || response || [];
-      setDomains(domainAssets);
+      const domainAssets = domainsResponse.items || domainsResponse || [];
+      const subdomainAssets = subdomainsResponse.items || subdomainsResponse || [];
+      const allAssets = [...domainAssets, ...subdomainAssets];
+      setDomains(allAssets);
       
       // Calculate stats
       const newStats: Stats = {
-        total: domainAssets.length,
-        in_scope: domainAssets.filter((d: Domain) => d.in_scope).length,
-        out_of_scope: domainAssets.filter((d: Domain) => !d.in_scope).length,
-        validated: domainAssets.filter((d: Domain) => d.metadata_?.validated_at).length,
-        suspicious: domainAssets.filter((d: Domain) => (d.metadata_?.suspicion_score || 0) >= 50).length,
-        parked: domainAssets.filter((d: Domain) => d.metadata_?.is_parked).length,
-        dns_enriched: domainAssets.filter((d: Domain) => d.metadata_?.dns_fetched_at).length,
-        has_mail: domainAssets.filter((d: Domain) => d.metadata_?.dns_summary?.has_mail).length,
+        total: allAssets.length,
+        domains: domainAssets.length,
+        subdomains: subdomainAssets.length,
+        in_scope: allAssets.filter((d: Domain) => d.in_scope).length,
+        out_of_scope: allAssets.filter((d: Domain) => !d.in_scope).length,
+        validated: allAssets.filter((d: Domain) => d.metadata_?.validated_at).length,
+        suspicious: allAssets.filter((d: Domain) => (d.metadata_?.suspicion_score || 0) >= 50).length,
+        parked: allAssets.filter((d: Domain) => d.metadata_?.is_parked).length,
+        dns_enriched: allAssets.filter((d: Domain) => d.metadata_?.dns_fetched_at).length,
+        whois_enriched: allAssets.filter((d: Domain) => d.metadata_?.whois_fetched_at).length,
+        has_mail: allAssets.filter((d: Domain) => d.metadata_?.dns_summary?.has_mail).length,
       };
       setStats(newStats);
       
@@ -215,6 +245,33 @@ export default function DomainsContent() {
       });
     } finally {
       setEnrichingDns(false);
+    }
+  };
+
+  const handleEnrichWhois = async () => {
+    try {
+      setEnrichingWhois(true);
+      const response = await api.enrichDomainsWhois({
+        organizationId: 1,
+        limit: 50,
+      });
+
+      toast({
+        title: 'WHOIS Enrichment Complete',
+        description: `Enriched ${response.enriched} of ${response.total_domains} domains. ${response.ownership_matches} ownership matches, ${response.privacy_protected} privacy protected.`,
+      });
+
+      fetchDomains();
+    } catch (error: any) {
+      console.error('Error enriching WHOIS:', error);
+      const message = error.response?.data?.detail || 'Failed to enrich WHOIS records';
+      toast({
+        title: 'Error',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setEnrichingWhois(false);
     }
   };
 
@@ -292,14 +349,26 @@ export default function DomainsContent() {
       return false;
     }
     
+    // Type filter (domain vs subdomain)
+    if (typeFilter !== 'all') {
+      if (typeFilter === 'domain' && domain.asset_type !== 'domain') return false;
+      if (typeFilter === 'subdomain' && domain.asset_type !== 'subdomain') return false;
+    }
+    
     // Source filter
     if (sourceFilter !== 'all') {
-      if (sourceFilter === 'whoxy' && !domain.discovery_source?.toLowerCase().includes('whoxy')) {
-        return false;
-      }
-      if (sourceFilter === 'other' && domain.discovery_source?.toLowerCase().includes('whoxy')) {
-        return false;
-      }
+      const src = domain.discovery_source?.toLowerCase() || '';
+      if (sourceFilter === 'whoxy' && !src.includes('whoxy')) return false;
+      if (sourceFilter === 'commoncrawl' && !src.includes('commoncrawl')) return false;
+      if (sourceFilter === 'sni' && !src.includes('sni')) return false;
+      if (sourceFilter === 'crtsh' && !src.includes('crtsh')) return false;
+      if (sourceFilter === 'virustotal' && !src.includes('virustotal')) return false;
+      if (sourceFilter === 'wayback' && !src.includes('wayback')) return false;
+      if (sourceFilter === 'rapiddns' && !src.includes('rapiddns')) return false;
+      if (sourceFilter === 'subfinder' && !src.includes('subfinder')) return false;
+      if (sourceFilter === 'm365' && !src.includes('m365')) return false;
+      if (sourceFilter === 'whoisxml' && !src.includes('whoisxml')) return false;
+      if (sourceFilter === 'manual' && !src.includes('manual') && !src.includes('seed')) return false;
     }
     
     // Scope filter
@@ -334,15 +403,72 @@ export default function DomainsContent() {
     return <Badge variant="outline" className="gap-1"><Eye className="h-3 w-3" /> Not Validated</Badge>;
   };
 
+  // Source badge styling
+  const getSourceBadge = (source: string | undefined) => {
+    const s = source?.toLowerCase() || 'unknown';
+    
+    const sourceConfig: Record<string, { icon: React.ComponentType<{className?: string}>, label: string, className: string }> = {
+      whoxy: { icon: Mail, label: 'Whoxy', className: 'bg-purple-500/20 text-purple-700 border-purple-500/30' },
+      commoncrawl: { icon: Database, label: 'Common Crawl', className: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/30' },
+      commoncrawl_comprehensive: { icon: Database, label: 'Common Crawl', className: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/30' },
+      sni_ip_ranges: { icon: Cloud, label: 'SNI/Cloud', className: 'bg-pink-500/20 text-pink-700 border-pink-500/30' },
+      crtsh: { icon: Lock, label: 'Cert Trans', className: 'bg-green-500/20 text-green-700 border-green-500/30' },
+      virustotal: { icon: Shield, label: 'VirusTotal', className: 'bg-red-500/20 text-red-700 border-red-500/30' },
+      wayback: { icon: FileText, label: 'Wayback', className: 'bg-amber-500/20 text-amber-700 border-amber-500/30' },
+      rapiddns: { icon: Radar, label: 'RapidDNS', className: 'bg-cyan-500/20 text-cyan-700 border-cyan-500/30' },
+      subfinder: { icon: Radar, label: 'Subfinder', className: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/30' },
+      m365: { icon: Building, label: 'M365', className: 'bg-blue-500/20 text-blue-700 border-blue-500/30' },
+      whoisxml: { icon: Building, label: 'WhoisXML', className: 'bg-violet-500/20 text-violet-700 border-violet-500/30' },
+      manual: { icon: Globe, label: 'Manual', className: 'bg-gray-500/20 text-gray-700 border-gray-500/30' },
+      seed: { icon: Globe, label: 'Seed', className: 'bg-blue-500/20 text-blue-700 border-blue-500/30' },
+    };
+
+    // Try to match source
+    let config = sourceConfig[s];
+    if (!config) {
+      // Try partial matches
+      for (const [key, val] of Object.entries(sourceConfig)) {
+        if (s.includes(key)) {
+          config = val;
+          break;
+        }
+      }
+    }
+    
+    if (!config) {
+      config = { icon: Search, label: source || 'Unknown', className: 'bg-gray-500/20 text-gray-600 border-gray-500/30' };
+    }
+
+    const Icon = config.icon;
+    return (
+      <Badge variant="outline" className={`gap-1 text-xs ${config.className}`}>
+        <Icon className="h-3 w-3" />
+        {config.label}
+      </Badge>
+    );
+  };
+
   return (
     <>
       <div className="p-6 space-y-6">
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-4">
           <Card>
             <CardContent className="pt-4">
               <div className="text-2xl font-bold">{stats.total}</div>
-              <div className="text-xs text-muted-foreground">Total Domains</div>
+              <div className="text-xs text-muted-foreground">Total</div>
+            </CardContent>
+          </Card>
+          <Card className="cursor-pointer hover:bg-muted/50" onClick={() => setTypeFilter('domain')}>
+            <CardContent className="pt-4">
+              <div className="text-2xl font-bold text-blue-600">{stats.domains}</div>
+              <div className="text-xs text-muted-foreground">Domains</div>
+            </CardContent>
+          </Card>
+          <Card className="cursor-pointer hover:bg-muted/50" onClick={() => setTypeFilter('subdomain')}>
+            <CardContent className="pt-4">
+              <div className="text-2xl font-bold text-indigo-600">{stats.subdomains}</div>
+              <div className="text-xs text-muted-foreground">Subdomains</div>
             </CardContent>
           </Card>
           <Card>
@@ -404,14 +530,34 @@ export default function DomainsContent() {
                   />
                 </div>
                 
+                <Select value={typeFilter} onValueChange={setTypeFilter}>
+                  <SelectTrigger className="w-36">
+                    <SelectValue placeholder="Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Types</SelectItem>
+                    <SelectItem value="domain">Domains Only</SelectItem>
+                    <SelectItem value="subdomain">Subdomains Only</SelectItem>
+                  </SelectContent>
+                </Select>
+                
                 <Select value={sourceFilter} onValueChange={setSourceFilter}>
-                  <SelectTrigger className="w-40">
+                  <SelectTrigger className="w-44">
                     <SelectValue placeholder="Source" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Sources</SelectItem>
-                    <SelectItem value="whoxy">Whoxy</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                    <SelectItem value="whoxy">Whoxy (WHOIS)</SelectItem>
+                    <SelectItem value="commoncrawl">Common Crawl</SelectItem>
+                    <SelectItem value="sni">SNI/Cloud IP</SelectItem>
+                    <SelectItem value="crtsh">Cert Transparency</SelectItem>
+                    <SelectItem value="virustotal">VirusTotal</SelectItem>
+                    <SelectItem value="wayback">Wayback Machine</SelectItem>
+                    <SelectItem value="rapiddns">RapidDNS</SelectItem>
+                    <SelectItem value="subfinder">Subfinder</SelectItem>
+                    <SelectItem value="m365">Microsoft 365</SelectItem>
+                    <SelectItem value="whoisxml">WhoisXML</SelectItem>
+                    <SelectItem value="manual">Manual/Seed</SelectItem>
                   </SelectContent>
                 </Select>
                 
@@ -441,8 +587,8 @@ export default function DomainsContent() {
               </div>
               
               <div className="flex gap-2">
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   onClick={handleEnrichDns}
                   disabled={enrichingDns}
                 >
@@ -453,8 +599,20 @@ export default function DomainsContent() {
                   )}
                   Enrich DNS
                 </Button>
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
+                  onClick={handleEnrichWhois}
+                  disabled={enrichingWhois}
+                >
+                  {enrichingWhois ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <FileText className="h-4 w-4 mr-2" />
+                  )}
+                  Enrich WHOIS
+                </Button>
+                <Button
+                  variant="outline"
                   onClick={handleValidateAll}
                   disabled={validating}
                 >
@@ -570,6 +728,8 @@ export default function DomainsContent() {
                         />
                       </TableHead>
                       <TableHead>Domain</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>Registrant</TableHead>
                       <TableHead>IP / DNS</TableHead>
                       <TableHead>Mail / Security</TableHead>
                       <TableHead>Status</TableHead>
@@ -590,17 +750,59 @@ export default function DomainsContent() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Globe className="h-4 w-4 text-muted-foreground" />
-                            <a 
-                              href={`https://${domain.value}`} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="font-mono text-sm hover:underline flex items-center gap-1"
-                            >
-                              {domain.value}
-                              <ExternalLink className="h-3 w-3" />
-                            </a>
+                            {domain.asset_type === 'subdomain' ? (
+                              <Radar className="h-4 w-4 text-indigo-500" />
+                            ) : (
+                              <Globe className="h-4 w-4 text-blue-500" />
+                            )}
+                            <div className="flex flex-col">
+                              <a 
+                                href={`https://${domain.value}`} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="font-mono text-sm hover:underline flex items-center gap-1"
+                              >
+                                {domain.value}
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                              <span className="text-[10px] text-muted-foreground">
+                                {domain.asset_type === 'subdomain' ? 'Subdomain' : 'Root Domain'}
+                              </span>
+                            </div>
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {getSourceBadge(domain.discovery_source)}
+                        </TableCell>
+                        <TableCell>
+                          {domain.asset_type === 'domain' ? (
+                            domain.metadata_?.whois ? (
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-xs font-medium truncate max-w-32" title={domain.metadata_.whois.registrant_org || domain.metadata_.whois.registrant_name}>
+                                  {domain.metadata_.whois.registrant_org || domain.metadata_.whois.registrant_name || 'Unknown'}
+                                </span>
+                                {domain.metadata_.whois.is_private && (
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 w-fit bg-gray-500/20 text-gray-600">
+                                    Private
+                                  </Badge>
+                                )}
+                                {domain.metadata_.whois.ownership_status === 'confirmed' && (
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 w-fit bg-green-500/20 text-green-700">
+                                    <CheckCircle className="h-2.5 w-2.5 mr-0.5" /> Confirmed
+                                  </Badge>
+                                )}
+                                {domain.metadata_.whois.ownership_status === 'mismatch' && (
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 w-fit bg-red-500/20 text-red-700">
+                                    <AlertTriangle className="h-2.5 w-2.5 mr-0.5" /> Mismatch
+                                  </Badge>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Not enriched</span>
+                            )
+                          ) : (
+                            <span className="text-xs text-muted-foreground">N/A</span>
+                          )}
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-col gap-1">

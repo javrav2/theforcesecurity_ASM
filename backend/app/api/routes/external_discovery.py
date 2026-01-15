@@ -1065,12 +1065,13 @@ async def enrich_domains_dns(
     from app.services.dns_enrichment_service import DNSEnrichmentService
     
     # Get WhoisXML API key from config
-    whoisxml_config = db.query(ApiConfig).filter(
-        ApiConfig.organization_id == organization_id,
-        ApiConfig.service_name == "whoisxml"
+    whoisxml_config = db.query(APIConfig).filter(
+        APIConfig.organization_id == organization_id,
+        APIConfig.service_name == "whoisxml"
     ).first()
     
-    if not whoisxml_config or not whoisxml_config.api_key:
+    api_key = whoisxml_config.get_api_key() if whoisxml_config else None
+    if not api_key:
         raise HTTPException(
             status_code=400,
             detail="WhoisXML API key not configured. Add it in Settings > External Discovery."
@@ -1096,7 +1097,7 @@ async def enrich_domains_dns(
         }
     
     # Initialize DNS service
-    dns_service = DNSEnrichmentService(whoisxml_config.api_key)
+    dns_service = DNSEnrichmentService(api_key)
     
     results = []
     enriched_count = 0
@@ -1186,13 +1187,14 @@ async def get_asset_dns_records(
     
     if refresh:
         # Get WhoisXML API key
-        whoisxml_config = db.query(ApiConfig).filter(
-            ApiConfig.organization_id == asset.organization_id,
-            ApiConfig.service_name == "whoisxml"
+        whoisxml_config = db.query(APIConfig).filter(
+            APIConfig.organization_id == asset.organization_id,
+            APIConfig.service_name == "whoisxml"
         ).first()
         
-        if whoisxml_config and whoisxml_config.api_key:
-            dns_service = DNSEnrichmentService(whoisxml_config.api_key)
+        api_key = whoisxml_config.get_api_key() if whoisxml_config else None
+        if api_key:
+            dns_service = DNSEnrichmentService(api_key)
             dns_data = await dns_service.enrich_domain(asset.value)
             
             if "error" not in dns_data:
@@ -1222,6 +1224,264 @@ async def get_asset_dns_records(
     }
 
 
+@router.post("/enrich-whois")
+async def enrich_domains_whois(
+    organization_id: int = 1,
+    domain_ids: Optional[List[int]] = None,
+    expected_registrant: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Enrich domain assets with WHOIS registration data.
+    
+    Fetches registrant info, creation/expiry dates, nameservers, and stores on the asset.
+    Optionally validates ownership by checking if registrant matches expected_registrant.
+    
+    Args:
+        organization_id: Organization to enrich domains for
+        domain_ids: Optional specific domain IDs to enrich
+        expected_registrant: Optional string to match against registrant (for ownership validation)
+        limit: Maximum domains to enrich
+    """
+    from app.services.whoxy_service import WhoxyService
+    
+    # Get Whoxy API key from config
+    whoxy_config = db.query(APIConfig).filter(
+        APIConfig.organization_id == organization_id,
+        APIConfig.service_name == "whoxy"
+    ).first()
+    
+    api_key = whoxy_config.get_api_key() if whoxy_config else None
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Whoxy API key not configured. Add it in Settings > External Discovery."
+        )
+    
+    # Get domains to enrich (both domains and subdomains, but WHOIS only makes sense for root domains)
+    query = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        Asset.asset_type == AssetType.DOMAIN,
+        Asset.in_scope == True
+    )
+    
+    if domain_ids:
+        query = query.filter(Asset.id.in_(domain_ids))
+    
+    domains = query.limit(limit).all()
+    
+    if not domains:
+        return {
+            "message": "No domains found to enrich",
+            "enriched": 0,
+            "results": []
+        }
+    
+    # Initialize Whoxy service
+    whoxy_service = WhoxyService(api_key)
+    
+    results = []
+    enriched_count = 0
+    ownership_matches = 0
+    ownership_mismatches = 0
+    privacy_protected = 0
+    
+    for domain_asset in domains:
+        try:
+            whois_data = await whoxy_service.whois_lookup(domain_asset.value)
+            
+            if whois_data and whois_data.get('status') == 1:
+                # Extract key WHOIS fields
+                whois_summary = {
+                    "domain_name": whois_data.get("domain_name", domain_asset.value),
+                    "registrar": whois_data.get("domain_registrar", {}).get("registrar_name"),
+                    "registrant_name": whois_data.get("registrant_contact", {}).get("full_name"),
+                    "registrant_org": whois_data.get("registrant_contact", {}).get("company_name"),
+                    "registrant_email": whois_data.get("registrant_contact", {}).get("email_address"),
+                    "registrant_country": whois_data.get("registrant_contact", {}).get("country_name"),
+                    "admin_name": whois_data.get("administrative_contact", {}).get("full_name"),
+                    "admin_org": whois_data.get("administrative_contact", {}).get("company_name"),
+                    "admin_email": whois_data.get("administrative_contact", {}).get("email_address"),
+                    "tech_name": whois_data.get("technical_contact", {}).get("full_name"),
+                    "tech_org": whois_data.get("technical_contact", {}).get("company_name"),
+                    "creation_date": whois_data.get("create_date"),
+                    "expiry_date": whois_data.get("expiry_date"),
+                    "updated_date": whois_data.get("update_date"),
+                    "nameservers": whois_data.get("name_servers", []),
+                    "status": whois_data.get("domain_status", []),
+                }
+                
+                # Check for privacy protection
+                privacy_indicators = [
+                    "privacy", "proxy", "whoisguard", "domains by proxy", 
+                    "contact privacy", "redacted", "withheld", "private",
+                    "whoisproxy", "domain protection"
+                ]
+                
+                combined_registrant = " ".join([
+                    str(whois_summary.get("registrant_name") or ""),
+                    str(whois_summary.get("registrant_org") or ""),
+                    str(whois_summary.get("registrant_email") or ""),
+                ]).lower()
+                
+                is_private = any(p in combined_registrant for p in privacy_indicators)
+                whois_summary["is_private"] = is_private
+                
+                if is_private:
+                    privacy_protected += 1
+                
+                # Check ownership match if expected_registrant provided
+                ownership_status = "unknown"
+                if expected_registrant and not is_private:
+                    expected_lower = expected_registrant.lower()
+                    if expected_lower in combined_registrant:
+                        ownership_status = "confirmed"
+                        ownership_matches += 1
+                    else:
+                        ownership_status = "mismatch"
+                        ownership_mismatches += 1
+                elif is_private:
+                    ownership_status = "private"
+                
+                whois_summary["ownership_status"] = ownership_status
+                
+                # Update asset metadata
+                metadata = domain_asset.metadata_ or {}
+                metadata["whois"] = whois_summary
+                metadata["whois_raw"] = whois_data  # Store full response
+                metadata["whois_fetched_at"] = datetime.utcnow().isoformat()
+                domain_asset.metadata_ = metadata
+                
+                enriched_count += 1
+                results.append({
+                    "domain": domain_asset.value,
+                    "asset_id": domain_asset.id,
+                    "status": "enriched",
+                    "registrant_org": whois_summary.get("registrant_org"),
+                    "registrant_name": whois_summary.get("registrant_name"),
+                    "registrar": whois_summary.get("registrar"),
+                    "is_private": is_private,
+                    "ownership_status": ownership_status,
+                    "expiry_date": whois_summary.get("expiry_date"),
+                })
+            else:
+                error_reason = whois_data.get("status_reason", "No WHOIS data returned") if whois_data else "WHOIS lookup failed"
+                results.append({
+                    "domain": domain_asset.value,
+                    "asset_id": domain_asset.id,
+                    "status": "error",
+                    "error": error_reason
+                })
+                
+        except Exception as e:
+            results.append({
+                "domain": domain_asset.value,
+                "asset_id": domain_asset.id,
+                "status": "error",
+                "error": str(e)
+            })
+    
+    db.commit()
+    
+    return {
+        "message": "WHOIS enrichment complete",
+        "total_domains": len(domains),
+        "enriched": enriched_count,
+        "ownership_matches": ownership_matches,
+        "ownership_mismatches": ownership_mismatches,
+        "privacy_protected": privacy_protected,
+        "results": results
+    }
+
+
+@router.get("/whois/{asset_id}")
+async def get_asset_whois(
+    asset_id: int,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Get WHOIS data for a specific domain asset.
+    
+    If refresh=True and Whoxy API is configured, fetches fresh data.
+    """
+    from app.services.whoxy_service import WhoxyService
+    
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if asset.asset_type != AssetType.DOMAIN:
+        raise HTTPException(status_code=400, detail="WHOIS data is only available for domain assets")
+    
+    if refresh:
+        # Get Whoxy API key
+        whoxy_config = db.query(APIConfig).filter(
+            APIConfig.organization_id == asset.organization_id,
+            APIConfig.service_name == "whoxy"
+        ).first()
+        
+        api_key = whoxy_config.get_api_key() if whoxy_config else None
+        if api_key:
+            whoxy_service = WhoxyService(api_key)
+            whois_data = await whoxy_service.whois_lookup(asset.value)
+            
+            if whois_data and whois_data.get('status') == 1:
+                # Extract key WHOIS fields
+                whois_summary = {
+                    "domain_name": whois_data.get("domain_name", asset.value),
+                    "registrar": whois_data.get("domain_registrar", {}).get("registrar_name"),
+                    "registrant_name": whois_data.get("registrant_contact", {}).get("full_name"),
+                    "registrant_org": whois_data.get("registrant_contact", {}).get("company_name"),
+                    "registrant_email": whois_data.get("registrant_contact", {}).get("email_address"),
+                    "registrant_country": whois_data.get("registrant_contact", {}).get("country_name"),
+                    "admin_name": whois_data.get("administrative_contact", {}).get("full_name"),
+                    "admin_org": whois_data.get("administrative_contact", {}).get("company_name"),
+                    "admin_email": whois_data.get("administrative_contact", {}).get("email_address"),
+                    "tech_name": whois_data.get("technical_contact", {}).get("full_name"),
+                    "tech_org": whois_data.get("technical_contact", {}).get("company_name"),
+                    "creation_date": whois_data.get("create_date"),
+                    "expiry_date": whois_data.get("expiry_date"),
+                    "updated_date": whois_data.get("update_date"),
+                    "nameservers": whois_data.get("name_servers", []),
+                    "status": whois_data.get("domain_status", []),
+                }
+                
+                # Check for privacy
+                privacy_indicators = [
+                    "privacy", "proxy", "whoisguard", "domains by proxy",
+                    "contact privacy", "redacted", "withheld", "private",
+                    "whoisproxy", "domain protection"
+                ]
+                
+                combined = " ".join([
+                    str(whois_summary.get("registrant_name") or ""),
+                    str(whois_summary.get("registrant_org") or ""),
+                    str(whois_summary.get("registrant_email") or ""),
+                ]).lower()
+                
+                whois_summary["is_private"] = any(p in combined for p in privacy_indicators)
+                
+                metadata = asset.metadata_ or {}
+                metadata["whois"] = whois_summary
+                metadata["whois_raw"] = whois_data
+                metadata["whois_fetched_at"] = datetime.utcnow().isoformat()
+                asset.metadata_ = metadata
+                
+                db.commit()
+                db.refresh(asset)
+    
+    metadata = asset.metadata_ or {}
+    
+    return {
+        "asset_id": asset.id,
+        "domain": asset.value,
+        "whois": metadata.get("whois", {}),
+        "whois_fetched_at": metadata.get("whois_fetched_at"),
+    }
 
 
 

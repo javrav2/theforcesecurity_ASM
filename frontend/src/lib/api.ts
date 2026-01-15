@@ -524,7 +524,11 @@ class ApiClient {
     max_screenshots?: number;
     screenshot_timeout?: number;
   }) {
-    const response = await this.client.post('/external-discovery/run', data);
+    // Discovery can take a long time with multiple sources (Common Crawl, SNI, etc.)
+    // Use a 5-minute timeout for this operation
+    const response = await this.client.post('/external-discovery/run', data, {
+      timeout: 300000  // 5 minutes
+    });
     return response.data;
   }
 
@@ -571,6 +575,31 @@ class ApiClient {
 
   async getAssetDnsRecords(assetId: number, refresh: boolean = false) {
     const response = await this.client.get(`/external-discovery/dns/${assetId}`, {
+      params: { refresh }
+    });
+    return response.data;
+  }
+
+  async enrichDomainsWhois(options?: {
+    organizationId?: number;
+    domainIds?: number[];
+    expectedRegistrant?: string;
+    limit?: number;
+  }) {
+    const params: any = {};
+    if (options?.organizationId) params.organization_id = options.organizationId;
+    if (options?.expectedRegistrant) params.expected_registrant = options.expectedRegistrant;
+    if (options?.limit) params.limit = options.limit;
+    
+    const body: any = {};
+    if (options?.domainIds) body.domain_ids = options.domainIds;
+    
+    const response = await this.client.post('/external-discovery/enrich-whois', body, { params });
+    return response.data;
+  }
+
+  async getAssetWhois(assetId: number, refresh: boolean = false) {
+    const response = await this.client.get(`/external-discovery/whois/${assetId}`, {
       params: { refresh }
     });
     return response.data;
