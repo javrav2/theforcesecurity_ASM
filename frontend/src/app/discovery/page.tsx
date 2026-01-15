@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
@@ -115,7 +115,22 @@ interface WaybackResult {
   elapsed_time?: number;
 }
 
+// Wrapper component to handle Suspense for useSearchParams
 export default function DiscoveryPage() {
+  return (
+    <Suspense fallback={
+      <MainLayout>
+        <div className="p-6 flex items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </MainLayout>
+    }>
+      <DiscoveryPageContent />
+    </Suspense>
+  );
+}
+
+function DiscoveryPageContent() {
   const searchParams = useSearchParams();
   
   // Common state
@@ -127,8 +142,8 @@ export default function DiscoveryPage() {
   
   // Pre-fill from URL params (when coming from Organization page)
   useEffect(() => {
-    const orgId = searchParams.get('org');
-    const domainParam = searchParams.get('domain');
+    const orgId = searchParams?.get('org');
+    const domainParam = searchParams?.get('domain');
     
     if (orgId) {
       setSelectedOrg(orgId);

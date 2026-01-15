@@ -124,6 +124,12 @@ class AssetResponse(AssetBase):
     netblock_id: Optional[int] = None
     asn: Optional[str] = None
     
+    # Hosting classification (for IP assets - distinguishes owned vs cloud infrastructure)
+    hosting_type: Optional[str] = None  # owned, cloud, cdn, third_party, unknown
+    hosting_provider: Optional[str] = None  # azure, aws, gcp, cloudflare, akamai, etc.
+    is_ephemeral_ip: bool = True  # True if IP could change (cloud/CDN = ephemeral)
+    resolved_from: Optional[str] = None  # Domain this IP was resolved from via DNS
+    
     # Scan tracking
     last_scan_id: Optional[str] = None
     last_scan_name: Optional[str] = None

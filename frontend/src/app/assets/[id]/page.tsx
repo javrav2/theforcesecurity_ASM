@@ -166,6 +166,11 @@ interface Asset {
   is_owned: boolean;
   netblock_id?: number;
   asn?: string;
+  // Hosting classification (for IP assets)
+  hosting_type?: string;  // owned, cloud, cdn, third_party, unknown
+  hosting_provider?: string;  // azure, aws, gcp, cloudflare, etc.
+  is_ephemeral_ip?: boolean;  // True if IP could change
+  resolved_from?: string;  // Domain this IP was resolved from
   technologies: Technology[];
   port_services: PortService[];
   open_ports_count: number;
@@ -906,14 +911,18 @@ export default function AssetDetailPage() {
               <CardContent>
                 <DiscoveryPath
                   value={asset.value}
-          assetType={asset.asset_type}
+                  assetType={asset.asset_type}
                   rootDomain={asset.root_domain}
                   liveUrl={asset.live_url}
                   discoverySource={asset.discovery_source}
                   discoveryChain={asset.discovery_chain}
                   associationReason={asset.association_reason}
                   associationConfidence={asset.association_confidence}
-        />
+                  hostingType={asset.hosting_type}
+                  hostingProvider={asset.hosting_provider}
+                  isEphemeralIp={asset.is_ephemeral_ip}
+                  resolvedFrom={asset.resolved_from}
+                />
               </CardContent>
             </Card>
           </>

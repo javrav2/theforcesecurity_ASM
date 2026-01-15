@@ -24,6 +24,7 @@ from app.services.subdomain_service import SubdomainService
 from app.services.http_service import HTTPService
 from app.services.wappalyzer_service import WappalyzerService
 from app.services.asset_labeling_service import add_tech_to_asset
+from app.services.ip_classifier_service import IPClassifierService, IPClassification
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,8 @@ class DiscoveryService:
         dns_service: Optional[DNSService] = None,
         subdomain_service: Optional[SubdomainService] = None,
         http_service: Optional[HTTPService] = None,
-        wappalyzer_service: Optional[WappalyzerService] = None
+        wappalyzer_service: Optional[WappalyzerService] = None,
+        ip_classifier: Optional[IPClassifierService] = None
     ):
         """
         Initialize discovery service.
@@ -86,12 +88,14 @@ class DiscoveryService:
             subdomain_service: Subdomain discovery service
             http_service: HTTP probing service
             wappalyzer_service: Technology fingerprinting service
+            ip_classifier: IP classification service for identifying owned vs cloud IPs
         """
         self.db = db
         self.dns = dns_service or DNSService()
         self.subdomain = subdomain_service or SubdomainService()
         self.http = http_service or HTTPService()
         self.wappalyzer = wappalyzer_service or WappalyzerService()
+        self.ip_classifier = ip_classifier or IPClassifierService(db)
     
     async def discover_domain(
         self,
@@ -158,16 +162,45 @@ class DiscoveryService:
             result.assets.append(self._asset_to_dict(root_asset))
             progress.assets_found += 1
             
-            # Create IP assets from A records
+            # Create IP assets from A records with hosting classification
             for ip in dns_records.a_records:
+                # Classify the IP to determine if it's owned infrastructure or cloud-hosted
+                ip_classification = self.ip_classifier.classify(ip, organization_id)
+                
                 ip_asset = self._create_or_update_asset(
                     organization_id=organization_id,
                     asset_type=AssetType.IP_ADDRESS,
                     name=ip,
                     value=ip,
                     parent_id=root_asset.id,
-                    discovery_source="dns_enumeration"
+                    discovery_source="dns_enumeration",
+                    metadata_={
+                        "resolved_from": domain,
+                        "hosting_type": ip_classification.hosting_type,
+                        "hosting_provider": ip_classification.hosting_provider,
+                        "is_ephemeral": ip_classification.is_ephemeral,
+                        "classification_confidence": ip_classification.confidence,
+                        "classification_reason": ip_classification.reason
+                    }
                 )
+                
+                # Set hosting classification fields on the asset
+                ip_asset.hosting_type = ip_classification.hosting_type
+                ip_asset.hosting_provider = ip_classification.hosting_provider
+                ip_asset.is_ephemeral_ip = ip_classification.is_ephemeral
+                ip_asset.resolved_from = domain
+                ip_asset.is_owned = ip_classification.in_owned_cidr
+                ip_asset.netblock_id = ip_classification.netblock_id
+                
+                # Log classification for awareness
+                if ip_classification.hosting_type == "cloud":
+                    logger.info(
+                        f"IP {ip} classified as cloud-hosted ({ip_classification.hosting_provider}) - "
+                        f"resolved from {domain}. Scan by hostname only."
+                    )
+                elif ip_classification.hosting_type == "owned":
+                    logger.info(f"IP {ip} classified as owned infrastructure - safe to scan directly")
+                
                 result.assets.append(self._asset_to_dict(ip_asset))
                 progress.assets_found += 1
             
@@ -201,16 +234,35 @@ class DiscoveryService:
                     result.assets.append(self._asset_to_dict(sub_asset))
                     progress.assets_found += 1
                     
-                    # Create IP assets for this subdomain
+                    # Create IP assets for this subdomain with hosting classification
                     for ip in sub_result.ip_addresses:
+                        # Classify the IP to determine if it's owned or cloud-hosted
+                        ip_classification = self.ip_classifier.classify(ip, organization_id)
+                        
                         ip_asset = self._create_or_update_asset(
                             organization_id=organization_id,
                             asset_type=AssetType.IP_ADDRESS,
                             name=ip,
                             value=ip,
                             parent_id=sub_asset.id,
-                            discovery_source="subdomain_resolution"
+                            discovery_source="subdomain_resolution",
+                            metadata_={
+                                "resolved_from": sub_result.subdomain,
+                                "hosting_type": ip_classification.hosting_type,
+                                "hosting_provider": ip_classification.hosting_provider,
+                                "is_ephemeral": ip_classification.is_ephemeral,
+                                "classification_confidence": ip_classification.confidence,
+                                "classification_reason": ip_classification.reason
+                            }
                         )
+                        
+                        # Set hosting classification fields
+                        ip_asset.hosting_type = ip_classification.hosting_type
+                        ip_asset.hosting_provider = ip_classification.hosting_provider
+                        ip_asset.is_ephemeral_ip = ip_classification.is_ephemeral
+                        ip_asset.resolved_from = sub_result.subdomain
+                        ip_asset.is_owned = ip_classification.in_owned_cidr
+                        ip_asset.netblock_id = ip_classification.netblock_id
                         # Don't add duplicate IPs to result
             
             progress.completed_steps += 1

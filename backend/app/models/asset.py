@@ -149,6 +149,13 @@ class Asset(Base):
     is_owned = Column(Boolean, default=False, index=True)  # Is this asset confirmed owned by the org
     netblock_id = Column(Integer, ForeignKey("netblocks.id"), nullable=True)  # Associated netblock if any
     
+    # Hosting classification (for IPs discovered via DNS resolution)
+    # This helps distinguish between owned infrastructure vs cloud-hosted ephemeral IPs
+    hosting_type = Column(String(50), nullable=True, index=True)  # owned, cloud, cdn, third_party, unknown
+    hosting_provider = Column(String(100), nullable=True)  # azure, aws, gcp, cloudflare, akamai, digitalocean, oracle
+    is_ephemeral_ip = Column(Boolean, default=True)  # True if IP could change (cloud/CDN) - safe default
+    resolved_from = Column(String(255), nullable=True)  # Domain/subdomain this IP was resolved from
+    
     # Scan tracking
     last_scan_id = Column(String(100), nullable=True)  # ID of the last scan that touched this asset
     last_scan_name = Column(String(255), nullable=True)  # Name of the last scan
