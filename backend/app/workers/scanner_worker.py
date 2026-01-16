@@ -197,13 +197,13 @@ class ScannerWorker:
             
             # Find pending scans, prioritizing ad-hoc over scheduled
             # Ad-hoc scans don't have 'triggered_by_schedule' in config
+            # Note: We order by created_at to process oldest first (FIFO)
+            # The is_scheduled flag is determined after fetching, not in the query
             pending_scans = db.query(Scan).filter(
                 Scan.status == ScanStatus.PENDING,
                 ~Scan.id.in_(active_scans)  # Exclude already active
             ).order_by(
-                # Prioritize non-scheduled scans (ad-hoc)
-                Scan.config['triggered_by_schedule'].astext.is_(None).desc(),
-                Scan.created_at.asc()
+                Scan.created_at.asc()  # Process oldest scans first (FIFO)
             ).limit(available_slots).all()
             
             if not pending_scans:

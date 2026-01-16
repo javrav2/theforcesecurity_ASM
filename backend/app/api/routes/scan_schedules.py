@@ -506,9 +506,11 @@ def get_schedule_history(
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Get scans triggered by this schedule
+    # Use PostgreSQL JSONB ->> operator for text extraction
+    from sqlalchemy import cast, String
     scans = db.query(Scan).filter(
         Scan.organization_id == schedule.organization_id,
-        Scan.config["triggered_by_schedule"].astext == str(schedule_id)
+        cast(Scan.config["triggered_by_schedule"], String) == str(schedule_id)
     ).order_by(Scan.created_at.desc()).limit(limit).all()
     
     return {
