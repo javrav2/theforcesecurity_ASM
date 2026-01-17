@@ -60,7 +60,12 @@ import {
   Zap,
   KeyRound,
   Trash2,
+  Check,
+  Square,
+  CheckSquare,
+  MinusSquare,
 } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate, downloadCSV } from '@/lib/utils';
@@ -168,6 +173,9 @@ export default function AssetsPage() {
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [totalAssets, setTotalAssets] = useState(0);
+  
+  // Multi-select state
+  const [selectedAssets, setSelectedAssets] = useState<Set<number>>(new Set());
 
   const [columns, setColumns] = useState<Column[]>([
     { key: 'screenshot', label: 'Screenshot', visible: true },
@@ -364,6 +372,77 @@ export default function AssetsPage() {
       title: 'Export Started',
       description: 'Your CSV file is being downloaded.',
     });
+  };
+
+  // Multi-select handlers
+  const toggleAssetSelection = (assetId: number) => {
+    setSelectedAssets(prev => {
+      const next = new Set(prev);
+      if (next.has(assetId)) {
+        next.delete(assetId);
+      } else {
+        next.add(assetId);
+      }
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    setSelectedAssets(new Set(displayedAssets.map(a => a.id)));
+  };
+
+  const deselectAll = () => {
+    setSelectedAssets(new Set());
+  };
+
+  const isAllSelected = displayedAssets.length > 0 && selectedAssets.size === displayedAssets.length;
+  const isSomeSelected = selectedAssets.size > 0 && selectedAssets.size < displayedAssets.length;
+
+  const handleBulkDelete = async () => {
+    if (selectedAssets.size === 0) return;
+    
+    if (confirm(`Delete ${selectedAssets.size} selected assets? This cannot be undone.`)) {
+      try {
+        const result = await api.bulkDeleteAssets(Array.from(selectedAssets));
+        toast({
+          title: 'Assets Deleted',
+          description: `Deleted ${result.deleted} assets.`,
+        });
+        setSelectedAssets(new Set());
+        fetchData();
+      } catch (error) {
+        toast({
+          title: 'Error',
+          description: 'Failed to delete assets',
+          variant: 'destructive',
+        });
+      }
+    }
+  };
+
+  const handleBulkUpdateScope = async (inScope: boolean) => {
+    if (selectedAssets.size === 0) return;
+    
+    try {
+      // Update each selected asset's scope
+      const promises = Array.from(selectedAssets).map(id =>
+        api.updateAsset(id, { in_scope: inScope })
+      );
+      await Promise.all(promises);
+      
+      toast({
+        title: 'Scope Updated',
+        description: `Updated ${selectedAssets.size} assets to ${inScope ? 'in scope' : 'out of scope'}.`,
+      });
+      setSelectedAssets(new Set());
+      fetchData();
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to update asset scope',
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleAddLabel = async () => {
@@ -619,6 +698,49 @@ export default function AssetsPage() {
           </div>
         )}
 
+        {/* Bulk Action Bar */}
+        {selectedAssets.size > 0 && (
+          <Card className="p-4 bg-primary/5 border-primary/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <span className="text-sm font-medium">
+                  {selectedAssets.size} asset{selectedAssets.size !== 1 ? 's' : ''} selected
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleBulkUpdateScope(true)}
+                  >
+                    <Check className="h-4 w-4 mr-1" />
+                    Add to Scope
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleBulkUpdateScope(false)}
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    Remove from Scope
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-red-500 border-red-500/50 hover:bg-red-500/10"
+                    onClick={handleBulkDelete}
+                  >
+                    <Trash2 className="h-4 w-4 mr-1" />
+                    Delete Selected
+                  </Button>
+                </div>
+              </div>
+              <Button size="sm" variant="ghost" onClick={deselectAll}>
+                Clear Selection
+              </Button>
+            </div>
+          </Card>
+        )}
+
         {/* Table with Customization */}
         <TableCustomization
           columns={columns}
@@ -635,6 +757,21 @@ export default function AssetsPage() {
             <Table>
               <TableHeader>
                 <TableRow className="border-border hover:bg-transparent">
+                  {/* Checkbox column */}
+                  <TableHead className="w-[50px]">
+                    <Checkbox
+                      checked={isAllSelected}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          selectAll();
+                        } else {
+                          deselectAll();
+                        }
+                      }}
+                      aria-label="Select all"
+                      className={isSomeSelected ? 'opacity-50' : ''}
+                    />
+                  </TableHead>
                   {visibleColumns.map(col => (
                     <TableHead 
                       key={col.key} 
@@ -655,13 +792,13 @@ export default function AssetsPage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={visibleColumns.length + 1} className="text-center py-8">
+                    <TableCell colSpan={visibleColumns.length + 2} className="text-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                     </TableCell>
                   </TableRow>
                 ) : displayedAssets.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={visibleColumns.length + 1} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={visibleColumns.length + 2} className="text-center py-8 text-muted-foreground">
                       No assets found. Run a discovery scan to find assets.
                     </TableCell>
                   </TableRow>
@@ -669,13 +806,22 @@ export default function AssetsPage() {
                   displayedAssets.map((asset) => {
                     const assetType = asset.type || asset.asset_type || 'domain';
                     const Icon = assetIcons[assetType] || Globe;
+                    const isSelected = selectedAssets.has(asset.id);
 
                     return (
                       <TableRow 
                         key={asset.id} 
-                        className="border-border cursor-pointer transition-colors hover:bg-secondary/50"
+                        className={`border-border cursor-pointer transition-colors hover:bg-secondary/50 ${isSelected ? 'bg-primary/5' : ''}`}
                         onClick={() => router.push(`/assets/${asset.id}`)}
                       >
+                        {/* Checkbox */}
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            checked={isSelected}
+                            onCheckedChange={() => toggleAssetSelection(asset.id)}
+                            aria-label={`Select ${asset.value}`}
+                          />
+                        </TableCell>
                         {/* Screenshot */}
                         {columns.find(c => c.key === 'screenshot')?.visible && (
                           <TableCell>
