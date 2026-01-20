@@ -46,6 +46,10 @@ import {
   Calendar,
   Hash,
   Mail,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldX,
+  Search,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -231,7 +235,30 @@ export default function AssetDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [capturingScreenshot, setCapturingScreenshot] = useState(false);
+  const [lookingUpVT, setLookingUpVT] = useState(false);
   const { toast } = useToast();
+
+  const handleVirusTotalLookup = async () => {
+    if (!asset) return;
+    
+    setLookingUpVT(true);
+    try {
+      const result = await api.lookupVirusTotal(asset.id);
+      toast({ 
+        title: 'VirusTotal Lookup Complete',
+        description: result.message || 'Reputation data retrieved'
+      });
+      fetchAsset(); // Refresh to show new VT data
+    } catch (error: any) {
+      toast({
+        title: 'VirusTotal Lookup Failed',
+        description: error?.response?.data?.detail || 'Failed to lookup reputation',
+        variant: 'destructive',
+      });
+    } finally {
+      setLookingUpVT(false);
+    }
+  };
 
   const fetchAsset = async () => {
     try {
@@ -841,6 +868,150 @@ export default function AssetDetailPage() {
                       </div>
                     </div>
                   )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* VirusTotal Reputation */}
+        {(asset.asset_type === 'domain' || asset.asset_type === 'subdomain' || asset.asset_type === 'ip_address') && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Shield className="h-5 w-5" />
+                  <CardTitle>VirusTotal Reputation</CardTitle>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleVirusTotalLookup} 
+                  disabled={lookingUpVT}
+                >
+                  {lookingUpVT ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <Search className="h-4 w-4 mr-2" />
+                  )}
+                  {lookingUpVT ? 'Looking up...' : 'Lookup VT'}
+                </Button>
+              </div>
+              <CardDescription>
+                Malware detection and security categorization from VirusTotal
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {asset.metadata_?.virustotal ? (
+                <div className="space-y-4">
+                  {/* Detection Ratio */}
+                  <div className="flex items-center gap-4">
+                    {asset.metadata_.virustotal.is_malicious ? (
+                      <div className="p-3 rounded-full bg-red-500/10">
+                        <ShieldX className="h-8 w-8 text-red-500" />
+                      </div>
+                    ) : asset.metadata_.virustotal.malicious > 0 || asset.metadata_.virustotal.suspicious > 0 ? (
+                      <div className="p-3 rounded-full bg-yellow-500/10">
+                        <ShieldAlert className="h-8 w-8 text-yellow-500" />
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-full bg-green-500/10">
+                        <ShieldCheck className="h-8 w-8 text-green-500" />
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-2xl font-bold">
+                        {asset.metadata_.virustotal.detection_ratio}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        Detection Ratio
+                      </div>
+                    </div>
+                    <div className="ml-auto text-right">
+                      <div className="text-sm">
+                        <span className="text-red-500 font-medium">{asset.metadata_.virustotal.malicious}</span> malicious
+                        {asset.metadata_.virustotal.suspicious > 0 && (
+                          <>, <span className="text-yellow-500 font-medium">{asset.metadata_.virustotal.suspicious}</span> suspicious</>
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {asset.metadata_.virustotal.harmless} harmless, {asset.metadata_.virustotal.undetected} undetected
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Reputation Score */}
+                  {asset.metadata_.virustotal.reputation_score !== undefined && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Reputation Score:</span>
+                      <Badge 
+                        variant="outline"
+                        className={
+                          asset.metadata_.virustotal.reputation_score < 0 
+                            ? 'text-red-500 border-red-500/30' 
+                            : asset.metadata_.virustotal.reputation_score > 0 
+                            ? 'text-green-500 border-green-500/30'
+                            : ''
+                        }
+                      >
+                        {asset.metadata_.virustotal.reputation_score}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        (negative = bad, positive = good)
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Categories */}
+                  {asset.metadata_.virustotal.categories?.length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Categories</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {asset.metadata_.virustotal.categories.map((cat: string, idx: number) => (
+                          <Badge key={idx} variant="secondary" className="text-xs">
+                            {cat}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Community Votes */}
+                  {(asset.metadata_.virustotal.community_votes?.harmless > 0 || 
+                    asset.metadata_.virustotal.community_votes?.malicious > 0) && (
+                    <div className="flex items-center gap-4 text-sm">
+                      <span className="text-muted-foreground">Community Votes:</span>
+                      <span className="text-green-500">
+                        👍 {asset.metadata_.virustotal.community_votes.harmless} harmless
+                      </span>
+                      <span className="text-red-500">
+                        👎 {asset.metadata_.virustotal.community_votes.malicious} malicious
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Last Analysis */}
+                  {asset.metadata_.virustotal.last_analysis_date && (
+                    <div className="text-xs text-muted-foreground">
+                      Last analyzed: {formatDate(asset.metadata_.virustotal.last_analysis_date)}
+                      {asset.metadata_.virustotal.lookup_date && (
+                        <> • Fetched: {formatDate(asset.metadata_.virustotal.lookup_date)}</>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : asset.metadata_?.virustotal?.error ? (
+                <div className="flex items-center gap-2 text-yellow-500">
+                  <AlertTriangle className="h-5 w-5" />
+                  <span>{asset.metadata_.virustotal.error}</span>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-6 text-center">
+                  <Shield className="h-10 w-10 text-muted-foreground mb-3" />
+                  <p className="text-muted-foreground">No VirusTotal data available</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Click &quot;Lookup VT&quot; to check reputation
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

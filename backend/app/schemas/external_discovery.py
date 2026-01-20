@@ -10,9 +10,9 @@ from pydantic import BaseModel, Field
 # =============================================================================
 
 class APIConfigCreate(BaseModel):
-    """Schema for creating an API configuration."""
+    """Schema for creating or updating an API configuration."""
     service_name: str = Field(..., description="Service name (e.g., virustotal, otx, whoisxml)")
-    api_key: str = Field(..., description="API key for the service")
+    api_key: Optional[str] = Field(default=None, description="API key for the service (optional for config-only updates)")
     api_user: Optional[str] = Field(default=None, description="Username if required")
     api_secret: Optional[str] = Field(default=None, description="API secret if separate from key")
     config: Optional[Dict[str, Any]] = Field(

@@ -194,21 +194,29 @@ def create_api_config(
     
     if existing:
         # Update existing
-        existing.set_api_key(config.api_key)
+        # Only update API key if provided (allows config-only updates)
+        if config.api_key:
+            existing.set_api_key(config.api_key)
+            existing.is_valid = True  # Reset validation on new key
+            existing.last_error = None
         if config.api_user:
             existing.api_user = config.api_user
         if config.api_secret:
             existing.set_api_secret(config.api_secret)
         if config.config:
-            existing.config = config.config
+            # Merge config instead of replacing to preserve other settings
+            existing.config = {**(existing.config or {}), **config.config}
         existing.is_active = True
-        existing.is_valid = True
-        existing.last_error = None
         db.commit()
         db.refresh(existing)
         db_config = existing
     else:
-        # Create new
+        # Create new - require API key for new configs
+        if not config.api_key:
+            raise HTTPException(
+                status_code=400, 
+                detail="API key is required when creating a new configuration"
+            )
         db_config = APIConfig(
             organization_id=organization_id,
             service_name=config.service_name,

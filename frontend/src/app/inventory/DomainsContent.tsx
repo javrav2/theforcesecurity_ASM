@@ -151,11 +151,23 @@ export default function DomainsContent() {
   const fetchDomains = async () => {
     try {
       setLoading(true);
-      // Fetch both domains and subdomains
-      const [domainsResponse, subdomainsResponse] = await Promise.all([
+      // Fetch both domains and subdomains - handle each independently
+      const [domainsResult, subdomainsResult] = await Promise.allSettled([
         api.getAssets({ asset_type: 'domain', limit: 500 }),
         api.getAssets({ asset_type: 'subdomain', limit: 1000 })
       ]);
+      
+      // Extract successful results, use empty arrays for failures
+      const domainsResponse = domainsResult.status === 'fulfilled' ? domainsResult.value : { items: [] };
+      const subdomainsResponse = subdomainsResult.status === 'fulfilled' ? subdomainsResult.value : { items: [] };
+      
+      // Log any failures for debugging
+      if (domainsResult.status === 'rejected') {
+        console.error('Failed to fetch domains:', domainsResult.reason);
+      }
+      if (subdomainsResult.status === 'rejected') {
+        console.error('Failed to fetch subdomains:', subdomainsResult.reason);
+      }
       
       const domainAssets = domainsResponse.items || domainsResponse || [];
       const subdomainAssets = subdomainsResponse.items || subdomainsResponse || [];
@@ -177,6 +189,25 @@ export default function DomainsContent() {
         has_mail: allAssets.filter((d: Domain) => d.metadata_?.dns_summary?.has_mail).length,
       };
       setStats(newStats);
+      
+      // Show warning if any request failed but we still have some data
+      const failedRequests = [];
+      if (domainsResult.status === 'rejected') failedRequests.push('domains');
+      if (subdomainsResult.status === 'rejected') failedRequests.push('subdomains');
+      
+      if (failedRequests.length > 0 && allAssets.length > 0) {
+        toast({
+          title: 'Partial Load',
+          description: `Some data couldn't be loaded: ${failedRequests.join(', ')}. Database may need migration.`,
+          variant: 'default',
+        });
+      } else if (failedRequests.length > 0 && allAssets.length === 0) {
+        toast({
+          title: 'Error',
+          description: 'Failed to fetch domains. Check backend logs for details.',
+          variant: 'destructive',
+        });
+      }
       
     } catch (error) {
       console.error('Error fetching domains:', error);

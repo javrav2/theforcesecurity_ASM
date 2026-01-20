@@ -131,17 +131,17 @@ export default function SettingsPage() {
       setApiConfigs(data.configs || []);
       
       // Load existing organization names and emails from config
+      // Always set these values (even to empty arrays) to ensure clean state
       const whoisxmlConfig = data.configs?.find((c: ApiConfig) => c.service_name === 'whoisxml');
-      if (whoisxmlConfig?.config?.organization_names) {
-        setOrgNames(whoisxmlConfig.config.organization_names);
-      }
+      setOrgNames(whoisxmlConfig?.config?.organization_names || []);
       
       const whoxyConfig = data.configs?.find((c: ApiConfig) => c.service_name === 'whoxy');
-      if (whoxyConfig?.config?.registration_emails) {
-        setRegEmails(whoxyConfig.config.registration_emails);
-      }
+      setRegEmails(whoxyConfig?.config?.registration_emails || []);
     } catch (error) {
       console.error('Failed to fetch API configs:', error);
+      // Reset to empty on error
+      setOrgNames([]);
+      setRegEmails([]);
     }
   };
 
@@ -151,10 +151,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (selectedOrg) {
+      // Clear current state and fetch new config
+      // The reset happens in fetchApiConfigs after data loads
+      setApiKeys({});
+      setApiUsers({});
       fetchApiConfigs(parseInt(selectedOrg));
-      // Reset form state
-      setOrgNames([]);
-      setRegEmails([]);
     }
   }, [selectedOrg]);
 
@@ -236,6 +237,47 @@ export default function SettingsPage() {
 
   const removeRegEmail = (email: string) => {
     setRegEmails(regEmails.filter(e => e !== email));
+  };
+
+  // Save discovery settings (org names and emails) without requiring API key change
+  const handleSaveDiscoverySettings = async () => {
+    if (!selectedOrg) return;
+    
+    setSaving('discovery');
+    try {
+      // Save org names to whoisxml config (if config exists or has org names)
+      const whoisxmlConfig = getConfigForService('whoisxml');
+      if (whoisxmlConfig || orgNames.length > 0) {
+        await api.saveApiConfig(parseInt(selectedOrg), {
+          service_name: 'whoisxml',
+          config: { organization_names: orgNames },
+        });
+      }
+      
+      // Save registration emails to whoxy config (if config exists or has emails)
+      const whoxyConfig = getConfigForService('whoxy');
+      if (whoxyConfig || regEmails.length > 0) {
+        await api.saveApiConfig(parseInt(selectedOrg), {
+          service_name: 'whoxy',
+          config: { registration_emails: regEmails },
+        });
+      }
+      
+      toast({
+        title: 'Success',
+        description: 'Discovery settings saved successfully',
+      });
+      
+      fetchApiConfigs(parseInt(selectedOrg));
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to save discovery settings',
+        variant: 'destructive',
+      });
+    } finally {
+      setSaving(null);
+    }
   };
 
   return (
@@ -353,6 +395,29 @@ export default function SettingsPage() {
                   <span className="text-sm text-muted-foreground">No registration emails configured</span>
                 )}
               </div>
+            </div>
+            
+            {/* Save Discovery Settings Button */}
+            <div className="pt-4 border-t">
+              <Button 
+                onClick={handleSaveDiscoverySettings}
+                disabled={saving === 'discovery'}
+              >
+                {saving === 'discovery' ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="h-4 w-4 mr-2" />
+                    Save Discovery Settings
+                  </>
+                )}
+              </Button>
+              <p className="text-xs text-muted-foreground mt-2">
+                Save organization names and registration emails to use as defaults in Discovery
+              </p>
             </div>
           </CardContent>
         </Card>

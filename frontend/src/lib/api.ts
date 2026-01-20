@@ -32,13 +32,13 @@ export function getApiErrorMessage(error: any, fallback: string = 'An error occu
 }
 
 // Determine API URL based on environment
-// In browser: use same host with port 8000
+// In browser: use same host with port 8000 (matching the page protocol)
 // In Node.js (SSR): use environment variable or localhost
 const getApiUrl = () => {
   if (typeof window !== 'undefined') {
-    // Running in browser - use the same hostname but port 8000
-    const hostname = window.location.hostname;
-    return `http://${hostname}:8000`;
+    // Running in browser - use the same hostname and protocol but port 8000
+    const { hostname, protocol } = window.location;
+    return `${protocol}//${hostname}:8000`;
   }
   // Running on server (SSR) - use env var or default
   return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -462,10 +462,11 @@ class ApiClient {
   getScreenshotImageUrl(screenshotId: number): string {
     const token = this.getToken();
     // Dynamically determine API URL at call time (not module load time)
-    // This ensures we use the correct hostname when called from browser
+    // This ensures we use the correct hostname and protocol when called from browser
     let apiUrl = 'http://localhost:8000';
     if (typeof window !== 'undefined') {
-      apiUrl = `http://${window.location.hostname}:8000`;
+      const { hostname, protocol } = window.location;
+      apiUrl = `${protocol}//${hostname}:8000`;
     }
     return `${apiUrl}/api/v1/screenshots/image/${screenshotId}?token=${token}`;
   }
@@ -549,9 +550,10 @@ class ApiClient {
 
   async saveApiConfig(organizationId: number, data: {
     service_name: string;
-    api_key: string;
+    api_key?: string;
     api_user?: string;
     api_secret?: string;
+    config?: Record<string, any>;
   }) {
     const response = await this.client.post(`/external-discovery/configs/${organizationId}`, data);
     return response.data;
@@ -621,6 +623,17 @@ class ApiClient {
       }
     }
     return results;
+  }
+
+  // VirusTotal lookups
+  async lookupVirusTotal(assetId: number) {
+    const response = await this.client.post(`/assets/${assetId}/virustotal-lookup`);
+    return response.data;
+  }
+
+  async bulkLookupVirusTotal(assetIds: number[]) {
+    const response = await this.client.post('/assets/bulk-virustotal-lookup', assetIds);
+    return response.data;
   }
 
   // Acquisitions / M&A
