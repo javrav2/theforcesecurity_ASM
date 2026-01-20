@@ -10,18 +10,18 @@ from app.db.database import Base
 
 class AssetType(str, enum.Enum):
     """Types of assets in the attack surface."""
-    DOMAIN = "domain"
-    SUBDOMAIN = "subdomain"
-    IP_ADDRESS = "ip_address"
-    IP_RANGE = "ip_range"
-    URL = "url"
-    CERTIFICATE = "certificate"
-    PORT = "port"
-    SERVICE = "service"
-    CLOUD_RESOURCE = "cloud_resource"
-    API_ENDPOINT = "api_endpoint"
-    EMAIL = "email"
-    OTHER = "other"
+    DOMAIN = "DOMAIN"
+    SUBDOMAIN = "SUBDOMAIN"
+    IP_ADDRESS = "IP_ADDRESS"
+    IP_RANGE = "IP_RANGE"
+    URL = "URL"
+    CERTIFICATE = "CERTIFICATE"
+    PORT = "PORT"
+    SERVICE = "SERVICE"
+    CLOUD_RESOURCE = "CLOUD_RESOURCE"
+    API_ENDPOINT = "API_ENDPOINT"
+    EMAIL = "EMAIL"
+    OTHER = "OTHER"
 
 
 class AssetStatus(str, enum.Enum):

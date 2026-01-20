@@ -392,10 +392,11 @@ export default function DomainsContent() {
       return false;
     }
     
-    // Type filter (domain vs subdomain)
+    // Type filter (domain vs subdomain) - handle both uppercase and lowercase
     if (typeFilter !== 'all') {
-      if (typeFilter === 'domain' && domain.asset_type !== 'domain') return false;
-      if (typeFilter === 'subdomain' && domain.asset_type !== 'subdomain') return false;
+      const assetType = domain.asset_type?.toLowerCase();
+      if (typeFilter === 'domain' && assetType !== 'domain') return false;
+      if (typeFilter === 'subdomain' && assetType !== 'subdomain') return false;
     }
     
     // Source filter
@@ -793,7 +794,7 @@ export default function DomainsContent() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            {domain.asset_type === 'subdomain' ? (
+                            {domain.asset_type?.toLowerCase() === 'subdomain' ? (
                               <Radar className="h-4 w-4 text-indigo-500" />
                             ) : (
                               <Globe className="h-4 w-4 text-blue-500" />
@@ -809,7 +810,7 @@ export default function DomainsContent() {
                                 <ExternalLink className="h-3 w-3" />
                               </a>
                               <span className="text-[10px] text-muted-foreground">
-                                {domain.asset_type === 'subdomain' ? 'Subdomain' : 'Root Domain'}
+                                {domain.asset_type?.toLowerCase() === 'subdomain' ? 'Subdomain' : 'Root Domain'}
                               </span>
                             </div>
                           </div>
@@ -818,7 +819,7 @@ export default function DomainsContent() {
                           {getSourceBadge(domain.discovery_source)}
                         </TableCell>
                         <TableCell>
-                          {domain.asset_type === 'domain' ? (
+                          {domain.asset_type?.toLowerCase() === 'domain' ? (
                             domain.metadata_?.whois ? (
                               <div className="flex flex-col gap-0.5">
                                 <span className="text-xs font-medium truncate max-w-32" title={domain.metadata_?.whois?.registrant_org || domain.metadata_?.whois?.registrant_name || ''}>

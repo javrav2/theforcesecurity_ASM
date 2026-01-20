@@ -181,7 +181,7 @@ def build_asset_response(asset: Asset) -> dict:
 @router.get("/", response_model=PaginatedAssetsResponse)
 def list_assets(
     organization_id: Optional[int] = None,
-    asset_type: Optional[AssetType] = None,
+    asset_type: Optional[str] = Query(None, description="Asset type (domain, subdomain, ip_address, etc.) - case insensitive"),
     status: Optional[AssetStatus] = None,
     search: Optional[str] = None,
     has_open_ports: Optional[bool] = None,
@@ -205,9 +205,15 @@ def list_assets(
             return PaginatedAssetsResponse(items=[], total=0, skip=skip, limit=limit, has_more=False)
         query = query.filter(Asset.organization_id == current_user.organization_id)
     
-    # Apply filters
+    # Apply filters - normalize asset_type to uppercase for case-insensitive matching
     if asset_type:
-        query = query.filter(Asset.asset_type == asset_type)
+        normalized_type = asset_type.upper()
+        try:
+            asset_type_enum = AssetType(normalized_type)
+            query = query.filter(Asset.asset_type == asset_type_enum)
+        except ValueError:
+            # Invalid asset type, return empty
+            return PaginatedAssetsResponse(items=[], total=0, skip=skip, limit=limit, has_more=False)
     else:
         # By default, exclude IP_RANGE (CIDR blocks) - these are managed in netblocks
         if not include_cidr:
