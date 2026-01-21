@@ -32,7 +32,7 @@ def list_netblocks(
     in_scope: Optional[bool] = None,
     ip_version: Optional[str] = None,
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=50000),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
