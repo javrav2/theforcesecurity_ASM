@@ -164,8 +164,11 @@ Automated recurring scans with flexible frequencies:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/javrav2/theforcesecurity_ASM.git ~/asm
-cd ~/asm
+# Create directory and clone
+sudo mkdir -p /opt/asm
+sudo chown $USER:$USER /opt/asm
+git clone https://github.com/javrav2/theforcesecurity_ASM.git /opt/asm
+cd /opt/asm
 ```
 
 ### 2. Create Environment File
@@ -291,6 +294,51 @@ git clone https://github.com/javrav2/theforcesecurity_ASM.git .
 ./aws/ec2-single/setup.sh
 ```
 
+### Manual AWS Setup (Existing EC2)
+
+```bash
+# SSH into your EC2 instance
+ssh -i your-key.pem ubuntu@YOUR_EC2_IP
+
+# Create and setup directory
+sudo mkdir -p /opt/asm
+sudo chown $USER:$USER /opt/asm
+cd /opt/asm
+
+# Clone repository
+git clone https://github.com/javrav2/theforcesecurity_ASM.git .
+
+# Create .env file (update PUBLIC_IP with your EC2 IP)
+PUBLIC_IP=$(curl -s ifconfig.me)
+cat > .env << EOF
+POSTGRES_USER=asm_user
+POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
+POSTGRES_DB=asm_db
+SECRET_KEY=$(openssl rand -hex 32)
+BACKEND_PORT=8000
+FRONTEND_PORT=80
+DEBUG=false
+NEXT_PUBLIC_API_URL=http://${PUBLIC_IP}:8000
+CORS_ORIGINS=["http://localhost","http://${PUBLIC_IP}","http://${PUBLIC_IP}:80"]
+SQS_QUEUE_URL=
+AWS_REGION=us-east-1
+EOF
+
+# Build and start
+sudo docker compose up -d --build
+
+# Check status
+sudo docker compose ps
+```
+
+### Updating Code on AWS
+
+```bash
+cd /opt/asm
+git pull
+sudo docker compose up -d --build --force-recreate
+```
+
 See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed AWS deployment instructions.
 
 ## 📁 Project Structure
@@ -379,7 +427,12 @@ Full API documentation available at `/api/docs`
 
 ## 🔧 Useful Commands
 
+All commands should be run from the application directory (`/opt/asm` on AWS):
+
 ```bash
+# Navigate to app directory (AWS)
+cd /opt/asm
+
 # View logs
 sudo docker compose logs -f
 sudo docker compose logs -f backend
@@ -387,8 +440,8 @@ sudo docker compose logs -f backend
 # Restart services
 sudo docker compose restart
 
-# Rebuild and restart
-sudo docker compose up -d --build
+# Rebuild and restart (after code changes)
+git pull && sudo docker compose up -d --build --force-recreate
 
 # Access backend shell
 sudo docker exec -it asm_backend bash

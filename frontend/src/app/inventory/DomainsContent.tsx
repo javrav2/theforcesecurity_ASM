@@ -160,8 +160,8 @@ export default function DomainsContent() {
       // Fetch both domains and subdomains - handle each independently
       // Fetch all assets to show complete attack surface
       const [domainsResult, subdomainsResult] = await Promise.allSettled([
-        api.getAssets({ asset_type: 'domain', limit: 50000 }),
-        api.getAssets({ asset_type: 'subdomain', limit: 50000 })
+        api.getAssets({ organization_id: 1, asset_type: 'domain', limit: 50000 }),
+        api.getAssets({ organization_id: 1, asset_type: 'subdomain', limit: 50000 })
       ]);
       
       // Extract successful results, use empty arrays for failures
