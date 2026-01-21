@@ -197,11 +197,13 @@ export default function AssetsPage() {
     { key: 'created_at', label: 'Last Seen', visible: true },
   ]);
 
+  const [serverStats, setServerStats] = useState<any>(null);
+  
   const fetchData = async (page: number = currentPage) => {
     setLoading(true);
     try {
       const skip = (page - 1) * PAGE_SIZE;
-      const [assetsData, orgsData] = await Promise.all([
+      const [assetsData, orgsData, summaryData] = await Promise.all([
         api.getAssets({
           organization_id: orgFilter !== 'all' ? parseInt(orgFilter) : undefined,
           asset_type: typeFilter !== 'all' ? typeFilter : undefined,
@@ -211,7 +213,11 @@ export default function AssetsPage() {
           skip: skip,
         }),
         api.getOrganizations(),
+        api.getAssetsSummary(orgFilter !== 'all' ? parseInt(orgFilter) : undefined),
       ]);
+      
+      // Store server-side stats for accurate counts
+      setServerStats(summaryData);
       
       // Get total count from response
       const total = assetsData.total || assetsData.items?.length || assetsData.length || 0;
@@ -532,8 +538,25 @@ export default function AssetsPage() {
 
   const visibleColumns = columns.filter(c => c.visible);
 
-  // Calculate attack surface stats
+  // Calculate attack surface stats - use server stats for accurate totals
   const attackSurfaceStats = useMemo(() => {
+    // Use server-side stats for accurate counts across all assets
+    if (serverStats) {
+      return {
+        total: serverStats.total || totalAssets,
+        live: serverStats.live?.live || 0,
+        loginPortals: serverStats.login_portals || 0,
+        outOfScope: serverStats.scope?.out_of_scope || 0,
+        totalPorts: serverStats.ports?.open_ports || 0,
+        riskyPorts: serverStats.ports?.risky_ports || 0,
+        withTech: 0, // Not in server stats yet
+        uniqueTech: 0, // Not in server stats yet
+        withEndpoints: 0, // Not in server stats yet
+        withFindings: 0, // Not in server stats yet
+      };
+    }
+    
+    // Fallback to page-level stats
     const liveAssets = assets.filter(a => a.is_live).length;
     const loginPortals = assets.filter(a => a.has_login_portal).length;
     const outOfScope = assets.filter(a => !a.in_scope).length;
@@ -561,7 +584,7 @@ export default function AssetsPage() {
       withEndpoints,
       withFindings,
     };
-  }, [assets, totalAssets]);
+  }, [assets, totalAssets, serverStats]);
 
   return (
     <MainLayout>

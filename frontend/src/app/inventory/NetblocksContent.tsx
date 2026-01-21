@@ -120,7 +120,7 @@ export default function NetblocksContent() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const params: any = { limit: 200 };
+      const params: any = { limit: 10000 };
       if (selectedOrg !== 'all') {
         params.organization_id = parseInt(selectedOrg);
       }

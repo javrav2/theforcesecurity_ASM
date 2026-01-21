@@ -53,10 +53,10 @@ Track and report on exposed services with structured data:
     openapi_url="/api/openapi.json"
 )
 
-# Configure CORS
+# Configure CORS - allow all origins for flexibility with different deployment scenarios
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=["*"],  # Allow all origins - required for dynamic IP/hostname access
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -2005,20 +2005,20 @@ class ScannerWorker:
         try:
             body = json.loads(message.get('Body', '{}'))
             scan_id = body.get('scan_id')
-            
-            # Track active scan
-            if scan_id:
-                active_scans.add(scan_id)
-            
+
+            # Note: scan_id is already added to active_scans in the main loop
+            # to prevent race conditions during polling
+
             async with self.scan_semaphore:
                 await self.process_message(message)
-                
+
         except Exception as e:
             logger.error(f"Error processing scan {scan_id}: {e}", exc_info=True)
         finally:
-            # Remove from active scans
+            # Remove from active scans when complete
             if scan_id:
                 active_scans.discard(scan_id)
+                logger.info(f"Scan {scan_id} removed from active scans")
     
     async def run(self):
         """
@@ -2042,10 +2042,24 @@ class ScannerWorker:
                     if shutdown_requested:
                         break
                     
+                    # Add scan to active_scans BEFORE creating task to prevent race condition
+                    try:
+                        body = json.loads(message.get('Body', '{}'))
+                        scan_id = body.get('scan_id')
+                        if scan_id:
+                            active_scans.add(scan_id)
+                            logger.info(f"Starting processing for scan {scan_id}")
+                    except Exception:
+                        pass
+                    
                     # Create task for concurrent processing
                     task = asyncio.create_task(self._process_with_semaphore(message))
                     pending_tasks.add(task)
                     task.add_done_callback(pending_tasks.discard)
+                
+                # Brief pause to let async tasks start processing
+                if messages:
+                    await asyncio.sleep(0.5)
                 
                 # Clean up completed tasks
                 done_tasks = [t for t in pending_tasks if t.done()]

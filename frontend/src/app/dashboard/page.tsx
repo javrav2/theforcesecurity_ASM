@@ -104,8 +104,8 @@ export default function DashboardPage() {
       const [vulnSummary, orgs, assetsData, geoAssetsData, vulns, nbSummary, remediationData, exposureData] = await Promise.all([
         api.getVulnerabilitiesSummary(),
         api.getOrganizations(),
-        api.getAssets({ limit: 100 }), // Fetch sample for stats
-        api.getAssets({ limit: 500, has_geo: true }), // Fetch assets with geo data specifically for the map
+        api.getAssets({ limit: 10000 }), // Fetch assets for stats
+        api.getAssets({ limit: 50000, has_geo: true }), // Fetch all assets with geo data for the map
         api.getVulnerabilities({ limit: 5 }),
         api.getNetblockSummary().catch(() => null),
         api.getRemediationEfficiency(30).catch(() => null),
@@ -149,10 +149,17 @@ export default function DashboardPage() {
     }
   };
 
-  // Transform assets for WorldMap - only include assets with geo data
+  // Transform assets for WorldMap - only include assets with valid geo data
   const mapAssets = useMemo(() => {
     return assets
-      .filter((a: any) => a.latitude && a.longitude)
+      .filter((a: any) => {
+        // Handle both string and number lat/lng, exclude empty strings and null/undefined
+        const lat = a.latitude;
+        const lng = a.longitude;
+        const hasValidLat = lat !== null && lat !== undefined && lat !== '' && !isNaN(parseFloat(lat));
+        const hasValidLng = lng !== null && lng !== undefined && lng !== '' && !isNaN(parseFloat(lng));
+        return hasValidLat && hasValidLng;
+      })
       .map((a: any) => ({
         id: a.id,
         value: a.name || a.value || '',
@@ -238,7 +245,7 @@ export default function DashboardPage() {
         {/* World Map */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Asset Locations</CardTitle>
+            <CardTitle className="text-lg">Global Attack Surface Heatmap</CardTitle>
           </CardHeader>
           <CardContent>
             {mapAssets.length > 0 ? (
@@ -255,7 +262,7 @@ export default function DashboardPage() {
               <div className="text-center py-12 text-muted-foreground">
                 <Globe className="h-12 w-12 mx-auto mb-4 opacity-50" />
                 <p>No assets with geo-location data yet</p>
-                <p className="text-sm mt-2">Run discovery scans to populate asset locations</p>
+                <p className="text-sm mt-2">Run a DNS Resolution scan to resolve IPs and geo-locate assets</p>
               </div>
             )}
           </CardContent>

@@ -96,6 +96,14 @@ def build_asset_response(asset: Asset) -> dict:
     except Exception:
         pass
     
+    # Get organization name from relationship
+    org_name = None
+    try:
+        if asset.organization:
+            org_name = asset.organization.name
+    except Exception:
+        pass
+    
     # Build response explicitly to avoid _sa_instance_state and missing columns
     return {
         "id": asset.id,
@@ -103,6 +111,7 @@ def build_asset_response(asset: Asset) -> dict:
         "asset_type": asset.asset_type,
         "value": asset.value,
         "organization_id": asset.organization_id,
+        "organization_name": org_name,
         "parent_id": safe_get("parent_id"),
         "status": asset.status,
         "description": safe_get("description"),
@@ -184,12 +193,14 @@ def list_assets(
     asset_type: Optional[str] = Query(None, description="Asset type (domain, subdomain, ip_address, etc.) - case insensitive"),
     status: Optional[AssetStatus] = None,
     search: Optional[str] = None,
+    is_live: Optional[bool] = Query(None, description="Filter by live status (true=live, false=not live)"),
+    in_scope: Optional[bool] = Query(None, description="Filter by scope (true=in scope, false=out of scope)"),
     has_open_ports: Optional[bool] = None,
     has_risky_ports: Optional[bool] = None,
     has_geo: Optional[bool] = Query(None, description="Filter for assets with geo data (latitude/longitude)"),
     include_cidr: bool = Query(False, description="Include IP_RANGE/CIDR assets (excluded by default)"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=100000),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -226,6 +237,18 @@ def list_assets(
             (Asset.name.ilike(f"%{search}%")) | 
             (Asset.value.ilike(f"%{search}%"))
         )
+    
+    # Filter by live status
+    if is_live is True:
+        query = query.filter(Asset.is_live == True)
+    elif is_live is False:
+        query = query.filter(Asset.is_live == False)
+    
+    # Filter by scope
+    if in_scope is True:
+        query = query.filter(Asset.in_scope == True)
+    elif in_scope is False:
+        query = query.filter(Asset.in_scope == False)
     
     # Filter for assets with geo data (for map display)
     if has_geo is True:
@@ -622,6 +645,12 @@ def get_assets_summary(
     total_risky_ports = 0
     assets_with_ports = 0
     assets_with_risky_ports = 0
+    live_count = 0
+    not_live_count = 0
+    not_probed_count = 0
+    in_scope_count = 0
+    out_of_scope_count = 0
+    with_login_portal = 0
     
     for asset in assets:
         type_key = asset.asset_type.value
@@ -629,6 +658,24 @@ def get_assets_summary(
         
         by_type[type_key] = by_type.get(type_key, 0) + 1
         by_status[status_key] = by_status.get(status_key, 0) + 1
+        
+        # Live status stats
+        if asset.is_live is True:
+            live_count += 1
+        elif asset.is_live is False:
+            not_live_count += 1
+        else:
+            not_probed_count += 1
+        
+        # Scope stats
+        if asset.in_scope:
+            in_scope_count += 1
+        else:
+            out_of_scope_count += 1
+        
+        # Login portal stats
+        if getattr(asset, 'has_login_portal', False):
+            with_login_portal += 1
         
         # Port stats
         asset_ports = len(asset.port_services)
@@ -649,6 +696,16 @@ def get_assets_summary(
         "total": len(assets),
         "by_type": by_type,
         "by_status": by_status,
+        "live": {
+            "live": live_count,
+            "not_live": not_live_count,
+            "not_probed": not_probed_count
+        },
+        "scope": {
+            "in_scope": in_scope_count,
+            "out_of_scope": out_of_scope_count
+        },
+        "login_portals": with_login_portal,
         "ports": {
             "total_ports": total_ports,
             "open_ports": total_open_ports,
@@ -1108,15 +1165,18 @@ def import_httpx_results(
 async def probe_assets_live(
     organization_id: int,
     asset_type: Optional[AssetType] = Query(None, description="Filter by asset type"),
-    limit: int = Query(50, ge=1, le=200, description="Max assets to probe"),
+    limit: int = Query(50, ge=1, le=500, description="Max assets to probe"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst)
 ):
     """
-    Run httpx probe on assets to check if they're live and get HTTP status.
+    Probe assets to check if they're live and get HTTP status.
     Updates is_live, http_status, and http_title fields.
+    Uses Python httpx library for reliability.
     """
-    from app.services.projectdiscovery_service import get_projectdiscovery_service
+    import httpx
+    import asyncio
+    import re
     
     if not check_org_access(current_user, organization_id):
         raise HTTPException(
@@ -1138,32 +1198,63 @@ async def probe_assets_live(
     if not assets:
         return {"probed": 0, "live": 0, "message": "No assets to probe"}
     
-    # Extract hostnames
-    targets = [asset.value for asset in assets]
+    # Probe each asset using Python httpx
+    async def probe_single(asset):
+        """Probe a single asset for HTTP response."""
+        hostname = asset.value
+        result = {"asset_id": asset.id, "is_live": False, "status": None, "title": None}
+        
+        for protocol in ["https", "http"]:
+            url = f"{protocol}://{hostname}"
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10.0,
+                    follow_redirects=True,
+                    verify=False  # Don't fail on self-signed certs
+                ) as client:
+                    response = await client.get(url)
+                    result["is_live"] = True
+                    result["status"] = response.status_code
+                    
+                    # Extract title from HTML
+                    content_type = response.headers.get("content-type", "")
+                    if "text/html" in content_type:
+                        html = response.text[:5000]  # Only look at first 5KB
+                        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+                        if title_match:
+                            result["title"] = title_match.group(1).strip()[:200]
+                    
+                    break  # Success, don't try other protocol
+            except Exception:
+                continue  # Try next protocol
+        
+        return result
     
-    # Run httpx probe
-    pd_service = get_projectdiscovery_service()
-    results = await pd_service.run_httpx(targets, timeout=10, follow_redirects=True)
+    # Run probes concurrently (limit concurrency to avoid overwhelming)
+    semaphore = asyncio.Semaphore(20)  # Max 20 concurrent requests
     
-    # Create a lookup map
-    results_map = {r.host: r for r in results}
+    async def probe_with_limit(asset):
+        async with semaphore:
+            return await probe_single(asset)
     
-    # Update assets
+    results = await asyncio.gather(*[probe_with_limit(asset) for asset in assets])
+    
+    # Create lookup map
+    results_map = {r["asset_id"]: r for r in results}
+    
+    # Update assets in database
     live_count = 0
     for asset in assets:
-        if asset.value in results_map:
-            result = results_map[asset.value]
+        result = results_map.get(asset.id)
+        if result and result["is_live"]:
             asset.is_live = True
-            asset.http_status = result.status_code
-            asset.http_title = result.title
-            if result.ip:
-                asset.add_ip_address(result.ip)
+            asset.http_status = result["status"]
+            asset.http_title = result["title"]
             asset.last_seen = datetime.utcnow()
             live_count += 1
         else:
-            # Asset didn't respond - could mark as not live
-            # For now, leave unchanged to allow retry
-            pass
+            # Mark as not live if probe failed
+            asset.is_live = False
     
     db.commit()
     

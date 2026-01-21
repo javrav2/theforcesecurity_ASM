@@ -68,6 +68,7 @@ class AssetResponse(AssetBase):
     """Schema for asset response."""
     id: int
     organization_id: int
+    organization_name: Optional[str] = None  # Populated from relationship
     parent_id: Optional[int] = None
     status: AssetStatus
     description: Optional[str] = None

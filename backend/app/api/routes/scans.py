@@ -1,5 +1,8 @@
 """Scan routes for ASM scan management."""
 
+import os
+import json
+import logging
 from typing import List, Optional, Dict
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -14,7 +17,92 @@ from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRe
 from app.api.deps import get_current_active_user, require_analyst
 from app.services.nuclei_service import count_cidr_targets
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scans", tags=["Scans"])
+
+# SQS Configuration
+SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+# Initialize SQS client lazily
+_sqs_client = None
+
+def get_sqs_client():
+    """Get or create SQS client."""
+    global _sqs_client
+    if _sqs_client is None and SQS_QUEUE_URL:
+        try:
+            import boto3
+            _sqs_client = boto3.client('sqs', region_name=AWS_REGION)
+            logger.info(f"SQS client initialized for queue: {SQS_QUEUE_URL}")
+        except Exception as e:
+            logger.error(f"Failed to initialize SQS client: {e}")
+    return _sqs_client
+
+
+def send_scan_to_sqs(scan: Scan) -> bool:
+    """
+    Send a scan job to SQS queue for processing.
+    
+    Returns True if message was sent successfully, False otherwise.
+    """
+    if not SQS_QUEUE_URL:
+        logger.debug("SQS_QUEUE_URL not configured, skipping SQS notification")
+        return False
+    
+    sqs = get_sqs_client()
+    if not sqs:
+        return False
+    
+    # Build job message
+    job_type_map = {
+        ScanType.VULNERABILITY: 'NUCLEI_SCAN',
+        ScanType.PORT_SCAN: 'PORT_SCAN',
+        ScanType.DISCOVERY: 'DISCOVERY',
+        ScanType.FULL: 'DISCOVERY',
+        ScanType.SUBDOMAIN_ENUM: 'SUBDOMAIN_ENUM',
+        ScanType.DNS_RESOLUTION: 'DNS_RESOLUTION',
+        ScanType.HTTP_PROBE: 'HTTP_PROBE',
+        ScanType.DNS_ENUM: 'DNS_RESOLUTION',
+        ScanType.LOGIN_PORTAL: 'LOGIN_PORTAL',
+        ScanType.SCREENSHOT: 'SCREENSHOT',
+        ScanType.TECHNOLOGY: 'TECHNOLOGY_SCAN',
+    }
+    
+    job_type = job_type_map.get(scan.scan_type, 'NUCLEI_SCAN')
+    config = scan.config or {}
+    
+    message_body = {
+        'job_type': job_type,
+        'scan_id': scan.id,
+        'organization_id': scan.organization_id,
+        'targets': scan.targets or [],
+        'config': config,
+        'scanner': config.get('scanner', 'naabu'),
+        'ports': config.get('ports'),
+        'severity': config.get('severity'),
+    }
+    
+    try:
+        response = sqs.send_message(
+            QueueUrl=SQS_QUEUE_URL,
+            MessageBody=json.dumps(message_body),
+            MessageAttributes={
+                'job_type': {
+                    'StringValue': job_type,
+                    'DataType': 'String'
+                },
+                'scan_id': {
+                    'StringValue': str(scan.id),
+                    'DataType': 'Number'
+                }
+            }
+        )
+        logger.info(f"Sent scan {scan.id} to SQS, MessageId: {response.get('MessageId')}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send scan {scan.id} to SQS: {e}")
+        return False
 
 
 def check_org_access(user: User, org_id: int) -> bool:
@@ -199,6 +287,9 @@ def create_scan(
     db.commit()
     db.refresh(new_scan)
     
+    # Send scan job to SQS for processing
+    send_scan_to_sqs(new_scan)
+    
     return new_scan
 
 
@@ -269,6 +360,9 @@ def create_scan_by_label(
     db.add(new_scan)
     db.commit()
     db.refresh(new_scan)
+    
+    # Send scan job to SQS for processing
+    send_scan_to_sqs(new_scan)
     
     return new_scan
 
@@ -496,6 +590,9 @@ def rescan(
     db.commit()
     db.refresh(new_scan)
     
+    # Send scan job to SQS for processing
+    send_scan_to_sqs(new_scan)
+    
     return new_scan
 
 
@@ -590,6 +687,9 @@ def quick_dns_resolution_scan(
     db.commit()
     db.refresh(scan)
     
+    # Send scan job to SQS for processing
+    send_scan_to_sqs(scan)
+    
     return {
         "id": scan.id,
         "name": scan.name,
@@ -667,6 +767,9 @@ def quick_http_probe_scan(
     db.add(scan)
     db.commit()
     db.refresh(scan)
+    
+    # Send scan job to SQS for processing
+    send_scan_to_sqs(scan)
     
     return {
         "id": scan.id,

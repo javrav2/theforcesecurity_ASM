@@ -191,6 +191,13 @@ class ApiClient {
     return response.data;
   }
 
+  async getAssetsSummary(organizationId?: number) {
+    const response = await this.client.get('/assets/stats/summary', {
+      params: organizationId ? { organization_id: organizationId } : {},
+    });
+    return response.data;
+  }
+
   // Findings (Vulnerabilities)
   async getFindings(params?: { 
     organization_id?: number; 

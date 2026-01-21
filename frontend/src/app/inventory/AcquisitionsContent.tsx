@@ -120,7 +120,7 @@ export default function AcquisitionsContent() {
     try {
       setLoading(true);
       const [acqData, summaryData] = await Promise.all([
-        api.getAcquisitions({ organization_id: 1, limit: 100 }),
+        api.getAcquisitions({ organization_id: 1, limit: 10000 }),
         api.getAcquisitionsSummary(1),
       ]);
       

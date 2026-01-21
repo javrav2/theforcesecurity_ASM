@@ -119,6 +119,8 @@ interface Stats {
   dns_enriched: number;
   whois_enriched: number;
   has_mail: number;
+  live: number;
+  not_probed: number;
 }
 
 export default function DomainsContent() {
@@ -127,11 +129,13 @@ export default function DomainsContent() {
   const [validating, setValidating] = useState(false);
   const [enrichingDns, setEnrichingDns] = useState(false);
   const [enrichingWhois, setEnrichingWhois] = useState(false);
+  const [probingLive, setProbingLive] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [scopeFilter, setScopeFilter] = useState<string>('all');
   const [suspicionFilter, setSuspicionFilter] = useState<string>('all');
+  const [liveFilter, setLiveFilter] = useState<string>('all');
   const [stats, setStats] = useState<Stats>({
     total: 0,
     domains: 0,
@@ -144,6 +148,8 @@ export default function DomainsContent() {
     dns_enriched: 0,
     whois_enriched: 0,
     has_mail: 0,
+    live: 0,
+    not_probed: 0,
   });
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
   const { toast } = useToast();
@@ -152,9 +158,10 @@ export default function DomainsContent() {
     try {
       setLoading(true);
       // Fetch both domains and subdomains - handle each independently
+      // Fetch all assets to show complete attack surface
       const [domainsResult, subdomainsResult] = await Promise.allSettled([
-        api.getAssets({ asset_type: 'domain', limit: 500 }),
-        api.getAssets({ asset_type: 'subdomain', limit: 1000 })
+        api.getAssets({ asset_type: 'domain', limit: 50000 }),
+        api.getAssets({ asset_type: 'subdomain', limit: 50000 })
       ]);
       
       // Extract successful results, use empty arrays for failures
@@ -187,6 +194,8 @@ export default function DomainsContent() {
         dns_enriched: allAssets.filter((d: Domain) => d.metadata_?.dns_fetched_at).length,
         whois_enriched: allAssets.filter((d: Domain) => d.metadata_?.whois_fetched_at).length,
         has_mail: allAssets.filter((d: Domain) => d.metadata_?.dns_summary?.has_mail).length,
+        live: allAssets.filter((d: Domain) => d.is_live).length,
+        not_probed: allAssets.filter((d: Domain) => d.is_live === undefined || d.is_live === null).length,
       };
       setStats(newStats);
       
@@ -318,6 +327,32 @@ export default function DomainsContent() {
     }
   };
 
+  const handleProbeLive = async () => {
+    try {
+      setProbingLive(true);
+      // Probe assets to check if they're live (HTTP/HTTPS responding)
+      const response = await api.post('/assets/probe-live?organization_id=1&limit=500');
+      
+      if (response.data) {
+        toast({
+          title: 'Live Probe Complete',
+          description: `Probed ${response.data.probed ?? 0} assets. ${response.data.live ?? 0} are live.`,
+        });
+        fetchDomains(); // Refresh to show updated is_live status
+      }
+    } catch (error: any) {
+      console.error('Error probing assets:', error);
+      const message = error?.response?.data?.detail || error?.message || 'Failed to probe assets';
+      toast({
+        title: 'Error',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setProbingLive(false);
+    }
+  };
+
   const handleToggleScope = async (domain: Domain) => {
     try {
       await api.updateAsset(domain.id, { in_scope: !domain.in_scope });
@@ -424,6 +459,11 @@ export default function DomainsContent() {
     if (suspicionFilter === 'clean' && (domain.metadata_?.suspicion_score || 0) >= 50) return false;
     if (suspicionFilter === 'parked' && !domain.metadata_?.is_parked) return false;
     if (suspicionFilter === 'unvalidated' && domain.metadata_?.validated_at) return false;
+    
+    // Live status filter
+    if (liveFilter === 'live' && !domain.is_live) return false;
+    if (liveFilter === 'not_live' && domain.is_live) return false;
+    if (liveFilter === 'not_probed' && domain.is_live !== undefined && domain.is_live !== null) return false;
     
     return true;
   });
@@ -628,6 +668,18 @@ export default function DomainsContent() {
                     <SelectItem value="unvalidated">Not Validated</SelectItem>
                   </SelectContent>
                 </Select>
+                
+                <Select value={liveFilter} onValueChange={setLiveFilter}>
+                  <SelectTrigger className="w-36">
+                    <SelectValue placeholder="Live Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="live">Live</SelectItem>
+                    <SelectItem value="not_live">Not Live</SelectItem>
+                    <SelectItem value="not_probed">Not Probed</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               
               <div className="flex gap-2">
@@ -666,6 +718,19 @@ export default function DomainsContent() {
                     <Shield className="h-4 w-4 mr-2" />
                   )}
                   Validate Whoxy
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleProbeLive}
+                  disabled={probingLive}
+                  className="bg-green-500/10 border-green-500/50 hover:bg-green-500/20"
+                >
+                  {probingLive ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Radar className="h-4 w-4 mr-2" />
+                  )}
+                  Probe Live
                 </Button>
                 <Button variant="outline" onClick={fetchDomains} disabled={loading}>
                   <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
