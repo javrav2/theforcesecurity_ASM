@@ -23,6 +23,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
   Globe,
   Search,
   RefreshCw,
@@ -47,6 +54,9 @@ import {
   Lock,
   FileText,
   Building,
+  MoreHorizontal,
+  ChevronDown,
+  Zap,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -158,6 +168,7 @@ export default function DomainsContent() {
   const [resolvingDns, setResolvingDns] = useState(false);
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
   const { toast } = useToast();
 
   // Debounce search input - waits 300ms after user stops typing
@@ -659,183 +670,197 @@ export default function DomainsContent() {
 
         {/* Filters and Actions */}
         <Card>
-          <CardHeader>
-            <div className="flex flex-col md:flex-row gap-4 justify-between">
-              <div className="flex flex-wrap gap-2">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search domains..."
-                    value={searchTerm}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
-                    className="pl-9 w-64"
-                  />
+          <CardHeader className="pb-3">
+            <div className="flex flex-col gap-3">
+              {/* Row 1: Search, Key Filters, Actions */}
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Search */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search domains..."
+                      value={searchTerm}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
+                      className="pl-9 w-56"
+                    />
+                  </div>
+                  
+                  {/* Key Filters */}
+                  <Select value={typeFilter} onValueChange={setTypeFilter}>
+                    <SelectTrigger className="w-32">
+                      <SelectValue placeholder="Type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Types</SelectItem>
+                      <SelectItem value="domain">Domains</SelectItem>
+                      <SelectItem value="subdomain">Subdomains</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  <Select value={scopeFilter} onValueChange={setScopeFilter}>
+                    <SelectTrigger className="w-32">
+                      <SelectValue placeholder="Scope" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="in_scope">In Scope</SelectItem>
+                      <SelectItem value="out_of_scope">Out of Scope</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  <Select value={liveFilter} onValueChange={setLiveFilter}>
+                    <SelectTrigger className="w-28">
+                      <SelectValue placeholder="Live" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="live">Live</SelectItem>
+                      <SelectItem value="not_live">Not Live</SelectItem>
+                      <SelectItem value="not_probed">Not Probed</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  {/* More Filters Toggle */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowMoreFilters(!showMoreFilters)}
+                    className="text-muted-foreground"
+                  >
+                    <Filter className="h-4 w-4 mr-1" />
+                    {showMoreFilters ? 'Less' : 'More'}
+                    <ChevronDown className={`h-3 w-3 ml-1 transition-transform ${showMoreFilters ? 'rotate-180' : ''}`} />
+                  </Button>
                 </div>
                 
-                <Select value={typeFilter} onValueChange={setTypeFilter}>
-                  <SelectTrigger className="w-36">
-                    <SelectValue placeholder="Type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Types</SelectItem>
-                    <SelectItem value="domain">Domains Only</SelectItem>
-                    <SelectItem value="subdomain">Subdomains Only</SelectItem>
-                  </SelectContent>
-                </Select>
-                
-                <Select value={sourceFilter} onValueChange={setSourceFilter}>
-                  <SelectTrigger className="w-44">
-                    <SelectValue placeholder="Source" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Sources</SelectItem>
-                    <SelectItem value="whoxy">Whoxy (WHOIS)</SelectItem>
-                    <SelectItem value="commoncrawl">Common Crawl</SelectItem>
-                    <SelectItem value="sni">SNI/Cloud IP</SelectItem>
-                    <SelectItem value="crtsh">Cert Transparency</SelectItem>
-                    <SelectItem value="virustotal">VirusTotal</SelectItem>
-                    <SelectItem value="wayback">Wayback Machine</SelectItem>
-                    <SelectItem value="rapiddns">RapidDNS</SelectItem>
-                    <SelectItem value="subfinder">Subfinder</SelectItem>
-                    <SelectItem value="m365">Microsoft 365</SelectItem>
-                    <SelectItem value="whoisxml">WhoisXML</SelectItem>
-                    <SelectItem value="manual">Manual/Seed</SelectItem>
-                  </SelectContent>
-                </Select>
-                
-                <Select value={scopeFilter} onValueChange={setScopeFilter}>
-                  <SelectTrigger className="w-40">
-                    <SelectValue placeholder="Scope" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="in_scope">In Scope</SelectItem>
-                    <SelectItem value="out_of_scope">Out of Scope</SelectItem>
-                  </SelectContent>
-                </Select>
-                
-                <Select value={suspicionFilter} onValueChange={setSuspicionFilter}>
-                  <SelectTrigger className="w-44">
-                    <SelectValue placeholder="Validation" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Status</SelectItem>
-                    <SelectItem value="suspicious">Suspicious</SelectItem>
-                    <SelectItem value="parked">Parked</SelectItem>
-                    <SelectItem value="clean">Clean</SelectItem>
-                    <SelectItem value="unvalidated">Not Validated</SelectItem>
-                  </SelectContent>
-                </Select>
-                
-                <Select value={liveFilter} onValueChange={setLiveFilter}>
-                  <SelectTrigger className="w-36">
-                    <SelectValue placeholder="Live Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="live">Live</SelectItem>
-                    <SelectItem value="not_live">Not Live</SelectItem>
-                    <SelectItem value="not_probed">Not Probed</SelectItem>
-                  </SelectContent>
-                </Select>
+                {/* Actions */}
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => fetchDomains(debouncedSearch || undefined)} disabled={loading}>
+                    <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                  </Button>
+                  
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm">
+                        <Zap className="h-4 w-4 mr-1" />
+                        Actions
+                        <ChevronDown className="h-3 w-3 ml-1" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuItem onClick={handleProbeLive} disabled={probingLive}>
+                        <Radar className="h-4 w-4 mr-2" />
+                        {probingLive ? 'Probing...' : 'Probe Live Status'}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleResolveDns} disabled={resolvingDns}>
+                        <Server className="h-4 w-4 mr-2" />
+                        {resolvingDns ? 'Resolving...' : 'Resolve DNS/IPs'}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={handleEnrichDns} disabled={enrichingDns}>
+                        <Database className="h-4 w-4 mr-2" />
+                        {enrichingDns ? 'Enriching...' : 'Enrich DNS Records'}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleEnrichWhois} disabled={enrichingWhois}>
+                        <FileText className="h-4 w-4 mr-2" />
+                        {enrichingWhois ? 'Enriching...' : 'Enrich WHOIS'}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleValidateAll} disabled={validating}>
+                        <Shield className="h-4 w-4 mr-2" />
+                        {validating ? 'Validating...' : 'Validate Ownership'}
+                      </DropdownMenuItem>
+                      {stats.out_of_scope > 0 && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem 
+                            className="text-red-600"
+                            onClick={async () => {
+                              if (confirm(`Delete ${stats.out_of_scope} out-of-scope domains? This cannot be undone.`)) {
+                                try {
+                                  const outOfScopeIds = domains.filter((d: Domain) => !d.in_scope).map((d: Domain) => d.id);
+                                  const result = await api.bulkDeleteAssets(outOfScopeIds);
+                                  toast({
+                                    title: 'Deleted',
+                                    description: `Deleted ${result.deleted} out-of-scope domains.`,
+                                  });
+                                  fetchDomains(debouncedSearch || undefined);
+                                } catch (error) {
+                                  toast({
+                                    title: 'Error',
+                                    description: 'Failed to delete domains',
+                                    variant: 'destructive',
+                                  });
+                                }
+                              }
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete Out of Scope ({stats.out_of_scope})
+                          </DropdownMenuItem>
+                        </>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               </div>
               
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  onClick={handleResolveDns}
-                  disabled={resolvingDns}
-                  className="bg-green-500/10 border-green-500/50 hover:bg-green-500/20"
-                >
-                  {resolvingDns ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Server className="h-4 w-4 mr-2" />
+              {/* Row 2: More Filters (collapsible) */}
+              {showMoreFilters && (
+                <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
+                  <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                    <SelectTrigger className="w-40">
+                      <SelectValue placeholder="Source" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Sources</SelectItem>
+                      <SelectItem value="whoxy">Whoxy (WHOIS)</SelectItem>
+                      <SelectItem value="commoncrawl">Common Crawl</SelectItem>
+                      <SelectItem value="sni">SNI/Cloud IP</SelectItem>
+                      <SelectItem value="crtsh">Cert Transparency</SelectItem>
+                      <SelectItem value="virustotal">VirusTotal</SelectItem>
+                      <SelectItem value="wayback">Wayback Machine</SelectItem>
+                      <SelectItem value="rapiddns">RapidDNS</SelectItem>
+                      <SelectItem value="subfinder">Subfinder</SelectItem>
+                      <SelectItem value="m365">Microsoft 365</SelectItem>
+                      <SelectItem value="whoisxml">WhoisXML</SelectItem>
+                      <SelectItem value="manual">Manual/Seed</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  <Select value={suspicionFilter} onValueChange={setSuspicionFilter}>
+                    <SelectTrigger className="w-36">
+                      <SelectValue placeholder="Validation" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Status</SelectItem>
+                      <SelectItem value="suspicious">Suspicious</SelectItem>
+                      <SelectItem value="parked">Parked</SelectItem>
+                      <SelectItem value="clean">Clean</SelectItem>
+                      <SelectItem value="unvalidated">Not Validated</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  {/* Clear Filters */}
+                  {(sourceFilter !== 'all' || suspicionFilter !== 'all' || typeFilter !== 'all' || scopeFilter !== 'all' || liveFilter !== 'all') && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setTypeFilter('all');
+                        setScopeFilter('all');
+                        setLiveFilter('all');
+                        setSourceFilter('all');
+                        setSuspicionFilter('all');
+                      }}
+                      className="text-muted-foreground"
+                    >
+                      <X className="h-3 w-3 mr-1" />
+                      Clear filters
+                    </Button>
                   )}
-                  Resolve IPs
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleEnrichDns}
-                  disabled={enrichingDns}
-                >
-                  {enrichingDns ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Database className="h-4 w-4 mr-2" />
-                  )}
-                  Enrich DNS
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleEnrichWhois}
-                  disabled={enrichingWhois}
-                >
-                  {enrichingWhois ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <FileText className="h-4 w-4 mr-2" />
-                  )}
-                  Enrich WHOIS
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleValidateAll}
-                  disabled={validating}
-                >
-                  {validating ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Shield className="h-4 w-4 mr-2" />
-                  )}
-                  Validate Whoxy
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleProbeLive}
-                  disabled={probingLive}
-                  className="bg-green-500/10 border-green-500/50 hover:bg-green-500/20"
-                >
-                  {probingLive ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Radar className="h-4 w-4 mr-2" />
-                  )}
-                  Probe Live
-                </Button>
-                <Button variant="outline" onClick={() => fetchDomains(debouncedSearch || undefined)} disabled={loading}>
-                  <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-                  Refresh
-                </Button>
-                {stats.out_of_scope > 0 && (
-                  <Button 
-                    variant="outline"
-                    className="text-red-500 border-red-500/50 hover:bg-red-500/10"
-                    onClick={async () => {
-                      if (confirm(`Delete ${stats.out_of_scope} out-of-scope domains? This cannot be undone.`)) {
-                        try {
-                          const outOfScopeIds = domains.filter((d: Domain) => !d.in_scope).map((d: Domain) => d.id);
-                          const result = await api.bulkDeleteAssets(outOfScopeIds);
-                          toast({
-                            title: 'Domains Deleted',
-                            description: `Deleted ${result.deleted} out-of-scope domains.`,
-                          });
-                          fetchDomains(debouncedSearch || undefined);
-                        } catch (error) {
-                          toast({
-                            title: 'Error',
-                            description: 'Failed to delete domains',
-                            variant: 'destructive',
-                          });
-                        }
-                      }
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Delete {stats.out_of_scope} Out of Scope
-                  </Button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </CardHeader>
           
