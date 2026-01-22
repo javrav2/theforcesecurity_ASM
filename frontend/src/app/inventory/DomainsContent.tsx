@@ -803,7 +803,7 @@ export default function DomainsContent() {
                   )}
                   Probe Live
                 </Button>
-                <Button variant="outline" onClick={fetchDomains} disabled={loading}>
+                <Button variant="outline" onClick={() => fetchDomains(debouncedSearch || undefined)} disabled={loading}>
                   <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
                   Refresh
                 </Button>
