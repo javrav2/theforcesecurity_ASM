@@ -121,6 +121,8 @@ interface Stats {
   has_mail: number;
   live: number;
   not_probed: number;
+  with_ip: number;
+  no_ip: number;
 }
 
 export default function DomainsContent() {
@@ -150,7 +152,10 @@ export default function DomainsContent() {
     has_mail: 0,
     live: 0,
     not_probed: 0,
+    with_ip: 0,
+    no_ip: 0,
   });
+  const [resolvingDns, setResolvingDns] = useState(false);
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
   const { toast } = useToast();
 
@@ -182,6 +187,7 @@ export default function DomainsContent() {
       setDomains(allAssets);
       
       // Calculate stats
+      const hasIp = (d: Domain) => d.ip_address || (d.metadata_?.dns_summary?.ip_addresses?.length ?? 0) > 0;
       const newStats: Stats = {
         total: allAssets.length,
         domains: domainAssets.length,
@@ -196,6 +202,8 @@ export default function DomainsContent() {
         has_mail: allAssets.filter((d: Domain) => d.metadata_?.dns_summary?.has_mail).length,
         live: allAssets.filter((d: Domain) => d.is_live).length,
         not_probed: allAssets.filter((d: Domain) => d.is_live === undefined || d.is_live === null).length,
+        with_ip: allAssets.filter((d: Domain) => hasIp(d)).length,
+        no_ip: allAssets.filter((d: Domain) => !hasIp(d)).length,
       };
       setStats(newStats);
       
@@ -258,6 +266,32 @@ export default function DomainsContent() {
       });
     } finally {
       setValidating(false);
+    }
+  };
+
+  // Quick DNS resolution (uses dnsx to resolve IPs)
+  const handleResolveDns = async () => {
+    try {
+      setResolvingDns(true);
+      const response = await api.post('/scans/quick/dns-resolution?organization_id=1&include_geo=true&limit=500');
+      
+      toast({
+        title: 'DNS Resolution Started',
+        description: response.data?.name || 'Resolving domain IPs in background...',
+      });
+      
+      // Wait a bit and refresh
+      setTimeout(() => {
+        fetchDomains();
+        setResolvingDns(false);
+      }, 3000);
+    } catch (error: any) {
+      console.error('Error resolving DNS:', error);
+      toast({
+        title: 'Info',
+        description: error?.response?.data?.detail || 'DNS resolution queued or already complete.',
+      });
+      setResolvingDns(false);
     }
   };
 
@@ -587,14 +621,14 @@ export default function DomainsContent() {
           </Card>
           <Card>
             <CardContent className="pt-4">
-              <div className="text-2xl font-bold text-purple-600">{stats.dns_enriched}</div>
-              <div className="text-xs text-muted-foreground">DNS Enriched</div>
+              <div className="text-2xl font-bold text-green-600">{stats.with_ip}</div>
+              <div className="text-xs text-muted-foreground">Has IP</div>
             </CardContent>
           </Card>
-          <Card>
+          <Card className={stats.no_ip > 0 ? "cursor-pointer hover:bg-muted/50 border-yellow-500/50" : ""} onClick={stats.no_ip > 0 ? handleResolveDns : undefined}>
             <CardContent className="pt-4">
-              <div className="text-2xl font-bold text-cyan-600">{stats.has_mail}</div>
-              <div className="text-xs text-muted-foreground">Has Email</div>
+              <div className="text-2xl font-bold text-yellow-600">{stats.no_ip}</div>
+              <div className="text-xs text-muted-foreground">{stats.no_ip > 0 ? 'No IP (click to resolve)' : 'No IP'}</div>
             </CardContent>
           </Card>
         </div>
@@ -683,6 +717,19 @@ export default function DomainsContent() {
               </div>
               
               <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleResolveDns}
+                  disabled={resolvingDns}
+                  className="bg-green-500/10 border-green-500/50 hover:bg-green-500/20"
+                >
+                  {resolvingDns ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Server className="h-4 w-4 mr-2" />
+                  )}
+                  Resolve IPs
+                </Button>
                 <Button
                   variant="outline"
                   onClick={handleEnrichDns}
@@ -916,11 +963,29 @@ export default function DomainsContent() {
                         <TableCell>
                           <div className="flex flex-col gap-1">
                             {domain.ip_address || (domain.metadata_?.dns_summary?.ip_addresses?.length ?? 0) > 0 ? (
-                              <span className="font-mono text-xs">
-                                {domain.ip_address || domain.metadata_?.dns_summary?.ip_addresses?.[0]}
-                              </span>
+                              <>
+                                <div className="flex items-center gap-1">
+                                  <CheckCircle className="h-3 w-3 text-green-500" />
+                                  <span className="font-mono text-xs">
+                                    {domain.ip_address || domain.metadata_?.dns_summary?.ip_addresses?.[0]}
+                                  </span>
+                                </div>
+                                {domain.metadata_?.dns_fetched_at && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {formatDate(domain.metadata_.dns_fetched_at)}
+                                  </span>
+                                )}
+                              </>
+                            ) : domain.metadata_?.dns_fetched_at ? (
+                              <div className="flex items-center gap-1">
+                                <XCircle className="h-3 w-3 text-red-500" />
+                                <span className="text-xs text-red-500">No A record</span>
+                              </div>
                             ) : (
-                              <span className="text-xs text-muted-foreground">No DNS</span>
+                              <div className="flex items-center gap-1">
+                                <AlertTriangle className="h-3 w-3 text-yellow-500" />
+                                <span className="text-xs text-yellow-600">Not resolved</span>
+                              </div>
                             )}
                             {(domain.metadata_?.dns_summary?.nameservers?.length ?? 0) > 0 && (
                               <span className="text-xs text-muted-foreground flex items-center gap-1">
