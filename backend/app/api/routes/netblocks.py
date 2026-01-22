@@ -1,5 +1,6 @@
 """Netblock/CIDR routes for IP range management."""
 
+import ipaddress
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -7,6 +8,18 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.db.database import get_db
+
+
+def is_ipv6_cidr(cidr: str) -> bool:
+    """Check if a CIDR notation is IPv6."""
+    if not cidr:
+        return False
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+        return network.version == 6
+    except ValueError:
+        # If it contains ':', likely IPv6 even if malformed
+        return ':' in cidr
 from app.models.netblock import Netblock
 from app.models.organization import Organization
 from app.models.api_config import APIConfig
@@ -372,6 +385,7 @@ def get_netblock_targets(
     organization_id: int,
     in_scope_only: bool = True,
     owned_only: bool = False,
+    include_ipv6: bool = Query(False, description="Include IPv6 netblocks (not supported for port scanning)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -379,6 +393,7 @@ def get_netblock_targets(
     Get all netblock CIDRs for an organization as scan targets.
     
     Returns a list of CIDR notations that can be used directly in scans.
+    Note: IPv6 netblocks are excluded by default as they are not supported for port scanning.
     """
     query = db.query(Netblock).filter(Netblock.organization_id == organization_id)
     
@@ -391,9 +406,15 @@ def get_netblock_targets(
     
     targets = []
     total_ips = 0
+    ipv6_skipped = 0
+    
     for nb in netblocks:
         cidr = nb.cidr_notation or nb.inetnum
         if cidr:
+            # Skip IPv6 unless explicitly requested
+            if not include_ipv6 and is_ipv6_cidr(cidr):
+                ipv6_skipped += 1
+                continue
             targets.append(cidr)
             total_ips += nb.ip_count or 0
     
@@ -403,13 +424,15 @@ def get_netblock_targets(
         "count": len(targets),
         "total_ips": total_ips,
         "in_scope_only": in_scope_only,
-        "owned_only": owned_only
+        "owned_only": owned_only,
+        "ipv6_skipped": ipv6_skipped
     }
 
 
 @router.post("/targets/by-ids")
 def get_targets_by_netblock_ids(
     netblock_ids: List[int],
+    include_ipv6: bool = Query(False, description="Include IPv6 netblocks (not supported for port scanning)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -417,16 +440,28 @@ def get_targets_by_netblock_ids(
     Get CIDR targets for specific netblock IDs.
     
     Use this to get targets from selected netblocks for scanning.
+    Note: IPv6 netblocks are excluded by default as they are not supported for port scanning.
     """
     netblocks = db.query(Netblock).filter(Netblock.id.in_(netblock_ids)).all()
     
     targets = []
     total_ips = 0
     netblock_details = []
+    ipv6_skipped = 0
+    ipv6_netblocks = []
     
     for nb in netblocks:
         cidr = nb.cidr_notation or nb.inetnum
         if cidr:
+            # Skip IPv6 unless explicitly requested
+            if not include_ipv6 and is_ipv6_cidr(cidr):
+                ipv6_skipped += 1
+                ipv6_netblocks.append({
+                    "id": nb.id,
+                    "cidr": cidr,
+                    "org_name": nb.org_name
+                })
+                continue
             targets.append(cidr)
             total_ips += nb.ip_count or 0
             netblock_details.append({
@@ -442,7 +477,9 @@ def get_targets_by_netblock_ids(
         "targets": targets,
         "count": len(targets),
         "total_ips": total_ips,
-        "netblocks": netblock_details
+        "netblocks": netblock_details,
+        "ipv6_skipped": ipv6_skipped,
+        "ipv6_netblocks": ipv6_netblocks
     }
 
 

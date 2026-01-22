@@ -500,6 +500,18 @@ class ScannerWorker:
         banner_grab = config.get('banner_grab', True)  # Grab banners for service ID
         one_port_at_a_time = config.get('one_port_at_a_time', False)  # ASM Recon mode
         
+        # Filter out IPv6 targets (not supported for port scanning)
+        from app.services.port_scanner_service import PortScannerService
+        scanner_svc = PortScannerService()
+        original_count = len(targets)
+        targets, ipv6_skipped = scanner_svc.filter_ipv4_only(targets)
+        if ipv6_skipped > 0:
+            logger.info(f"Filtered out {ipv6_skipped} IPv6 targets (not supported for port scanning)")
+        
+        if not targets:
+            logger.warning(f"No valid IPv4 targets after filtering (skipped {ipv6_skipped} IPv6)")
+            return
+        
         # IMPORTANT: Set default ports if not specified (don't scan all 65535!)
         # This prevents accidental 33+ minute scans
         if not ports or ports == "-":
@@ -508,8 +520,6 @@ class ScannerWorker:
             logger.info(f"No ports specified, defaulting to top common ports")
         
         # Log scan estimate
-        from app.services.port_scanner_service import PortScannerService
-        scanner_svc = PortScannerService()
         num_ports = scanner_svc._count_ports(ports) if hasattr(scanner_svc, '_count_ports') else 0
         num_hosts = scanner_svc._estimate_hosts(targets) if hasattr(scanner_svc, '_estimate_hosts') else len(targets)
         logger.info(f"Port scan: {num_hosts} hosts × {num_ports} ports = ~{num_hosts * num_ports:,} probes")

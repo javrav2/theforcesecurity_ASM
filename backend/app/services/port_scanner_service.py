@@ -809,7 +809,10 @@ class PortScannerService:
         return count
     
     def _estimate_hosts(self, targets: List[str]) -> int:
-        """Estimate total number of hosts from targets (including CIDR expansion)."""
+        """Estimate total number of hosts from targets (including CIDR expansion).
+        
+        Note: IPv6 targets are skipped as they are not supported for port scanning.
+        """
         import ipaddress
         
         total = 0
@@ -818,12 +821,52 @@ class PortScannerService:
             if "/" in target:
                 try:
                     network = ipaddress.ip_network(target, strict=False)
+                    # Skip IPv6 - not supported for port scanning and has huge address space
+                    if network.version == 6:
+                        continue
                     total += network.num_addresses
                 except ValueError:
+                    # If it looks like IPv6, skip it
+                    if ':' in target:
+                        continue
                     total += 1
             else:
+                # Skip IPv6 addresses
+                if ':' in target:
+                    continue
                 total += 1
         return total
+    
+    def filter_ipv4_only(self, targets: List[str]) -> tuple[List[str], int]:
+        """Filter targets to IPv4 only, returning (ipv4_targets, ipv6_skipped_count)."""
+        import ipaddress
+        
+        ipv4_targets = []
+        ipv6_skipped = 0
+        
+        for target in targets:
+            target = target.strip()
+            if not target:
+                continue
+            
+            # Quick check for IPv6 indicators
+            if ':' in target:
+                ipv6_skipped += 1
+                continue
+            
+            # For CIDRs, validate they're IPv4
+            if '/' in target:
+                try:
+                    network = ipaddress.ip_network(target, strict=False)
+                    if network.version == 6:
+                        ipv6_skipped += 1
+                        continue
+                except ValueError:
+                    pass  # Let it through, scanner will handle invalid
+            
+            ipv4_targets.append(target)
+        
+        return ipv4_targets, ipv6_skipped
     
     def _parse_masscan_json(self, content: str, results: List[PortResult]):
         """Parse masscan JSON output and append to results list."""

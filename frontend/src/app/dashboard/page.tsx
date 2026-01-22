@@ -244,10 +244,7 @@ export default function DashboardPage() {
 
         {/* World Map */}
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Global Attack Surface Heatmap</CardTitle>
-          </CardHeader>
-          <CardContent>
+          <CardContent className="pt-6">
             {mapAssets.length > 0 ? (
               <WorldMap 
                 assets={mapAssets} 
