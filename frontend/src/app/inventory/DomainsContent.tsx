@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -157,16 +157,32 @@ export default function DomainsContent() {
   });
   const [resolvingDns, setResolvingDns] = useState(false);
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const { toast } = useToast();
 
-  const fetchDomains = async () => {
+  // Debounce search input - waits 300ms after user stops typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const fetchDomains = useCallback(async (search?: string) => {
     try {
       setLoading(true);
+      // Build params - use server-side search for efficiency
+      const baseParams = {
+        organization_id: 1,
+        limit: 50000,
+        ...(search ? { search } : {}),
+      };
+      
       // Fetch both domains and subdomains - handle each independently
       // Fetch all assets to show complete attack surface
       const [domainsResult, subdomainsResult] = await Promise.allSettled([
-        api.getAssets({ organization_id: 1, asset_type: 'domain', limit: 50000 }),
-        api.getAssets({ organization_id: 1, asset_type: 'subdomain', limit: 50000 })
+        api.getAssets({ ...baseParams, asset_type: 'domain' }),
+        api.getAssets({ ...baseParams, asset_type: 'subdomain' })
       ]);
       
       // Extract successful results, use empty arrays for failures
@@ -236,11 +252,12 @@ export default function DomainsContent() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
+  // Refetch when debounced search changes (server-side search)
   useEffect(() => {
-    fetchDomains();
-  }, []);
+    fetchDomains(debouncedSearch || undefined);
+  }, [debouncedSearch, fetchDomains]);
 
   const handleValidateAll = async () => {
     try {
@@ -256,7 +273,7 @@ export default function DomainsContent() {
         description: `Validated ${response.data?.total ?? 0} domains. ${response.data?.suspicious ?? 0} suspicious, ${response.data?.auto_removed ?? 0} auto-removed.`,
       });
       
-      fetchDomains();
+      fetchDomains(debouncedSearch || undefined);
     } catch (error) {
       console.error('Error validating domains:', error);
       toast({
@@ -282,7 +299,7 @@ export default function DomainsContent() {
       
       // Wait a bit and refresh
       setTimeout(() => {
-        fetchDomains();
+        fetchDomains(debouncedSearch || undefined);
         setResolvingDns(false);
       }, 3000);
     } catch (error: any) {
@@ -308,7 +325,7 @@ export default function DomainsContent() {
           title: 'DNS Enrichment Complete',
           description: `Enriched ${response.enriched ?? 0} of ${response.total_domains ?? 0} domains with DNS records.`,
         });
-        fetchDomains();
+        fetchDomains(debouncedSearch || undefined);
       } else {
         toast({
           title: 'Warning',
@@ -341,7 +358,7 @@ export default function DomainsContent() {
           title: 'WHOIS Enrichment Complete',
           description: `Enriched ${response.enriched ?? 0} of ${response.total_domains ?? 0} domains. ${response.ownership_matches ?? 0} ownership matches, ${response.privacy_protected ?? 0} privacy protected.`,
         });
-        fetchDomains();
+        fetchDomains(debouncedSearch || undefined);
       } else {
         toast({
           title: 'Warning',
@@ -372,7 +389,7 @@ export default function DomainsContent() {
           title: 'Live Probe Complete',
           description: `Probed ${response.data.probed ?? 0} assets. ${response.data.live ?? 0} are live.`,
         });
-        fetchDomains(); // Refresh to show updated is_live status
+        fetchDomains(debouncedSearch || undefined); // Refresh to show updated is_live status
       }
     } catch (error: any) {
       console.error('Error probing assets:', error);
@@ -389,15 +406,20 @@ export default function DomainsContent() {
 
   const handleToggleScope = async (domain: Domain) => {
     try {
-      await api.updateAsset(domain.id, { in_scope: !domain.in_scope });
+      // Use cascade endpoint - when a domain is removed from scope, 
+      // its subdomains should also be removed from scope
+      const result = await api.setAssetScopeWithCascade(domain.id, !domain.in_scope, true);
       
-      setDomains((prev: Domain[]) => prev.map((d: Domain) => 
-        d.id === domain.id ? { ...d, in_scope: !d.in_scope } : d
-      ));
+      // Refetch to get updated state including cascaded subdomains
+      fetchDomains(debouncedSearch || undefined);
+      
+      const cascadeMsg = result.subdomains_updated > 0 
+        ? ` (and ${result.subdomains_updated} subdomains)` 
+        : '';
       
       toast({
         title: domain.in_scope ? 'Removed from Scope' : 'Added to Scope',
-        description: `${domain.value} is now ${domain.in_scope ? 'out of' : 'in'} scope`,
+        description: `${domain.value}${cascadeMsg} is now ${domain.in_scope ? 'out of' : 'in'} scope`,
       });
     } catch (error) {
       console.error('Error updating domain:', error);
@@ -414,17 +436,20 @@ export default function DomainsContent() {
     
     try {
       const domainIds: number[] = Array.from(selectedDomains);
-      for (let i = 0; i < domainIds.length; i++) {
-        await api.updateAsset(domainIds[i], { in_scope: inScope });
-      }
+      // Use bulk cascade endpoint for efficiency
+      const result = await api.bulkSetScopeWithCascade(domainIds, inScope, true);
+      
+      const cascadeMsg = result.cascaded_subdomains > 0 
+        ? ` and ${result.cascaded_subdomains} subdomains` 
+        : '';
       
       toast({
         title: 'Bulk Update Complete',
-        description: `Updated ${selectedDomains.size} domains to ${inScope ? 'in' : 'out of'} scope`,
+        description: `Updated ${result.updated} domains${cascadeMsg} to ${inScope ? 'in' : 'out of'} scope`,
       });
       
       setSelectedDomains(new Set());
-      fetchDomains();
+      fetchDomains(debouncedSearch || undefined);
     } catch (error) {
       console.error('Error bulk updating domains:', error);
       toast({
@@ -454,53 +479,52 @@ export default function DomainsContent() {
     setSelectedDomains(new Set());
   };
 
-  // Filter domains
-  const filteredDomains = domains.filter((domain: Domain) => {
-    // Search filter
-    if (searchTerm && !domain.value.toLowerCase().includes(searchTerm.toLowerCase())) {
-      return false;
-    }
-    
-    // Type filter (domain vs subdomain) - handle both uppercase and lowercase
-    if (typeFilter !== 'all') {
-      const assetType = domain.asset_type?.toLowerCase();
-      if (typeFilter === 'domain' && assetType !== 'domain') return false;
-      if (typeFilter === 'subdomain' && assetType !== 'subdomain') return false;
-    }
-    
-    // Source filter
-    if (sourceFilter !== 'all') {
-      const src = domain.discovery_source?.toLowerCase() || '';
-      if (sourceFilter === 'whoxy' && !src.includes('whoxy')) return false;
-      if (sourceFilter === 'commoncrawl' && !src.includes('commoncrawl')) return false;
-      if (sourceFilter === 'sni' && !src.includes('sni')) return false;
-      if (sourceFilter === 'crtsh' && !src.includes('crtsh')) return false;
-      if (sourceFilter === 'virustotal' && !src.includes('virustotal')) return false;
-      if (sourceFilter === 'wayback' && !src.includes('wayback')) return false;
-      if (sourceFilter === 'rapiddns' && !src.includes('rapiddns')) return false;
-      if (sourceFilter === 'subfinder' && !src.includes('subfinder')) return false;
-      if (sourceFilter === 'm365' && !src.includes('m365')) return false;
-      if (sourceFilter === 'whoisxml' && !src.includes('whoisxml')) return false;
-      if (sourceFilter === 'manual' && !src.includes('manual') && !src.includes('seed')) return false;
-    }
-    
-    // Scope filter
-    if (scopeFilter === 'in_scope' && !domain.in_scope) return false;
-    if (scopeFilter === 'out_of_scope' && domain.in_scope) return false;
-    
-    // Suspicion filter
-    if (suspicionFilter === 'suspicious' && (domain.metadata_?.suspicion_score || 0) < 50) return false;
-    if (suspicionFilter === 'clean' && (domain.metadata_?.suspicion_score || 0) >= 50) return false;
-    if (suspicionFilter === 'parked' && !domain.metadata_?.is_parked) return false;
-    if (suspicionFilter === 'unvalidated' && domain.metadata_?.validated_at) return false;
-    
-    // Live status filter
-    if (liveFilter === 'live' && !domain.is_live) return false;
-    if (liveFilter === 'not_live' && domain.is_live) return false;
-    if (liveFilter === 'not_probed' && domain.is_live !== undefined && domain.is_live !== null) return false;
-    
-    return true;
-  });
+  // Filter domains - search is now server-side, other filters remain client-side
+  const filteredDomains = useMemo(() => {
+    return domains.filter((domain: Domain) => {
+      // Note: Search is now done server-side for efficiency across all records
+      
+      // Type filter (domain vs subdomain) - handle both uppercase and lowercase
+      if (typeFilter !== 'all') {
+        const assetType = domain.asset_type?.toLowerCase();
+        if (typeFilter === 'domain' && assetType !== 'domain') return false;
+        if (typeFilter === 'subdomain' && assetType !== 'subdomain') return false;
+      }
+      
+      // Source filter
+      if (sourceFilter !== 'all') {
+        const src = domain.discovery_source?.toLowerCase() || '';
+        if (sourceFilter === 'whoxy' && !src.includes('whoxy')) return false;
+        if (sourceFilter === 'commoncrawl' && !src.includes('commoncrawl')) return false;
+        if (sourceFilter === 'sni' && !src.includes('sni')) return false;
+        if (sourceFilter === 'crtsh' && !src.includes('crtsh')) return false;
+        if (sourceFilter === 'virustotal' && !src.includes('virustotal')) return false;
+        if (sourceFilter === 'wayback' && !src.includes('wayback')) return false;
+        if (sourceFilter === 'rapiddns' && !src.includes('rapiddns')) return false;
+        if (sourceFilter === 'subfinder' && !src.includes('subfinder')) return false;
+        if (sourceFilter === 'm365' && !src.includes('m365')) return false;
+        if (sourceFilter === 'whoisxml' && !src.includes('whoisxml')) return false;
+        if (sourceFilter === 'manual' && !src.includes('manual') && !src.includes('seed')) return false;
+      }
+      
+      // Scope filter
+      if (scopeFilter === 'in_scope' && !domain.in_scope) return false;
+      if (scopeFilter === 'out_of_scope' && domain.in_scope) return false;
+      
+      // Suspicion filter
+      if (suspicionFilter === 'suspicious' && (domain.metadata_?.suspicion_score || 0) < 50) return false;
+      if (suspicionFilter === 'clean' && (domain.metadata_?.suspicion_score || 0) >= 50) return false;
+      if (suspicionFilter === 'parked' && !domain.metadata_?.is_parked) return false;
+      if (suspicionFilter === 'unvalidated' && domain.metadata_?.validated_at) return false;
+      
+      // Live status filter
+      if (liveFilter === 'live' && !domain.is_live) return false;
+      if (liveFilter === 'not_live' && domain.is_live) return false;
+      if (liveFilter === 'not_probed' && domain.is_live !== undefined && domain.is_live !== null) return false;
+      
+      return true;
+    });
+  }, [domains, typeFilter, sourceFilter, scopeFilter, suspicionFilter, liveFilter]);
 
   const getSuspicionBadge = (domain: Domain) => {
     const score = domain.metadata_?.suspicion_score || 0;
@@ -796,7 +820,7 @@ export default function DomainsContent() {
                             title: 'Domains Deleted',
                             description: `Deleted ${result.deleted} out-of-scope domains.`,
                           });
-                          fetchDomains();
+                          fetchDomains(debouncedSearch || undefined);
                         } catch (error) {
                           toast({
                             title: 'Error',
@@ -838,7 +862,7 @@ export default function DomainsContent() {
                         description: `Deleted ${result.deleted} domains.`,
                       });
                       setSelectedDomains(new Set());
-                      fetchDomains();
+                      fetchDomains(debouncedSearch || undefined);
                     } catch (error) {
                       toast({
                         title: 'Error',

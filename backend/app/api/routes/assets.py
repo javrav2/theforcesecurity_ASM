@@ -2073,3 +2073,205 @@ def get_technology_statistics(
         ],
         "by_category": dict(sorted_categories),
     }
+
+
+# =============================================================================
+# Cascading Scope Management
+# =============================================================================
+
+@router.post("/{asset_id}/set-scope")
+def set_asset_scope_with_cascade(
+    asset_id: int,
+    in_scope: bool = Query(..., description="Whether to mark asset as in-scope or out-of-scope"),
+    cascade_to_subdomains: bool = Query(True, description="Also update all subdomains of this domain"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Set scope for a domain and optionally cascade to all its subdomains.
+    
+    When a domain is marked out-of-scope, its subdomains should typically also
+    be removed from scope since they belong to a domain no longer owned/tracked.
+    
+    The cascade uses the `root_domain` field to find related subdomains.
+    
+    Example:
+    ```
+    POST /api/v1/assets/123/set-scope?in_scope=false&cascade_to_subdomains=true
+    ```
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Update the main asset
+    asset.in_scope = in_scope
+    asset.updated_at = datetime.utcnow()
+    
+    cascaded_count = 0
+    cascaded_assets = []
+    
+    # If this is a domain and cascade is enabled, update subdomains too
+    if cascade_to_subdomains and asset.asset_type == AssetType.DOMAIN:
+        # Find all subdomains that belong to this root domain
+        subdomains = db.query(Asset).filter(
+            Asset.organization_id == asset.organization_id,
+            Asset.asset_type == AssetType.SUBDOMAIN,
+            Asset.root_domain == asset.value
+        ).all()
+        
+        for sub in subdomains:
+            sub.in_scope = in_scope
+            sub.updated_at = datetime.utcnow()
+            cascaded_count += 1
+            cascaded_assets.append({"id": sub.id, "value": sub.value})
+    
+    db.commit()
+    
+    return {
+        "id": asset.id,
+        "value": asset.value,
+        "in_scope": asset.in_scope,
+        "cascaded_to_subdomains": cascade_to_subdomains,
+        "subdomains_updated": cascaded_count,
+        "updated_subdomains": cascaded_assets[:20],  # Show first 20
+        "message": f"Updated scope for {asset.value}" + (f" and {cascaded_count} subdomains" if cascaded_count > 0 else "")
+    }
+
+
+@router.delete("/{asset_id}/with-subdomains")
+def delete_asset_with_subdomains(
+    asset_id: int,
+    confirm: bool = Query(False, description="Must be true to actually delete"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Delete a domain and all its subdomains.
+    
+    This is useful when a domain is no longer owned and should be completely
+    removed from the attack surface along with all its subdomains.
+    
+    Pass confirm=true to actually delete. Without it, returns a preview of what would be deleted.
+    
+    Example:
+    ```
+    DELETE /api/v1/assets/123/with-subdomains?confirm=true
+    ```
+    """
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Find all subdomains that belong to this root domain
+    subdomains = []
+    if asset.asset_type == AssetType.DOMAIN:
+        subdomains = db.query(Asset).filter(
+            Asset.organization_id == asset.organization_id,
+            Asset.asset_type == AssetType.SUBDOMAIN,
+            Asset.root_domain == asset.value
+        ).all()
+    
+    total_to_delete = 1 + len(subdomains)
+    
+    if not confirm:
+        return {
+            "would_delete": total_to_delete,
+            "domain": {"id": asset.id, "value": asset.value},
+            "subdomains": [{"id": s.id, "value": s.value} for s in subdomains[:50]],
+            "subdomains_count": len(subdomains),
+            "message": f"Would delete {asset.value} and {len(subdomains)} subdomains. Set confirm=true to proceed."
+        }
+    
+    # Delete subdomains first
+    for sub in subdomains:
+        db.delete(sub)
+    
+    # Delete the main asset
+    db.delete(asset)
+    
+    db.commit()
+    
+    return {
+        "deleted": total_to_delete,
+        "domain": asset.value,
+        "subdomains_deleted": len(subdomains),
+        "message": f"Deleted {asset.value} and {len(subdomains)} subdomains"
+    }
+
+
+@router.post("/bulk-set-scope")
+def bulk_set_scope_with_cascade(
+    asset_ids: List[int],
+    in_scope: bool = Query(..., description="Whether to mark assets as in-scope or out-of-scope"),
+    cascade_to_subdomains: bool = Query(True, description="Also update subdomains of any domains in the list"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Bulk update scope for multiple assets with optional cascade to subdomains.
+    
+    For each DOMAIN asset in the list, if cascade_to_subdomains is true,
+    all subdomains matching that root_domain will also be updated.
+    
+    Example:
+    ```
+    POST /api/v1/assets/bulk-set-scope?in_scope=false&cascade_to_subdomains=true
+    Body: [1, 2, 3]
+    ```
+    """
+    updated_count = 0
+    cascaded_count = 0
+    errors = []
+    
+    # Get all requested assets
+    assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+    
+    # Build lookup for access checking
+    asset_map = {a.id: a for a in assets}
+    
+    for asset_id in asset_ids:
+        asset = asset_map.get(asset_id)
+        if not asset:
+            errors.append(f"Asset {asset_id} not found")
+            continue
+        
+        if not check_org_access(current_user, asset.organization_id):
+            errors.append(f"Asset {asset_id} access denied")
+            continue
+        
+        # Update the asset
+        asset.in_scope = in_scope
+        asset.updated_at = datetime.utcnow()
+        updated_count += 1
+        
+        # Cascade to subdomains if this is a domain
+        if cascade_to_subdomains and asset.asset_type == AssetType.DOMAIN:
+            cascade_updated = db.query(Asset).filter(
+                Asset.organization_id == asset.organization_id,
+                Asset.asset_type == AssetType.SUBDOMAIN,
+                Asset.root_domain == asset.value
+            ).update(
+                {Asset.in_scope: in_scope, Asset.updated_at: datetime.utcnow()},
+                synchronize_session=False
+            )
+            cascaded_count += cascade_updated
+    
+    db.commit()
+    
+    return {
+        "updated": updated_count,
+        "cascaded_subdomains": cascaded_count,
+        "total_affected": updated_count + cascaded_count,
+        "in_scope": in_scope,
+        "errors": errors[:10] if errors else [],
+        "message": f"Updated {updated_count} assets" + (f" and {cascaded_count} subdomains" if cascaded_count > 0 else "")
+    }

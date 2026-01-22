@@ -632,6 +632,28 @@ class ApiClient {
     return results;
   }
 
+  // Cascading Scope Management
+  async setAssetScopeWithCascade(assetId: number, inScope: boolean, cascadeToSubdomains: boolean = true) {
+    const response = await this.client.post(`/assets/${assetId}/set-scope`, null, {
+      params: { in_scope: inScope, cascade_to_subdomains: cascadeToSubdomains }
+    });
+    return response.data;
+  }
+
+  async deleteAssetWithSubdomains(assetId: number, confirm: boolean = false) {
+    const response = await this.client.delete(`/assets/${assetId}/with-subdomains`, {
+      params: { confirm }
+    });
+    return response.data;
+  }
+
+  async bulkSetScopeWithCascade(assetIds: number[], inScope: boolean, cascadeToSubdomains: boolean = true) {
+    const response = await this.client.post('/assets/bulk-set-scope', assetIds, {
+      params: { in_scope: inScope, cascade_to_subdomains: cascadeToSubdomains }
+    });
+    return response.data;
+  }
+
   // VirusTotal lookups
   async lookupVirusTotal(assetId: number) {
     const response = await this.client.post(`/assets/${assetId}/virustotal-lookup`);
