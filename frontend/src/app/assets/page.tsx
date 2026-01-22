@@ -64,6 +64,7 @@ import {
   Square,
   CheckSquare,
   MinusSquare,
+  Radar,
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { api } from '@/lib/api';
@@ -198,6 +199,32 @@ export default function AssetsPage() {
   ]);
 
   const [serverStats, setServerStats] = useState<any>(null);
+  const [probingLive, setProbingLive] = useState(false);
+
+  const handleProbeLive = async () => {
+    try {
+      setProbingLive(true);
+      const orgId = orgFilter !== 'all' ? parseInt(orgFilter) : 1;
+      const response = await api.post(`/assets/probe-live?organization_id=${orgId}&limit=500`);
+      
+      if (response.data) {
+        toast({
+          title: 'Live Probe Complete',
+          description: `Probed ${response.data.probed ?? 0} assets. ${response.data.live ?? 0} are live.`,
+        });
+        fetchData();
+      }
+    } catch (error: any) {
+      console.error('Error probing assets:', error);
+      toast({
+        title: 'Error',
+        description: error?.response?.data?.detail || 'Failed to probe assets',
+        variant: 'destructive',
+      });
+    } finally {
+      setProbingLive(false);
+    }
+  };
   
   const fetchData = async (page: number = currentPage) => {
     setLoading(true);
@@ -614,6 +641,25 @@ export default function AssetsPage() {
                 <div>
                   <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.live}</p>
                   <p className="text-xs text-muted-foreground">Live Assets</p>
+                </div>
+              </div>
+            </Card>
+
+            <Card 
+              className={`p-4 bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20 cursor-pointer hover:border-purple-500/40 transition-colors ${probingLive ? 'opacity-50' : ''}`}
+              onClick={!probingLive ? handleProbeLive : undefined}
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-purple-500/20">
+                  {probingLive ? (
+                    <Loader2 className="h-5 w-5 text-purple-400 animate-spin" />
+                  ) : (
+                    <Radar className="h-5 w-5 text-purple-400" />
+                  )}
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-foreground">{probingLive ? 'Probing...' : 'Probe Live'}</p>
+                  <p className="text-xs text-muted-foreground">Check HTTP status</p>
                 </div>
               </div>
             </Card>

@@ -842,7 +842,6 @@ export default function DomainsContent() {
                       <TableHead>IP / DNS</TableHead>
                       <TableHead>Mail / Security</TableHead>
                       <TableHead>Status</TableHead>
-                      <TableHead>Live</TableHead>
                       <TableHead>Scope</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
@@ -956,33 +955,6 @@ export default function DomainsContent() {
                         </TableCell>
                         <TableCell>
                           {getSuspicionBadge(domain)}
-                        </TableCell>
-                        <TableCell>
-                          {domain.is_live === true ? (
-                            <div className="flex flex-col gap-0.5">
-                              <Badge className="bg-green-500/20 text-green-700 hover:bg-green-500/30">
-                                <CheckCircle className="h-3 w-3 mr-1" /> Live
-                              </Badge>
-                              {domain.http_status && (
-                                <span className={`text-xs font-mono ${
-                                  domain.http_status >= 200 && domain.http_status < 300 ? 'text-green-600' :
-                                  domain.http_status >= 300 && domain.http_status < 400 ? 'text-blue-600' :
-                                  domain.http_status >= 400 && domain.http_status < 500 ? 'text-yellow-600' :
-                                  'text-red-600'
-                                }`}>
-                                  HTTP {domain.http_status}
-                                </span>
-                              )}
-                            </div>
-                          ) : domain.is_live === false ? (
-                            <Badge variant="secondary" className="bg-red-500/10 text-red-600">
-                              <XCircle className="h-3 w-3 mr-1" /> Down
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-muted-foreground">
-                              Not Probed
-                            </Badge>
-                          )}
                         </TableCell>
                         <TableCell>
                           {domain.in_scope ? (
