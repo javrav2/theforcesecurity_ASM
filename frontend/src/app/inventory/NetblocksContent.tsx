@@ -134,16 +134,55 @@ export default function NetblocksContent() {
         params.ip_version = ipVersionFilter;
       }
 
-      const [netblocksData, summaryData, orgsData] = await Promise.all([
+      // Fetch with better error handling
+      const [netblocksResult, summaryResult, orgsResult] = await Promise.allSettled([
         api.getNetblocks(params),
         api.getNetblockSummary(selectedOrg !== 'all' ? parseInt(selectedOrg) : undefined),
         api.getOrganizations(),
       ]);
 
-      setNetblocks(netblocksData);
-      setSummary(summaryData);
-      setOrganizations(orgsData);
+      // Handle netblocks
+      if (netblocksResult.status === 'fulfilled') {
+        const data = netblocksResult.value;
+        setNetblocks(Array.isArray(data) ? data : data?.items || []);
+      } else {
+        console.error('Failed to fetch netblocks:', netblocksResult.reason);
+        setNetblocks([]);
+      }
+
+      // Handle summary
+      if (summaryResult.status === 'fulfilled') {
+        setSummary(summaryResult.value);
+      } else {
+        console.error('Failed to fetch summary:', summaryResult.reason);
+        setSummary(null);
+      }
+
+      // Handle organizations
+      if (orgsResult.status === 'fulfilled') {
+        const data = orgsResult.value;
+        setOrganizations(Array.isArray(data) ? data : data?.items || []);
+      } else {
+        console.error('Failed to fetch organizations:', orgsResult.reason);
+        setOrganizations([]);
+      }
+
+      // Show warning if any failed
+      const failures = [netblocksResult, summaryResult, orgsResult].filter(r => r.status === 'rejected');
+      if (failures.length > 0 && failures.length < 3) {
+        toast({
+          title: 'Partial Load',
+          description: 'Some data could not be loaded. Check console for details.',
+        });
+      } else if (failures.length === 3) {
+        toast({
+          title: 'Error',
+          description: 'Failed to fetch netblocks data',
+          variant: 'destructive',
+        });
+      }
     } catch (error) {
+      console.error('Error fetching netblocks:', error);
       toast({
         title: 'Error',
         description: 'Failed to fetch netblocks',
