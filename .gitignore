@@ -93,3 +93,7 @@ data/sni-downloads/*.txt
 
 # Large data files (SNI downloads)
 data/sni-downloads/*.txt
+.env.backup
+.secrets
+.env.backup
+.secrets
