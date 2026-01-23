@@ -427,8 +427,17 @@ def trigger_scheduled_scan(
         "masscan": ScanType.PORT_SCAN,
         "critical_ports": ScanType.PORT_SCAN,
         "discovery": ScanType.DISCOVERY,
+        "full_discovery": ScanType.DISCOVERY,
         "screenshot": ScanType.SCREENSHOT,
         "technology": ScanType.TECHNOLOGY,
+        "http_probe": ScanType.HTTP_PROBE,
+        "dns_resolution": ScanType.DNS_RESOLUTION,
+        "subdomain_enum": ScanType.SUBDOMAIN_ENUM,
+        "login_portal": ScanType.LOGIN_PORTAL,
+        "paramspider": ScanType.PARAMSPIDER,
+        "waybackurls": ScanType.WAYBACKURLS,
+        "katana": ScanType.KATANA,
+        "cleanup": ScanType.CLEANUP,
     }
     
     scan_type = scan_type_map.get(schedule.scan_type, ScanType.VULNERABILITY)

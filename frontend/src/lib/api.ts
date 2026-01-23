@@ -980,6 +980,42 @@ class ApiClient {
     }
   }
 
+  // ==================== REMEDIATION ====================
+
+  async getRemediationPlaybooks() {
+    const response = await this.client.get('/remediation/playbooks');
+    return response.data;
+  }
+
+  async getRemediationPlaybook(playbookId: string) {
+    const response = await this.client.get(`/remediation/playbooks/${playbookId}`);
+    return response.data;
+  }
+
+  async searchRemediationPlaybooks(query: string) {
+    const response = await this.client.get('/remediation/playbooks/search', {
+      params: { query }
+    });
+    return response.data;
+  }
+
+  async getRemediationForFinding(findingId: number) {
+    const response = await this.client.get(`/remediation/for-finding/${findingId}`);
+    return response.data;
+  }
+
+  async assignPlaybookToFinding(findingId: number, playbookId: string) {
+    const response = await this.client.post(`/remediation/for-finding/${findingId}/assign`, null, {
+      params: { playbook_id: playbookId }
+    });
+    return response.data;
+  }
+
+  async getRemediationStats() {
+    const response = await this.client.get('/remediation/stats');
+    return response.data;
+  }
+
   // Health check
   async healthCheck() {
     const response = await axios.get(`${API_URL}/health`);

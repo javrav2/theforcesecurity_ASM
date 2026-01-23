@@ -165,7 +165,6 @@ export default function DomainsContent() {
     with_ip: 0,
     no_ip: 0,
   });
-  const [resolvingDns, setResolvingDns] = useState(false);
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showMoreFilters, setShowMoreFilters] = useState(false);
@@ -297,30 +296,12 @@ export default function DomainsContent() {
     }
   };
 
-  // Quick DNS resolution (uses dnsx to resolve IPs)
-  const handleResolveDns = async () => {
-    try {
-      setResolvingDns(true);
-      const response = await api.post('/scans/quick/dns-resolution?organization_id=1&include_geo=true&limit=500');
-      
-      toast({
-        title: 'DNS Resolution Started',
-        description: response.data?.name || 'Resolving domain IPs in background...',
-      });
-      
-      // Wait a bit and refresh
-      setTimeout(() => {
-        fetchDomains(debouncedSearch || undefined);
-        setResolvingDns(false);
-      }, 3000);
-    } catch (error: any) {
-      console.error('Error resolving DNS:', error);
-      toast({
-        title: 'Info',
-        description: error?.response?.data?.detail || 'DNS resolution queued or already complete.',
-      });
-      setResolvingDns(false);
-    }
+  // DNS resolution is now automated - direct users to scan schedules
+  const handleResolveDns = () => {
+    toast({
+      title: 'DNS Resolution',
+      description: 'DNS resolution runs automatically via scheduled scans. Go to Scans > Schedules to configure.',
+    });
   };
 
   const handleEnrichDns = async () => {
@@ -663,7 +644,7 @@ export default function DomainsContent() {
           <Card className={stats.no_ip > 0 ? "cursor-pointer hover:bg-muted/50 border-yellow-500/50" : ""} onClick={stats.no_ip > 0 ? handleResolveDns : undefined}>
             <CardContent className="pt-4">
               <div className="text-2xl font-bold text-yellow-600">{stats.no_ip}</div>
-              <div className="text-xs text-muted-foreground">{stats.no_ip > 0 ? 'No IP (click to resolve)' : 'No IP'}</div>
+              <div className="text-xs text-muted-foreground">{stats.no_ip > 0 ? 'No IP (auto-resolved)' : 'No IP'}</div>
             </CardContent>
           </Card>
         </div>
@@ -752,10 +733,6 @@ export default function DomainsContent() {
                       <DropdownMenuItem onClick={handleProbeLive} disabled={probingLive}>
                         <Radar className="h-4 w-4 mr-2" />
                         {probingLive ? 'Probing...' : 'Probe Live Status'}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={handleResolveDns} disabled={resolvingDns}>
-                        <Server className="h-4 w-4 mr-2" />
-                        {resolvingDns ? 'Resolving...' : 'Resolve DNS/IPs'}
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={handleEnrichDns} disabled={enrichingDns}>

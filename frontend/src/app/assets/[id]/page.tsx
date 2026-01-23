@@ -50,6 +50,9 @@ import {
   ShieldAlert,
   ShieldX,
   Search,
+  Code,
+  Link2,
+  FolderSearch,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -201,6 +204,10 @@ interface Asset {
   high_vuln_count?: number;
   medium_vuln_count?: number;
   low_vuln_count?: number;
+  // Discovered endpoints and parameters (from Katana, ParamSpider)
+  endpoints?: string[];
+  parameters?: string[];
+  js_files?: string[];
 }
 
 const assetTypeIcons: Record<string, any> = {
@@ -1035,6 +1042,106 @@ export default function AssetDetailPage() {
                   </Badge>
                 ))}
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Web Crawl Results (Katana/ParamSpider) */}
+        {((asset.endpoints && asset.endpoints.length > 0) || 
+          (asset.parameters && asset.parameters.length > 0) || 
+          (asset.js_files && asset.js_files.length > 0)) && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <FolderSearch className="h-5 w-5" />
+                <CardTitle>Web Crawl Results</CardTitle>
+              </div>
+              <CardDescription>
+                Discovered endpoints, parameters, and JS files from Katana/ParamSpider scans
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Endpoints */}
+              {asset.endpoints && asset.endpoints.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Link2 className="h-4 w-4 text-blue-500" />
+                    <h4 className="text-sm font-medium">Endpoints ({asset.endpoints.length})</h4>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
+                    {asset.endpoints.slice(0, 50).map((endpoint, idx) => (
+                      <div key={idx} className="font-mono text-xs text-muted-foreground hover:text-foreground transition-colors">
+                        {endpoint}
+                      </div>
+                    ))}
+                    {asset.endpoints.length > 50 && (
+                      <div className="text-xs text-muted-foreground pt-2 border-t">
+                        +{asset.endpoints.length - 50} more endpoints
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Parameters */}
+              {asset.parameters && asset.parameters.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Hash className="h-4 w-4 text-orange-500" />
+                    <h4 className="text-sm font-medium">URL Parameters ({asset.parameters.length})</h4>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {asset.parameters.slice(0, 100).map((param, idx) => (
+                      <Badge 
+                        key={idx} 
+                        variant="outline" 
+                        className="font-mono text-xs bg-orange-500/10 text-orange-600 border-orange-500/30"
+                      >
+                        {param}
+                      </Badge>
+                    ))}
+                    {asset.parameters.length > 100 && (
+                      <Badge variant="outline" className="text-xs">
+                        +{asset.parameters.length - 100} more
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    These parameters may be vulnerable to XSS, SQLi, SSRF, or other injection attacks
+                  </p>
+                </div>
+              )}
+
+              {/* JavaScript Files */}
+              {asset.js_files && asset.js_files.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Code className="h-4 w-4 text-yellow-500" />
+                    <h4 className="text-sm font-medium">JavaScript Files ({asset.js_files.length})</h4>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
+                    {asset.js_files.slice(0, 30).map((jsFile, idx) => (
+                      <a
+                        key={idx}
+                        href={jsFile.startsWith('http') ? jsFile : `https://${asset.value}${jsFile}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block font-mono text-xs text-muted-foreground hover:text-blue-500 transition-colors truncate"
+                      >
+                        {jsFile}
+                      </a>
+                    ))}
+                    {asset.js_files.length > 30 && (
+                      <div className="text-xs text-muted-foreground pt-2 border-t">
+                        +{asset.js_files.length - 30} more JS files
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    JS files may contain API endpoints, secrets, or other sensitive information
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

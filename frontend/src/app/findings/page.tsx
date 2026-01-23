@@ -44,6 +44,7 @@ import {
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate, downloadCSV, cn } from '@/lib/utils';
+import { RemediationPanel } from '@/components/remediation/RemediationPanel';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -132,7 +133,30 @@ export default function FindingsPage() {
   const [selectedSeverity, setSelectedSeverity] = useState<Severity | null>(null);
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
   const [stats, setStats] = useState<any>(null);
+  const [remediationData, setRemediationData] = useState<any>(null);
+  const [loadingRemediation, setLoadingRemediation] = useState(false);
   const { toast } = useToast();
+
+  // Fetch remediation playbook when a finding is selected
+  const fetchRemediation = async (findingId: number) => {
+    setLoadingRemediation(true);
+    setRemediationData(null);
+    try {
+      const data = await api.getRemediationForFinding(findingId);
+      setRemediationData(data);
+    } catch (err) {
+      console.error('Failed to fetch remediation:', err);
+      // Silently fail - will show fallback remediation
+    } finally {
+      setLoadingRemediation(false);
+    }
+  };
+
+  // Handle finding selection
+  const handleSelectFinding = (finding: Finding) => {
+    setSelectedFinding(finding);
+    fetchRemediation(finding.id);
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -386,7 +410,7 @@ export default function FindingsPage() {
                   <TableRow
                     key={finding.id}
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => setSelectedFinding(finding)}
+                    onClick={() => handleSelectFinding(finding)}
                   >
                     <TableCell>
                       <Badge className={getSeverityBadgeClass(finding.severity)}>
@@ -639,20 +663,28 @@ export default function FindingsPage() {
                 </div>
               )}
 
-              {/* Remediation */}
-              {selectedFinding?.remediation && (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-green-400">Remediation</p>
-                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                    {selectedFinding.remediation}
-                  </p>
-                  {selectedFinding.remediation_deadline && (
-                    <p className="text-xs text-yellow-400">
-                      Deadline: {formatDate(selectedFinding.remediation_deadline)}
-                    </p>
+              {/* Remediation Panel */}
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-green-400 flex items-center gap-2">
+                  <Shield className="h-4 w-4" />
+                  Remediation Guidance
+                  {selectedFinding?.remediation_deadline && (
+                    <Badge variant="outline" className="text-yellow-400 border-yellow-400/30 ml-2">
+                      Due: {formatDate(selectedFinding.remediation_deadline)}
+                    </Badge>
                   )}
-                </div>
-              )}
+                </p>
+                {loadingRemediation ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : (
+                  <RemediationPanel 
+                    playbook={remediationData?.has_playbook ? remediationData.playbook : undefined}
+                    fallbackRemediation={selectedFinding?.remediation || remediationData?.remediation}
+                  />
+                )}
+              </div>
 
               {/* Tags */}
               {selectedFinding?.tags && selectedFinding.tags.length > 0 && (
