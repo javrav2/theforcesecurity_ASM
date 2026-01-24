@@ -325,6 +325,152 @@ PORT_FINDING_RULES = [
         cwe_id="CWE-284"
     ),
     
+    # ==================== OT/ICS - INDUSTRIAL CONTROL SYSTEMS ====================
+    PortFindingRule(
+        ports=[502],
+        title="Modbus Protocol Exposed",
+        description="Modbus industrial protocol is exposed. Modbus lacks authentication and encryption, allowing attackers to read/write to PLCs and industrial controllers.",
+        severity=Severity.CRITICAL,
+        remediation="1. NEVER expose Modbus to the internet\n2. Segment OT networks from IT networks\n3. Use industrial firewalls or data diodes\n4. Implement monitoring for anomalous Modbus traffic\n5. Consider Modbus/TCP security extensions if available",
+        tags=["ot", "ics", "scada", "modbus", "plc", "critical-infrastructure"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[102],
+        title="Siemens S7 Protocol Exposed",
+        description="Siemens S7comm protocol (ISO-TSAP) is exposed. This allows direct communication with Siemens PLCs and has been targeted by malware like Stuxnet.",
+        severity=Severity.CRITICAL,
+        remediation="1. NEVER expose S7 protocol to the internet\n2. Implement network segmentation between IT/OT\n3. Use Siemens security features (access protection)\n4. Deploy industrial IDS/IPS\n5. Monitor for S7comm exploitation attempts",
+        tags=["ot", "ics", "scada", "siemens", "s7", "plc", "critical-infrastructure"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[44818],
+        title="EtherNet/IP Protocol Exposed",
+        description="EtherNet/IP (CIP) industrial protocol is exposed. Used by Rockwell/Allen-Bradley PLCs. Lacks built-in authentication.",
+        severity=Severity.CRITICAL,
+        remediation="1. NEVER expose EtherNet/IP to untrusted networks\n2. Implement industrial DMZ architecture\n3. Use CIP Security if supported by devices\n4. Deploy network monitoring for OT protocols\n5. Segment control networks",
+        tags=["ot", "ics", "scada", "ethernet-ip", "cip", "rockwell", "allen-bradley", "plc"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[20000],
+        title="DNP3 Protocol Exposed",
+        description="DNP3 (Distributed Network Protocol) is exposed. Used in utilities and SCADA systems. Vulnerable to manipulation and replay attacks.",
+        severity=Severity.CRITICAL,
+        remediation="1. NEVER expose DNP3 to the internet\n2. Implement DNP3 Secure Authentication if supported\n3. Use encrypted VPN tunnels for remote DNP3 access\n4. Deploy DNP3-aware firewalls\n5. Monitor for protocol anomalies",
+        tags=["ot", "ics", "scada", "dnp3", "utilities", "critical-infrastructure"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[47808],
+        title="BACnet Protocol Exposed",
+        description="BACnet building automation protocol is exposed. Used for HVAC, lighting, and access control systems. Lacks authentication.",
+        severity=Severity.HIGH,
+        remediation="1. Restrict BACnet to building management networks\n2. Use BACnet/SC (Secure Connect) if available\n3. Implement network segmentation\n4. Monitor for unauthorized BACnet commands\n5. Disable BACnet broadcast if not needed",
+        tags=["ot", "ics", "bacnet", "building-automation", "hvac"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[1911, 1962],
+        title="Niagara Fox Protocol Exposed",
+        description="Tridium Niagara Fox protocol is exposed. Used in building automation and smart grid systems.",
+        severity=Severity.HIGH,
+        remediation="1. Restrict access to management networks only\n2. Update to latest Niagara firmware\n3. Enable TLS for Fox protocol\n4. Use strong authentication\n5. Review CVE-2012-4701 and related vulnerabilities",
+        tags=["ot", "ics", "niagara", "fox", "building-automation", "tridium"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[789],
+        title="Red Lion Crimson Protocol Exposed",
+        description="Red Lion Crimson protocol is exposed. Used for HMI and industrial device configuration.",
+        severity=Severity.HIGH,
+        remediation="1. Restrict to control network segments\n2. Use VPN for remote access\n3. Update device firmware regularly\n4. Implement network monitoring",
+        tags=["ot", "ics", "red-lion", "hmi"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[2222],
+        title="EtherNet/IP I/O Exposed",
+        description="EtherNet/IP implicit messaging (I/O) port is exposed. Used for real-time I/O data between PLCs and devices.",
+        severity=Severity.HIGH,
+        remediation="1. Never expose I/O traffic outside control networks\n2. Use industrial firewalls\n3. Implement strict network segmentation\n4. Monitor for unauthorized I/O connections",
+        tags=["ot", "ics", "ethernet-ip", "io", "plc"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[4840],
+        title="OPC UA Protocol Exposed",
+        description="OPC Unified Architecture protocol is exposed. While OPC UA supports security, misconfigured instances may allow unauthenticated access.",
+        severity=Severity.HIGH,
+        remediation="1. Enable OPC UA security mode (Sign or SignAndEncrypt)\n2. Require certificate-based authentication\n3. Restrict to trusted networks\n4. Audit OPC UA access regularly\n5. Keep OPC UA stack updated",
+        tags=["ot", "ics", "opc-ua", "industrial-automation"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[18245, 18246],
+        title="GE SRTP Protocol Exposed",
+        description="GE SRTP (Service Request Transport Protocol) is exposed. Used by GE PLCs and controllers.",
+        severity=Severity.CRITICAL,
+        remediation="1. Restrict to control network segments only\n2. Implement industrial firewalls\n3. Use VPN for any remote access\n4. Monitor for protocol anomalies",
+        tags=["ot", "ics", "ge", "srtp", "plc"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[1089, 1090, 1091],
+        title="FF HSE Protocol Exposed",
+        description="Foundation Fieldbus HSE (High Speed Ethernet) protocol is exposed. Used in process automation.",
+        severity=Severity.HIGH,
+        remediation="1. Segment fieldbus networks\n2. Use industrial firewalls\n3. Implement OT network monitoring\n4. Document and audit all HSE connections",
+        tags=["ot", "ics", "fieldbus", "process-automation"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[9600],
+        title="OMRON FINS Protocol Exposed",
+        description="OMRON FINS industrial protocol is exposed. Used for communication with OMRON PLCs. Lacks authentication.",
+        severity=Severity.CRITICAL,
+        remediation="1. Never expose FINS to untrusted networks\n2. Implement network segmentation\n3. Use FINS/UDP filtering\n4. Deploy OT-aware IDS",
+        tags=["ot", "ics", "omron", "fins", "plc"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[5007],
+        title="Mitsubishi MELSEC Protocol Exposed",
+        description="Mitsubishi MELSEC-Q protocol is exposed. Used for PLC programming and communication. No built-in authentication.",
+        severity=Severity.CRITICAL,
+        remediation="1. Restrict to engineering workstations only\n2. Segment control networks\n3. Use industrial firewalls\n4. Monitor for unauthorized MELSEC traffic",
+        tags=["ot", "ics", "mitsubishi", "melsec", "plc"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[2404],
+        title="IEC 60870-5-104 Protocol Exposed",
+        description="IEC 60870-5-104 telecontrol protocol is exposed. Used in power grids and utilities for SCADA communication.",
+        severity=Severity.CRITICAL,
+        remediation="1. Never expose IEC 104 to the internet\n2. Use IEC 62351 security extensions\n3. Implement encrypted tunnels\n4. Deploy protocol-aware monitoring\n5. Follow NERC CIP compliance",
+        tags=["ot", "ics", "scada", "iec-104", "utilities", "power-grid", "critical-infrastructure"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[4000],
+        title="Emerson ROC Protocol Exposed",
+        description="Emerson ROC (Remote Operations Controller) protocol is exposed. Used in oil & gas pipeline monitoring.",
+        severity=Severity.CRITICAL,
+        remediation="1. Restrict to SCADA network segments\n2. Use encrypted tunnels for remote access\n3. Implement ROC Plus security features\n4. Monitor for unauthorized access",
+        tags=["ot", "ics", "emerson", "roc", "oil-gas", "pipeline"],
+        cwe_id="CWE-306"
+    ),
+    PortFindingRule(
+        ports=[5094, 5095],
+        title="HART-IP Protocol Exposed",
+        description="HART-IP industrial protocol is exposed. Used for smart field device communication in process industries.",
+        severity=Severity.HIGH,
+        remediation="1. Restrict to instrument networks\n2. Use industrial firewalls\n3. Implement HART-IP security features\n4. Monitor device configurations",
+        tags=["ot", "ics", "hart", "field-devices", "process-automation"],
+        cwe_id="CWE-306"
+    ),
+    
     # ==================== FILTERED PORTS ====================
     PortFindingRule(
         ports=[22, 3389, 445, 3306, 5432, 1433],

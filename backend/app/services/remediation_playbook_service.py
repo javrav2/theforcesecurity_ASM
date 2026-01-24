@@ -816,6 +816,389 @@ _register_playbook(RemediationPlaybook(
 ))
 
 
+# -----------------------------------------------------------------------------
+# OT/ICS - INDUSTRIAL CONTROL SYSTEMS PLAYBOOKS
+# -----------------------------------------------------------------------------
+
+_register_playbook(RemediationPlaybook(
+    id="exposed-modbus",
+    title="Secure Exposed Modbus Protocol",
+    summary="Modbus lacks authentication - immediately isolate from untrusted networks and implement OT network segmentation.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.HIGH,
+    estimated_time="1-2 days (requires change window)",
+    required_access=[RequiredAccess.INFRASTRUCTURE, RequiredAccess.SECURITY_TEAM],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Immediate: Block Modbus from internet",
+            description="Add firewall rules to block port 502 from all untrusted networks immediately.",
+            command="# Modbus TCP uses port 502\n# Block at perimeter firewall immediately",
+            notes="This is critical - Modbus has NO authentication. Any attacker can read/write PLC registers."
+        ),
+        RemediationStep(
+            order=2,
+            title="Implement IT/OT network segmentation",
+            description="Create a dedicated OT network zone with controlled access points. Use industrial firewalls or DMZ architecture.",
+            notes="Follow IEC 62443 zone and conduit model. The Purdue Model recommends 5 levels of segmentation."
+        ),
+        RemediationStep(
+            order=3,
+            title="Deploy OT-aware monitoring",
+            description="Install industrial intrusion detection that understands Modbus protocol semantics.",
+            notes="Solutions like Claroty, Dragos, Nozomi Networks can detect malicious Modbus commands."
+        ),
+        RemediationStep(
+            order=4,
+            title="Enable Modbus/TCP filtering",
+            description="If Modbus must cross trust boundaries, use a Modbus-aware firewall that can filter by function code and register ranges.",
+            notes="Block dangerous function codes like Write Single Coil (05), Write Multiple Coils (15), Write Single Register (06)."
+        ),
+        RemediationStep(
+            order=5,
+            title="Document and inventory",
+            description="Create an asset inventory of all Modbus devices including IP, unit ID, and function.",
+            command="# Use nmap to enumerate Modbus devices:\nnmap -p 502 --script modbus-discover <network/24>"
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify Modbus is not accessible from internet",
+            expected_result="Port 502 closed or filtered from external networks",
+            command="nmap -p 502 <target-ip>",
+            automated=True
+        ),
+        VerificationStep(
+            order=2,
+            description="Verify OT network segmentation",
+            expected_result="Cannot reach Modbus from corporate IT network without going through firewall",
+            automated=False
+        ),
+    ],
+    impact_if_not_fixed="Exposed Modbus allows attackers to directly control PLCs, pumps, valves, and industrial equipment. This could cause physical damage, safety incidents, or production outages.",
+    common_mistakes=[
+        "Thinking 'we need Modbus for SCADA' - use secure tunnels or proxies instead",
+        "Trusting VLANs alone for segmentation (they can be bypassed)",
+        "Not inventorying all Modbus devices in the environment"
+    ],
+    references=[
+        "https://www.cisa.gov/uscert/ics/advisories",
+        "https://www.fortiguard.com/services/operational-technology-security-service",
+        "https://ics-cert.us-cert.gov/Recommended-Practices",
+    ],
+    related_cwe="CWE-306",
+    tags=["ot", "ics", "scada", "modbus", "plc", "critical-infrastructure"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="exposed-s7",
+    title="Secure Exposed Siemens S7 Protocol",
+    summary="S7comm protocol is exposed - this was targeted by Stuxnet. Immediately isolate and implement defense-in-depth.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.HIGH,
+    estimated_time="1-2 days (requires change window)",
+    required_access=[RequiredAccess.INFRASTRUCTURE, RequiredAccess.SECURITY_TEAM],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Immediate: Block S7 from untrusted networks",
+            description="Add firewall rules to block port 102 (ISO-TSAP) from all untrusted networks.",
+            command="# S7comm uses port 102 (ISO-on-TCP)\n# Block at perimeter immediately",
+            notes="S7comm was the protocol exploited by Stuxnet to damage Iranian centrifuges."
+        ),
+        RemediationStep(
+            order=2,
+            title="Enable PLC access protection",
+            description="Configure password protection on Siemens PLCs using TIA Portal or STEP 7.",
+            notes="Enable at minimum: Know-how protection, Copy protection, and Access protection (read/write passwords)."
+        ),
+        RemediationStep(
+            order=3,
+            title="Implement network segmentation",
+            description="Place all Siemens PLCs in a dedicated control network zone with strict access controls.",
+            notes="Follow Siemens defense-in-depth recommendations and IEC 62443."
+        ),
+        RemediationStep(
+            order=4,
+            title="Update PLC firmware",
+            description="Ensure all S7 PLCs are running latest firmware with security patches.",
+            command="# Check current firmware in TIA Portal or via:\nnmap -p 102 --script s7-info <target-ip>"
+        ),
+        RemediationStep(
+            order=5,
+            title="Deploy industrial monitoring",
+            description="Install OT-aware IDS that can detect S7comm exploitation attempts.",
+            notes="Monitor for unauthorized S7 STOP/START commands, program downloads, and memory writes."
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify S7 is not accessible from internet or IT networks",
+            expected_result="Port 102 closed or filtered",
+            command="nmap -p 102 --script s7-info <target-ip>",
+            automated=True
+        ),
+        VerificationStep(
+            order=2,
+            description="Verify PLC access protection is enabled",
+            expected_result="Password required for read/write operations",
+            automated=False
+        ),
+    ],
+    impact_if_not_fixed="Exposed S7comm allows attackers to stop/start PLCs, modify programs, and cause physical damage. Stuxnet demonstrated nation-state level attacks on these protocols.",
+    common_mistakes=[
+        "Relying only on S7 password protection (can be bypassed in some firmware versions)",
+        "Not patching CVE-2019-13945 and other S7 vulnerabilities",
+        "Allowing engineering workstations direct internet access"
+    ],
+    references=[
+        "https://www.fortiguard.com/encyclopedia?type=otsapp",
+        "https://www.siemens.com/global/en/products/automation/topic-areas/industrial-security.html",
+    ],
+    related_cwe="CWE-306",
+    tags=["ot", "ics", "scada", "siemens", "s7", "plc", "critical-infrastructure"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="exposed-ethernet-ip",
+    title="Secure Exposed EtherNet/IP Protocol",
+    summary="EtherNet/IP (CIP) is exposed - segment Rockwell/Allen-Bradley controllers from untrusted networks.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.HIGH,
+    estimated_time="1-2 days",
+    required_access=[RequiredAccess.INFRASTRUCTURE, RequiredAccess.SECURITY_TEAM],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Block EtherNet/IP from untrusted networks",
+            description="Add firewall rules to block port 44818 (explicit messaging) and 2222 (I/O) from untrusted networks.",
+            command="# EtherNet/IP ports:\n# 44818/TCP - Explicit messaging\n# 2222/UDP - Implicit I/O\n# Block both at perimeter"
+        ),
+        RemediationStep(
+            order=2,
+            title="Implement CIP Security if supported",
+            description="Enable CIP Security on compatible devices for authentication and encryption.",
+            notes="CIP Security requires compatible devices (check with Rockwell). Older devices don't support it."
+        ),
+        RemediationStep(
+            order=3,
+            title="Segment control networks",
+            description="Create dedicated cell/area zones for controllers with industrial DMZ architecture.",
+            notes="Follow Rockwell CPwE (Converged Plantwide Ethernet) architecture guidelines."
+        ),
+        RemediationStep(
+            order=4,
+            title="Deploy industrial monitoring",
+            description="Install OT-aware monitoring that understands CIP/EtherNet/IP protocol.",
+            command="# Enumerate EtherNet/IP devices:\nnmap -p 44818 --script enip-info <network/24>"
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify EtherNet/IP is not accessible from untrusted networks",
+            expected_result="Ports 44818 and 2222 closed or filtered",
+            command="nmap -p 44818 --script enip-info <target-ip>",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Exposed EtherNet/IP allows attackers to read/write PLC data, stop controllers, and cause production outages or safety incidents.",
+    common_mistakes=[
+        "Blocking only 44818 but leaving 2222 open",
+        "Assuming VLANs provide sufficient isolation",
+        "Not inventorying all EtherNet/IP devices"
+    ],
+    references=[
+        "https://www.fortiguard.com/services/operational-technology-security-service",
+        "https://www.rockwellautomation.com/en-us/capabilities/industrial-cybersecurity.html",
+    ],
+    related_cwe="CWE-306",
+    tags=["ot", "ics", "ethernet-ip", "cip", "rockwell", "allen-bradley", "plc"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="exposed-dnp3",
+    title="Secure Exposed DNP3 Protocol",
+    summary="DNP3 is exposed - critical for utilities and power grids. Implement secure authentication and network isolation.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.HIGH,
+    estimated_time="2-5 days (compliance considerations)",
+    required_access=[RequiredAccess.INFRASTRUCTURE, RequiredAccess.SECURITY_TEAM],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Block DNP3 from internet immediately",
+            description="Add firewall rules to block port 20000 from all untrusted networks.",
+            command="# DNP3 uses port 20000 (default)\n# Block at perimeter immediately"
+        ),
+        RemediationStep(
+            order=2,
+            title="Enable DNP3 Secure Authentication",
+            description="Implement DNP3 Secure Authentication (SA) version 5 or higher on compatible devices.",
+            notes="DNP3-SA provides challenge-response authentication. Requires compatible RTUs/IEDs."
+        ),
+        RemediationStep(
+            order=3,
+            title="Use encrypted tunnels for WAN",
+            description="If DNP3 must traverse WAN, use IPsec VPN tunnels between control centers and substations.",
+            notes="This is required for NERC CIP compliance in bulk electric systems."
+        ),
+        RemediationStep(
+            order=4,
+            title="Deploy DNP3-aware monitoring",
+            description="Install IDS with DNP3 protocol inspection capabilities.",
+            notes="Monitor for unauthorized control commands and protocol anomalies.",
+            command="# Enumerate DNP3 devices:\nnmap -p 20000 --script dnp3-info <network/24>"
+        ),
+        RemediationStep(
+            order=5,
+            title="Review NERC CIP compliance",
+            description="For bulk electric systems, ensure compliance with NERC CIP standards.",
+            notes="CIP-005 requires electronic security perimeters. CIP-007 requires access controls."
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify DNP3 is not accessible from internet",
+            expected_result="Port 20000 closed or filtered from external networks",
+            command="nmap -p 20000 --script dnp3-info <target-ip>",
+            automated=True
+        ),
+        VerificationStep(
+            order=2,
+            description="Verify DNP3 Secure Authentication is enabled",
+            expected_result="Authentication required for control operations",
+            automated=False
+        ),
+    ],
+    impact_if_not_fixed="Exposed DNP3 in utility environments could allow attackers to manipulate power grid operations, open breakers, or cause cascading failures.",
+    common_mistakes=[
+        "Not enabling DNP3 Secure Authentication",
+        "Using DNP3 over public networks without encryption",
+        "Ignoring NERC CIP compliance requirements"
+    ],
+    references=[
+        "https://www.cisa.gov/uscert/ics",
+        "https://www.nerc.com/pa/Stand/Pages/CIPStandards.aspx",
+    ],
+    related_cwe="CWE-306",
+    tags=["ot", "ics", "scada", "dnp3", "utilities", "power-grid", "nerc-cip", "critical-infrastructure"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="exposed-bacnet",
+    title="Secure Exposed BACnet Protocol",
+    summary="BACnet building automation protocol is exposed - segment from untrusted networks and enable security features.",
+    priority=RemediationPriority.HIGH,
+    effort=RemediationEffort.MEDIUM,
+    estimated_time="4-8 hours",
+    required_access=[RequiredAccess.ADMIN, RequiredAccess.INFRASTRUCTURE],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Block BACnet from internet",
+            description="Add firewall rules to block port 47808 from untrusted networks.",
+            command="# BACnet/IP uses port 47808/UDP\n# Block at perimeter"
+        ),
+        RemediationStep(
+            order=2,
+            title="Segment BACnet to BMS network",
+            description="Place all BACnet devices in a dedicated building management system (BMS) network zone.",
+            notes="Separate from corporate IT network and other OT systems."
+        ),
+        RemediationStep(
+            order=3,
+            title="Enable BACnet/SC if supported",
+            description="Implement BACnet Secure Connect for TLS-based authentication and encryption.",
+            notes="BACnet/SC requires compatible devices. Legacy devices may not support it."
+        ),
+        RemediationStep(
+            order=4,
+            title="Disable unnecessary BACnet broadcasts",
+            description="Configure BBMD (BACnet Broadcast Management Device) to limit broadcast scope.",
+            notes="This prevents BACnet device discovery from spreading across network segments."
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify BACnet is not accessible from internet",
+            expected_result="Port 47808 closed or filtered",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Exposed BACnet allows attackers to control HVAC, lighting, and access control systems. Could be used to cause discomfort, disable physical security, or increase energy costs.",
+    common_mistakes=[
+        "Connecting BMS directly to corporate network for remote access",
+        "Not disabling BACnet broadcasts",
+        "Using default passwords on BACnet devices"
+    ],
+    references=[
+        "https://www.ashrae.org/technical-resources/bookstore/bacnet",
+    ],
+    related_cwe="CWE-306",
+    tags=["ot", "ics", "bacnet", "building-automation", "bms", "hvac"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="exposed-opc-ua",
+    title="Secure Exposed OPC UA Protocol",
+    summary="OPC UA is exposed - enable security mode and certificate authentication.",
+    priority=RemediationPriority.HIGH,
+    effort=RemediationEffort.MEDIUM,
+    estimated_time="2-4 hours",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Block OPC UA from untrusted networks",
+            description="Add firewall rules to restrict port 4840 to authorized clients only.",
+            command="# OPC UA uses port 4840 by default"
+        ),
+        RemediationStep(
+            order=2,
+            title="Enable OPC UA security mode",
+            description="Configure OPC UA servers to require Sign or SignAndEncrypt security mode. Disable None.",
+            notes="Security mode 'None' allows unauthenticated access. Always disable it."
+        ),
+        RemediationStep(
+            order=3,
+            title="Implement certificate authentication",
+            description="Configure OPC UA to require client certificates for authentication.",
+            notes="Use a proper PKI infrastructure. Don't accept self-signed certificates from unknown clients."
+        ),
+        RemediationStep(
+            order=4,
+            title="Review user authentication",
+            description="Ensure OPC UA user authentication is enabled with strong passwords.",
+            notes="Disable anonymous authentication unless explicitly required."
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify OPC UA requires authentication",
+            expected_result="Anonymous access denied",
+            automated=False
+        ),
+    ],
+    impact_if_not_fixed="Misconfigured OPC UA can expose read/write access to industrial data and control systems without authentication.",
+    common_mistakes=[
+        "Leaving security mode set to 'None'",
+        "Accepting all client certificates without validation",
+        "Using weak or default passwords"
+    ],
+    references=[
+        "https://opcfoundation.org/developer-tools/specifications-unified-architecture",
+    ],
+    related_cwe="CWE-306",
+    tags=["ot", "ics", "opc-ua", "industrial-automation"],
+))
+
+
 # =============================================================================
 # PLAYBOOK LOOKUP SERVICE
 # =============================================================================
@@ -836,6 +1219,18 @@ class RemediationPlaybookService:
         "ftp service exposed": "exposed-ftp",
         "http service (unencrypted)": "missing-https",
         
+        # OT/ICS findings
+        "modbus protocol exposed": "exposed-modbus",
+        "siemens s7 protocol exposed": "exposed-s7",
+        "ethernet/ip protocol exposed": "exposed-ethernet-ip",
+        "dnp3 protocol exposed": "exposed-dnp3",
+        "bacnet protocol exposed": "exposed-bacnet",
+        "opc ua protocol exposed": "exposed-opc-ua",
+        "iec 60870-5-104 protocol exposed": "exposed-dnp3",  # Similar remediation
+        "omron fins protocol exposed": "exposed-modbus",  # Similar remediation
+        "mitsubishi melsec protocol exposed": "exposed-modbus",  # Similar remediation
+        "ge srtp protocol exposed": "exposed-modbus",  # Similar remediation
+        
         # Nuclei template patterns
         "exposed-panels": "exposed-admin-panel",
         "admin-panel": "exposed-admin-panel",
@@ -844,6 +1239,7 @@ class RemediationPlaybookService:
     
     # Map ports to playbook IDs (fallback)
     PORT_TO_PLAYBOOK_MAP = {
+        # IT services
         22: "exposed-ssh",
         3389: "exposed-rdp",
         23: "exposed-telnet",
@@ -855,6 +1251,22 @@ class RemediationPlaybookService:
         445: "exposed-smb",
         139: "exposed-smb",
         21: "exposed-ftp",
+        
+        # OT/ICS protocols
+        502: "exposed-modbus",
+        102: "exposed-s7",
+        44818: "exposed-ethernet-ip",
+        2222: "exposed-ethernet-ip",
+        20000: "exposed-dnp3",
+        47808: "exposed-bacnet",
+        4840: "exposed-opc-ua",
+        2404: "exposed-dnp3",  # IEC 60870-5-104
+        9600: "exposed-modbus",  # OMRON FINS
+        5007: "exposed-modbus",  # Mitsubishi MELSEC
+        18245: "exposed-modbus",  # GE SRTP
+        18246: "exposed-modbus",  # GE SRTP
+        1911: "exposed-bacnet",  # Niagara Fox
+        1962: "exposed-bacnet",  # Niagara Fox
     }
     
     @classmethod
@@ -896,12 +1308,29 @@ class RemediationPlaybookService:
         # Try tag match
         if tags:
             for tag in tags:
-                if "ssh" in tag.lower():
+                tag_lower = tag.lower()
+                # IT services
+                if "ssh" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-ssh")
-                if "rdp" in tag.lower():
+                if "rdp" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-rdp")
-                if "mysql" in tag.lower() or "database" in tag.lower():
+                if "mysql" in tag_lower or "database" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-mysql")
+                # OT/ICS
+                if "modbus" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
+                if "s7" in tag_lower or "siemens" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("exposed-s7")
+                if "ethernet-ip" in tag_lower or "cip" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("exposed-ethernet-ip")
+                if "dnp3" in tag_lower or "iec-104" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("exposed-dnp3")
+                if "bacnet" in tag_lower or "bms" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("exposed-bacnet")
+                if "opc-ua" in tag_lower or "opc ua" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("exposed-opc-ua")
+                if "ot" in tag_lower or "ics" in tag_lower or "scada" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("exposed-modbus")  # General OT playbook
         
         return None
     
