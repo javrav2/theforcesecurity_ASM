@@ -163,6 +163,7 @@ export default function AssetsPage() {
   const [orgFilter, setOrgFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [liveFilter, setLiveFilter] = useState<string>('live'); // Default to live assets
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [sortColumn, setSortColumn] = useState<string>('');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
@@ -235,6 +236,7 @@ export default function AssetsPage() {
           organization_id: orgFilter !== 'all' ? parseInt(orgFilter) : undefined,
           asset_type: typeFilter !== 'all' ? typeFilter : undefined,
           status: statusFilter !== 'all' ? statusFilter : undefined,
+          is_live: liveFilter === 'live' ? true : liveFilter === 'not_live' ? false : undefined,
           search: search || undefined,
           limit: PAGE_SIZE,
           skip: skip,
@@ -251,44 +253,11 @@ export default function AssetsPage() {
       setTotalAssets(total);
 
       // Transform assets to include derived properties
+      // NOTE: Removed screenshot fetching here - it was causing 50+ API calls per page load
+      // Screenshots are now lazy-loaded via the screenshot_id field from the backend
       const assetsList = assetsData.items || assetsData || [];
       
-      // Fetch screenshots for each asset in parallel (limit to first 20 to avoid too many requests)
-      const assetsWithScreenshots = await Promise.all(
-        assetsList.slice(0, 50).map(async (a: any) => {
-          let screenshotUrl = null;
-          let screenshotId = null;
-          
-          try {
-            const screenshotData = await api.getAssetScreenshots(a.id);
-            if (screenshotData.screenshots && screenshotData.screenshots.length > 0) {
-              // Find the most recent successful screenshot
-              const successfulScreenshot = screenshotData.screenshots.find((s: any) => s.status === 'success' && s.file_path);
-              if (successfulScreenshot) {
-                screenshotId = successfulScreenshot.id;
-                screenshotUrl = api.getScreenshotImageUrl(successfulScreenshot.id);
-              }
-            }
-          } catch (e) {
-            // Ignore screenshot fetch errors
-          }
-          
-          return {
-            ...a,
-            name: a.name || a.value,
-            value: a.value || a.name,
-            type: a.asset_type || 'subdomain',
-            findingsCount: a.vulnerability_count || 0,
-            tags: a.tags || [],
-            lastSeen: new Date(a.updated_at || a.created_at),
-            screenshotUrl,
-            screenshotId,
-          };
-        })
-      );
-      
-      // Add remaining assets without screenshots
-      const remainingAssets = assetsList.slice(50).map((a: any) => ({
+      const transformedAssets = assetsList.map((a: any) => ({
         ...a,
         name: a.name || a.value,
         value: a.value || a.name,
@@ -296,11 +265,12 @@ export default function AssetsPage() {
         findingsCount: a.vulnerability_count || 0,
         tags: a.tags || [],
         lastSeen: new Date(a.updated_at || a.created_at),
-        screenshotUrl: null,
-        screenshotId: null,
+        // Use screenshot_id from backend if available (cached from last screenshot capture)
+        screenshotUrl: a.screenshot_id ? api.getScreenshotImageUrl(a.screenshot_id) : null,
+        screenshotId: a.screenshot_id || null,
       }));
 
-      setAssets([...assetsWithScreenshots, ...remainingAssets]);
+      setAssets(transformedAssets);
       setOrganizations(orgsData);
     } catch (error: any) {
       console.error('Failed to fetch assets:', error);
@@ -327,7 +297,7 @@ export default function AssetsPage() {
   useEffect(() => {
     setCurrentPage(1);
     fetchData(1);
-  }, [orgFilter, typeFilter, statusFilter]);
+  }, [orgFilter, typeFilter, statusFilter, liveFilter]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -505,6 +475,7 @@ export default function AssetsPage() {
     if (key === 'type') setTypeFilter(value);
     if (key === 'status') setStatusFilter(value);
     if (key === 'organization') setOrgFilter(value);
+    if (key === 'live') setLiveFilter(value);
   };
 
   const getStatusColor = (status: string) => {
@@ -536,6 +507,15 @@ export default function AssetsPage() {
   };
 
   const filters: FilterOption[] = [
+    {
+      key: 'live',
+      label: 'Live Status',
+      options: [
+        { label: 'All', value: 'all' },
+        { label: 'Live', value: 'live' },
+        { label: 'Not Live', value: 'not_live' },
+      ],
+    },
     {
       key: 'type',
       label: 'Type',
@@ -569,9 +549,13 @@ export default function AssetsPage() {
   const attackSurfaceStats = useMemo(() => {
     // Use server-side stats for accurate counts across all assets
     if (serverStats) {
+      const total = serverStats.total || totalAssets;
+      const live = serverStats.live?.live || 0;
       return {
-        total: serverStats.total || totalAssets,
-        live: serverStats.live?.live || 0,
+        total,
+        live,
+        notLive: serverStats.live?.not_live || (total - live),
+        notProbed: serverStats.live?.not_probed || 0,
         loginPortals: serverStats.login_portals || 0,
         outOfScope: serverStats.scope?.out_of_scope || 0,
         totalPorts: serverStats.ports?.open_ports || 0,
@@ -585,6 +569,7 @@ export default function AssetsPage() {
     
     // Fallback to page-level stats
     const liveAssets = assets.filter(a => a.is_live).length;
+    const notLiveAssets = assets.filter(a => a.is_live === false).length;
     const loginPortals = assets.filter(a => a.has_login_portal).length;
     const outOfScope = assets.filter(a => !a.in_scope).length;
     const totalPorts = assets.reduce((sum, a) => sum + (a.open_ports_count || 0), 0);
@@ -602,6 +587,8 @@ export default function AssetsPage() {
     return {
       total: totalAssets, // Use server's total count, not just current page
       live: liveAssets,
+      notLive: notLiveAssets,
+      notProbed: 0,
       loginPortals,
       outOfScope,
       totalPorts,
@@ -619,9 +606,12 @@ export default function AssetsPage() {
 
       <div className="p-6 space-y-6">
         {/* Attack Surface Overview Stats */}
-        {!loading && assets.length > 0 && (
+        {!loading && (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-            <Card className="p-4 bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
+            <Card 
+              className={`p-4 bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20 cursor-pointer hover:border-blue-500/40 transition-colors ${liveFilter === 'all' ? 'ring-2 ring-blue-500' : ''}`}
+              onClick={() => setLiveFilter('all')}
+            >
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-blue-500/20">
                   <Globe className="h-5 w-5 text-blue-400" />
@@ -633,7 +623,10 @@ export default function AssetsPage() {
               </div>
             </Card>
             
-            <Card className="p-4 bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
+            <Card 
+              className={`p-4 bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20 cursor-pointer hover:border-green-500/40 transition-colors ${liveFilter === 'live' ? 'ring-2 ring-green-500' : ''}`}
+              onClick={() => setLiveFilter('live')}
+            >
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-green-500/20">
                   <Activity className="h-5 w-5 text-green-400" />
@@ -641,6 +634,21 @@ export default function AssetsPage() {
                 <div>
                   <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.live}</p>
                   <p className="text-xs text-muted-foreground">Live Assets</p>
+                </div>
+              </div>
+            </Card>
+
+            <Card 
+              className={`p-4 bg-gradient-to-br from-gray-500/10 to-gray-600/5 border-gray-500/20 cursor-pointer hover:border-gray-500/40 transition-colors ${liveFilter === 'not_live' ? 'ring-2 ring-gray-500' : ''}`}
+              onClick={() => setLiveFilter('not_live')}
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-gray-500/20">
+                  <XCircle className="h-5 w-5 text-gray-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-foreground">{attackSurfaceStats.notLive}</p>
+                  <p className="text-xs text-muted-foreground">Not Live</p>
                 </div>
               </div>
             </Card>

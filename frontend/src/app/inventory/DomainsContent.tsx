@@ -57,6 +57,9 @@ import {
   MoreHorizontal,
   ChevronDown,
   Zap,
+  Code,
+  Link2,
+  Hash,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -115,6 +118,10 @@ interface Domain {
     };
     whois_fetched_at?: string;
   };
+  // Web crawl results from Katana/ParamSpider
+  endpoints?: string[];
+  parameters?: string[];
+  js_files?: string[];
 }
 
 interface Stats {
@@ -914,6 +921,7 @@ export default function DomainsContent() {
                       <TableHead>Registrant</TableHead>
                       <TableHead>IP / DNS</TableHead>
                       <TableHead>Mail / Security</TableHead>
+                      <TableHead>Web Crawl</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Scope</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
@@ -1043,6 +1051,35 @@ export default function DomainsContent() {
                               </div>
                             )}
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {/* Web Crawl Results - Endpoints, Params, JS */}
+                          {((domain.endpoints?.length ?? 0) > 0 || 
+                            (domain.parameters?.length ?? 0) > 0 || 
+                            (domain.js_files?.length ?? 0) > 0) ? (
+                            <div className="flex flex-col gap-1">
+                              {(domain.endpoints?.length ?? 0) > 0 && (
+                                <span className="text-xs flex items-center gap-1 text-blue-600">
+                                  <Link2 className="h-3 w-3" />
+                                  {domain.endpoints!.length} endpoints
+                                </span>
+                              )}
+                              {(domain.parameters?.length ?? 0) > 0 && (
+                                <span className="text-xs flex items-center gap-1 text-orange-600">
+                                  <Hash className="h-3 w-3" />
+                                  {domain.parameters!.length} params
+                                </span>
+                              )}
+                              {(domain.js_files?.length ?? 0) > 0 && (
+                                <span className="text-xs flex items-center gap-1 text-yellow-600">
+                                  <Code className="h-3 w-3" />
+                                  {domain.js_files!.length} JS files
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Not crawled</span>
+                          )}
                         </TableCell>
                         <TableCell>
                           {getSuspicionBadge(domain)}

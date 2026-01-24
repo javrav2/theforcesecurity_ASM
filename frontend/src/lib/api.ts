@@ -163,6 +163,10 @@ class ApiClient {
     search?: string;
     asset_type?: string;
     status?: string;
+    is_live?: boolean;
+    in_scope?: boolean;
+    has_open_ports?: boolean;
+    has_risky_ports?: boolean;
     include_cidr?: boolean;
     has_geo?: boolean;
   }) {
