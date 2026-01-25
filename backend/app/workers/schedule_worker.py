@@ -30,7 +30,8 @@ from app.models.netblock import Netblock
 IPV4_ONLY_SCAN_TYPES = [
     "port_scan", "masscan", "critical_ports", 
     "http_probe", "screenshot", "login_portal",
-    "nuclei", "vulnerability", "technology",
+    "nuclei", "nuclei_critical", "nuclei_high", "nuclei_critical_high",
+    "nuclei_medium", "nuclei_low_info", "vulnerability", "technology",
     "katana", "paramspider", "waybackurls",
 ]
 
@@ -273,6 +274,11 @@ class ScheduleWorker:
         # Map schedule scan_type to ScanType enum
         scan_type_map = {
             "nuclei": ScanType.VULNERABILITY,
+            "nuclei_critical": ScanType.VULNERABILITY,
+            "nuclei_high": ScanType.VULNERABILITY,
+            "nuclei_critical_high": ScanType.VULNERABILITY,
+            "nuclei_medium": ScanType.VULNERABILITY,
+            "nuclei_low_info": ScanType.VULNERABILITY,
             "vulnerability": ScanType.VULNERABILITY,
             "port_scan": ScanType.PORT_SCAN,
             "masscan": ScanType.PORT_SCAN,

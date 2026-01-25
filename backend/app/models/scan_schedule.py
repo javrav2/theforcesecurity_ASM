@@ -190,13 +190,63 @@ CONTINUOUS_SCAN_TYPES = {
         }
     },
     "nuclei": {
-        "name": "Nuclei Vulnerability Scan",
-        "description": "Template-based vulnerability scanning",
+        "name": "Nuclei Vulnerability Scan (All Severities)",
+        "description": "Full template-based vulnerability scanning - all severity levels. Can take a long time for large targets.",
         "default_config": {
-            "severity": ["critical", "high", "medium"],
+            "severity": ["critical", "high", "medium", "low", "info"],
             "rate_limit": 150,
             "timeout": 10,
         }
+    },
+    "nuclei_critical": {
+        "name": "Nuclei - Critical Only",
+        "description": "Fast scan for critical vulnerabilities only. Runs quickly, catches the most severe issues.",
+        "default_config": {
+            "severity": ["critical"],
+            "rate_limit": 150,
+            "timeout": 10,
+        },
+        "recommended_frequency": "daily",
+    },
+    "nuclei_high": {
+        "name": "Nuclei - High Severity",
+        "description": "Scan for high severity vulnerabilities. Runs faster than full scan.",
+        "default_config": {
+            "severity": ["high"],
+            "rate_limit": 150,
+            "timeout": 10,
+        },
+        "recommended_frequency": "daily",
+    },
+    "nuclei_critical_high": {
+        "name": "Nuclei - Critical & High",
+        "description": "Scan for critical and high severity vulnerabilities. Best balance of speed and coverage.",
+        "default_config": {
+            "severity": ["critical", "high"],
+            "rate_limit": 150,
+            "timeout": 10,
+        },
+        "recommended_frequency": "daily",
+    },
+    "nuclei_medium": {
+        "name": "Nuclei - Medium Severity",
+        "description": "Scan for medium severity vulnerabilities.",
+        "default_config": {
+            "severity": ["medium"],
+            "rate_limit": 150,
+            "timeout": 10,
+        },
+        "recommended_frequency": "weekly",
+    },
+    "nuclei_low_info": {
+        "name": "Nuclei - Low & Info",
+        "description": "Scan for low severity and informational findings. Slowest but most comprehensive.",
+        "default_config": {
+            "severity": ["low", "info"],
+            "rate_limit": 150,
+            "timeout": 10,
+        },
+        "recommended_frequency": "weekly",
     },
     "port_scan": {
         "name": "Port Service Scan",
