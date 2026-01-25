@@ -430,14 +430,17 @@ class PortScannerService:
             
             try:
                 # Add overall timeout for the scan process
+                # Minimum 5 minutes (300s), scales up with target count
+                scan_timeout = max(300, timeout * len(targets) + 60)
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=timeout * len(targets) + 60  # Scale timeout with target count
+                    timeout=scan_timeout
                 )
             except asyncio.TimeoutError:
+                scan_timeout = max(300, timeout * len(targets) + 60)
                 process.kill()
                 await process.wait()
-                result.errors.append(f"Scan timed out after {timeout * len(targets) + 60}s")
+                result.errors.append(f"Scan timed out after {scan_timeout}s")
                 return result
             
             # Log any errors from naabu
