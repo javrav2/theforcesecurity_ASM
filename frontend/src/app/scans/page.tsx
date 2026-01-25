@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -114,6 +115,7 @@ export default function ScansPage() {
     targets: '',
     scanner: 'naabu',  // Port scanner: naabu, masscan, nmap
     ports: '',         // Port specification for port scans
+    severity: ['critical', 'high'] as string[],  // Default to critical & high for faster scans
   });
   const { toast } = useToast();
 
@@ -180,6 +182,8 @@ export default function ScansPage() {
         if (formData.ports) {
           config.ports = formData.ports;
         }
+      } else if (formData.scan_type === 'vulnerability') {
+        config.severity = formData.severity;
       }
 
       await api.createScan({
@@ -196,7 +200,7 @@ export default function ScansPage() {
       });
 
       setCreateDialogOpen(false);
-      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '', scanner: 'naabu', ports: '' });
+      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '', scanner: 'naabu', ports: '', severity: ['critical', 'high'] });
       fetchData();
     } catch (error: any) {
       toast({
@@ -375,6 +379,51 @@ export default function ScansPage() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* Vulnerability Scan - Severity Selection */}
+                {formData.scan_type === 'vulnerability' && (
+                  <div className="space-y-3">
+                    <Label>Severity Levels</Label>
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        { id: 'critical', label: 'Critical', color: 'text-red-500' },
+                        { id: 'high', label: 'High', color: 'text-orange-500' },
+                        { id: 'medium', label: 'Medium', color: 'text-yellow-500' },
+                        { id: 'low', label: 'Low', color: 'text-blue-500' },
+                        { id: 'info', label: 'Info', color: 'text-gray-500' },
+                      ].map((sev) => (
+                        <div key={sev.id} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`severity-${sev.id}`}
+                            checked={formData.severity.includes(sev.id)}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                setFormData({
+                                  ...formData,
+                                  severity: [...formData.severity, sev.id],
+                                });
+                              } else {
+                                setFormData({
+                                  ...formData,
+                                  severity: formData.severity.filter((s) => s !== sev.id),
+                                });
+                              }
+                            }}
+                          />
+                          <label
+                            htmlFor={`severity-${sev.id}`}
+                            className={`text-sm font-medium cursor-pointer ${sev.color}`}
+                          >
+                            {sev.label}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Fewer severities = faster scan. Critical & High recommended for quick scans.
+                    </p>
+                  </div>
+                )}
 
                 {/* Port Scan Options */}
                 {formData.scan_type === 'port_scan' && (
