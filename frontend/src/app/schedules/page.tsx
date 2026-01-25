@@ -47,6 +47,7 @@ import {
   Shield,
   Trash2,
   History,
+  Pencil,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -109,6 +110,8 @@ export default function SchedulesPage() {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<ScanSchedule | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -116,6 +119,16 @@ export default function SchedulesPage() {
     organization_id: '',
     scan_type: 'critical_ports',
     frequency: 'daily',
+    run_at_hour: '2',
+    run_on_day: '0',
+    targets: '',
+    is_enabled: true,
+  });
+  const [editFormData, setEditFormData] = useState({
+    name: '',
+    description: '',
+    scan_type: '',
+    frequency: '',
     run_at_hour: '2',
     run_on_day: '0',
     targets: '',
@@ -269,6 +282,64 @@ export default function SchedulesPage() {
         description: error.response?.data?.detail || 'Failed to delete schedule',
         variant: 'destructive',
       });
+    }
+  };
+
+  const handleEditSchedule = (schedule: ScanSchedule) => {
+    setEditingSchedule(schedule);
+    setEditFormData({
+      name: schedule.name,
+      description: schedule.description || '',
+      scan_type: schedule.scan_type,
+      frequency: schedule.frequency,
+      run_at_hour: schedule.run_at_hour.toString(),
+      run_on_day: schedule.run_on_day?.toString() || '0',
+      targets: schedule.targets?.join('\n') || '',
+      is_enabled: schedule.is_enabled,
+    });
+    setEditDialogOpen(true);
+  };
+
+  const handleUpdateSchedule = async () => {
+    if (!editingSchedule) return;
+
+    setSubmitting(true);
+    try {
+      const targets = editFormData.targets
+        .split('\n')
+        .map((t) => t.trim())
+        .filter((t) => t);
+
+      await api.request(`/scan-schedules/${editingSchedule.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: editFormData.name,
+          description: editFormData.description || undefined,
+          scan_type: editFormData.scan_type,
+          frequency: editFormData.frequency,
+          run_at_hour: parseInt(editFormData.run_at_hour),
+          run_on_day: editFormData.frequency === 'weekly' ? parseInt(editFormData.run_on_day) : undefined,
+          targets: targets.length > 0 ? targets : [],
+          is_enabled: editFormData.is_enabled,
+        }),
+      });
+
+      toast({
+        title: 'Schedule Updated',
+        description: 'The scan schedule has been updated successfully.',
+      });
+
+      setEditDialogOpen(false);
+      setEditingSchedule(null);
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to update schedule',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -623,6 +694,14 @@ export default function SchedulesPage() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            onClick={() => handleEditSchedule(schedule)}
+                            title="Edit schedule"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => handleToggle(schedule.id)}
                             title={schedule.is_enabled ? 'Pause' : 'Resume'}
                           >
@@ -650,6 +729,156 @@ export default function SchedulesPage() {
             </Table>
           </CardContent>
         </Card>
+
+        {/* Edit Schedule Dialog */}
+        <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Scan Schedule</DialogTitle>
+              <DialogDescription>
+                Update the schedule configuration.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label>Schedule Name *</Label>
+                <Input
+                  placeholder="e.g., Daily Critical Port Monitor"
+                  value={editFormData.name}
+                  onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Description</Label>
+                <Input
+                  placeholder="Optional description"
+                  value={editFormData.description}
+                  onChange={(e) => setEditFormData({ ...editFormData, description: e.target.value })}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Scan Type *</Label>
+                <Select
+                  value={editFormData.scan_type}
+                  onValueChange={(value) => setEditFormData({ ...editFormData, scan_type: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(scanTypes).map(([key, type]) => (
+                      <SelectItem key={key} value={key}>
+                        <div className="flex flex-col">
+                          <span>{type.name}</span>
+                          <span className="text-xs text-muted-foreground">{type.description}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Frequency *</Label>
+                  <Select
+                    value={editFormData.frequency}
+                    onValueChange={(value) => setEditFormData({ ...editFormData, frequency: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FREQUENCY_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Run At (Hour, UTC)</Label>
+                  <Select
+                    value={editFormData.run_at_hour}
+                    onValueChange={(value) => setEditFormData({ ...editFormData, run_at_hour: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 24 }, (_, i) => (
+                        <SelectItem key={i} value={i.toString()}>
+                          {i.toString().padStart(2, '0')}:00
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {editFormData.frequency === 'weekly' && (
+                <div className="space-y-2">
+                  <Label>Day of Week</Label>
+                  <Select
+                    value={editFormData.run_on_day}
+                    onValueChange={(value) => setEditFormData({ ...editFormData, run_on_day: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DAY_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <Label>Targets (optional, one per line)</Label>
+                <textarea
+                  className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  placeholder="192.168.1.0/24&#10;10.0.0.1&#10;example.com"
+                  value={editFormData.targets}
+                  onChange={(e) => setEditFormData({ ...editFormData, targets: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Leave empty to automatically scan <span className="font-medium text-primary">all in-scope assets</span>
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={editFormData.is_enabled}
+                  onCheckedChange={(checked) => setEditFormData({ ...editFormData, is_enabled: checked })}
+                />
+                <Label>Schedule enabled</Label>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleUpdateSchedule} disabled={submitting}>
+                {submitting ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Pencil className="h-4 w-4 mr-2" />
+                )}
+                Save Changes
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </MainLayout>
   );

@@ -407,7 +407,20 @@ class PortScannerService:
             if exclude_cdn:
                 cmd.append("-exclude-cdn")
             
-            logger.debug(f"Naabu command: {' '.join(cmd)}")
+            # Log the command for debugging
+            cmd_str = ' '.join(cmd)
+            logger.info(f"Naabu command: {cmd_str}")
+            
+            # Verify naabu binary exists
+            import shutil
+            naabu_binary = shutil.which(self.naabu_path)
+            if not naabu_binary:
+                error_msg = f"Naabu binary not found at '{self.naabu_path}'. Check if naabu is installed."
+                logger.error(error_msg)
+                result.errors.append(error_msg)
+                return result
+            
+            logger.debug(f"Found naabu at: {naabu_binary}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -429,9 +442,11 @@ class PortScannerService:
             
             # Log any errors from naabu
             if process.returncode != 0:
-                error_msg = stderr.decode() if stderr else f"Exit code: {process.returncode}"
-                logger.error(f"Naabu scan failed: {error_msg}")
-                result.errors.append(error_msg)
+                stderr_text = stderr.decode().strip() if stderr else ""
+                stdout_text = stdout.decode().strip() if stdout else ""
+                error_msg = stderr_text or stdout_text or f"Unknown error"
+                logger.error(f"Naabu scan failed (exit code {process.returncode}): {error_msg}")
+                result.errors.append(f"Exit code {process.returncode}: {error_msg}")
             
             if stderr:
                 stderr_text = stderr.decode()
@@ -465,9 +480,17 @@ class PortScannerService:
             result.success = True
             result.targets_scanned = len(targets)
             
+        except FileNotFoundError as e:
+            error_msg = f"Naabu binary not found: {e}. Ensure naabu is installed at {self.naabu_path}"
+            logger.error(error_msg)
+            result.errors.append(error_msg)
+        except PermissionError as e:
+            error_msg = f"Permission denied running naabu: {e}"
+            logger.error(error_msg)
+            result.errors.append(error_msg)
         except Exception as e:
-            logger.error(f"Naabu scan failed: {e}")
-            result.errors.append(str(e))
+            logger.error(f"Naabu scan failed with {type(e).__name__}: {e}", exc_info=True)
+            result.errors.append(f"{type(e).__name__}: {str(e)}")
         
         finally:
             for path in [targets_path, output_path]:

@@ -104,6 +104,18 @@ def build_asset_response(asset: Asset) -> dict:
     except Exception:
         pass
     
+    # Get the latest successful screenshot ID
+    screenshot_id = None
+    try:
+        if asset.screenshots:
+            # screenshots are ordered by captured_at desc, so first is most recent
+            for screenshot in asset.screenshots:
+                if screenshot.status.value == 'success' and screenshot.file_path:
+                    screenshot_id = screenshot.id
+                    break
+    except Exception:
+        pass
+    
     # Build response explicitly to avoid _sa_instance_state and missing columns
     return {
         "id": asset.id,
@@ -160,6 +172,8 @@ def build_asset_response(asset: Asset) -> dict:
         "in_scope": safe_get("in_scope", True),
         "is_owned": safe_get("is_owned", False),
         "is_live": safe_get("is_live", False),
+        "has_login_portal": safe_get("has_login_portal", False),
+        "login_portals": safe_get("login_portals", []),
         "netblock_id": safe_get("netblock_id"),
         # Scan tracking
         "last_scan_id": safe_get("last_scan_id"),
@@ -184,6 +198,8 @@ def build_asset_response(asset: Asset) -> dict:
         "high_vuln_count": high_vulns,
         "medium_vuln_count": medium_vulns,
         "low_vuln_count": low_vulns,
+        # Latest screenshot
+        "screenshot_id": screenshot_id,
     }
 
 

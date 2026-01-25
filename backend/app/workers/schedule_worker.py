@@ -26,6 +26,57 @@ from app.models.asset import Asset, AssetType
 from app.models.label import Label
 from app.models.netblock import Netblock
 
+# Scan types that require IPv4 only (don't support IPv6)
+IPV4_ONLY_SCAN_TYPES = [
+    "port_scan", "masscan", "critical_ports", 
+    "http_probe", "screenshot", "login_portal",
+    "nuclei", "vulnerability", "technology",
+    "katana", "paramspider", "waybackurls",
+]
+
+
+def filter_ipv6_targets(targets: list, scan_type: str) -> tuple:
+    """
+    Filter out IPv6 targets for scan types that don't support them.
+    
+    Returns: (filtered_targets, ipv6_skipped_count)
+    """
+    import ipaddress
+    
+    if scan_type not in IPV4_ONLY_SCAN_TYPES:
+        return targets, 0
+    
+    filtered = []
+    ipv6_count = 0
+    
+    for target in targets:
+        target = target.strip()
+        if not target:
+            continue
+        
+        # Quick check for IPv6 (contains colon but isn't a URL port)
+        if ':' in target:
+            # Check if it's actually an IPv6 address (not a URL with port like example.com:8080)
+            # IPv6 addresses have multiple colons or are in brackets
+            if target.count(':') > 1 or target.startswith('['):
+                ipv6_count += 1
+                continue
+            # Single colon might be domain:port, let it through
+        
+        # For CIDRs, check if IPv6
+        if '/' in target:
+            try:
+                network = ipaddress.ip_network(target, strict=False)
+                if network.version == 6:
+                    ipv6_count += 1
+                    continue
+            except ValueError:
+                pass  # Not a valid CIDR, might be a domain path
+        
+        filtered.append(target)
+    
+    return filtered, ipv6_count
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -182,6 +233,12 @@ class ScheduleWorker:
             # Combine and deduplicate
             targets = list(set(asset_targets + netblock_targets))
             logger.info(f"Auto-targeting {len(asset_targets)} assets + {len(netblock_targets)} netblock CIDRs")
+        
+        # Filter out IPv6 targets for scan types that don't support them
+        original_count = len(targets)
+        targets, ipv6_skipped = filter_ipv6_targets(targets, schedule.scan_type)
+        if ipv6_skipped > 0:
+            logger.info(f"Filtered out {ipv6_skipped} IPv6 targets for {schedule.scan_type} scan (IPv6 not supported)")
         
         if not targets:
             # Check what's missing to give a better error message

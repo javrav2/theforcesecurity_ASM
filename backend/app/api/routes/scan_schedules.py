@@ -25,6 +25,53 @@ import re
 
 router = APIRouter(prefix="/scan-schedules", tags=["Scan Schedules"])
 
+# Scan types that require IPv4 only (don't support IPv6)
+IPV4_ONLY_SCAN_TYPES = [
+    "port_scan", "masscan", "critical_ports", 
+    "http_probe", "screenshot", "login_portal",
+    "nuclei", "vulnerability", "technology",
+    "katana", "paramspider", "waybackurls",
+]
+
+
+def filter_ipv6_targets(targets: List[str], scan_type: str) -> tuple:
+    """
+    Filter out IPv6 targets for scan types that don't support them.
+    
+    Returns: (filtered_targets, ipv6_skipped_count)
+    """
+    if scan_type not in IPV4_ONLY_SCAN_TYPES:
+        return targets, 0
+    
+    filtered = []
+    ipv6_count = 0
+    
+    for target in targets:
+        target = target.strip()
+        if not target:
+            continue
+        
+        # Quick check for IPv6 (contains colon but isn't a URL port)
+        if ':' in target:
+            # IPv6 addresses have multiple colons or are in brackets
+            if target.count(':') > 1 or target.startswith('['):
+                ipv6_count += 1
+                continue
+        
+        # For CIDRs, check if IPv6
+        if '/' in target:
+            try:
+                network = ipaddress.ip_network(target, strict=False)
+                if network.version == 6:
+                    ipv6_count += 1
+                    continue
+            except ValueError:
+                pass  # Not a valid CIDR
+        
+        filtered.append(target)
+    
+    return filtered, ipv6_count
+
 
 def check_org_access(user: User, org_id: int) -> bool:
     """Check if user has access to organization."""
@@ -414,7 +461,16 @@ def trigger_scheduled_scan(
         # Combine and deduplicate
         targets = list(set(asset_targets + netblock_targets))
     
+    # Filter out IPv6 targets for scan types that don't support them
+    original_count = len(targets)
+    targets, ipv6_skipped = filter_ipv6_targets(targets, schedule.scan_type)
+    
     if not targets:
+        if ipv6_skipped > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No valid targets after filtering {ipv6_skipped} IPv6 addresses (IPv6 not supported for {schedule.scan_type})"
+            )
         raise HTTPException(
             status_code=400,
             detail="No targets found for this schedule. Run discovery first to populate assets and netblocks."
@@ -459,6 +515,7 @@ def trigger_scheduled_scan(
     
     # Calculate target statistics (total IPs from CIDRs, etc.)
     target_stats = calculate_target_stats(targets)
+    target_stats["ipv6_skipped"] = ipv6_skipped
     config["target_stats"] = target_stats
     
     scan = Scan(
@@ -475,6 +532,7 @@ def trigger_scheduled_scan(
             "targets_expanded": target_stats["targets_expanded"],
             "cidr_count": target_stats["cidr_count"],
             "host_count": target_stats["host_count"],
+            "ipv6_skipped": ipv6_skipped,
         }
     )
     
@@ -487,6 +545,11 @@ def trigger_scheduled_scan(
     db.commit()
     db.refresh(scan)
     
+    # Build message with IPv6 info if any were skipped
+    message = f"Scan '{scan.name}' created with {target_stats['targets_expanded']:,} IPs from {target_stats['targets_original']} targets"
+    if ipv6_skipped > 0:
+        message += f" ({ipv6_skipped} IPv6 targets skipped)"
+    
     return {
         "success": True,
         "scan_id": scan.id,
@@ -494,7 +557,8 @@ def trigger_scheduled_scan(
         "total_ips": target_stats["targets_expanded"],
         "cidr_count": target_stats["cidr_count"],
         "host_count": target_stats["host_count"],
-        "message": f"Scan '{scan.name}' created with {target_stats['targets_expanded']:,} IPs from {target_stats['targets_original']} targets",
+        "ipv6_skipped": ipv6_skipped,
+        "message": message,
     }
 
 
