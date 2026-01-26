@@ -144,6 +144,64 @@ class PortScannerService:
         self.masscan_path = masscan_path
         self.nmap_path = nmap_path
     
+    def _validate_targets(self, targets: List[str]) -> tuple:
+        """
+        Validate and clean targets, removing invalid entries.
+        
+        Returns: (valid_targets, invalid_targets)
+        """
+        import ipaddress
+        import re
+        
+        valid = []
+        invalid = []
+        
+        # Domain regex - basic validation
+        domain_pattern = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$')
+        
+        for target in targets:
+            target = target.strip()
+            if not target:
+                continue
+            
+            # Skip comments
+            if target.startswith('#'):
+                continue
+            
+            # Check if it's a valid IP address
+            try:
+                ipaddress.ip_address(target)
+                valid.append(target)
+                continue
+            except ValueError:
+                pass
+            
+            # Check if it's a valid CIDR
+            try:
+                ipaddress.ip_network(target, strict=False)
+                valid.append(target)
+                continue
+            except ValueError:
+                pass
+            
+            # Check if it's a valid domain
+            if domain_pattern.match(target):
+                valid.append(target)
+                continue
+            
+            # Check if it's a hostname (less strict)
+            if re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$', target) and '.' in target:
+                valid.append(target)
+                continue
+            
+            # Invalid target
+            invalid.append(target)
+        
+        if invalid:
+            logger.warning(f"Filtered {len(invalid)} invalid targets: {invalid[:5]}{'...' if len(invalid) > 5 else ''}")
+        
+        return valid, invalid
+    
     def get_port_list(self, db, name: str) -> str:
         """
         Get a port list from the database by name.
@@ -375,8 +433,17 @@ class PortScannerService:
         """Execute a single naabu scan."""
         result = ScanResult(success=False, scanner=ScannerType.NAABU)
         
+        # Validate targets before writing to file
+        valid_targets, invalid_targets = self._validate_targets(targets)
+        if invalid_targets:
+            result.errors.append(f"Skipped {len(invalid_targets)} invalid targets")
+        
+        if not valid_targets:
+            result.errors.append("No valid targets to scan")
+            return result
+        
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
-            targets_file.write("\n".join(targets))
+            targets_file.write("\n".join(valid_targets))
             targets_path = targets_file.name
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as output_file:
@@ -578,9 +645,18 @@ class PortScannerService:
                 targets, ports, rate, timeout, banner_grab
             )
         
+        # Validate targets before writing to file
+        valid_targets, invalid_targets = self._validate_targets(targets)
+        if invalid_targets:
+            result.errors.append(f"Skipped {len(invalid_targets)} invalid targets")
+        
+        if not valid_targets:
+            result.errors.append("No valid targets to scan")
+            return result
+        
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as targets_file:
             # Masscan natively supports CIDR notation in input files
-            targets_file.write("\n".join(targets))
+            targets_file.write("\n".join(valid_targets))
             targets_path = targets_file.name
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as output_file:
