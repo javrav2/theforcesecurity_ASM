@@ -2,7 +2,7 @@
 
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, ForeignKey, Text, JSON, Index
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
@@ -38,6 +38,15 @@ class Asset(Base):
     
     __tablename__ = "assets"
     
+    # Composite indexes for common query patterns - improves query performance
+    __table_args__ = (
+        Index('ix_assets_org_created', 'organization_id', 'created_at'),
+        Index('ix_assets_org_is_live', 'organization_id', 'is_live'),
+        Index('ix_assets_org_in_scope', 'organization_id', 'in_scope'),
+        Index('ix_assets_org_type', 'organization_id', 'asset_type'),
+        Index('ix_assets_org_value', 'organization_id', 'value'),
+    )
+    
     id = Column(Integer, primary_key=True, index=True)
     
     # Asset identification
@@ -47,7 +56,7 @@ class Asset(Base):
     root_domain = Column(String(255), nullable=True, index=True)  # The root domain (e.g., "rockwellautomation.com" for "sic.rockwellautomation.com")
     
     # Organization
-    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
     organization = relationship("Organization", back_populates="assets")
     
     # Parent asset (for hierarchical relationships)

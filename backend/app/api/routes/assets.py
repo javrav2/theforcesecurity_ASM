@@ -4,7 +4,8 @@ import logging
 from typing import List, Optional, Literal
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy import func, case
 
 from app.db.database import get_db
 from app.models.asset import Asset, AssetType, AssetStatus
@@ -221,7 +222,15 @@ def list_assets(
     current_user: User = Depends(get_current_active_user)
 ):
     """List assets with filtering options. By default excludes IP_RANGE/CIDR blocks (use netblocks endpoint for those)."""
-    query = db.query(Asset)
+    # Use eager loading to avoid N+1 queries - only load what we need
+    query = db.query(Asset).options(
+        selectinload(Asset.port_services),
+        selectinload(Asset.technologies),
+        selectinload(Asset.organization),
+        # Don't load vulnerabilities and screenshots for list - too slow
+        # selectinload(Asset.vulnerabilities),
+        # selectinload(Asset.screenshots),
+    )
     
     # Organization filter
     if current_user.is_superuser:
@@ -279,8 +288,38 @@ def list_assets(
             (Asset.latitude == None) | (Asset.latitude == '')
         )
     
-    # Get total count before pagination
-    total_count = query.count()
+    # Get total count before pagination (using a separate lightweight query)
+    count_query = db.query(func.count(Asset.id))
+    # Apply the same filters to count query
+    if current_user.is_superuser:
+        if organization_id:
+            count_query = count_query.filter(Asset.organization_id == organization_id)
+    else:
+        count_query = count_query.filter(Asset.organization_id == current_user.organization_id)
+    
+    if asset_type:
+        try:
+            asset_type_enum = AssetType(asset_type.upper())
+            count_query = count_query.filter(Asset.asset_type == asset_type_enum)
+        except ValueError:
+            pass
+    elif not include_cidr:
+        count_query = count_query.filter(Asset.asset_type != AssetType.IP_RANGE)
+    
+    if status:
+        count_query = count_query.filter(Asset.status == status)
+    if search:
+        count_query = count_query.filter((Asset.name.ilike(f"%{search}%")) | (Asset.value.ilike(f"%{search}%")))
+    if is_live is True:
+        count_query = count_query.filter(Asset.is_live == True)
+    elif is_live is False:
+        count_query = count_query.filter(Asset.is_live == False)
+    if in_scope is True:
+        count_query = count_query.filter(Asset.in_scope == True)
+    elif in_scope is False:
+        count_query = count_query.filter(Asset.in_scope == False)
+    
+    total_count = count_query.scalar() or 0
     
     # Apply pagination
     assets = query.order_by(Asset.created_at.desc()).offset(skip).limit(limit).all()
@@ -639,94 +678,102 @@ def get_assets_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Get asset statistics summary including port information."""
-    query = db.query(Asset)
+    """Get asset statistics summary including port information.
     
-    # Organization filter
+    OPTIMIZED: Uses SQL aggregations instead of loading all assets into memory.
+    """
+    # Build base filter for organization
+    org_filter = None
     if current_user.is_superuser:
         if organization_id:
-            query = query.filter(Asset.organization_id == organization_id)
+            org_filter = Asset.organization_id == organization_id
     else:
         if not current_user.organization_id:
             return {"total": 0, "by_type": {}, "by_status": {}, "ports": {}}
-        query = query.filter(Asset.organization_id == current_user.organization_id)
+        org_filter = Asset.organization_id == current_user.organization_id
     
-    assets = query.all()
+    # Get total count and aggregated stats in ONE query
+    base_query = db.query(
+        func.count(Asset.id).label('total'),
+        func.sum(case((Asset.is_live == True, 1), else_=0)).label('live_count'),
+        func.sum(case((Asset.is_live == False, 1), else_=0)).label('not_live_count'),
+        func.sum(case((Asset.is_live == None, 1), else_=0)).label('not_probed_count'),
+        func.sum(case((Asset.in_scope == True, 1), else_=0)).label('in_scope_count'),
+        func.sum(case((Asset.in_scope == False, 1), else_=0)).label('out_of_scope_count'),
+        func.sum(case((Asset.has_login_portal == True, 1), else_=0)).label('with_login_portal'),
+    )
     
-    # Calculate stats
-    by_type = {}
-    by_status = {}
-    total_ports = 0
-    total_open_ports = 0
-    total_risky_ports = 0
-    assets_with_ports = 0
-    assets_with_risky_ports = 0
-    live_count = 0
-    not_live_count = 0
-    not_probed_count = 0
-    in_scope_count = 0
-    out_of_scope_count = 0
-    with_login_portal = 0
+    if org_filter is not None:
+        base_query = base_query.filter(org_filter)
     
-    for asset in assets:
-        type_key = asset.asset_type.value
-        status_key = asset.status.value
-        
-        by_type[type_key] = by_type.get(type_key, 0) + 1
-        by_status[status_key] = by_status.get(status_key, 0) + 1
-        
-        # Live status stats
-        if asset.is_live is True:
-            live_count += 1
-        elif asset.is_live is False:
-            not_live_count += 1
-        else:
-            not_probed_count += 1
-        
-        # Scope stats
-        if asset.in_scope:
-            in_scope_count += 1
-        else:
-            out_of_scope_count += 1
-        
-        # Login portal stats
-        if getattr(asset, 'has_login_portal', False):
-            with_login_portal += 1
-        
-        # Port stats
-        asset_ports = len(asset.port_services)
-        if asset_ports > 0:
-            assets_with_ports += 1
-            total_ports += asset_ports
-            
-            open_count = len([p for p in asset.port_services if p.state == PortState.OPEN])
-            risky_count = len([p for p in asset.port_services if p.is_risky])
-            
-            total_open_ports += open_count
-            total_risky_ports += risky_count
-            
-            if risky_count > 0:
-                assets_with_risky_ports += 1
+    stats = base_query.first()
+    
+    # Get counts by asset type
+    type_query = db.query(
+        Asset.asset_type,
+        func.count(Asset.id)
+    ).group_by(Asset.asset_type)
+    
+    if org_filter is not None:
+        type_query = type_query.filter(org_filter)
+    
+    by_type = {str(row[0].value): row[1] for row in type_query.all()}
+    
+    # Get counts by status
+    status_query = db.query(
+        Asset.status,
+        func.count(Asset.id)
+    ).group_by(Asset.status)
+    
+    if org_filter is not None:
+        status_query = status_query.filter(org_filter)
+    
+    by_status = {str(row[0].value): row[1] for row in status_query.all()}
+    
+    # Get port statistics (separate query for efficiency)
+    port_stats_query = db.query(
+        func.count(PortService.id).label('total_ports'),
+        func.sum(case((PortService.state == PortState.OPEN, 1), else_=0)).label('open_ports'),
+        func.sum(case((PortService.is_risky == True, 1), else_=0)).label('risky_ports'),
+        func.count(func.distinct(PortService.asset_id)).label('assets_with_ports'),
+    ).join(Asset, PortService.asset_id == Asset.id)
+    
+    if org_filter is not None:
+        port_stats_query = port_stats_query.filter(org_filter)
+    
+    port_stats = port_stats_query.first()
+    
+    # Count assets with risky ports
+    risky_assets_query = db.query(
+        func.count(func.distinct(PortService.asset_id))
+    ).join(Asset, PortService.asset_id == Asset.id).filter(
+        PortService.is_risky == True
+    )
+    
+    if org_filter is not None:
+        risky_assets_query = risky_assets_query.filter(org_filter)
+    
+    assets_with_risky_ports = risky_assets_query.scalar() or 0
     
     return {
-        "total": len(assets),
+        "total": stats.total or 0,
         "by_type": by_type,
         "by_status": by_status,
         "live": {
-            "live": live_count,
-            "not_live": not_live_count,
-            "not_probed": not_probed_count
+            "live": stats.live_count or 0,
+            "not_live": stats.not_live_count or 0,
+            "not_probed": stats.not_probed_count or 0
         },
         "scope": {
-            "in_scope": in_scope_count,
-            "out_of_scope": out_of_scope_count
+            "in_scope": stats.in_scope_count or 0,
+            "out_of_scope": stats.out_of_scope_count or 0
         },
-        "login_portals": with_login_portal,
+        "login_portals": stats.with_login_portal or 0,
         "ports": {
-            "total_ports": total_ports,
-            "open_ports": total_open_ports,
-            "risky_ports": total_risky_ports,
-            "assets_with_ports": assets_with_ports,
+            "total_ports": port_stats.total_ports or 0 if port_stats else 0,
+            "open_ports": port_stats.open_ports or 0 if port_stats else 0,
+            "risky_ports": port_stats.risky_ports or 0 if port_stats else 0,
+            "assets_with_ports": port_stats.assets_with_ports or 0 if port_stats else 0,
             "assets_with_risky_ports": assets_with_risky_ports
         }
     }
