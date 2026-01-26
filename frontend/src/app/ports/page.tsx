@@ -22,7 +22,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Network, Search, Download, Loader2, Filter } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Network, Search, Download, Loader2, Filter, AlertTriangle, MoreVertical, Bug, Flag } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate, downloadCSV } from '@/lib/utils';
@@ -30,14 +36,21 @@ import { formatDate, downloadCSV } from '@/lib/utils';
 interface PortResult {
   id: number;
   asset_id: number;
-  hostname: string;
-  ip_address: string;
+  hostname: string | null;
+  ip_address: string | null;
+  asset_value: string | null;
   port: number;
   protocol: string;
-  service?: string;
-  version?: string;
+  service_name?: string;
+  service_product?: string;
+  service_version?: string;
   state: string;
   banner?: string;
+  is_risky: boolean;
+  risk_reason?: string;
+  discovered_by?: string;
+  first_seen: string;
+  last_seen: string;
   created_at: string;
 }
 
@@ -47,6 +60,7 @@ export default function PortsPage() {
   const [search, setSearch] = useState('');
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [orgFilter, setOrgFilter] = useState<string>('all');
+  const [riskyFilter, setRiskyFilter] = useState<string>('all');
   const { toast } = useToast();
 
   const fetchData = async () => {
@@ -55,7 +69,8 @@ export default function PortsPage() {
       const [portsData, orgsData] = await Promise.all([
         api.getPorts({
           organization_id: orgFilter !== 'all' ? parseInt(orgFilter) : undefined,
-          limit: 100,
+          is_risky: riskyFilter === 'risky' ? true : riskyFilter === 'safe' ? false : undefined,
+          limit: 200,
         }),
         api.getOrganizations(),
       ]);
@@ -63,6 +78,7 @@ export default function PortsPage() {
       setPorts(portsData.items || portsData || []);
       setOrganizations(orgsData);
     } catch (error) {
+      console.error('Failed to fetch ports:', error);
       toast({
         title: 'Error',
         description: 'Failed to fetch port data',
@@ -75,19 +91,72 @@ export default function PortsPage() {
 
   useEffect(() => {
     fetchData();
-  }, [orgFilter]);
+  }, [orgFilter, riskyFilter]);
+
+  const handleCreateFinding = async (portId: number, severity: string) => {
+    try {
+      const response = await api.request(`/ports/${portId}/create-finding?severity=${severity}`, {
+        method: 'POST',
+      });
+      if (response.success) {
+        toast({
+          title: 'Finding Created',
+          description: response.message,
+        });
+        fetchData(); // Refresh to show updated risky status
+      } else {
+        toast({
+          title: 'Finding Exists',
+          description: response.message,
+          variant: 'default',
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to create finding',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleMarkRisky = async (portId: number) => {
+    const reason = prompt('Enter reason why this port is risky:');
+    if (!reason) return;
+    
+    try {
+      await api.request(`/ports/${portId}/mark-risky?reason=${encodeURIComponent(reason)}`, {
+        method: 'POST',
+      });
+      toast({
+        title: 'Port Marked as Risky',
+        description: 'The port has been flagged for attention.',
+      });
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to mark port as risky',
+        variant: 'destructive',
+      });
+    }
+  };
 
   const handleExport = () => {
     downloadCSV(
       ports.map((p) => ({
-        hostname: p.hostname,
-        ip_address: p.ip_address,
+        hostname: p.hostname || p.asset_value || '',
+        ip_address: p.ip_address || p.asset_value || '',
         port: p.port,
         protocol: p.protocol,
-        service: p.service || '',
-        version: p.version || '',
+        service: p.service_name || '',
+        product: p.service_product || '',
+        version: p.service_version || '',
         state: p.state,
-        created_at: p.created_at,
+        is_risky: p.is_risky ? 'Yes' : 'No',
+        risk_reason: p.risk_reason || '',
+        discovered_by: p.discovered_by || '',
+        last_seen: p.last_seen,
       })),
       'ports'
     );
@@ -99,10 +168,11 @@ export default function PortsPage() {
 
   const filteredPorts = ports.filter(
     (p) =>
-      p.hostname?.toLowerCase().includes(search.toLowerCase()) ||
-      p.ip_address?.includes(search) ||
+      (p.hostname?.toLowerCase() || '').includes(search.toLowerCase()) ||
+      (p.ip_address || '').includes(search) ||
+      (p.asset_value || '').toLowerCase().includes(search.toLowerCase()) ||
       p.port?.toString().includes(search) ||
-      p.service?.toLowerCase().includes(search.toLowerCase())
+      (p.service_name?.toLowerCase() || '').includes(search.toLowerCase())
   );
 
   const getStateColor = (state: string) => {
@@ -170,14 +240,14 @@ export default function PortsPage() {
         </div>
 
         {/* Port Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
           <Card className="p-4">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-green-500/10">
                 <Network className="h-5 w-5 text-green-500" />
               </div>
               <div>
-                <p className="text-2xl font-bold">{ports.filter((p) => p.state === 'open').length}</p>
+                <p className="text-2xl font-bold">{ports.filter((p) => p.state?.toUpperCase() === 'OPEN').length}</p>
                 <p className="text-sm text-muted-foreground">Open Ports</p>
               </div>
             </div>
@@ -189,7 +259,7 @@ export default function PortsPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold">
-                  {new Set(ports.map((p) => p.hostname)).size}
+                  {new Set(ports.map((p) => p.asset_value || p.hostname || p.ip_address)).size}
                 </p>
                 <p className="text-sm text-muted-foreground">Unique Hosts</p>
               </div>
@@ -202,20 +272,36 @@ export default function PortsPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold">
-                  {new Set(ports.map((p) => p.service).filter(Boolean)).size}
+                  {new Set(ports.map((p) => p.service_name).filter(Boolean)).size}
                 </p>
                 <p className="text-sm text-muted-foreground">Services</p>
               </div>
             </div>
           </Card>
-          <Card className="p-4">
+          <Card 
+            className={`p-4 cursor-pointer hover:border-red-500/40 transition-colors ${riskyFilter === 'risky' ? 'ring-2 ring-red-500' : ''}`}
+            onClick={() => setRiskyFilter(riskyFilter === 'risky' ? 'all' : 'risky')}
+          >
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-red-500/10">
-                <Network className="h-5 w-5 text-red-500" />
+                <AlertTriangle className="h-5 w-5 text-red-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold">
-                  {ports.filter((p) => [21, 22, 23, 3389, 5900].includes(p.port)).length}
+                  {ports.filter((p) => p.is_risky).length}
+                </p>
+                <p className="text-sm text-muted-foreground">Risky Ports</p>
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-purple-500/10">
+                <Network className="h-5 w-5 text-purple-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">
+                  {ports.filter((p) => [21, 22, 23, 3389, 5900, 3306, 5432, 27017, 6379].includes(p.port)).length}
                 </p>
                 <p className="text-sm text-muted-foreground">Critical Ports</p>
               </div>
@@ -229,48 +315,94 @@ export default function PortsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Host</TableHead>
-                <TableHead>IP Address</TableHead>
                 <TableHead>Port</TableHead>
                 <TableHead>Protocol</TableHead>
                 <TableHead>Service</TableHead>
-                <TableHead>Version</TableHead>
+                <TableHead>Product / Version</TableHead>
                 <TableHead>State</TableHead>
-                <TableHead>Discovered</TableHead>
+                <TableHead>Risk</TableHead>
+                <TableHead>Last Seen</TableHead>
+                <TableHead className="w-[60px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8">
+                  <TableCell colSpan={9} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : filteredPorts.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                     No port scan results found. Run a port scan to discover services.
                   </TableCell>
                 </TableRow>
               ) : (
                 filteredPorts.map((port) => (
                   <TableRow key={port.id} className={getServiceColor(port.port)}>
-                    <TableCell className="font-medium">{port.hostname}</TableCell>
-                    <TableCell className="font-mono text-sm">{port.ip_address}</TableCell>
+                    <TableCell className="font-medium">
+                      <div className="flex flex-col">
+                        <span>{port.hostname || port.asset_value || port.ip_address || '-'}</span>
+                        {port.hostname && port.ip_address && port.hostname !== port.ip_address && (
+                          <span className="text-xs text-muted-foreground font-mono">{port.ip_address}</span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="font-mono">
                         {port.port}
                       </Badge>
                     </TableCell>
                     <TableCell className="uppercase text-xs">{port.protocol}</TableCell>
-                    <TableCell>{port.service || '-'}</TableCell>
+                    <TableCell>{port.service_name || '-'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">
-                      {port.version || '-'}
+                      {port.service_product || port.service_version 
+                        ? `${port.service_product || ''} ${port.service_version || ''}`.trim()
+                        : '-'}
                     </TableCell>
                     <TableCell>
                       <Badge className={getStateColor(port.state)}>{port.state}</Badge>
                     </TableCell>
+                    <TableCell>
+                      {port.is_risky ? (
+                        <Badge className="bg-red-500/20 text-red-400" title={port.risk_reason}>
+                          <AlertTriangle className="h-3 w-3 mr-1" />
+                          Risky
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">-</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      {formatDate(port.created_at)}
+                      {formatDate(port.last_seen)}
+                    </TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => handleCreateFinding(port.id, 'critical')}>
+                            <Bug className="h-4 w-4 mr-2 text-red-500" />
+                            Create Critical Finding
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleCreateFinding(port.id, 'high')}>
+                            <Bug className="h-4 w-4 mr-2 text-orange-500" />
+                            Create High Finding
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleCreateFinding(port.id, 'medium')}>
+                            <Bug className="h-4 w-4 mr-2 text-yellow-500" />
+                            Create Medium Finding
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleMarkRisky(port.id)}>
+                            <Flag className="h-4 w-4 mr-2 text-red-500" />
+                            Mark as Risky
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </TableCell>
                   </TableRow>
                 ))

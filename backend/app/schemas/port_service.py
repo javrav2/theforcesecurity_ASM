@@ -79,6 +79,11 @@ class PortServiceResponse(PortServiceBase):
     risk_reason: Optional[str] = None
     tags: List[str] = []
     
+    # Asset info (populated by API)
+    hostname: Optional[str] = None
+    ip_address: Optional[str] = None
+    asset_value: Optional[str] = None
+    
     # Computed fields
     port_string: str = ""
     display_name: str = ""

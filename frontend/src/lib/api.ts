@@ -747,7 +747,16 @@ class ApiClient {
   }
 
   // Ports
-  async getPorts(params?: { organization_id?: number; asset_id?: number; skip?: number; limit?: number }) {
+  async getPorts(params?: { 
+    organization_id?: number; 
+    asset_id?: number; 
+    skip?: number; 
+    limit?: number;
+    is_risky?: boolean;
+    state?: string;
+    port?: number;
+    service?: string;
+  }) {
     const response = await this.client.get('/ports/', { params });
     return response.data;
   }

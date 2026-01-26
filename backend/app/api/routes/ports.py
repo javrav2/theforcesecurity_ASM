@@ -59,6 +59,7 @@ def check_org_access(user: User, org_id: int) -> bool:
 @router.get("/", response_model=List[PortServiceResponse])
 def list_port_services(
     asset_id: Optional[int] = None,
+    organization_id: Optional[int] = None,
     port: Optional[int] = None,
     protocol: Optional[Protocol] = None,
     service: Optional[str] = None,
@@ -73,7 +74,9 @@ def list_port_services(
     query = db.query(PortService).join(Asset)
     
     # Organization filter
-    if not current_user.is_superuser:
+    if current_user.is_superuser and organization_id:
+        query = query.filter(Asset.organization_id == organization_id)
+    elif not current_user.is_superuser:
         if not current_user.organization_id:
             return []
         query = query.filter(Asset.organization_id == current_user.organization_id)
@@ -92,14 +95,49 @@ def list_port_services(
     if is_risky is not None:
         query = query.filter(PortService.is_risky == is_risky)
     
-    ports = query.order_by(PortService.port).offset(skip).limit(limit).all()
+    ports = query.order_by(PortService.last_seen.desc()).offset(skip).limit(limit).all()
     
-    # Add computed fields
+    # Add computed fields and asset info
+    results = []
     for p in ports:
-        p.port_string = p.port_string
-        p.display_name = p.display_name
+        # Build response with asset info
+        response = PortServiceResponse(
+            id=p.id,
+            asset_id=p.asset_id,
+            port=p.port,
+            protocol=p.protocol,
+            service_name=p.service_name,
+            service_product=p.service_product,
+            service_version=p.service_version,
+            service_extra_info=p.service_extra_info,
+            cpe=p.cpe,
+            banner=p.banner,
+            state=p.state,
+            reason=p.reason,
+            discovered_by=p.discovered_by,
+            first_seen=p.first_seen or datetime.utcnow(),
+            last_seen=p.last_seen or datetime.utcnow(),
+            is_ssl=p.is_ssl or False,
+            ssl_version=p.ssl_version,
+            ssl_cipher=p.ssl_cipher,
+            ssl_cert_subject=p.ssl_cert_subject,
+            ssl_cert_issuer=p.ssl_cert_issuer,
+            ssl_cert_expiry=p.ssl_cert_expiry,
+            is_risky=p.is_risky or False,
+            risk_reason=p.risk_reason,
+            tags=p.tags or [],
+            port_string=p.port_string,
+            display_name=p.display_name,
+            created_at=p.created_at or datetime.utcnow(),
+            updated_at=p.updated_at or datetime.utcnow(),
+            # Add asset info
+            hostname=p.asset.name if p.asset else None,
+            ip_address=p.asset.value if p.asset else None,
+            asset_value=p.asset.value if p.asset else None,
+        )
+        results.append(response)
     
-    return ports
+    return results
 
 
 @router.post("/", response_model=PortServiceResponse, status_code=status.HTTP_201_CREATED)
@@ -278,6 +316,147 @@ def delete_port_service(
     db.commit()
     
     return None
+
+
+@router.post("/{port_id}/create-finding")
+def create_finding_from_port(
+    port_id: int,
+    severity: str = Query("medium", description="Finding severity: critical, high, medium, low, info"),
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Create a security finding from a specific port.
+    
+    Allows analysts to manually flag a port as a security issue
+    when automated rules don't catch it.
+    """
+    from app.models.finding import Finding, Severity, FindingStatus
+    
+    port_service = db.query(PortService).filter(PortService.id == port_id).first()
+    
+    if not port_service:
+        raise HTTPException(status_code=404, detail="Port service not found")
+    
+    asset = db.query(Asset).filter(Asset.id == port_service.asset_id).first()
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Map severity string to enum
+    severity_map = {
+        "critical": Severity.CRITICAL,
+        "high": Severity.HIGH,
+        "medium": Severity.MEDIUM,
+        "low": Severity.LOW,
+        "info": Severity.INFO,
+    }
+    finding_severity = severity_map.get(severity.lower(), Severity.MEDIUM)
+    
+    # Generate title if not provided
+    if not title:
+        service_name = port_service.service_name or "Unknown service"
+        title = f"Exposed {service_name} on port {port_service.port}/{port_service.protocol.value}"
+    
+    # Generate description if not provided
+    if not description:
+        description = f"""An exposed service was manually flagged for review.
+
+**Asset:** {asset.value}
+**Port:** {port_service.port}/{port_service.protocol.value}
+**Service:** {port_service.service_name or 'Unknown'}
+**Product:** {port_service.service_product or 'Unknown'}
+**Version:** {port_service.service_version or 'Unknown'}
+**State:** {port_service.state.value}
+
+This port was flagged by an analyst as potentially risky and requires review."""
+    
+    # Check for existing finding for this port
+    existing = db.query(Finding).filter(
+        Finding.asset_id == asset.id,
+        Finding.metadata_.contains({"port": port_service.port}),
+        Finding.status != FindingStatus.RESOLVED
+    ).first()
+    
+    if existing:
+        return {
+            "success": False,
+            "message": f"Finding already exists for this port (ID: {existing.id})",
+            "finding_id": existing.id,
+            "duplicate": True
+        }
+    
+    # Create the finding
+    finding = Finding(
+        title=title,
+        description=description,
+        severity=finding_severity,
+        status=FindingStatus.OPEN,
+        finding_type="exposed_port",
+        asset_id=asset.id,
+        organization_id=asset.organization_id,
+        source="manual",
+        metadata_={
+            "port": port_service.port,
+            "protocol": port_service.protocol.value,
+            "service": port_service.service_name,
+            "product": port_service.service_product,
+            "version": port_service.service_version,
+            "port_service_id": port_service.id,
+            "created_by": current_user.username,
+        },
+        remediation=f"Review if port {port_service.port} ({port_service.service_name or 'unknown service'}) should be exposed. If not needed, disable the service or restrict access via firewall rules.",
+        cwe_id="CWE-200",
+        tags=["exposed-port", "manual-finding"],
+    )
+    
+    db.add(finding)
+    
+    # Mark the port as risky
+    port_service.is_risky = True
+    port_service.risk_reason = f"Manually flagged - {severity} severity"
+    
+    db.commit()
+    db.refresh(finding)
+    
+    return {
+        "success": True,
+        "message": f"Finding created for port {port_service.port}",
+        "finding_id": finding.id,
+        "finding_title": finding.title,
+        "severity": finding.severity.value,
+    }
+
+
+@router.post("/{port_id}/mark-risky")
+def mark_port_as_risky(
+    port_id: int,
+    reason: str = Query(..., description="Reason why this port is risky"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """Mark a port as risky without creating a full finding."""
+    port_service = db.query(PortService).filter(PortService.id == port_id).first()
+    
+    if not port_service:
+        raise HTTPException(status_code=404, detail="Port service not found")
+    
+    asset = db.query(Asset).filter(Asset.id == port_service.asset_id).first()
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    port_service.is_risky = True
+    port_service.risk_reason = reason
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": f"Port {port_service.port} marked as risky",
+        "port_id": port_id,
+        "risk_reason": reason
+    }
 
 
 # ==================== REPORTING ENDPOINTS ====================
