@@ -49,19 +49,19 @@ class ScanResponse(ScanBase):
     targets: List[str] = []
     config: dict[str, Any] = {}
     status: ScanStatus
-    progress: int
-    assets_discovered: int
-    technologies_found: int
-    vulnerabilities_found: int
-    targets_count: int = 0
-    findings_count: int = 0
+    progress: Optional[int] = 0
+    assets_discovered: Optional[int] = 0
+    technologies_found: Optional[int] = 0
+    vulnerabilities_found: Optional[int] = 0
+    targets_count: Optional[int] = 0
+    findings_count: Optional[int] = 0
     started_by: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
-    results: dict[str, Any] = {}
-    created_at: datetime
-    updated_at: datetime
+    results: Optional[dict[str, Any]] = {}
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True

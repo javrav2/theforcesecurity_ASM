@@ -438,8 +438,11 @@ class PortScannerService:
                 )
             except asyncio.TimeoutError:
                 scan_timeout = max(300, timeout * len(targets) + 60)
-                process.kill()
-                await process.wait()
+                try:
+                    process.kill()
+                    await process.wait()
+                except ProcessLookupError:
+                    pass  # Process already terminated
                 result.errors.append(f"Scan timed out after {scan_timeout}s")
                 return result
             
