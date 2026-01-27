@@ -574,21 +574,33 @@ class ScannerWorker:
                 **scan_kwargs
             )
             
-            # Import results
-            import_summary = self.port_scanner_service.import_results_to_assets(
-                db=db,
-                scan_result=result,
-                organization_id=organization_id,
-                create_assets=True
-            )
+            logger.info(f"Scan {scan_id}: masscan/naabu completed with {len(result.ports_found)} ports found")
+            
+            # Import results with error handling
+            try:
+                import_summary = self.port_scanner_service.import_results_to_assets(
+                    db=db,
+                    scan_result=result,
+                    organization_id=organization_id,
+                    create_assets=True
+                )
+                logger.info(f"Scan {scan_id}: imported {import_summary.get('ports_imported', 0)} ports")
+            except Exception as import_error:
+                logger.error(f"Scan {scan_id}: import_results_to_assets failed: {import_error}", exc_info=True)
+                import_summary = {"ports_imported": 0, "ports_updated": 0, "errors": [str(import_error)]}
             
             # Generate findings from port scan results
-            findings_service = PortFindingsService()
-            findings_summary = findings_service.create_findings_from_scan(
-                db=db,
-                organization_id=organization_id,
-                scan_id=scan_id
-            )
+            try:
+                findings_service = PortFindingsService()
+                findings_summary = findings_service.create_findings_from_scan(
+                    db=db,
+                    organization_id=organization_id,
+                    scan_id=scan_id
+                )
+                logger.info(f"Scan {scan_id}: created {findings_summary.get('findings_created', 0)} findings")
+            except Exception as findings_error:
+                logger.error(f"Scan {scan_id}: create_findings_from_scan failed: {findings_error}", exc_info=True)
+                findings_summary = {"findings_created": 0, "by_severity": {}}
             
             # Calculate unique live hosts (assets discovered)
             unique_hosts = set()
@@ -723,13 +735,20 @@ class ScannerWorker:
                 
                 db.commit()
             
-            logger.info(
-                f"Port scan complete: {len(result.ports_found)} ports, "
-                f"{findings_summary.get('findings_created', 0)} findings"
-            )
+            # Commit the scan results BEFORE any additional processing
+            try:
+                db.commit()
+                logger.info(
+                    f"Port scan {scan_id} complete: {len(result.ports_found)} ports, "
+                    f"{findings_summary.get('findings_created', 0)} findings"
+                )
+            except Exception as commit_error:
+                logger.error(f"Scan {scan_id}: Failed to commit results: {commit_error}", exc_info=True)
+                db.rollback()
+                raise
             
         except Exception as e:
-            logger.error(f"Port scan failed: {e}", exc_info=True)
+            logger.error(f"Port scan {scan_id} failed: {e}", exc_info=True)
             if db and scan_id:
                 scan = db.query(Scan).filter(Scan.id == scan_id).first()
                 if scan:
