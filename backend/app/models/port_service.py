@@ -66,6 +66,9 @@ class PortService(Base):
     asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
     asset = relationship("Asset", back_populates="port_services")
     
+    # IP address where port was discovered (important when asset is a domain)
+    scanned_ip = Column(String(45), nullable=True)  # The actual IP address where the port was found
+    
     # Discovery info
     discovered_by = Column(String(100), nullable=True)  # Scanner that found this (naabu, nmap, etc.)
     first_seen = Column(DateTime, default=datetime.utcnow)

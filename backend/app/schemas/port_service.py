@@ -25,6 +25,7 @@ class PortServiceCreate(PortServiceBase):
     state: PortState = PortState.OPEN
     reason: Optional[str] = None
     discovered_by: Optional[str] = None
+    scanned_ip: Optional[str] = None  # IP where port was discovered
     is_ssl: bool = False
     ssl_version: Optional[str] = None
     ssl_cipher: Optional[str] = None
@@ -79,6 +80,9 @@ class PortServiceResponse(PortServiceBase):
     risk_reason: Optional[str] = None
     tags: List[str] = []
     
+    # IP where port was discovered (important for domain assets)
+    scanned_ip: Optional[str] = None
+    
     # Asset info (populated by API)
     hostname: Optional[str] = None
     ip_address: Optional[str] = None
@@ -111,6 +115,7 @@ class PortServiceSummary(BaseModel):
     state: str
     is_ssl: bool = False
     is_risky: bool = False
+    scanned_ip: Optional[str] = None  # IP where port was found
 
 
 # ==================== REPORTING SCHEMAS ====================

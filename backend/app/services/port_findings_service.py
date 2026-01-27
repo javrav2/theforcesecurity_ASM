@@ -686,6 +686,11 @@ class PortFindingsService:
         
         # Build description with context
         description = rule.description
+        
+        # Include IP address where port was found (important for domain assets)
+        if port_service.scanned_ip:
+            description += f"\n\n**Found at IP:** {port_service.scanned_ip}"
+        
         if port_service.service_name:
             description += f"\n\nDetected service: {port_service.service_name}"
         if port_service.service_product:
@@ -695,6 +700,27 @@ class PortFindingsService:
             description += ")"
         if port_service.banner:
             description += f"\n\nBanner: {port_service.banner[:500]}"
+        
+        # Build evidence with IP information
+        evidence_parts = [f"Port {port_service.port}/{port_service.protocol.value} is in {port_service.state.value} state"]
+        if port_service.scanned_ip:
+            evidence_parts.append(f"Detected on IP: {port_service.scanned_ip}")
+        if port_service.asset:
+            evidence_parts.append(f"Asset: {port_service.asset.value}")
+        evidence = ". ".join(evidence_parts)
+        
+        # Build metadata including IP
+        metadata = {
+            "port": port_service.port,
+            "protocol": port_service.protocol.value,
+            "state": port_service.state.value,
+            "service": port_service.service_name,
+            "product": port_service.service_product,
+            "version": port_service.service_version,
+            "discovered_by": port_service.discovered_by
+        }
+        if port_service.scanned_ip:
+            metadata["scanned_ip"] = port_service.scanned_ip
         
         # Create finding
         finding = Vulnerability(
@@ -708,16 +734,8 @@ class PortFindingsService:
             cwe_id=rule.cwe_id,
             remediation=rule.remediation,
             tags=rule.tags + [f"port:{port_service.port}"],
-            evidence=f"Port {port_service.port}/{port_service.protocol.value} is in {port_service.state.value} state",
-            metadata_={
-                "port": port_service.port,
-                "protocol": port_service.protocol.value,
-                "state": port_service.state.value,
-                "service": port_service.service_name,
-                "product": port_service.service_product,
-                "version": port_service.service_version,
-                "discovered_by": port_service.discovered_by
-            }
+            evidence=evidence,
+            metadata_=metadata
         )
         
         db.add(finding)

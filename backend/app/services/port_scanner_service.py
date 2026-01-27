@@ -1375,9 +1375,17 @@ class PortScannerService:
             if asset:
                 host_result["asset_id"] = asset.id
                 
+                # Track IPs discovered for this asset (for domain assets)
+                discovered_ips = set()
+                
                 # Import ports for this host
                 for port_result in ports:
                     try:
+                        # Track the IP where port was found
+                        scanned_ip = port_result.ip if port_result.ip != port_result.host else None
+                        if scanned_ip:
+                            discovered_ips.add(scanned_ip)
+                        
                         # Check for existing port
                         existing = db.query(PortService).filter(
                             PortService.asset_id == asset.id,
@@ -1389,6 +1397,8 @@ class PortScannerService:
                             # Update existing
                             existing.last_seen = datetime.utcnow()
                             existing.state = PortState.OPEN
+                            if scanned_ip:
+                                existing.scanned_ip = scanned_ip
                             if port_result.service_name:
                                 existing.service_name = port_result.service_name
                             if port_result.service_product:
@@ -1403,12 +1413,34 @@ class PortScannerService:
                         else:
                             # Create new
                             port_data = port_result.to_port_service_dict(asset.id)
+                            # Add scanned_ip to port data
+                            port_data["scanned_ip"] = scanned_ip
                             port_service = PortService(**port_data)
                             db.add(port_service)
                             summary["ports_imported"] += 1
                             
                     except Exception as e:
                         summary["errors"].append(f"Error importing {host}:{port_result.port}: {e}")
+                
+                # Update asset's IP addresses if this is a domain asset and we have IPs
+                if discovered_ips and asset.asset_type in [AssetType.DOMAIN, AssetType.SUBDOMAIN]:
+                    try:
+                        asset.update_ip_addresses(list(discovered_ips))
+                        logger.info(f"Updated IP addresses for {asset.value}: {discovered_ips}")
+                    except Exception as e:
+                        logger.warning(f"Failed to update IP addresses for {asset.value}: {e}")
+                
+                # Run device inference to update system_type based on discovered services
+                try:
+                    from app.services.device_inference_service import get_device_inference_service
+                    db.flush()  # Ensure ports are persisted
+                    db.refresh(asset)  # Reload asset with new ports
+                    inference_service = get_device_inference_service()
+                    inference = inference_service.update_asset_device_info(db, asset)
+                    if inference.system_type:
+                        logger.info(f"Inferred device type for {asset.value}: {inference.system_type}")
+                except Exception as e:
+                    logger.warning(f"Device inference failed for {asset.value}: {e}")
             else:
                 summary["errors"].append(f"No asset found/created for {host}")
             

@@ -81,6 +81,7 @@ interface PortService {
   is_ssl: boolean;
   is_risky: boolean;
   port_string: string;
+  scanned_ip?: string;  // IP address where port was found
 }
 
 interface DiscoveryStep {
@@ -1448,6 +1449,7 @@ export default function AssetDetailPage() {
                     <TableHead>Port</TableHead>
                     <TableHead>Protocol</TableHead>
                     <TableHead>Service</TableHead>
+                    <TableHead>Found at IP</TableHead>
                     <TableHead>Product</TableHead>
                     <TableHead>Version</TableHead>
                     <TableHead>State</TableHead>
@@ -1464,6 +1466,9 @@ export default function AssetDetailPage() {
                           {port.service || '—'}
                             {port.is_ssl && <Lock className="h-3 w-3 text-green-400" />}
                         </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-sm text-blue-400">
+                        {port.scanned_ip || asset.ip_address || '—'}
                       </TableCell>
                       <TableCell>{port.product || '—'}</TableCell>
                       <TableCell className="font-mono text-sm">{port.version || '—'}</TableCell>
