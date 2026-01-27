@@ -2395,34 +2395,50 @@ class RemediationPlaybookService:
     }
     
     # Template/Tag pattern to playbook mapping (for Nuclei templates without CWE)
+    # More specific patterns should come FIRST to avoid false matches
+    # Order matters - check specific patterns before generic ones
     TEMPLATE_PATTERN_MAP = {
-        # Config exposure patterns
-        "config": "vuln-info-exposure",
-        "exposure": "vuln-info-exposure",
-        "exposed": "vuln-info-exposure",
-        "disclosure": "vuln-info-exposure",
-        "leak": "vuln-info-exposure",
-        # Git/Source code
+        # Security headers - MUST be checked before generic "exposure"
+        "http-missing-security-headers": "vuln-security-headers",
+        "missing-security-headers": "vuln-security-headers",
+        "missing-header": "vuln-security-headers",
+        "security-header": "vuln-security-headers",
+        "x-frame-options": "vuln-security-headers",
+        "content-security-policy": "vuln-security-headers",
+        "strict-transport-security": "vuln-security-headers",
+        "x-content-type-options": "vuln-security-headers",
+        "cross-origin": "vuln-security-headers",
+        
+        # Git/Source code - specific before generic
         "git-config": "vuln-git-exposure",
         ".git": "vuln-git-exposure",
         "git-exposure": "vuln-git-exposure",
         "svn": "vuln-git-exposure",
+        
         # Backup files
         "backup": "vuln-backup-exposure",
         ".bak": "vuln-backup-exposure",
+        
         # Directory listing
         "directory-listing": "vuln-directory-listing",
         "dir-listing": "vuln-directory-listing",
+        
         # Default credentials
         "default-login": "vuln-default-credentials",
         "default-credential": "vuln-default-credentials",
         "default-password": "vuln-default-credentials",
-        # Security headers
-        "missing-header": "vuln-security-headers",
-        "security-header": "vuln-security-headers",
+        
         # Redirect
         "redirect": "vuln-open-redirect",
         "open-redirect": "vuln-open-redirect",
+        
+        # Generic exposure patterns - LAST to avoid false positives
+        "config-exposure": "vuln-info-exposure",
+        "file-exposure": "vuln-info-exposure",
+        "disclosure": "vuln-info-exposure",
+        "leak": "vuln-info-exposure",
+        # Note: removed "config", "exposure", "exposed" as they're too generic
+        # and cause false positives with security headers and other findings
     }
     
     @classmethod
@@ -2466,19 +2482,22 @@ class RemediationPlaybookService:
             if cwe_id.lower() in cls.CWE_TO_PLAYBOOK_MAP:
                 return REMEDIATION_PLAYBOOKS.get(cls.CWE_TO_PLAYBOOK_MAP[cwe_id.lower()])
         
+        # Try template ID pattern matching FIRST (most specific for Nuclei templates)
+        # This should match before generic tag patterns
+        if template_id:
+            template_lower = template_id.lower()
+            for pattern, playbook_id in cls.TEMPLATE_PATTERN_MAP.items():
+                if pattern in template_lower:
+                    return REMEDIATION_PLAYBOOKS.get(playbook_id)
+        
         # Try port match
         if port and port in cls.PORT_TO_PLAYBOOK_MAP:
             return REMEDIATION_PLAYBOOKS.get(cls.PORT_TO_PLAYBOOK_MAP[port])
         
-        # Try tag match
+        # Try tag match (after template ID to avoid generic tag false positives)
         if tags:
             for tag in tags:
                 tag_lower = tag.lower()
-                
-                # Check against template pattern map first
-                for pattern, playbook_id in cls.TEMPLATE_PATTERN_MAP.items():
-                    if pattern in tag_lower:
-                        return REMEDIATION_PLAYBOOKS.get(playbook_id)
                 
                 # IT services
                 if "ssh" in tag_lower:
@@ -2496,6 +2515,9 @@ class RemediationPlaybookService:
                     return REMEDIATION_PLAYBOOKS.get("vuln-xss")
                 if "lfi" in tag_lower or "path-traversal" in tag_lower or "traversal" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("vuln-path-traversal")
+                # Security headers
+                if "security-header" in tag_lower or "missing-header" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("vuln-security-headers")
                 # OT/ICS
                 if "modbus" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
@@ -2511,13 +2533,6 @@ class RemediationPlaybookService:
                     return REMEDIATION_PLAYBOOKS.get("exposed-opc-ua")
                 if "ot" in tag_lower or "ics" in tag_lower or "scada" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
-        
-        # Try template ID pattern matching (for Nuclei templates)
-        if template_id:
-            template_lower = template_id.lower()
-            for pattern, playbook_id in cls.TEMPLATE_PATTERN_MAP.items():
-                if pattern in template_lower:
-                    return REMEDIATION_PLAYBOOKS.get(playbook_id)
         
         # If this is a CVE-based finding, return generic upgrade playbook
         if cve_id or (template_id and "cve" in template_id.lower()):
