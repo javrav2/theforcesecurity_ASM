@@ -545,27 +545,29 @@ class ScannerWorker:
             }
             selected_scanner = scanner_type_map.get(scanner, ScannerType.NAABU)
             
-            # Run port scan with reliability options
+            # Run port scan with scanner-specific options
+            # Base kwargs that all scanners accept
             scan_kwargs = {
                 "targets": targets, 
                 "ports": ports,
-                "rate": rate,
-                "timeout": timeout,
             }
             
             # Add scanner-specific options
             if selected_scanner == ScannerType.NAABU:
+                scan_kwargs["rate"] = rate
+                scan_kwargs["timeout"] = timeout
                 scan_kwargs["retries"] = retries
                 scan_kwargs["chunk_size"] = chunk_size
                 scan_kwargs["top_ports"] = top_ports
                 scan_kwargs["exclude_cdn"] = exclude_cdn
-                # Note: exclude_ports and scan_type would need naabu service updates
             elif selected_scanner == ScannerType.MASSCAN:
+                scan_kwargs["rate"] = rate
+                scan_kwargs["timeout"] = timeout
                 scan_kwargs["banner_grab"] = banner_grab
                 scan_kwargs["one_port_at_a_time"] = one_port_at_a_time
             elif selected_scanner == ScannerType.NMAP:
-                if service_detection:
-                    scan_kwargs["service_detection"] = service_detection
+                # Nmap doesn't use rate/timeout in the same way
+                scan_kwargs["service_detection"] = service_detection
             
             logger.info(f"Starting port scan with rate={rate}, timeout={timeout}, retries={retries}")
             
