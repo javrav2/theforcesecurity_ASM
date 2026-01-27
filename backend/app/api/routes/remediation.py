@@ -291,7 +291,6 @@ def get_remediation_workload(
         Vulnerability.status.in_([
             VulnerabilityStatus.OPEN,
             VulnerabilityStatus.IN_PROGRESS,
-            VulnerabilityStatus.REOPENED
         ])
     )
     
@@ -441,7 +440,6 @@ def get_prioritized_remediation_list(
         Vulnerability.status.in_([
             VulnerabilityStatus.OPEN,
             VulnerabilityStatus.IN_PROGRESS,
-            VulnerabilityStatus.REOPENED
         ])
     )
     
