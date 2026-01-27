@@ -174,7 +174,7 @@ class NucleiFindingsService:
         if create_assets and asset.id is None:
             result["asset_created"] = True
         
-        # Check for existing finding
+        # Check for existing finding on this asset
         existing = self._find_existing_vulnerability(asset.id, nuclei_result)
         
         if existing:
@@ -183,14 +183,43 @@ class NucleiFindingsService:
             result["updated"] = True
             result["vulnerability_id"] = existing.id
         else:
-            # Create new finding
-            vulnerability = self._create_vulnerability(
-                asset, nuclei_result, scan_id
+            # Check for duplicate on related assets (domain/IP deduplication)
+            from app.services.finding_deduplication_service import get_deduplication_service
+            dedup_service = get_deduplication_service(self.db)
+            
+            duplicate = dedup_service.find_duplicate_finding(
+                asset=asset,
+                template_id=nuclei_result.template_id,
+                cve_id=nuclei_result.cve_id,
+                include_related_assets=True
             )
-            self.db.add(vulnerability)
-            self.db.flush()
-            result["created"] = True
-            result["vulnerability_id"] = vulnerability.id
+            
+            if duplicate:
+                # Same vulnerability already exists on a related asset (e.g., domain's IP)
+                # Merge into existing finding instead of creating a new one
+                dedup_service.merge_finding_into_existing(
+                    existing=duplicate,
+                    new_asset=asset,
+                    new_evidence=nuclei_result.extracted_results,
+                    new_matched_at=nuclei_result.matched_at
+                )
+                result["updated"] = True
+                result["vulnerability_id"] = duplicate.id
+                result["deduplicated"] = True
+                result["duplicate_asset"] = duplicate.asset.value if duplicate.asset else None
+                logger.info(
+                    f"Deduplicated finding {nuclei_result.template_id} on {asset.value} - "
+                    f"already exists on related asset (finding #{duplicate.id})"
+                )
+            else:
+                # Create new finding
+                vulnerability = self._create_vulnerability(
+                    asset, nuclei_result, scan_id
+                )
+                self.db.add(vulnerability)
+                self.db.flush()
+                result["created"] = True
+                result["vulnerability_id"] = vulnerability.id
         
         # Add labels to asset
         if create_labels:

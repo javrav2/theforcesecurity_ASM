@@ -447,6 +447,158 @@ def get_vulnerability_exposure(
     }
 
 
+@router.get("/duplicates")
+def find_duplicate_findings(
+    organization_id: Optional[int] = None,
+    dry_run: bool = Query(True, description="If true, report but don't link duplicates"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Find and optionally link duplicate findings across related assets.
+    
+    This identifies cases where the same vulnerability exists on:
+    - A domain and its resolved IP address
+    - A subdomain and its parent domain
+    - Multiple assets that resolve to the same IP
+    
+    Useful for cleaning up WAF bypass scenarios where findings are
+    detected on both the domain (protected) and IP (unprotected).
+    """
+    from app.services.finding_deduplication_service import get_deduplication_service
+    
+    # Use organization from user if not specified
+    if organization_id is None and not current_user.is_superuser:
+        organization_id = current_user.organization_id
+    
+    if organization_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="organization_id is required for non-superuser users"
+        )
+    
+    dedup_service = get_deduplication_service(db)
+    result = dedup_service.deduplicate_findings_for_organization(
+        organization_id=organization_id,
+        dry_run=dry_run
+    )
+    
+    return {
+        "dry_run": dry_run,
+        "message": "Duplicate analysis complete" if dry_run else "Duplicates linked",
+        **result
+    }
+
+
+@router.get("/{vulnerability_id}/related")
+def get_related_findings(
+    vulnerability_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get findings related to this vulnerability (duplicates on related assets).
+    
+    Returns:
+    - Linked duplicate findings
+    - Findings on related assets with the same template_id
+    - The asset relationship (domain/IP, subdomain/parent, etc.)
+    """
+    from app.services.finding_deduplication_service import get_deduplication_service
+    
+    vuln = db.query(Vulnerability).filter(Vulnerability.id == vulnerability_id).first()
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found")
+    
+    if not vuln.asset:
+        return {
+            "vulnerability_id": vulnerability_id,
+            "related_findings": [],
+            "linked_findings": [],
+            "message": "No asset associated with this finding"
+        }
+    
+    # Get linked findings from metadata
+    linked_findings = []
+    if vuln.metadata_ and vuln.metadata_.get("linked_findings"):
+        for link in vuln.metadata_["linked_findings"]:
+            linked_vuln = db.query(Vulnerability).filter(
+                Vulnerability.id == link["finding_id"]
+            ).first()
+            if linked_vuln:
+                linked_findings.append({
+                    "id": linked_vuln.id,
+                    "title": linked_vuln.title,
+                    "severity": linked_vuln.severity.value if linked_vuln.severity else None,
+                    "asset_id": linked_vuln.asset_id,
+                    "asset_value": linked_vuln.asset.value if linked_vuln.asset else None,
+                    "relationship": link.get("relationship", "linked")
+                })
+    
+    # Also check if this finding is a duplicate of another
+    if vuln.metadata_ and vuln.metadata_.get("primary_finding_id"):
+        primary = db.query(Vulnerability).filter(
+            Vulnerability.id == vuln.metadata_["primary_finding_id"]
+        ).first()
+        if primary:
+            linked_findings.append({
+                "id": primary.id,
+                "title": primary.title,
+                "severity": primary.severity.value if primary.severity else None,
+                "asset_id": primary.asset_id,
+                "asset_value": primary.asset.value if primary.asset else None,
+                "relationship": "primary_finding"
+            })
+    
+    # Find related assets
+    dedup_service = get_deduplication_service(db)
+    related_assets = dedup_service.get_related_assets(vuln.asset)
+    
+    # Find similar findings on related assets
+    related_findings = []
+    if vuln.template_id and related_assets:
+        related_asset_ids = [a.id for a in related_assets]
+        similar = db.query(Vulnerability).filter(
+            Vulnerability.asset_id.in_(related_asset_ids),
+            Vulnerability.template_id == vuln.template_id,
+            Vulnerability.id != vulnerability_id
+        ).all()
+        
+        for v in similar:
+            related_findings.append({
+                "id": v.id,
+                "title": v.title,
+                "severity": v.severity.value if v.severity else None,
+                "asset_id": v.asset_id,
+                "asset_value": v.asset.value if v.asset else None,
+                "status": v.status.value if v.status else None
+            })
+    
+    # Get also_affects from metadata
+    also_affects = []
+    if vuln.metadata_ and vuln.metadata_.get("also_affects"):
+        also_affects = vuln.metadata_["also_affects"]
+    
+    return {
+        "vulnerability_id": vulnerability_id,
+        "template_id": vuln.template_id,
+        "asset": {
+            "id": vuln.asset.id,
+            "value": vuln.asset.value,
+            "type": vuln.asset.asset_type.value
+        },
+        "related_assets": [
+            {
+                "id": a.id,
+                "value": a.value,
+                "type": a.asset_type.value
+            }
+            for a in related_assets
+        ],
+        "linked_findings": linked_findings,
+        "related_findings": related_findings,
+        "also_affects": also_affects
+    }
 
 
 

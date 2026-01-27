@@ -615,16 +615,48 @@ class PortFindingsService:
         
         ports = query.all()
         
+        # Import deduplication service for cross-asset duplicate detection
+        from app.services.finding_deduplication_service import get_deduplication_service
+        dedup_service = get_deduplication_service(db)
+        
         for port_service in ports:
             for rule in self.rules:
                 if self._matches_rule(port_service, rule):
-                    # Check for existing finding
+                    # Check for existing finding on this asset
                     existing = self._find_existing(db, port_service, rule)
                     
                     if existing:
                         existing.last_detected = datetime.utcnow()
                         summary["findings_updated"] += 1
                     else:
+                        # Check for duplicate on related assets (domain/IP deduplication)
+                        if port_service.asset:
+                            duplicate = dedup_service.find_duplicate_finding(
+                                asset=port_service.asset,
+                                port=port_service.port,
+                                include_related_assets=True
+                            )
+                            
+                            if duplicate:
+                                # Same port finding exists on related asset
+                                ip_info = f" at IP {port_service.scanned_ip}" if port_service.scanned_ip else ""
+                                dedup_service.merge_finding_into_existing(
+                                    existing=duplicate,
+                                    new_asset=port_service.asset,
+                                    new_evidence=f"Port {port_service.port}/{port_service.protocol.value}{ip_info}",
+                                    new_matched_at=port_service.asset.value
+                                )
+                                summary["findings_updated"] += 1
+                                if "deduplicated" not in summary:
+                                    summary["deduplicated"] = 0
+                                summary["deduplicated"] += 1
+                                logger.info(
+                                    f"Deduplicated port {port_service.port} finding on {port_service.asset.value} - "
+                                    f"already exists on related asset (finding #{duplicate.id})"
+                                )
+                                continue
+                        
+                        # Create new finding
                         finding = self._create_finding(db, port_service, rule, scan_id)
                         summary["findings_created"] += 1
                         summary["by_severity"][rule.severity.value] += 1
