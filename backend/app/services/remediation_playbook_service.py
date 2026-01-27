@@ -1297,6 +1297,329 @@ _register_playbook(RemediationPlaybook(
 ))
 
 
+# -----------------------------------------------------------------------------
+# WEB VULNERABILITY PLAYBOOKS (CWE-based for Nuclei findings)
+# -----------------------------------------------------------------------------
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-ssrf",
+    title="Remediate Server-Side Request Forgery (SSRF)",
+    summary="SSRF allows attackers to make requests from your server to internal resources. Upgrade the affected software and implement request validation.",
+    priority=RemediationPriority.HIGH,
+    effort=RemediationEffort.MEDIUM,
+    estimated_time="2-4 hours",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Upgrade the vulnerable software immediately",
+            description="Most SSRF vulnerabilities are fixed in newer versions. Check the CVE details for the patched version.",
+            command="""# Check current version and upgrade:
+# For Keycloak: https://www.keycloak.org/downloads
+# For other software, check vendor security advisories
+
+# Docker example:
+docker pull jboss/keycloak:latest
+docker-compose up -d
+
+# Package manager example:
+apt update && apt upgrade <package-name>""",
+            notes="Always test upgrades in a staging environment first."
+        ),
+        RemediationStep(
+            order=2,
+            title="Implement URL validation and allowlisting",
+            description="If the feature requires external URLs, validate and restrict them to known-safe domains.",
+            command="""# Application-level fix - allowlist approach:
+ALLOWED_DOMAINS = ['api.trusted.com', 'cdn.trusted.com']
+
+def validate_url(url):
+    parsed = urlparse(url)
+    if parsed.hostname not in ALLOWED_DOMAINS:
+        raise ValueError("Domain not allowed")
+    if parsed.scheme not in ['https']:
+        raise ValueError("Only HTTPS allowed")
+    return url""",
+            notes="Blocklists are insufficient - attackers can bypass with DNS rebinding, IP encoding tricks, etc."
+        ),
+        RemediationStep(
+            order=3,
+            title="Block internal network access from web servers",
+            description="Use network segmentation to prevent web servers from reaching internal resources.",
+            command="""# Network-level controls:
+# 1. Web servers should not be able to reach internal metadata endpoints
+# 2. Block access to private IP ranges (10.x, 172.16.x, 192.168.x)
+# 3. Block cloud metadata endpoints (169.254.169.254)
+
+# AWS: Use IMDSv2 to protect metadata endpoint
+aws ec2 modify-instance-metadata-options --instance-id i-xxx --http-tokens required"""
+        ),
+        RemediationStep(
+            order=4,
+            title="Disable or restrict the vulnerable feature",
+            description="If the feature (like request_uri in OIDC) is not needed, disable it.",
+            command="""# Keycloak specific - disable request_uri:
+# In keycloak admin console, disable "Request Object Required"
+# Or configure client to not use request_uri
+
+# General: Disable unused features in security-sensitive applications"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Re-run the vulnerability scan",
+            expected_result="Vulnerability no longer detected",
+            command="nuclei -t CVE-xxx.yaml -u https://target.com",
+            automated=True
+        ),
+        VerificationStep(
+            order=2,
+            description="Test SSRF manually with internal targets",
+            expected_result="Requests to internal IPs should fail",
+            command="curl 'https://target.com/vuln-endpoint?url=http://169.254.169.254/'"
+        ),
+    ],
+    impact_if_not_fixed="SSRF can lead to internal network scanning, access to cloud metadata (credentials), and in some cases remote code execution.",
+    common_mistakes=[
+        "Only blocking localhost - attackers use 127.0.0.1, 0.0.0.0, IPv6, decimal IP notation",
+        "Using blocklists instead of allowlists",
+        "Not blocking cloud metadata endpoints (169.254.169.254)"
+    ],
+    references=[
+        "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery",
+        "https://portswigger.net/web-security/ssrf",
+    ],
+    related_cwe="CWE-918",
+    tags=["web", "ssrf", "nuclei", "cve"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-sqli",
+    title="Remediate SQL Injection Vulnerability",
+    summary="SQL injection allows attackers to execute arbitrary database queries. Use parameterized queries and upgrade affected software.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.MEDIUM,
+    estimated_time="2-8 hours",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Identify and patch the vulnerable component",
+            description="If this is a CVE in third-party software, upgrade to the patched version immediately.",
+            command="""# Check vendor advisories for patched versions
+# Apply security updates
+
+# For custom code, identify the vulnerable query:
+# Look for string concatenation in SQL queries"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Use parameterized queries",
+            description="Replace string concatenation with parameterized/prepared statements.",
+            command="""# WRONG - Vulnerable:
+query = f"SELECT * FROM users WHERE id = {user_input}"
+
+# CORRECT - Parameterized:
+cursor.execute("SELECT * FROM users WHERE id = %s", (user_input,))
+
+# Or use ORM:
+User.objects.filter(id=user_input)"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Implement input validation",
+            description="Validate and sanitize all user input as defense-in-depth.",
+            command="""# Validate input types and ranges:
+def validate_user_id(user_id):
+    if not isinstance(user_id, int):
+        raise ValueError("User ID must be integer")
+    if user_id < 0 or user_id > 999999999:
+        raise ValueError("User ID out of range")
+    return user_id"""
+        ),
+        RemediationStep(
+            order=4,
+            title="Apply least privilege to database accounts",
+            description="Ensure the application uses a database account with minimal permissions.",
+            command="""-- Create limited database user:
+CREATE USER 'app_user'@'localhost' IDENTIFIED BY 'password';
+GRANT SELECT, INSERT, UPDATE ON app_db.* TO 'app_user'@'localhost';
+-- Do NOT grant DELETE, DROP, or admin privileges"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Re-run vulnerability scan",
+            expected_result="SQL injection no longer detected",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="SQL injection can lead to complete database compromise, data theft, data modification, and potentially server takeover.",
+    common_mistakes=[
+        "Using blocklists to filter SQL characters (easily bypassed)",
+        "Only fixing the specific payload that was detected",
+        "Not reviewing similar code patterns throughout the application"
+    ],
+    references=[
+        "https://owasp.org/www-community/attacks/SQL_Injection",
+        "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html",
+    ],
+    related_cwe="CWE-89",
+    tags=["web", "sqli", "injection", "nuclei", "cve", "critical"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-xss",
+    title="Remediate Cross-Site Scripting (XSS)",
+    summary="XSS allows attackers to inject malicious scripts. Implement output encoding and Content Security Policy.",
+    priority=RemediationPriority.MEDIUM,
+    effort=RemediationEffort.LOW,
+    estimated_time="1-4 hours",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Upgrade vulnerable software",
+            description="If this is a CVE in third-party software, upgrade to the patched version.",
+            command="# Check vendor security advisories and apply patches"
+        ),
+        RemediationStep(
+            order=2,
+            title="Implement context-aware output encoding",
+            description="Encode all user-supplied data before including in HTML output.",
+            command="""# Use framework's built-in escaping:
+
+# Python/Jinja2:
+{{ user_input }}  # Auto-escaped in Jinja2
+
+# React:
+{userInput}  // Auto-escaped in JSX
+
+# PHP:
+echo htmlspecialchars($user_input, ENT_QUOTES, 'UTF-8');"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Implement Content Security Policy (CSP)",
+            description="Add CSP headers to prevent inline script execution.",
+            command="""# Nginx:
+add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'";
+
+# Apache:
+Header set Content-Security-Policy "default-src 'self'; script-src 'self'"
+
+# Application-level:
+response.headers['Content-Security-Policy'] = "default-src 'self'";"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Re-run vulnerability scan",
+            expected_result="XSS no longer detected",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="XSS can lead to session hijacking, credential theft, malware distribution, and defacement.",
+    common_mistakes=[
+        "Only encoding in some contexts but not others",
+        "Using innerHTML or dangerouslySetInnerHTML with user input"
+    ],
+    references=[
+        "https://owasp.org/www-community/attacks/xss/",
+        "https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html",
+    ],
+    related_cwe="CWE-79",
+    tags=["web", "xss", "injection", "nuclei", "cve"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-outdated-software",
+    title="Upgrade Outdated/Vulnerable Software",
+    summary="This software version has known security vulnerabilities. Upgrade to the latest patched version.",
+    priority=RemediationPriority.HIGH,
+    effort=RemediationEffort.MEDIUM,
+    estimated_time="1-4 hours",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Identify the current version and required update",
+            description="Check the CVE details to find which version fixes the vulnerability.",
+            command="""# Check current version:
+# Web apps: Look at response headers, /version endpoints, login pages
+# Servers: Check package version with apt/yum/brew
+
+# Find patched version:
+# - Check CVE details in NVD: https://nvd.nist.gov/vuln/detail/CVE-XXXX-XXXXX
+# - Check vendor security advisories
+# - Check GitHub security advisories"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Test upgrade in staging environment",
+            description="Before upgrading production, test the new version in a staging environment.",
+            command="""# Clone production environment
+# Apply the upgrade
+# Run integration tests
+# Verify application functionality"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Apply the upgrade to production",
+            description="Schedule a maintenance window and apply the upgrade.",
+            command="""# Docker:
+docker pull <image>:latest
+docker-compose up -d
+
+# Linux packages:
+apt update && apt upgrade <package>
+# or
+yum update <package>
+
+# Manual install:
+# Follow vendor upgrade documentation"""
+        ),
+        RemediationStep(
+            order=4,
+            title="Verify the upgrade and re-scan",
+            description="Confirm the new version is running and the vulnerability is resolved.",
+            command="""# Check version after upgrade
+# Re-run vulnerability scan to confirm fix
+nuclei -u https://target.com -t CVE-xxxx-xxxxx.yaml"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify new version is running",
+            expected_result="Updated version number displayed",
+            automated=False
+        ),
+        VerificationStep(
+            order=2,
+            description="Re-run vulnerability scan",
+            expected_result="CVE no longer detected",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Known vulnerabilities in outdated software are actively exploited by attackers. Exploit code is often publicly available.",
+    common_mistakes=[
+        "Upgrading without testing (breaking production)",
+        "Only upgrading the main package but not dependencies",
+        "Not checking for new vulnerabilities in the updated version"
+    ],
+    references=[
+        "https://nvd.nist.gov/",
+        "https://cve.mitre.org/",
+    ],
+    related_cwe="CWE-1104",
+    tags=["upgrade", "patch", "cve", "outdated", "nuclei"],
+))
+
+
 # =============================================================================
 # PLAYBOOK LOOKUP SERVICE
 # =============================================================================
@@ -1372,6 +1695,37 @@ class RemediationPlaybookService:
         """Get a specific playbook by ID."""
         return REMEDIATION_PLAYBOOKS.get(playbook_id)
     
+    # CWE to playbook mapping for vulnerability findings
+    CWE_TO_PLAYBOOK_MAP = {
+        # SSRF
+        "CWE-918": "vuln-ssrf",
+        "cwe-918": "vuln-ssrf",
+        # SQL Injection
+        "CWE-89": "vuln-sqli",
+        "cwe-89": "vuln-sqli",
+        # XSS
+        "CWE-79": "vuln-xss",
+        "cwe-79": "vuln-xss",
+        # Path Traversal
+        "CWE-22": "vuln-outdated-software",
+        "cwe-22": "vuln-outdated-software",
+        # Command Injection
+        "CWE-78": "vuln-sqli",  # Similar remediation pattern
+        "cwe-78": "vuln-sqli",
+        # Outdated software
+        "CWE-1104": "vuln-outdated-software",
+        "cwe-1104": "vuln-outdated-software",
+        # Authentication issues
+        "CWE-287": "exposed-admin-panel",
+        "cwe-287": "exposed-admin-panel",
+        # Missing encryption
+        "CWE-319": "missing-https",
+        "cwe-319": "missing-https",
+        # Access control
+        "CWE-284": "exposed-admin-panel",
+        "cwe-284": "exposed-admin-panel",
+    }
+    
     @classmethod
     def get_playbook_for_finding(
         cls,
@@ -1379,25 +1733,39 @@ class RemediationPlaybookService:
         template_id: Optional[str] = None,
         port: Optional[int] = None,
         tags: Optional[List[str]] = None,
+        cwe_id: Optional[str] = None,
+        cve_id: Optional[str] = None,
     ) -> Optional[RemediationPlaybook]:
         """
         Find the most relevant playbook for a finding.
         
-        Matches based on title, template ID, port, or tags.
+        Matches based on title, template ID, port, tags, CWE, or CVE.
         """
-        # Try title match first
+        # Try title match first (most specific)
         if title:
             title_lower = title.lower()
             for pattern, playbook_id in cls.FINDING_TO_PLAYBOOK_MAP.items():
                 if pattern in title_lower:
                     return REMEDIATION_PLAYBOOKS.get(playbook_id)
         
-        # Try template ID match
+        # Try template ID match (for Nuclei findings)
         if template_id:
             template_lower = template_id.lower()
             for pattern, playbook_id in cls.FINDING_TO_PLAYBOOK_MAP.items():
                 if pattern in template_lower:
                     return REMEDIATION_PLAYBOOKS.get(playbook_id)
+        
+        # Try CWE match (for vulnerability type-based remediation)
+        if cwe_id:
+            cwe_normalized = cwe_id.upper().replace("_", "-")
+            if not cwe_normalized.startswith("CWE-"):
+                cwe_normalized = f"CWE-{cwe_normalized}"
+            
+            if cwe_normalized in cls.CWE_TO_PLAYBOOK_MAP:
+                return REMEDIATION_PLAYBOOKS.get(cls.CWE_TO_PLAYBOOK_MAP[cwe_normalized])
+            # Also try lowercase
+            if cwe_id.lower() in cls.CWE_TO_PLAYBOOK_MAP:
+                return REMEDIATION_PLAYBOOKS.get(cls.CWE_TO_PLAYBOOK_MAP[cwe_id.lower()])
         
         # Try port match
         if port and port in cls.PORT_TO_PLAYBOOK_MAP:
@@ -1414,6 +1782,13 @@ class RemediationPlaybookService:
                     return REMEDIATION_PLAYBOOKS.get("exposed-rdp")
                 if "mysql" in tag_lower or "database" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-mysql")
+                # Web vulnerabilities
+                if "ssrf" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("vuln-ssrf")
+                if "sqli" in tag_lower or "sql-injection" in tag_lower or "injection" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("vuln-sqli")
+                if "xss" in tag_lower or "cross-site" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("vuln-xss")
                 # OT/ICS
                 if "modbus" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
@@ -1428,7 +1803,11 @@ class RemediationPlaybookService:
                 if "opc-ua" in tag_lower or "opc ua" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-opc-ua")
                 if "ot" in tag_lower or "ics" in tag_lower or "scada" in tag_lower:
-                    return REMEDIATION_PLAYBOOKS.get("exposed-modbus")  # General OT playbook
+                    return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
+        
+        # If this is a CVE-based finding, return generic upgrade playbook
+        if cve_id or (template_id and "cve" in template_id.lower()):
+            return REMEDIATION_PLAYBOOKS.get("vuln-outdated-software")
         
         return None
     

@@ -117,18 +117,22 @@ def get_remediation_for_finding(
     title = finding.title
     template_id = finding.template_id
     tags = finding.tags or []
+    cwe_id = finding.cwe_id
+    cve_id = finding.cve_id
     
     # Try to extract port from metadata or evidence
     port = None
     if finding.metadata_:
         port = finding.metadata_.get("port")
     
-    # Find matching playbook
+    # Find matching playbook - includes CWE/CVE matching for Nuclei findings
     playbook = RemediationPlaybookService.get_playbook_for_finding(
         title=title,
         template_id=template_id,
         port=port,
         tags=tags,
+        cwe_id=cwe_id,
+        cve_id=cve_id,
     )
     
     if not playbook:
