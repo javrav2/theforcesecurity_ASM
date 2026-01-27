@@ -32,6 +32,10 @@ REDIS_PORT=6379
 # AWS Configuration (optional)
 AWS_REGION=us-east-1
 SQS_QUEUE_URL=
+
+# ProjectDiscovery Cloud (optional - for Chaos subdomain dataset)
+# Get API key at: https://cloud.projectdiscovery.io
+PDCP_API_KEY=
 ```
 
 ## Quick Setup

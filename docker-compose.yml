@@ -59,6 +59,8 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       # Common Crawl S3 Index (optional - for fast subdomain lookups)
       - CC_S3_BUCKET=${CC_S3_BUCKET:-}
+      # ProjectDiscovery Cloud API Key (optional - for Chaos subdomain dataset)
+      - PDCP_API_KEY=${PDCP_API_KEY:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -117,6 +119,8 @@ services:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      # ProjectDiscovery Cloud API Key (optional - for Chaos subdomain dataset)
+      - PDCP_API_KEY=${PDCP_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy

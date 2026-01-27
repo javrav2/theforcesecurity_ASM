@@ -221,8 +221,8 @@ TOOLS = {
         "name": "Chaos",
         "description": "ProjectDiscovery subdomain dataset for passive recon",
         "category": "passive",
-        "type": "api",
-        "service_name": "chaos",
+        "type": "env_api",  # Uses environment variable for API key
+        "env_key": "PDCP_API_KEY",
         "configured": False,
     },
     "certspotter": {
@@ -310,10 +310,19 @@ def check_cli_tool(tool_config: dict) -> dict:
 
 def check_api_tool(tool_config: dict, db: Session) -> dict:
     """Check if an API tool is configured."""
+    import os
     result = tool_config.copy()
     
     if tool_config.get("type") == "builtin":
         result["configured"] = True
+        return result
+    
+    # Check for environment variable based API keys (e.g., Chaos)
+    if tool_config.get("type") == "env_api":
+        env_key = tool_config.get("env_key")
+        if env_key:
+            api_key = os.environ.get(env_key, "")
+            result["configured"] = bool(api_key)
         return result
     
     service_name = tool_config.get("service_name")
@@ -364,7 +373,7 @@ def get_tools_status(
     # Calculate summary
     total = len(tools_status)
     installed_cli = sum(1 for t in tools_status.values() if t.get("type") == "cli" and t.get("installed"))
-    configured_api = sum(1 for t in tools_status.values() if t.get("type") in ["api", "builtin"] and t.get("configured"))
+    configured_api = sum(1 for t in tools_status.values() if t.get("type") in ["api", "builtin", "env_api"] and t.get("configured"))
     
     return {
         "summary": {
@@ -372,7 +381,7 @@ def get_tools_status(
             "cli_tools_installed": installed_cli,
             "cli_tools_total": sum(1 for t in tools_status.values() if t.get("type") == "cli"),
             "api_tools_configured": configured_api,
-            "api_tools_total": sum(1 for t in tools_status.values() if t.get("type") in ["api", "builtin"]),
+            "api_tools_total": sum(1 for t in tools_status.values() if t.get("type") in ["api", "builtin", "env_api"]),
         },
         "tools": tools_status,
         "by_category": by_category,

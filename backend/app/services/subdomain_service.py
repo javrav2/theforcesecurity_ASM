@@ -10,6 +10,8 @@ import dns.resolver
 import dns.exception
 import httpx
 
+from app.services.chaos_service import ChaosService, CHAOS_CONFIGURED
+
 logger = logging.getLogger(__name__)
 
 # Check if subfinder is available
@@ -83,14 +85,15 @@ class SubdomainResult:
 
 
 class SubdomainService:
-    """Service for subdomain enumeration using multiple sources including subfinder."""
+    """Service for subdomain enumeration using multiple sources including subfinder and Chaos."""
     
     def __init__(
         self,
         nameservers: Optional[list[str]] = None,
         timeout: float = 3.0,
         max_concurrent: int = 50,
-        use_subfinder: bool = True
+        use_subfinder: bool = True,
+        use_chaos: bool = True
     ):
         """
         Initialize subdomain service.
@@ -100,6 +103,7 @@ class SubdomainService:
             timeout: Query timeout in seconds
             max_concurrent: Maximum concurrent DNS queries
             use_subfinder: Whether to use subfinder if available
+            use_chaos: Whether to use Chaos if configured
         """
         self.resolver = dns.resolver.Resolver()
         self.resolver.timeout = timeout
@@ -113,11 +117,18 @@ class SubdomainService:
         self.max_concurrent = max_concurrent
         self.timeout = timeout
         self.use_subfinder = use_subfinder and SUBFINDER_AVAILABLE
+        self.use_chaos = use_chaos and CHAOS_CONFIGURED
+        self.chaos_service = ChaosService() if self.use_chaos else None
         
         if self.use_subfinder:
             logger.info("Subfinder is available and will be used for subdomain enumeration")
         else:
-            logger.info("Subfinder not available, using crt.sh and DNS brute-forcing only")
+            logger.info("Subfinder not available")
+        
+        if self.use_chaos:
+            logger.info("Chaos is configured and will be used for passive subdomain lookup")
+        else:
+            logger.info("Chaos not configured (set PDCP_API_KEY to enable)")
     
     async def enumerate_subdomains(
         self,
@@ -125,16 +136,18 @@ class SubdomainService:
         wordlist: Optional[list[str]] = None,
         use_crtsh: bool = True,
         use_subfinder: bool = True,
+        use_chaos: bool = True,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> list[SubdomainResult]:
         """
-        Enumerate subdomains using multiple techniques including subfinder.
+        Enumerate subdomains using multiple techniques including subfinder and Chaos.
         
         Args:
             domain: Base domain to enumerate
             wordlist: Custom wordlist (defaults to COMMON_SUBDOMAINS)
             use_crtsh: Whether to query crt.sh for certificate transparency logs
             use_subfinder: Whether to use subfinder (if available)
+            use_chaos: Whether to use Chaos dataset (if configured)
             progress_callback: Optional callback for progress updates (current, total)
             
         Returns:
@@ -142,7 +155,20 @@ class SubdomainService:
         """
         discovered = {}
         
-        # 1. Run subfinder first (if available) - uses 40+ passive sources
+        # 1. Query Chaos dataset first (fastest - pre-indexed database)
+        if use_chaos and self.use_chaos and self.chaos_service:
+            logger.info(f"Querying Chaos dataset for {domain}")
+            chaos_results = await self.chaos_service.fetch_subdomains(domain)
+            for subdomain in chaos_results:
+                if subdomain not in discovered:
+                    discovered[subdomain] = SubdomainResult(
+                        subdomain=subdomain,
+                        ip_addresses=[],
+                        source="chaos"
+                    )
+            logger.info(f"Chaos found {len(chaos_results)} subdomains for {domain}")
+        
+        # 2. Run subfinder (if available) - uses 40+ passive sources
         if use_subfinder and self.use_subfinder:
             logger.info(f"Running subfinder for passive subdomain enumeration on {domain}")
             subfinder_results = await self._run_subfinder(domain)

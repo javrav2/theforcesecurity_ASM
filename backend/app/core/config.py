@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
     
+    # ProjectDiscovery Cloud API Key (for Chaos subdomain dataset)
+    PDCP_API_KEY: str = ""
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
