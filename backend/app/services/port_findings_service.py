@@ -658,18 +658,20 @@ class PortFindingsService:
         rule: PortFindingRule
     ) -> Optional[Vulnerability]:
         """Find existing open finding for this port/rule combination."""
-        # Build a unique identifier for the finding
-        title_pattern = f"%Port {port_service.port}%"
+        # Build a unique identifier for the finding - match on port number in title
+        # This is more reliable than JSON tag matching
+        title_pattern = f"%Port {port_service.port}/{port_service.protocol.value}%"
         
-        return db.query(Vulnerability).filter(
+        query = db.query(Vulnerability).filter(
             Vulnerability.asset_id == port_service.asset_id,
             Vulnerability.title.like(title_pattern),
-            Vulnerability.tags.contains([rule.tags[0]]) if rule.tags else True,
             Vulnerability.status.in_([
                 VulnerabilityStatus.OPEN,
                 VulnerabilityStatus.IN_PROGRESS
             ])
-        ).first()
+        )
+        
+        return query.first()
     
     def _create_finding(
         self,
