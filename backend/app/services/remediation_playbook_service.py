@@ -161,28 +161,74 @@ _register_playbook(RemediationPlaybook(
         RemediationStep(
             order=1,
             title="Implement IP-based access restrictions",
-            description="Configure firewall rules to allow SSH only from trusted IP ranges (office, VPN).",
-            command="# AWS Security Group example:\naws ec2 authorize-security-group-ingress --group-id sg-xxx --protocol tcp --port 22 --cidr 10.0.0.0/8",
-            notes="Document all allowed IP ranges for future reference."
+            description="Configure firewall or ACL rules to allow SSH only from trusted IP ranges (office, VPN, management network).",
+            command="""# Linux iptables:
+sudo iptables -A INPUT -p tcp --dport 22 -s 10.0.0.0/8 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 22 -j DROP
+
+# Cisco IOS/ASA:
+access-list SSH-ACCESS permit tcp 10.0.0.0 0.255.255.255 host <device-ip> eq 22
+access-list SSH-ACCESS deny tcp any host <device-ip> eq 22
+
+# Palo Alto:
+# Security Policy: Allow SSH from trusted zones only
+
+# AWS Security Group:
+aws ec2 authorize-security-group-ingress --group-id sg-xxx --protocol tcp --port 22 --cidr 10.0.0.0/8""",
+            notes="Document all allowed IP ranges. For network devices, use management VLANs or out-of-band management networks."
         ),
         RemediationStep(
             order=2,
-            title="Disable password authentication",
-            description="Configure SSH to only allow key-based authentication.",
-            command="# Edit /etc/ssh/sshd_config:\nPasswordAuthentication no\nPubkeyAuthentication yes\n\n# Then restart SSH:\nsudo systemctl restart sshd",
-            notes="Ensure you have key-based access configured before disabling passwords!"
+            title="Disable password authentication (where applicable)",
+            description="For Linux/Unix servers, configure SSH to only allow key-based authentication. For network devices, use TACACS+/RADIUS with MFA.",
+            command="""# Linux - Edit /etc/ssh/sshd_config:
+PasswordAuthentication no
+PubkeyAuthentication yes
+# Then restart SSH:
+sudo systemctl restart sshd
+
+# Cisco IOS - Use AAA with TACACS+:
+aaa new-model
+aaa authentication login default group tacacs+ local
+
+# For network devices without key support:
+# Use strong passwords + TACACS+/RADIUS + MFA""",
+            notes="For network devices (routers, switches, firewalls), key-based auth may not be supported. Use centralized AAA (TACACS+/RADIUS) with MFA instead."
         ),
         RemediationStep(
             order=3,
-            title="Install fail2ban for brute-force protection",
-            description="Install and configure fail2ban to automatically block repeated failed login attempts.",
-            command="sudo apt install fail2ban\nsudo systemctl enable fail2ban\nsudo systemctl start fail2ban"
+            title="Enable login attempt limiting",
+            description="Block or rate-limit repeated failed login attempts to prevent brute-force attacks.",
+            command="""# Linux - Install fail2ban:
+sudo apt install fail2ban
+sudo systemctl enable fail2ban
+
+# Cisco IOS - Login block:
+login block-for 120 attempts 5 within 60
+
+# Palo Alto - Brute Force Protection:
+# Configure in Device > Setup > Management > Authentication Settings
+
+# Juniper - Connection rate limiting:
+set system login retry-options tries-before-disconnect 3""",
+            notes="Most network devices have built-in brute-force protection - enable it."
         ),
         RemediationStep(
             order=4,
-            title="Consider using a bastion host or VPN",
-            description="For production environments, route all SSH through a dedicated bastion host or require VPN connection first.",
-            notes="This adds defense-in-depth and centralizes access logging."
+            title="Use bastion host, VPN, or management network",
+            description="Route all SSH/management access through a dedicated jump host, VPN, or isolated management network.",
+            command="""# Options by environment:
+
+# On-premises / Network devices:
+# - Use out-of-band management network (OOB)
+# - Require VPN connection before accessing management interfaces
+# - Deploy a hardened bastion/jump server
+
+# Cloud:
+# - AWS: Use Systems Manager Session Manager (no SSH needed)
+# - Azure: Use Azure Bastion
+# - Both: Or deploy a bastion host in a private subnet""",
+            notes="This is the most important long-term fix. Management interfaces should never be directly internet-accessible."
         ),
     ],
     verification=[
@@ -233,32 +279,74 @@ _register_playbook(RemediationPlaybook(
             order=1,
             title="Block RDP from internet immediately",
             description="Add firewall rule to block port 3389 from public internet while you implement proper access.",
-            command="# AWS Security Group - remove 0.0.0.0/0 rule for port 3389\naws ec2 revoke-security-group-ingress --group-id sg-xxx --protocol tcp --port 3389 --cidr 0.0.0.0/0",
+            command="""# Perimeter firewall (Palo Alto, Fortinet, etc.):
+# Create deny rule: Source=any, Dest=<your-subnet>, Port=3389, Action=Deny
+
+# Windows Firewall (on the host):
+netsh advfirewall firewall add rule name="Block RDP Internet" dir=in action=block protocol=tcp localport=3389
+
+# Linux iptables (if forwarding to Windows):
+sudo iptables -A FORWARD -p tcp --dport 3389 -j DROP
+
+# AWS Security Group:
+aws ec2 revoke-security-group-ingress --group-id sg-xxx --protocol tcp --port 3389 --cidr 0.0.0.0/0""",
             notes="URGENT: Do this first to stop active exploitation attempts."
         ),
         RemediationStep(
             order=2,
             title="Enable Network Level Authentication (NLA)",
             description="NLA requires authentication before the RDP session is established, blocking many attacks.",
-            command="# PowerShell:\nSet-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp' -Name 'UserAuthentication' -Value 1"
+            command="""# PowerShell:
+Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp' -Name 'UserAuthentication' -Value 1
+
+# Or via Group Policy:
+# Computer Configuration > Administrative Templates > Windows Components > 
+# Remote Desktop Services > Remote Desktop Session Host > Security
+# Set: Require user authentication for remote connections = Enabled"""
         ),
         RemediationStep(
             order=3,
             title="Implement VPN or RD Gateway",
-            description="Set up Azure AD Application Proxy, Windows RD Gateway, or require VPN connection for RDP access.",
+            description="All RDP access should go through a VPN, RD Gateway, or zero-trust access solution.",
+            command="""# Options by environment:
+
+# On-premises:
+# - Deploy Windows Remote Desktop Gateway (RD Gateway)
+# - Require VPN connection (OpenVPN, WireGuard, Cisco AnyConnect)
+# - Use jump server in DMZ with MFA
+
+# Cloud:
+# - Azure: Use Azure Bastion (no public IP needed)
+# - AWS: Use Systems Manager Fleet Manager or a bastion host
+# - Any: Deploy Guacamole as web-based RDP gateway""",
             notes="This is the most important long-term fix. Direct RDP should never be exposed."
         ),
         RemediationStep(
             order=4,
             title="Enable account lockout policies",
             description="Configure account lockout after failed login attempts to prevent brute-force.",
-            command="# Group Policy path:\n# Computer Configuration > Windows Settings > Security Settings > Account Policies > Account Lockout Policy\n# Set: Account lockout threshold = 5 attempts"
+            command="""# Group Policy path:
+# Computer Configuration > Windows Settings > Security Settings > 
+# Account Policies > Account Lockout Policy
+
+# Recommended settings:
+# - Account lockout threshold: 5 attempts
+# - Account lockout duration: 30 minutes
+# - Reset lockout counter after: 30 minutes"""
         ),
         RemediationStep(
             order=5,
             title="Ensure systems are patched",
             description="Apply all Windows security updates, especially for RDP vulnerabilities like BlueKeep (CVE-2019-0708).",
-            command="# Check for updates:\nGet-WindowsUpdate\n\n# Or use Windows Update"
+            command="""# PowerShell - Check for updates:
+Get-WindowsUpdate
+
+# Or check patch level:
+systeminfo | findstr /B /C:"OS Version" /C:"KB"
+
+# Critical RDP patches to verify:
+# - KB4499175 (BlueKeep - CVE-2019-0708)
+# - KB4512501 (DejaBlue - CVE-2019-1181/1182)"""
         ),
     ],
     verification=[
@@ -368,8 +456,8 @@ _register_playbook(RemediationPlaybook(
         RemediationStep(
             order=1,
             title="Block MySQL from internet immediately",
-            description="Add firewall rules to block port 3306 from public access.",
-            command="# AWS Security Group:\naws ec2 revoke-security-group-ingress --group-id sg-xxx --protocol tcp --port 3306 --cidr 0.0.0.0/0"
+            description="Add firewall rules to block port 3306 from public access at the perimeter.",
+            command="# Linux iptables:\nsudo iptables -A INPUT -p tcp --dport 3306 -s 0.0.0.0/0 -j DROP\n\n# Perimeter firewall (Palo Alto, Fortinet, Cisco ASA):\n# Create deny rule: Source=any-external, Dest=<db-server>, Port=3306\n\n# AWS Security Group:\naws ec2 revoke-security-group-ingress --group-id sg-xxx --protocol tcp --port 3306 --cidr 0.0.0.0/0"
         ),
         RemediationStep(
             order=2,
@@ -438,7 +526,7 @@ _register_playbook(RemediationPlaybook(
             order=1,
             title="Block Redis from internet",
             description="Immediately restrict Redis port 6379 at the firewall.",
-            command="# iptables:\nsudo iptables -A INPUT -p tcp --dport 6379 -s 0.0.0.0/0 -j DROP\n\n# Or AWS Security Group"
+            command="# Linux iptables:\nsudo iptables -A INPUT -p tcp --dport 6379 -s 0.0.0.0/0 -j DROP\n\n# Perimeter firewall (Palo Alto, Fortinet, Cisco ASA):\n# Create deny rule: Source=any, Dest=<redis-server>, Port=6379, Action=Deny\n\n# AWS Security Group:\naws ec2 revoke-security-group-ingress --group-id sg-xxx --protocol tcp --port 6379 --cidr 0.0.0.0/0"
         ),
         RemediationStep(
             order=2,

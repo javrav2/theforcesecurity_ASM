@@ -56,6 +56,7 @@ from app.api.deps import get_db, get_current_active_user, require_analyst, requi
 from app.models.user import User
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.api_config import APIConfig, ExternalService
+from app.models.organization import Organization
 from app.schemas.external_discovery import (
     APIConfigCreate,
     APIConfigUpdate,
@@ -342,6 +343,45 @@ async def run_external_discovery(
     
     start_time = time.time()
     
+    # Get organization for saved discovery settings
+    org = db.query(Organization).filter(Organization.id == request.organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    
+    # Use provided keywords or fall back to saved organization settings
+    commoncrawl_org_name = request.commoncrawl_org_name
+    commoncrawl_keywords = request.commoncrawl_keywords
+    sni_keywords = request.sni_keywords
+    
+    # Fall back to saved settings if not provided in request
+    if not commoncrawl_org_name and org.commoncrawl_org_name:
+        commoncrawl_org_name = org.commoncrawl_org_name
+        logger.info(f"Using saved commoncrawl_org_name: {commoncrawl_org_name}")
+    
+    if not commoncrawl_keywords and org.commoncrawl_keywords:
+        commoncrawl_keywords = org.commoncrawl_keywords
+        logger.info(f"Using saved commoncrawl_keywords: {commoncrawl_keywords}")
+    
+    if not sni_keywords and org.sni_keywords:
+        sni_keywords = org.sni_keywords
+        logger.info(f"Using saved sni_keywords: {sni_keywords}")
+    
+    # Save keywords to organization if new ones were provided
+    settings_updated = False
+    if request.commoncrawl_org_name and request.commoncrawl_org_name != org.commoncrawl_org_name:
+        org.commoncrawl_org_name = request.commoncrawl_org_name
+        settings_updated = True
+    if request.commoncrawl_keywords and request.commoncrawl_keywords != org.commoncrawl_keywords:
+        org.commoncrawl_keywords = request.commoncrawl_keywords
+        settings_updated = True
+    if request.sni_keywords and request.sni_keywords != org.sni_keywords:
+        org.sni_keywords = request.sni_keywords
+        settings_updated = True
+    
+    if settings_updated:
+        db.commit()
+        logger.info(f"Saved discovery keywords for organization {org.id}")
+    
     # Initialize discovery service
     service = ExternalDiscoveryService(db, request.organization_id)
     
@@ -352,10 +392,10 @@ async def run_external_discovery(
         include_free=request.include_free_sources,
         organization_names=request.organization_names,
         registration_emails=request.registration_emails,
-        commoncrawl_org_name=request.commoncrawl_org_name,
-        commoncrawl_keywords=request.commoncrawl_keywords,
+        commoncrawl_org_name=commoncrawl_org_name,
+        commoncrawl_keywords=commoncrawl_keywords,
         include_sni_discovery=request.include_sni_discovery,
-        sni_keywords=request.sni_keywords
+        sni_keywords=sni_keywords
     )
     
     # Aggregate results

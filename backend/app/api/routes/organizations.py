@@ -10,7 +10,13 @@ from app.models.organization import Organization
 from app.models.asset import Asset
 from app.models.vulnerability import Vulnerability, Severity
 from app.models.user import User
-from app.schemas.organization import OrganizationCreate, OrganizationUpdate, OrganizationResponse
+from app.schemas.organization import (
+    OrganizationCreate, 
+    OrganizationUpdate, 
+    OrganizationResponse,
+    DiscoverySettingsUpdate,
+    DiscoverySettingsResponse,
+)
 from app.api.deps import get_current_active_user, require_admin
 
 router = APIRouter(prefix="/organizations", tags=["Organizations"])
@@ -158,6 +164,78 @@ def delete_organization(
     db.commit()
     
     return None
+
+
+@router.get("/{org_id}/discovery-settings", response_model=DiscoverySettingsResponse)
+def get_discovery_settings(
+    org_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get discovery keyword settings for an organization."""
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found"
+        )
+    
+    # Check access
+    if not current_user.is_superuser and current_user.organization_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    return DiscoverySettingsResponse(
+        organization_id=org.id,
+        commoncrawl_org_name=org.commoncrawl_org_name,
+        commoncrawl_keywords=org.commoncrawl_keywords or [],
+        sni_keywords=org.sni_keywords or [],
+    )
+
+
+@router.put("/{org_id}/discovery-settings", response_model=DiscoverySettingsResponse)
+def update_discovery_settings(
+    org_id: int,
+    settings: DiscoverySettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Update discovery keyword settings for an organization."""
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found"
+        )
+    
+    # Check access - analysts and admins can update discovery settings
+    if not current_user.is_superuser and current_user.organization_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    # Update fields if provided
+    if settings.commoncrawl_org_name is not None:
+        org.commoncrawl_org_name = settings.commoncrawl_org_name
+    if settings.commoncrawl_keywords is not None:
+        org.commoncrawl_keywords = settings.commoncrawl_keywords
+    if settings.sni_keywords is not None:
+        org.sni_keywords = settings.sni_keywords
+    
+    db.commit()
+    db.refresh(org)
+    
+    return DiscoverySettingsResponse(
+        organization_id=org.id,
+        commoncrawl_org_name=org.commoncrawl_org_name,
+        commoncrawl_keywords=org.commoncrawl_keywords or [],
+        sni_keywords=org.sni_keywords or [],
+    )
 
 
 

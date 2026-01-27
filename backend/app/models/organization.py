@@ -1,7 +1,7 @@
 """Organization model for multi-tenant support."""
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, JSON
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
@@ -18,6 +18,11 @@ class Organization(Base):
     domain = Column(String(255), nullable=True)  # Primary domain
     industry = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
+    
+    # Discovery configuration - persisted keywords for Common Crawl and SNI searches
+    commoncrawl_org_name = Column(String(255), nullable=True)  # Organization name for TLD search
+    commoncrawl_keywords = Column(JSON, default=list)  # Keywords for wildcard search (e.g., ["rockwell", "allen-bradley"])
+    sni_keywords = Column(JSON, default=list)  # Keywords for SNI cloud asset discovery
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

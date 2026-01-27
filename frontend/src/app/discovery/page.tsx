@@ -211,6 +211,37 @@ function DiscoveryPageContent() {
     }
   };
 
+  // Load saved discovery settings when organization is selected
+  const loadDiscoverySettings = async (orgId: string) => {
+    try {
+      const settings = await api.getDiscoverySettings(parseInt(orgId));
+      if (settings) {
+        // Pre-fill Common Crawl settings
+        if (settings.commoncrawl_org_name) {
+          setCcOrgName(settings.commoncrawl_org_name);
+        }
+        if (settings.commoncrawl_keywords && settings.commoncrawl_keywords.length > 0) {
+          setCcKeywords(settings.commoncrawl_keywords);
+        }
+        // Pre-fill SNI settings
+        if (settings.sni_keywords && settings.sni_keywords.length > 0) {
+          setSniKeywords(settings.sni_keywords);
+        }
+        console.log('Loaded saved discovery settings:', settings);
+      }
+    } catch (error) {
+      // Settings not found is fine - just use empty defaults
+      console.log('No saved discovery settings found for organization');
+    }
+  };
+
+  // Load settings when organization changes
+  useEffect(() => {
+    if (selectedOrg) {
+      loadDiscoverySettings(selectedOrg);
+    }
+  }, [selectedOrg]);
+
   useEffect(() => {
     fetchData();
   }, []);
@@ -731,6 +762,11 @@ function DiscoveryPageContent() {
                         Search Common Crawl's billions of URLs for organization-related domains.
                         Use this to find domains like org.*, *org*, and keyword matches like *rockwell*.
                       </p>
+                      <div className="p-2 bg-green-500/10 border border-green-500/30 rounded-lg mb-3">
+                        <p className="text-xs text-green-400">
+                          ✓ Keywords are automatically saved when you run discovery and will be pre-filled next time.
+                        </p>
+                      </div>
                       
                       <div className="space-y-4">
                         <div className="space-y-2">
@@ -785,6 +821,11 @@ function DiscoveryPageContent() {
                         Discover cloud-hosted assets by searching SSL/TLS certificate data from AWS, GCP, Azure, Oracle, and DigitalOcean IP ranges.
                         Source: <a href="https://kaeferjaeger.gay/?dir=sni-ip-ranges" target="_blank" rel="noopener" className="text-primary underline">kaeferjaeger.gay</a>
                       </p>
+                      <div className="p-2 bg-cyan-500/10 border border-cyan-500/30 rounded-lg mb-3">
+                        <p className="text-xs text-cyan-400">
+                          ✓ SNI keywords are automatically saved when you run discovery and will be pre-filled next time.
+                        </p>
+                      </div>
                       
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">

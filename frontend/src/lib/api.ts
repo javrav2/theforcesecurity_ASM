@@ -155,6 +155,20 @@ class ApiClient {
     return response.data;
   }
 
+  async getDiscoverySettings(organizationId: number) {
+    const response = await this.client.get(`/organizations/${organizationId}/discovery-settings`);
+    return response.data;
+  }
+
+  async updateDiscoverySettings(organizationId: number, data: {
+    commoncrawl_org_name?: string;
+    commoncrawl_keywords?: string[];
+    sni_keywords?: string[];
+  }) {
+    const response = await this.client.put(`/organizations/${organizationId}/discovery-settings`, data);
+    return response.data;
+  }
+
   // Assets
   async getAssets(params?: { 
     organization_id?: number; 
