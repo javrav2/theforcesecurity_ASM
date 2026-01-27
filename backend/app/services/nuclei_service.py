@@ -479,9 +479,11 @@ class NucleiService:
             result.errors.append(str(e))
             
         finally:
-            # Cleanup
+            # Cleanup temporary files
             if os.path.exists(targets_file_path):
                 os.unlink(targets_file_path)
+            if os.path.exists(output_file_path):
+                os.unlink(output_file_path)
             
             result.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
         

@@ -734,8 +734,6 @@ class ScannerWorker:
                 
                 if scanned_netblocks > 0:
                     logger.info(f"Updated {scanned_netblocks} netblocks as scanned")
-                
-                db.commit()
             
             # Commit the scan results BEFORE any additional processing
             try:

@@ -433,6 +433,17 @@ class PortScannerService:
         """Execute a single naabu scan."""
         result = ScanResult(success=False, scanner=ScannerType.NAABU)
         
+        # Verify naabu binary exists BEFORE creating temp files
+        import shutil
+        naabu_binary = shutil.which(self.naabu_path)
+        if not naabu_binary:
+            error_msg = f"Naabu binary not found at '{self.naabu_path}'. Check if naabu is installed."
+            logger.error(error_msg)
+            result.errors.append(error_msg)
+            return result
+        
+        logger.debug(f"Found naabu at: {naabu_binary}")
+        
         # Validate targets before writing to file
         valid_targets, invalid_targets = self._validate_targets(targets)
         if invalid_targets:
@@ -477,17 +488,6 @@ class PortScannerService:
             # Log the command for debugging
             cmd_str = ' '.join(cmd)
             logger.info(f"Naabu command: {cmd_str}")
-            
-            # Verify naabu binary exists
-            import shutil
-            naabu_binary = shutil.which(self.naabu_path)
-            if not naabu_binary:
-                error_msg = f"Naabu binary not found at '{self.naabu_path}'. Check if naabu is installed."
-                logger.error(error_msg)
-                result.errors.append(error_msg)
-                return result
-            
-            logger.debug(f"Found naabu at: {naabu_binary}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
