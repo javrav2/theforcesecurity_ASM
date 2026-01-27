@@ -7,6 +7,9 @@ import { Header } from '@/components/layout/Header';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Table,
   TableBody,
@@ -243,6 +246,9 @@ export default function AssetDetailPage() {
   const [copied, setCopied] = useState(false);
   const [capturingScreenshot, setCapturingScreenshot] = useState(false);
   const [lookingUpVT, setLookingUpVT] = useState(false);
+  const [acsDialogOpen, setAcsDialogOpen] = useState(false);
+  const [editingAcs, setEditingAcs] = useState(5);
+  const [savingAcs, setSavingAcs] = useState(false);
   const { toast } = useToast();
 
   const handleVirusTotalLookup = async () => {
@@ -313,6 +319,56 @@ export default function AssetDetailPage() {
       });
     } finally {
       setCapturingScreenshot(false);
+    }
+  };
+
+  const handleOpenAcsDialog = () => {
+    if (asset) {
+      setEditingAcs(asset.acs_score || 5);
+      setAcsDialogOpen(true);
+    }
+  };
+
+  const handleSaveAcs = async () => {
+    if (!asset) return;
+    
+    setSavingAcs(true);
+    try {
+      await api.updateAsset(asset.id, { acs_score: editingAcs } as any);
+      toast({ title: 'ACS score updated successfully' });
+      setAcsDialogOpen(false);
+      fetchAsset();
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to update ACS score',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingAcs(false);
+    }
+  };
+
+  const handleCalculateRiskDrivers = async () => {
+    if (!asset) return;
+    
+    setSavingAcs(true);
+    try {
+      const result = await api.post(`/assets/${asset.id}/calculate-risk-drivers`);
+      toast({ 
+        title: 'Risk drivers calculated',
+        description: `Risk level: ${result.data?.risk_drivers?.overall_risk?.level || 'unknown'}`
+      });
+      setAcsDialogOpen(false);
+      fetchAsset();
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to calculate risk drivers',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingAcs(false);
     }
   };
 
@@ -468,7 +524,7 @@ export default function AssetDetailPage() {
               <CardContent className="p-4">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm text-muted-foreground">ACS</span>
-                  <Button variant="ghost" size="icon" className="h-5 w-5">
+                  <Button variant="ghost" size="icon" className="h-5 w-5" onClick={handleOpenAcsDialog} title="Edit ACS Score">
                     <Settings className="h-3 w-3" />
                   </Button>
                 </div>
@@ -1512,6 +1568,68 @@ export default function AssetDetailPage() {
           httpTitle={asset.http_title}
         />
       </div>
+
+      {/* ACS Edit Dialog */}
+      <Dialog open={acsDialogOpen} onOpenChange={setAcsDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Asset Criticality Score (ACS)</DialogTitle>
+            <DialogDescription>
+              Set the criticality score for this asset (0-10). Higher scores indicate more critical assets.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="acs-score">ACS Score</Label>
+              <div className="flex items-center gap-4">
+                <Input
+                  id="acs-score"
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={editingAcs}
+                  onChange={(e) => setEditingAcs(Math.min(10, Math.max(0, parseInt(e.target.value) || 0)))}
+                  className="w-24"
+                />
+                <div className="flex-1">
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    value={editingAcs}
+                    onChange={(e) => setEditingAcs(parseInt(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <span className={`text-lg font-bold ${
+                  editingAcs >= 8 ? 'text-red-500' : 
+                  editingAcs >= 6 ? 'text-orange-500' : 
+                  editingAcs >= 4 ? 'text-yellow-500' : 
+                  'text-green-500'
+                }`}>
+                  {editingAcs}/10
+                </span>
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground space-y-1">
+              <p><strong>0-3:</strong> Low criticality (static pages, dev/test systems)</p>
+              <p><strong>4-5:</strong> Medium criticality (standard business systems)</p>
+              <p><strong>6-7:</strong> High criticality (login portals, customer-facing apps)</p>
+              <p><strong>8-10:</strong> Critical (payment systems, admin panels, databases)</p>
+            </div>
+          </div>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button variant="outline" onClick={handleCalculateRiskDrivers} disabled={savingAcs}>
+              {savingAcs ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+              Auto-Calculate
+            </Button>
+            <Button onClick={handleSaveAcs} disabled={savingAcs}>
+              {savingAcs ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Save Score
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </MainLayout>
   );
 }

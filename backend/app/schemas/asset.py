@@ -40,6 +40,7 @@ class AssetUpdate(BaseModel):
     is_monitored: Optional[bool] = None
     in_scope: Optional[bool] = None
     is_owned: Optional[bool] = None
+    acs_score: Optional[int] = Field(None, ge=0, le=10, description="Asset Criticality Score (0-10)")
 
 
 class TechnologySummary(BaseModel):
