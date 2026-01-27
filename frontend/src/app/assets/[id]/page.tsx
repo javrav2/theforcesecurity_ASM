@@ -555,26 +555,26 @@ export default function AssetDetailPage() {
                   {/* High-risk Technologies */}
                   {asset.acs_drivers?.technologies?.count > 0 && (
                     <Badge className={`text-xs ${
-                      asset.acs_drivers.technologies.risk === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
-                      asset.acs_drivers.technologies.risk === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
+                      asset.acs_drivers?.technologies?.risk === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+                      asset.acs_drivers?.technologies?.risk === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
                       'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
                     }`}>
-                      ⚙️ {asset.acs_drivers.technologies.items?.[0]?.reason || 'High-risk Tech'}
+                      ⚙️ {asset.acs_drivers?.technologies?.items?.[0]?.reason || 'High-risk Tech'}
                     </Badge>
                   )}
                   {/* Risky Ports */}
                   {asset.acs_drivers?.risky_ports?.count > 0 && (
                     <Badge className={`text-xs ${
-                      asset.acs_drivers.risky_ports.risk === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+                      asset.acs_drivers?.risky_ports?.risk === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
                       'bg-orange-500/20 text-orange-400 border-orange-500/30'
                     }`}>
-                      🔓 {asset.acs_drivers.risky_ports.count} Risky Port(s)
+                      🔓 {asset.acs_drivers?.risky_ports?.count} Risky Port(s)
                     </Badge>
                   )}
                   {/* Vulnerabilities */}
                   {asset.acs_drivers?.vulnerabilities?.critical > 0 && (
                     <Badge className="text-xs bg-red-500/20 text-red-400 border-red-500/30">
-                      ⚠️ {asset.acs_drivers.vulnerabilities.critical} Critical Vuln
+                      ⚠️ {asset.acs_drivers?.vulnerabilities?.critical} Critical Vuln
                     </Badge>
                   )}
                   {/* Public Facing */}
@@ -680,12 +680,12 @@ export default function AssetDetailPage() {
                     <div className="col-span-2 flex justify-between py-2 border-b">
                       <span className="text-muted-foreground">Risk Level</span>
                       <Badge className={`${
-                        asset.acs_drivers.overall_risk.level === 'critical' ? 'bg-red-500' :
-                        asset.acs_drivers.overall_risk.level === 'high' ? 'bg-orange-500' :
-                        asset.acs_drivers.overall_risk.level === 'medium' ? 'bg-yellow-500' :
+                        asset.acs_drivers?.overall_risk?.level === 'critical' ? 'bg-red-500' :
+                        asset.acs_drivers?.overall_risk?.level === 'high' ? 'bg-orange-500' :
+                        asset.acs_drivers?.overall_risk?.level === 'medium' ? 'bg-yellow-500' :
                         'bg-green-500'
                       }`}>
-                        {asset.acs_drivers.overall_risk.level?.toUpperCase()}
+                        {asset.acs_drivers?.overall_risk?.level?.toUpperCase()}
                       </Badge>
                     </div>
                   )}
@@ -693,7 +693,7 @@ export default function AssetDetailPage() {
                     <div className="col-span-2 py-2 border-b">
                       <span className="text-muted-foreground block mb-2">Risk Factors</span>
                       <div className="flex flex-wrap gap-1">
-                        {asset.acs_drivers.overall_risk.factors.map((factor: string, idx: number) => (
+                        {asset.acs_drivers?.overall_risk?.factors?.map((factor: string, idx: number) => (
                           <Badge key={idx} variant="outline" className="text-xs">
                             {factor}
                           </Badge>
