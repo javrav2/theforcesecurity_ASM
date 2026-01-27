@@ -2432,11 +2432,39 @@ class RemediationPlaybookService:
         "redirect": "vuln-open-redirect",
         "open-redirect": "vuln-open-redirect",
         
+        # Editor/IDE config files
+        "editor-exposure": "vuln-info-exposure",
+        "editorconfig": "vuln-info-exposure",
+        ".editorconfig": "vuln-info-exposure",
+        "ide-config": "vuln-info-exposure",
+        
+        # Keycloak / Auth server exposures
+        "keycloak": "vuln-info-exposure",
+        "admin-console-config": "vuln-info-exposure",
+        "oauth-config": "vuln-info-exposure",
+        "oidc-config": "vuln-info-exposure",
+        "auth-config": "vuln-info-exposure",
+        
+        # Environment/Config files
+        "env-file": "vuln-info-exposure",
+        ".env": "vuln-info-exposure",
+        "config-file": "vuln-info-exposure",
+        "configuration-file": "vuln-info-exposure",
+        "phpinfo": "vuln-info-exposure",
+        "server-status": "vuln-info-exposure",
+        
+        # Debug/Development exposures
+        "debug": "vuln-info-exposure",
+        "debug-mode": "vuln-info-exposure",
+        "trace-method": "vuln-info-exposure",
+        "stack-trace": "vuln-info-exposure",
+        
         # Generic exposure patterns - LAST to avoid false positives
         "config-exposure": "vuln-info-exposure",
         "file-exposure": "vuln-info-exposure",
         "disclosure": "vuln-info-exposure",
         "leak": "vuln-info-exposure",
+        "-exposure": "vuln-info-exposure",  # Catch-all for *-exposure templates
         # Note: removed "config", "exposure", "exposed" as they're too generic
         # and cause false positives with security headers and other findings
     }

@@ -264,10 +264,13 @@ def get_remediation_workload(
     - Breakdown by severity, effort level, and playbook
     - Prioritized action list (quick wins, highest impact)
     """
+    import logging
     from sqlalchemy import func
     from sqlalchemy.orm import joinedload
     from app.models.vulnerability import VulnerabilityStatus, Severity
     from app.models.asset import Asset
+    
+    logger = logging.getLogger(__name__)
     
     # Effort level to hours mapping
     EFFORT_HOURS = {
@@ -287,20 +290,24 @@ def get_remediation_workload(
         "info": 0.25,
     }
     
-    # Build base query for open findings with eager loading
-    query = db.query(Vulnerability).options(
-        joinedload(Vulnerability.asset)
-    ).filter(
-        Vulnerability.status.in_([
-            VulnerabilityStatus.OPEN,
-            VulnerabilityStatus.IN_PROGRESS,
-        ])
-    )
-    
-    if organization_id:
-        query = query.join(Asset).filter(Asset.organization_id == organization_id)
-    
-    findings = query.all()
+    try:
+        # Build base query for open findings with eager loading
+        query = db.query(Vulnerability).options(
+            joinedload(Vulnerability.asset)
+        ).filter(
+            Vulnerability.status.in_([
+                VulnerabilityStatus.OPEN,
+                VulnerabilityStatus.IN_PROGRESS,
+            ])
+        )
+        
+        if organization_id:
+            query = query.join(Asset).filter(Asset.organization_id == organization_id)
+        
+        findings = query.all()
+    except Exception as e:
+        logger.error(f"Error fetching findings for workload: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
     # Calculate workload
     total_hours = 0
@@ -312,78 +319,89 @@ def get_remediation_workload(
     high_priority = []  # Critical/high severity
     
     for finding in findings:
-        severity = (finding.severity.value if finding.severity else "medium").lower()
-        
-        # Try to get playbook for this finding
-        playbook = RemediationPlaybookService.get_playbook_for_finding(
-            title=finding.title,
-            template_id=finding.template_id,
-            tags=finding.tags or [],
-            cwe_id=finding.cwe_id,
-            cve_id=finding.cve_id,
-        )
-        
-        if playbook:
-            effort = playbook.effort.value
-            hours = EFFORT_HOURS.get(effort, 2)
-            playbook_id = playbook.id
-            playbook_title = playbook.title
-        else:
-            effort = "medium" if severity in ["critical", "high"] else "low"
-            hours = SEVERITY_DEFAULT_HOURS.get(severity, 1)
-            playbook_id = None
-            playbook_title = "No playbook matched"
-        
-        total_hours += hours
-        
-        # Track by severity
-        if severity in by_severity:
-            by_severity[severity] += hours
-            by_severity_count[severity] += 1
-        
-        # Track by effort
-        if effort in by_effort:
-            by_effort[effort] += 1
-        
-        # Track by playbook
-        if playbook_id:
-            if playbook_id not in by_playbook:
-                by_playbook[playbook_id] = {
-                    "id": playbook_id,
-                    "title": playbook_title,
-                    "count": 0,
-                    "total_hours": 0,
+        try:
+            severity = (finding.severity.value if finding.severity else "medium").lower()
+            
+            # Try to get playbook for this finding
+            playbook = RemediationPlaybookService.get_playbook_for_finding(
+                title=finding.title,
+                template_id=finding.template_id,
+                tags=finding.tags or [],
+                cwe_id=finding.cwe_id,
+                cve_id=finding.cve_id,
+            )
+            
+            if playbook:
+                effort = playbook.effort.value
+                hours = EFFORT_HOURS.get(effort, 2)
+                playbook_id = playbook.id
+                playbook_title = playbook.title
+            else:
+                effort = "medium" if severity in ["critical", "high"] else "low"
+                hours = SEVERITY_DEFAULT_HOURS.get(severity, 1)
+                playbook_id = None
+                playbook_title = "No playbook matched"
+            
+            total_hours += hours
+            
+            # Track by severity
+            if severity in by_severity:
+                by_severity[severity] += hours
+                by_severity_count[severity] += 1
+            
+            # Track by effort
+            if effort in by_effort:
+                by_effort[effort] += 1
+            
+            # Track by playbook
+            if playbook_id:
+                if playbook_id not in by_playbook:
+                    by_playbook[playbook_id] = {
+                        "id": playbook_id,
+                        "title": playbook_title,
+                        "count": 0,
+                        "total_hours": 0,
+                        "effort": effort,
+                        "priority": playbook.priority.value if playbook else "medium",
+                    }
+                by_playbook[playbook_id]["count"] += 1
+                by_playbook[playbook_id]["total_hours"] += hours
+            
+            # Get asset value safely
+            asset_value = None
+            try:
+                asset_value = finding.asset.value if finding.asset else None
+            except Exception:
+                pass
+            
+            # Identify quick wins (low effort, any severity)
+            if effort in ["minimal", "low"] and severity in ["critical", "high", "medium"]:
+                quick_wins.append({
+                    "id": finding.id,
+                    "title": finding.title,
+                    "severity": severity,
                     "effort": effort,
-                    "priority": playbook.priority.value if playbook else "medium",
-                }
-            by_playbook[playbook_id]["count"] += 1
-            by_playbook[playbook_id]["total_hours"] += hours
-        
-        # Identify quick wins (low effort, any severity)
-        if effort in ["minimal", "low"] and severity in ["critical", "high", "medium"]:
-            quick_wins.append({
-                "id": finding.id,
-                "title": finding.title,
-                "severity": severity,
-                "effort": effort,
-                "hours": hours,
-                "playbook_id": playbook_id,
-                "playbook_title": playbook_title,
-                "asset_value": finding.asset.value if finding.asset else None,
-            })
-        
-        # Identify high priority (critical/high severity)
-        if severity in ["critical", "high"]:
-            high_priority.append({
-                "id": finding.id,
-                "title": finding.title,
-                "severity": severity,
-                "effort": effort,
-                "hours": hours,
-                "playbook_id": playbook_id,
-                "playbook_title": playbook_title,
-                "asset_value": finding.asset.value if finding.asset else None,
-            })
+                    "hours": hours,
+                    "playbook_id": playbook_id,
+                    "playbook_title": playbook_title,
+                    "asset_value": asset_value,
+                })
+            
+            # Identify high priority (critical/high severity)
+            if severity in ["critical", "high"]:
+                high_priority.append({
+                    "id": finding.id,
+                    "title": finding.title,
+                    "severity": severity,
+                    "effort": effort,
+                    "hours": hours,
+                    "playbook_id": playbook_id,
+                    "playbook_title": playbook_title,
+                    "asset_value": asset_value,
+                })
+        except Exception as e:
+            # Log and skip problematic findings
+            logger.warning(f"Error processing finding {finding.id}: {e}")
     
     # Calculate work weeks
     work_week_hours = 40
@@ -440,52 +458,69 @@ def get_prioritized_remediation_list(
     from app.models.vulnerability import VulnerabilityStatus, Severity
     from app.models.asset import Asset
     
-    query = db.query(Vulnerability).options(
-        joinedload(Vulnerability.asset)
-    ).filter(
-        Vulnerability.status.in_([
-            VulnerabilityStatus.OPEN,
-            VulnerabilityStatus.IN_PROGRESS,
-        ])
-    )
+    import logging
+    logger = logging.getLogger(__name__)
     
-    if organization_id:
-        query = query.join(Asset).filter(Asset.organization_id == organization_id)
-    
-    # Order by severity first
-    findings = query.order_by(
-        Vulnerability.severity.desc(),
-        Vulnerability.created_at.asc()
-    ).limit(limit).all()
+    try:
+        query = db.query(Vulnerability).options(
+            joinedload(Vulnerability.asset)
+        ).filter(
+            Vulnerability.status.in_([
+                VulnerabilityStatus.OPEN,
+                VulnerabilityStatus.IN_PROGRESS,
+            ])
+        )
+        
+        if organization_id:
+            query = query.join(Asset).filter(Asset.organization_id == organization_id)
+        
+        # Order by severity first
+        findings = query.order_by(
+            Vulnerability.severity.desc(),
+            Vulnerability.created_at.asc()
+        ).limit(limit).all()
+    except Exception as e:
+        logger.error(f"Error fetching prioritized findings: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
     result = []
     for finding in findings:
-        playbook = RemediationPlaybookService.get_playbook_for_finding(
-            title=finding.title,
-            template_id=finding.template_id,
-            tags=finding.tags or [],
-            cwe_id=finding.cwe_id,
-            cve_id=finding.cve_id,
-        )
-        
-        result.append({
-            "id": finding.id,
-            "title": finding.title,
-            "severity": finding.severity.value if finding.severity else "medium",
-            "status": finding.status.value if finding.status else "open",
-            "asset_id": finding.asset_id,
-            "asset_value": finding.asset.value if finding.asset else None,
-            "template_id": finding.template_id,
-            "has_playbook": playbook is not None,
-            "playbook": {
-                "id": playbook.id,
-                "title": playbook.title,
-                "effort": playbook.effort.value,
-                "estimated_time": playbook.estimated_time,
-                "priority": playbook.priority.value,
-            } if playbook else None,
-            "created_at": finding.created_at.isoformat() if finding.created_at else None,
-        })
+        try:
+            playbook = RemediationPlaybookService.get_playbook_for_finding(
+                title=finding.title,
+                template_id=finding.template_id,
+                tags=finding.tags or [],
+                cwe_id=finding.cwe_id,
+                cve_id=finding.cve_id,
+            )
+            
+            # Get asset value safely
+            asset_value = None
+            try:
+                asset_value = finding.asset.value if finding.asset else None
+            except Exception:
+                pass
+            
+            result.append({
+                "id": finding.id,
+                "title": finding.title,
+                "severity": finding.severity.value if finding.severity else "medium",
+                "status": finding.status.value if finding.status else "open",
+                "asset_id": finding.asset_id,
+                "asset_value": asset_value,
+                "template_id": finding.template_id,
+                "has_playbook": playbook is not None,
+                "playbook": {
+                    "id": playbook.id,
+                    "title": playbook.title,
+                    "effort": playbook.effort.value,
+                    "estimated_time": playbook.estimated_time,
+                    "priority": playbook.priority.value,
+                } if playbook else None,
+                "created_at": finding.created_at.isoformat() if finding.created_at else None,
+            })
+        except Exception as e:
+            logger.warning(f"Error processing finding {finding.id}: {e}")
     
     return {
         "findings": result,
