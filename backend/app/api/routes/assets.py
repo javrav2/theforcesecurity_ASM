@@ -2338,3 +2338,111 @@ def bulk_set_scope_with_cascade(
         "errors": errors[:10] if errors else [],
         "message": f"Updated {updated_count} assets" + (f" and {cascaded_count} subdomains" if cascaded_count > 0 else "")
     }
+
+
+# =============================================================================
+# Risk Driver Endpoints
+# =============================================================================
+
+@router.post("/{asset_id}/calculate-risk-drivers")
+async def calculate_asset_risk_drivers(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Calculate and update risk drivers for a single asset.
+    
+    Risk drivers are calculated based on:
+    - Login portal detection
+    - High-risk technologies (SAP, databases, admin panels, etc.)
+    - Risky open ports
+    - Vulnerability count and severity
+    - Public accessibility
+    - Hosting classification
+    
+    The results are stored in the asset's acs_drivers field.
+    """
+    from app.services.risk_driver_service import get_risk_driver_service
+    
+    asset = db.query(Asset).options(
+        selectinload(Asset.technologies),
+        selectinload(Asset.port_services),
+        selectinload(Asset.vulnerabilities)
+    ).filter(Asset.id == asset_id).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    if not check_org_access(current_user, asset.organization_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    service = get_risk_driver_service(db)
+    drivers = service.update_asset_risk_drivers(asset)
+    
+    return {
+        "asset_id": asset_id,
+        "value": asset.value,
+        "acs_score": asset.acs_score,
+        "risk_drivers": drivers
+    }
+
+
+@router.post("/calculate-risk-drivers")
+async def calculate_all_risk_drivers(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    limit: int = Query(500, ge=1, le=5000, description="Maximum assets to process"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Calculate and update risk drivers for multiple assets.
+    
+    This analyzes each asset's:
+    - Login portals
+    - Technologies
+    - Risky ports
+    - Vulnerabilities
+    - Public accessibility
+    
+    And populates the acs_drivers field with meaningful risk factors.
+    """
+    from app.services.risk_driver_service import get_risk_driver_service
+    
+    # Validate org access if specified
+    if organization_id and not current_user.is_superuser:
+        if current_user.organization_id != organization_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Build query
+    query = db.query(Asset).options(
+        selectinload(Asset.technologies),
+        selectinload(Asset.port_services),
+        selectinload(Asset.vulnerabilities)
+    )
+    
+    if organization_id:
+        query = query.filter(Asset.organization_id == organization_id)
+    elif not current_user.is_superuser:
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    assets = query.limit(limit).all()
+    
+    service = get_risk_driver_service(db)
+    
+    stats = {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0}
+    
+    for asset in assets:
+        drivers = service.update_asset_risk_drivers(asset)
+        stats["total"] += 1
+        
+        overall = drivers.get("overall_risk", {})
+        risk_level = overall.get("level", "low")
+        if risk_level in stats:
+            stats[risk_level] += 1
+    
+    return {
+        "message": f"Calculated risk drivers for {stats['total']} assets",
+        "statistics": stats
+    }

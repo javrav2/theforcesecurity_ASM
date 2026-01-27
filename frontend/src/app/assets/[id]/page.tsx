@@ -485,21 +485,61 @@ export default function AssetDetailPage() {
             </CardContent>
           </Card>
 
-            {/* Key Drivers */}
+            {/* Risk Drivers */}
             <Card className="border-2">
               <CardContent className="p-4">
-                <div className="text-sm text-muted-foreground mb-2">Key Drivers</div>
+                <div className="text-sm text-muted-foreground mb-2">Risk Drivers</div>
                 <div className="flex flex-wrap gap-1">
-                  {asset.acs_drivers && Object.entries(asset.acs_drivers).slice(0, 2).map(([key, value]) => (
-                    <Badge key={key} variant="secondary" className="text-xs">
-                      {key}: {String(value).substring(0, 10)}...
+                  {/* Login Portal */}
+                  {asset.acs_drivers?.login_portal && (
+                    <Badge className="text-xs bg-red-500/20 text-red-400 border-red-500/30">
+                      🔐 Login Portal
                     </Badge>
-                  ))}
-                  {asset.device_class && (
+                  )}
+                  {/* High-risk Technologies */}
+                  {asset.acs_drivers?.technologies?.count > 0 && (
+                    <Badge className={`text-xs ${
+                      asset.acs_drivers.technologies.risk === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+                      asset.acs_drivers.technologies.risk === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
+                      'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                    }`}>
+                      ⚙️ {asset.acs_drivers.technologies.items?.[0]?.reason || 'High-risk Tech'}
+                    </Badge>
+                  )}
+                  {/* Risky Ports */}
+                  {asset.acs_drivers?.risky_ports?.count > 0 && (
+                    <Badge className={`text-xs ${
+                      asset.acs_drivers.risky_ports.risk === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+                      'bg-orange-500/20 text-orange-400 border-orange-500/30'
+                    }`}>
+                      🔓 {asset.acs_drivers.risky_ports.count} Risky Port(s)
+                    </Badge>
+                  )}
+                  {/* Vulnerabilities */}
+                  {asset.acs_drivers?.vulnerabilities?.critical > 0 && (
+                    <Badge className="text-xs bg-red-500/20 text-red-400 border-red-500/30">
+                      ⚠️ {asset.acs_drivers.vulnerabilities.critical} Critical Vuln
+                    </Badge>
+                  )}
+                  {/* Public Facing */}
+                  {asset.acs_drivers?.public_facing && (
+                    <Badge variant="secondary" className="text-xs">
+                      🌐 Public
+                    </Badge>
+                  )}
+                  {/* Owned Infrastructure */}
+                  {asset.acs_drivers?.owned_infrastructure && (
+                    <Badge variant="secondary" className="text-xs">
+                      🏢 Owned Infra
+                    </Badge>
+                  )}
+                  {/* Device Class fallback if no drivers */}
+                  {(!asset.acs_drivers || Object.keys(asset.acs_drivers).length === 0) && asset.device_class && (
                     <Badge variant="secondary" className="text-xs">{asset.device_class}</Badge>
                   )}
-                  {asset.acs_drivers && Object.keys(asset.acs_drivers).length > 2 && (
-                    <Badge variant="outline" className="text-xs">+{Object.keys(asset.acs_drivers).length - 2}</Badge>
+                  {/* No drivers message */}
+                  {(!asset.acs_drivers || Object.keys(asset.acs_drivers).length === 0) && !asset.device_class && (
+                    <span className="text-xs text-muted-foreground">Run risk analysis to populate</span>
                   )}
               </div>
             </CardContent>
@@ -580,12 +620,29 @@ export default function AssetDetailPage() {
                             : '—'}
                     </span>
                   </div>
-                  {asset.acs_drivers && Object.keys(asset.acs_drivers).length > 0 && (
+                  {asset.acs_drivers?.overall_risk && (
                     <div className="col-span-2 flex justify-between py-2 border-b">
-                      <span className="text-muted-foreground">ACS Key Drivers</span>
-                      <span className="font-mono text-xs text-right max-w-md">
-                        {Object.entries(asset.acs_drivers).map(([k, v]) => `${k}: ${v}`).join(', ')}
-                      </span>
+                      <span className="text-muted-foreground">Risk Level</span>
+                      <Badge className={`${
+                        asset.acs_drivers.overall_risk.level === 'critical' ? 'bg-red-500' :
+                        asset.acs_drivers.overall_risk.level === 'high' ? 'bg-orange-500' :
+                        asset.acs_drivers.overall_risk.level === 'medium' ? 'bg-yellow-500' :
+                        'bg-green-500'
+                      }`}>
+                        {asset.acs_drivers.overall_risk.level?.toUpperCase()}
+                      </Badge>
+                    </div>
+                  )}
+                  {asset.acs_drivers?.overall_risk?.factors?.length > 0 && (
+                    <div className="col-span-2 py-2 border-b">
+                      <span className="text-muted-foreground block mb-2">Risk Factors</span>
+                      <div className="flex flex-wrap gap-1">
+                        {asset.acs_drivers.overall_risk.factors.map((factor: string, idx: number) => (
+                          <Badge key={idx} variant="outline" className="text-xs">
+                            {factor}
+                          </Badge>
+                        ))}
+                      </div>
                     </div>
                   )}
                   <div className="flex justify-between py-2 border-b">
