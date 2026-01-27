@@ -682,6 +682,31 @@ class ApiClient {
     return response.data;
   }
 
+  // Create Asset (add domain manually)
+  async createAsset(data: {
+    organization_id: number;
+    name: string;
+    value: string;
+    asset_type?: string;
+    in_scope?: boolean;
+    discovery_source?: string;
+    association_reason?: string;
+  }) {
+    const response = await this.client.post('/assets/', data);
+    return response.data;
+  }
+
+  async createAssetsBulk(assets: Array<{
+    organization_id: number;
+    name: string;
+    value: string;
+    asset_type?: string;
+    in_scope?: boolean;
+  }>) {
+    const response = await this.client.post('/assets/bulk', assets);
+    return response.data;
+  }
+
   // Acquisitions / M&A
   async getAcquisitions(params?: { 
     organization_id?: number; 

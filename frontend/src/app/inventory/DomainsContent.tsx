@@ -30,9 +30,19 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import {
   Globe,
   Search,
   RefreshCw,
+  Plus,
   CheckCircle,
   XCircle,
   AlertTriangle,
@@ -175,6 +185,9 @@ export default function DomainsContent() {
   const [selectedDomains, setSelectedDomains] = useState<Set<number>>(new Set());
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showMoreFilters, setShowMoreFilters] = useState(false);
+  const [addDomainDialogOpen, setAddDomainDialogOpen] = useState(false);
+  const [addingDomains, setAddingDomains] = useState(false);
+  const [newDomainsInput, setNewDomainsInput] = useState('');
   const { toast } = useToast();
 
   // Debounce search input - waits 300ms after user stops typing
@@ -400,6 +413,71 @@ export default function DomainsContent() {
       });
     } finally {
       setProbingLive(false);
+    }
+  };
+
+  const handleAddDomains = async () => {
+    if (!newDomainsInput.trim()) {
+      toast({
+        title: 'Error',
+        description: 'Please enter at least one domain',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setAddingDomains(true);
+      
+      // Parse domains - split by newlines, commas, or spaces
+      const domainsToAdd = newDomainsInput
+        .split(/[\n,\s]+/)
+        .map((d: string) => d.trim().toLowerCase())
+        .filter((d: string) => d.length > 0 && d.includes('.'));
+      
+      if (domainsToAdd.length === 0) {
+        toast({
+          title: 'Error',
+          description: 'No valid domains found. Domains should contain a period (e.g., example.com)',
+          variant: 'destructive',
+        });
+        return;
+      }
+      
+      // Create assets for each domain
+      const assets = domainsToAdd.map((domain: string) => ({
+        organization_id: 1,
+        name: domain,
+        value: domain,
+        asset_type: domain.split('.').length > 2 ? 'subdomain' : 'domain',
+        in_scope: true,
+        discovery_source: 'manual',
+        association_reason: 'Manually added',
+      }));
+      
+      if (assets.length === 1) {
+        await api.createAsset(assets[0]);
+      } else {
+        await api.createAssetsBulk(assets);
+      }
+      
+      toast({
+        title: 'Success',
+        description: `Added ${assets.length} domain(s) to inventory`,
+      });
+      
+      setAddDomainDialogOpen(false);
+      setNewDomainsInput('');
+      fetchDomains(debouncedSearch || undefined);
+    } catch (error: any) {
+      console.error('Error adding domains:', error);
+      toast({
+        title: 'Error',
+        description: error?.response?.data?.detail || 'Failed to add domains',
+        variant: 'destructive',
+      });
+    } finally {
+      setAddingDomains(false);
     }
   };
 
@@ -724,6 +802,11 @@ export default function DomainsContent() {
                 
                 {/* Actions */}
                 <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={() => setAddDomainDialogOpen(true)}>
+                    <Plus className="h-4 w-4 mr-1" />
+                    Add Domain
+                  </Button>
+                  
                   <Button variant="outline" size="sm" onClick={() => fetchDomains(debouncedSearch || undefined)} disabled={loading}>
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </Button>
@@ -1130,6 +1213,55 @@ export default function DomainsContent() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Add Domain Dialog */}
+      <Dialog open={addDomainDialogOpen} onOpenChange={setAddDomainDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Domains</DialogTitle>
+            <DialogDescription>
+              Add domains or subdomains to your inventory. Enter one per line or separate with commas.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <div>
+              <Label htmlFor="domains">Domains</Label>
+              <textarea
+                id="domains"
+                value={newDomainsInput}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNewDomainsInput(e.target.value)}
+                placeholder={"example.com\nsubdomain.example.com\nanother-domain.net"}
+                rows={6}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Enter domains one per line, or separate with commas or spaces.
+                Subdomains (e.g., app.example.com) are automatically detected.
+              </p>
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddDomainDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAddDomains} disabled={addingDomains}>
+              {addingDomains ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Adding...
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Domains
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
