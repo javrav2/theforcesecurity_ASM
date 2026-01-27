@@ -32,15 +32,15 @@ export function getApiErrorMessage(error: any, fallback: string = 'An error occu
 }
 
 // Determine API URL based on environment
-// In browser: use same host with port 8000 (matching the page protocol)
+// In browser: use same origin (nginx proxies /api to backend)
 // In Node.js (SSR): use environment variable or localhost
 const getApiUrl = () => {
   if (typeof window !== 'undefined') {
-    // Running in browser - use the same hostname and protocol but port 8000
-    const { hostname, protocol } = window.location;
-    return `${protocol}//${hostname}:8000`;
+    // Running in browser - use the same origin, nginx proxies /api/ to backend
+    const { origin } = window.location;
+    return origin;
   }
-  // Running on server (SSR) - use env var or default
+  // Running on server (SSR) - use env var or default to localhost:8000 for direct access
   return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 };
 
@@ -52,7 +52,8 @@ class ApiClient {
 
   constructor() {
     this.client = axios.create({
-      // FastAPI is mounted at /api/v1 (see backend/app/core/config.py API_PREFIX)
+      // In browser: nginx proxies /api/v1 -> backend /api/v1
+      // In SSR: direct to backend at localhost:8000/api/v1
       baseURL: `${API_URL}/api/v1`,
       headers: {
         'Content-Type': 'application/json',
@@ -486,12 +487,10 @@ class ApiClient {
 
   getScreenshotImageUrl(screenshotId: number): string {
     const token = this.getToken();
-    // Dynamically determine API URL at call time (not module load time)
-    // This ensures we use the correct hostname and protocol when called from browser
+    // Use same origin - nginx proxies /api/ to backend
     let apiUrl = 'http://localhost:8000';
     if (typeof window !== 'undefined') {
-      const { hostname, protocol } = window.location;
-      apiUrl = `${protocol}//${hostname}:8000`;
+      apiUrl = window.location.origin;
     }
     return `${apiUrl}/api/v1/screenshots/image/${screenshotId}?token=${token}`;
   }
