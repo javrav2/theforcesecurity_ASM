@@ -1619,6 +1619,647 @@ nuclei -u https://target.com -t CVE-xxxx-xxxxx.yaml"""
     tags=["upgrade", "patch", "cve", "outdated", "nuclei"],
 ))
 
+_register_playbook(RemediationPlaybook(
+    id="vuln-info-exposure",
+    title="Remediate Information Exposure",
+    summary="Sensitive files or configuration data are publicly accessible. Remove or restrict access to these files immediately.",
+    priority=RemediationPriority.HIGH,
+    effort=RemediationEffort.LOW,
+    estimated_time="30 minutes - 1 hour",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Remove or relocate the exposed file",
+            description="The exposed file should not be accessible from the web. Either delete it or move it outside the web root.",
+            command="""# Option 1: Delete the file if not needed
+rm /var/www/html/karma.conf.js
+rm /var/www/html/.env
+rm /var/www/html/config.json
+
+# Option 2: Move outside web root
+mv /var/www/html/config.js /var/www/config/
+
+# Option 3: For development files that shouldn't be in production
+# Review your deployment process to exclude dev files"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Block access via web server configuration",
+            description="Add rules to block access to sensitive file patterns.",
+            command="""# Nginx - add to server block:
+location ~* \\.(conf|config|env|ini|log|bak|sql|git|svn)$ {
+    deny all;
+    return 404;
+}
+
+location ~ /\\. {
+    deny all;
+    return 404;
+}
+
+# Apache - add to .htaccess or vhost:
+<FilesMatch "\\.(conf|config|env|ini|log|bak|sql)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Block hidden files
+<FilesMatch "^\\.">
+    Order allow,deny
+    Deny from all
+</FilesMatch>"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Review deployment process",
+            description="Ensure your CI/CD pipeline doesn't deploy development or test files to production.",
+            command="""# .dockerignore example:
+*.conf.js
+karma.conf.js
+*.test.js
+*.spec.js
+.env
+.git/
+node_modules/
+
+# .gitignore should exclude sensitive files from repo:
+.env
+*.local
+config/secrets.json"""
+        ),
+        RemediationStep(
+            order=4,
+            title="Audit for other exposed files",
+            description="Check for other potentially exposed sensitive files.",
+            command="""# Common files to check:
+curl -s https://target.com/.env
+curl -s https://target.com/.git/config
+curl -s https://target.com/config.json
+curl -s https://target.com/package.json
+curl -s https://target.com/composer.json
+curl -s https://target.com/web.config
+curl -s https://target.com/phpinfo.php
+curl -s https://target.com/.htpasswd
+curl -s https://target.com/backup.sql"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify file returns 403 or 404",
+            expected_result="File no longer accessible",
+            command="curl -I https://target.com/exposed-file.conf",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Exposed configuration files can reveal database credentials, API keys, internal paths, and application structure - enabling further attacks.",
+    common_mistakes=[
+        "Only blocking the specific file instead of the pattern",
+        "Forgetting to restart the web server after config changes",
+        "Not checking for backup files (.bak, .old, ~)"
+    ],
+    references=[
+        "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/04-Review_Old_Backup_and_Unreferenced_Files_for_Sensitive_Information",
+    ],
+    related_cwe="CWE-200",
+    tags=["config", "exposure", "information-disclosure", "nuclei"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-directory-listing",
+    title="Disable Directory Listing",
+    summary="Directory listing is enabled, exposing file structure and potentially sensitive files.",
+    priority=RemediationPriority.MEDIUM,
+    effort=RemediationEffort.LOW,
+    estimated_time="15-30 minutes",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Disable directory listing in web server",
+            description="Configure the web server to not show directory contents when no index file exists.",
+            command="""# Nginx - remove autoindex or set to off:
+location / {
+    autoindex off;
+}
+
+# Apache - add to .htaccess or vhost:
+Options -Indexes
+
+# IIS - web.config:
+<system.webServer>
+    <directoryBrowse enabled="false" />
+</system.webServer>"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Add index files to directories",
+            description="Add blank index.html files to prevent directory listing as defense in depth.",
+            command="""# Create empty index files
+find /var/www/html -type d -exec touch {}/index.html \\;
+
+# Or create a redirect index:
+echo '<meta http-equiv="refresh" content="0;url=/">' > index.html"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify directory no longer lists files",
+            expected_result="Returns 403 Forbidden or redirects",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Directory listing exposes your file structure, potentially revealing backup files, source code, and other sensitive information.",
+    common_mistakes=[
+        "Only disabling for some directories",
+        "Forgetting subdirectories"
+    ],
+    references=[
+        "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/03-Test_File_Extensions_Handling_for_Sensitive_Information",
+    ],
+    related_cwe="CWE-548",
+    tags=["directory-listing", "exposure", "configuration", "nuclei"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-git-exposure",
+    title="Remediate Exposed Git Repository",
+    summary="CRITICAL: Git repository files are publicly accessible. Attackers can download your entire source code and commit history.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.LOW,
+    estimated_time="30 minutes - 1 hour",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Block access to .git directory immediately",
+            description="Add web server rules to block all access to .git directories.",
+            command="""# Nginx:
+location ~ /\\.git {
+    deny all;
+    return 404;
+}
+
+# Apache (.htaccess):
+<DirectoryMatch "\\.git">
+    Order allow,deny
+    Deny from all
+</DirectoryMatch>
+
+# Or redirect pattern match:
+RedirectMatch 404 /\\.git"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Remove .git from production entirely",
+            description="The .git directory should never exist on production servers.",
+            command="""# Remove .git directory
+rm -rf /var/www/html/.git
+
+# Update deployment to exclude .git:
+rsync -av --exclude='.git' source/ dest/
+
+# Or use git archive for deployments:
+git archive --format=tar HEAD | tar -x -C /var/www/html/"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Rotate all credentials in repository",
+            description="Assume all secrets in the repository are compromised. Rotate immediately.",
+            command="""# Identify secrets that may have been exposed:
+# - Database passwords
+# - API keys  
+# - AWS credentials
+# - OAuth secrets
+# - Encryption keys
+
+# For each secret:
+# 1. Generate new credential
+# 2. Update application configuration
+# 3. Revoke old credential
+# 4. Monitor for unauthorized access"""
+        ),
+        RemediationStep(
+            order=4,
+            title="Review commit history for sensitive data",
+            description="Check if sensitive data was ever committed to the repository.",
+            command="""# Search for secrets in git history:
+git log -p | grep -i "password\\|secret\\|api_key\\|token"
+
+# Use tools like truffleHog or git-secrets:
+trufflehog git https://github.com/org/repo
+
+# If secrets found, consider them compromised even if removed later"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify .git is not accessible",
+            expected_result="Returns 403 or 404",
+            command="curl -I https://target.com/.git/config",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Attackers can download your entire source code, find vulnerabilities, extract credentials from commit history, and understand your application's internals.",
+    common_mistakes=[
+        "Only blocking .git/config but not the entire directory",
+        "Forgetting to rotate credentials that were in the repo",
+        "Not checking all subdomains/servers"
+    ],
+    references=[
+        "https://blog.netspi.com/dumping-git-data-from-misconfigured-web-servers/",
+    ],
+    related_cwe="CWE-527",
+    tags=["git", "source-code", "exposure", "critical", "nuclei"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-default-credentials",
+    title="Change Default Credentials",
+    summary="Default or weak credentials detected. Change immediately - these are actively exploited by automated attacks.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.LOW,
+    estimated_time="15-30 minutes",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Change the password immediately",
+            description="Replace default credentials with strong, unique passwords.",
+            command="""# Generate a strong password:
+openssl rand -base64 32
+
+# Or use a password manager to generate
+
+# Minimum requirements:
+# - 16+ characters
+# - Mix of upper, lower, numbers, symbols
+# - Not used anywhere else
+# - Not based on dictionary words"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Check for other default accounts",
+            description="Many applications have multiple default accounts. Check for all of them.",
+            command="""# Common default credentials to check:
+# admin/admin
+# admin/password
+# root/root
+# test/test
+# guest/guest
+# administrator/administrator
+# user/user
+# demo/demo
+
+# Check application documentation for default accounts"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Implement account lockout",
+            description="Add brute-force protection to prevent credential guessing.",
+            command="""# Lock account after 5 failed attempts for 30 minutes
+# Log all failed login attempts
+# Consider MFA for admin accounts
+# Implement CAPTCHA after 3 failed attempts"""
+        ),
+        RemediationStep(
+            order=4,
+            title="Review access logs",
+            description="Check if the default credentials were used by attackers before you changed them.",
+            command="""# Check access logs for:
+# - Login attempts to admin panels
+# - Unusual activity from unknown IPs
+# - Changes made by default accounts
+
+grep -i "login\\|admin\\|auth" /var/log/access.log | tail -100"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify old credentials no longer work",
+            expected_result="Login fails with old credentials",
+            automated=False
+        ),
+    ],
+    impact_if_not_fixed="Default credentials are the first thing attackers try. Automated scanners continuously probe for default passwords and can compromise your system within minutes.",
+    common_mistakes=[
+        "Using the same password across multiple systems",
+        "Only changing the admin password but not other default accounts",
+        "Setting a weak password that's easy to guess"
+    ],
+    references=[
+        "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/04-Authentication_Testing/02-Testing_for_Default_Credentials",
+    ],
+    related_cwe="CWE-798",
+    tags=["default-credentials", "authentication", "critical", "nuclei"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-security-headers",
+    title="Implement Security Headers",
+    summary="Missing or misconfigured security headers. Add proper headers to protect against common web attacks.",
+    priority=RemediationPriority.LOW,
+    effort=RemediationEffort.LOW,
+    estimated_time="30 minutes - 1 hour",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Add essential security headers",
+            description="Configure your web server or application to send security headers.",
+            command="""# Nginx - add to server block:
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+
+# Apache - add to .htaccess or vhost:
+Header always set X-Frame-Options "SAMEORIGIN"
+Header always set X-Content-Type-Options "nosniff"
+Header always set X-XSS-Protection "1; mode=block"
+Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+# Application level (example in Python/Flask):
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Implement Content Security Policy (CSP)",
+            description="CSP is the most important security header but requires careful configuration.",
+            command="""# Start with report-only mode to identify issues:
+Content-Security-Policy-Report-Only: default-src 'self'; report-uri /csp-report
+
+# Basic CSP - adjust based on your needs:
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';
+
+# Use CSP evaluator: https://csp-evaluator.withgoogle.com/"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Enable HSTS",
+            description="HTTP Strict Transport Security forces HTTPS and prevents downgrade attacks.",
+            command="""# Nginx:
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+# Apache:
+Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+# Note: Only enable after confirming HTTPS works correctly
+# Start with shorter max-age for testing: max-age=86400"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Check headers are present",
+            expected_result="All security headers returned",
+            command="curl -I https://target.com | grep -i 'x-frame\\|x-content\\|strict'",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Missing security headers leave your application vulnerable to clickjacking, MIME sniffing attacks, and make XSS exploitation easier.",
+    common_mistakes=[
+        "Setting CSP too strict and breaking functionality",
+        "Forgetting to add 'always' in Nginx (headers not sent on error pages)",
+        "Not testing all pages after adding headers"
+    ],
+    references=[
+        "https://securityheaders.com/",
+        "https://owasp.org/www-project-secure-headers/",
+    ],
+    related_cwe="CWE-693",
+    tags=["headers", "security-headers", "csp", "hsts", "nuclei"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-backup-exposure",
+    title="Remove Exposed Backup Files",
+    summary="Backup or archive files are publicly accessible. These often contain source code, database dumps, or credentials.",
+    priority=RemediationPriority.HIGH,
+    effort=RemediationEffort.LOW,
+    estimated_time="30 minutes",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Delete exposed backup files",
+            description="Remove backup files from the web-accessible directory.",
+            command="""# Find and remove backup files:
+find /var/www/html -name "*.bak" -delete
+find /var/www/html -name "*.backup" -delete
+find /var/www/html -name "*.old" -delete
+find /var/www/html -name "*~" -delete
+find /var/www/html -name "*.sql" -delete
+find /var/www/html -name "*.tar.gz" -delete
+find /var/www/html -name "*.zip" -delete
+
+# Move backups outside web root:
+mv /var/www/html/backup* /var/backups/"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Block access to backup file patterns",
+            description="Add web server rules to block common backup extensions.",
+            command="""# Nginx:
+location ~* \\.(bak|backup|old|orig|sql|tar|gz|zip|7z|rar)$ {
+    deny all;
+    return 404;
+}
+
+# Apache:
+<FilesMatch "\\.(bak|backup|old|orig|sql|tar|gz|zip|7z|rar)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Rotate credentials in backup",
+            description="If backup contained credentials, treat them as compromised.",
+            command="""# Check what was in the backup:
+# - Database credentials
+# - API keys
+# - User passwords (if database dump)
+
+# Rotate all credentials found in the backup"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify backup files return 404",
+            expected_result="Backup files not accessible",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Backup files often contain source code (revealing vulnerabilities), database dumps (user credentials), and configuration (API keys, database passwords).",
+    common_mistakes=[
+        "Only deleting the detected file without checking for others",
+        "Forgetting about editor backup files (~, .swp)",
+        "Not blocking the pattern, only the specific file"
+    ],
+    references=[
+        "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/04-Review_Old_Backup_and_Unreferenced_Files_for_Sensitive_Information",
+    ],
+    related_cwe="CWE-530",
+    tags=["backup", "exposure", "data-leak", "nuclei"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-path-traversal",
+    title="Remediate Path Traversal Vulnerability",
+    summary="Path traversal allows attackers to read arbitrary files from the server. Fix input validation immediately.",
+    priority=RemediationPriority.CRITICAL,
+    effort=RemediationEffort.MEDIUM,
+    estimated_time="2-4 hours",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Upgrade if this is a known CVE",
+            description="If this is in third-party software, upgrade to the patched version.",
+            command="""# Check vendor security advisories
+# Apply the security patch or upgrade"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Implement proper input validation",
+            description="Validate and sanitize all file path inputs. Use allowlists, not blocklists.",
+            command="""# WRONG - Blocklist approach (easily bypassed):
+if '..' in user_input:
+    reject()
+
+# CORRECT - Allowlist and canonical path check:
+import os
+
+def safe_join(base_dir, user_path):
+    # Resolve to absolute path
+    full_path = os.path.realpath(os.path.join(base_dir, user_path))
+    
+    # Ensure it's still under base_dir
+    if not full_path.startswith(os.path.realpath(base_dir)):
+        raise ValueError("Path traversal attempt detected")
+    
+    return full_path"""
+        ),
+        RemediationStep(
+            order=3,
+            title="Run application with minimal permissions",
+            description="Limit what files the application can access even if path traversal occurs.",
+            command="""# Create dedicated user with limited access:
+useradd -r -s /bin/false appuser
+chown -R appuser:appuser /var/www/app
+chmod -R 750 /var/www/app
+
+# Run application as this user
+# Use chroot or containers to limit filesystem access"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Re-run vulnerability scan",
+            expected_result="Path traversal no longer detected",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Path traversal can expose /etc/passwd, application source code, configuration files with credentials, and potentially allow code execution.",
+    common_mistakes=[
+        "Only blocking '../' but not URL-encoded variants (%2e%2e%2f)",
+        "Only checking at one layer but not after URL decoding",
+        "Using blocklists instead of allowlists"
+    ],
+    references=[
+        "https://owasp.org/www-community/attacks/Path_Traversal",
+        "https://portswigger.net/web-security/file-path-traversal",
+    ],
+    related_cwe="CWE-22",
+    tags=["path-traversal", "lfi", "file-inclusion", "nuclei"],
+))
+
+_register_playbook(RemediationPlaybook(
+    id="vuln-open-redirect",
+    title="Fix Open Redirect Vulnerability",
+    summary="Open redirect allows attackers to redirect users to malicious sites using your domain's trust.",
+    priority=RemediationPriority.MEDIUM,
+    effort=RemediationEffort.LOW,
+    estimated_time="1-2 hours",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Validate redirect URLs against allowlist",
+            description="Only allow redirects to known-safe domains or relative URLs.",
+            command="""# Python example:
+from urllib.parse import urlparse
+
+ALLOWED_HOSTS = ['example.com', 'www.example.com']
+
+def safe_redirect(url):
+    parsed = urlparse(url)
+    
+    # Allow relative URLs
+    if not parsed.netloc:
+        return url
+    
+    # Check against allowlist
+    if parsed.netloc in ALLOWED_HOSTS:
+        return url
+    
+    # Reject external redirects
+    raise ValueError("Redirect to external site not allowed")"""
+        ),
+        RemediationStep(
+            order=2,
+            title="Use indirect references",
+            description="Instead of accepting URLs, accept tokens that map to predefined destinations.",
+            command="""# Instead of: /redirect?url=https://evil.com
+# Use: /redirect?destination=dashboard
+
+DESTINATIONS = {
+    'dashboard': '/user/dashboard',
+    'settings': '/user/settings',
+    'logout': '/auth/logout',
+}
+
+def redirect(destination):
+    if destination not in DESTINATIONS:
+        return redirect_to_home()
+    return redirect_to(DESTINATIONS[destination])"""
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Verify external redirects are blocked",
+            expected_result="Redirect to external site fails",
+            command="curl -I 'https://target.com/redirect?url=https://evil.com'",
+            automated=True
+        ),
+    ],
+    impact_if_not_fixed="Attackers use your trusted domain in phishing campaigns. Victims are more likely to trust a link to your site before being redirected to a malicious one.",
+    common_mistakes=[
+        "Only checking for http:// but not // or https://",
+        "Regex that can be bypassed with URL encoding",
+        "Allowing subdomains like evil.example.com"
+    ],
+    references=[
+        "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/11-Client-side_Testing/04-Testing_for_Client-side_URL_Redirect",
+        "https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html",
+    ],
+    related_cwe="CWE-601",
+    tags=["open-redirect", "redirect", "phishing", "nuclei"],
+))
+
 
 # =============================================================================
 # PLAYBOOK LOOKUP SERVICE
@@ -1706,12 +2347,39 @@ class RemediationPlaybookService:
         # XSS
         "CWE-79": "vuln-xss",
         "cwe-79": "vuln-xss",
-        # Path Traversal
-        "CWE-22": "vuln-outdated-software",
-        "cwe-22": "vuln-outdated-software",
+        # Path Traversal / LFI
+        "CWE-22": "vuln-path-traversal",
+        "cwe-22": "vuln-path-traversal",
         # Command Injection
         "CWE-78": "vuln-sqli",  # Similar remediation pattern
         "cwe-78": "vuln-sqli",
+        # Information Exposure (config files, etc.)
+        "CWE-200": "vuln-info-exposure",
+        "cwe-200": "vuln-info-exposure",
+        # Sensitive Data Exposure
+        "CWE-538": "vuln-info-exposure",
+        "cwe-538": "vuln-info-exposure",
+        # Source Code Exposure
+        "CWE-527": "vuln-git-exposure",
+        "cwe-527": "vuln-git-exposure",
+        # Backup File Exposure
+        "CWE-530": "vuln-backup-exposure",
+        "cwe-530": "vuln-backup-exposure",
+        # Directory Listing
+        "CWE-548": "vuln-directory-listing",
+        "cwe-548": "vuln-directory-listing",
+        # Default Credentials
+        "CWE-798": "vuln-default-credentials",
+        "cwe-798": "vuln-default-credentials",
+        # Hardcoded Credentials
+        "CWE-259": "vuln-default-credentials",
+        "cwe-259": "vuln-default-credentials",
+        # Open Redirect
+        "CWE-601": "vuln-open-redirect",
+        "cwe-601": "vuln-open-redirect",
+        # Missing Security Headers
+        "CWE-693": "vuln-security-headers",
+        "cwe-693": "vuln-security-headers",
         # Outdated software
         "CWE-1104": "vuln-outdated-software",
         "cwe-1104": "vuln-outdated-software",
@@ -1724,6 +2392,37 @@ class RemediationPlaybookService:
         # Access control
         "CWE-284": "exposed-admin-panel",
         "cwe-284": "exposed-admin-panel",
+    }
+    
+    # Template/Tag pattern to playbook mapping (for Nuclei templates without CWE)
+    TEMPLATE_PATTERN_MAP = {
+        # Config exposure patterns
+        "config": "vuln-info-exposure",
+        "exposure": "vuln-info-exposure",
+        "exposed": "vuln-info-exposure",
+        "disclosure": "vuln-info-exposure",
+        "leak": "vuln-info-exposure",
+        # Git/Source code
+        "git-config": "vuln-git-exposure",
+        ".git": "vuln-git-exposure",
+        "git-exposure": "vuln-git-exposure",
+        "svn": "vuln-git-exposure",
+        # Backup files
+        "backup": "vuln-backup-exposure",
+        ".bak": "vuln-backup-exposure",
+        # Directory listing
+        "directory-listing": "vuln-directory-listing",
+        "dir-listing": "vuln-directory-listing",
+        # Default credentials
+        "default-login": "vuln-default-credentials",
+        "default-credential": "vuln-default-credentials",
+        "default-password": "vuln-default-credentials",
+        # Security headers
+        "missing-header": "vuln-security-headers",
+        "security-header": "vuln-security-headers",
+        # Redirect
+        "redirect": "vuln-open-redirect",
+        "open-redirect": "vuln-open-redirect",
     }
     
     @classmethod
@@ -1775,6 +2474,12 @@ class RemediationPlaybookService:
         if tags:
             for tag in tags:
                 tag_lower = tag.lower()
+                
+                # Check against template pattern map first
+                for pattern, playbook_id in cls.TEMPLATE_PATTERN_MAP.items():
+                    if pattern in tag_lower:
+                        return REMEDIATION_PLAYBOOKS.get(playbook_id)
+                
                 # IT services
                 if "ssh" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-ssh")
@@ -1789,6 +2494,8 @@ class RemediationPlaybookService:
                     return REMEDIATION_PLAYBOOKS.get("vuln-sqli")
                 if "xss" in tag_lower or "cross-site" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("vuln-xss")
+                if "lfi" in tag_lower or "path-traversal" in tag_lower or "traversal" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("vuln-path-traversal")
                 # OT/ICS
                 if "modbus" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
@@ -1804,6 +2511,13 @@ class RemediationPlaybookService:
                     return REMEDIATION_PLAYBOOKS.get("exposed-opc-ua")
                 if "ot" in tag_lower or "ics" in tag_lower or "scada" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
+        
+        # Try template ID pattern matching (for Nuclei templates)
+        if template_id:
+            template_lower = template_id.lower()
+            for pattern, playbook_id in cls.TEMPLATE_PATTERN_MAP.items():
+                if pattern in template_lower:
+                    return REMEDIATION_PLAYBOOKS.get(playbook_id)
         
         # If this is a CVE-based finding, return generic upgrade playbook
         if cve_id or (template_id and "cve" in template_id.lower()):
