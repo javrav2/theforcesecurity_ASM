@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 
 class RemediationPriority(str, Enum):
     """Priority level for remediation."""
-    CRITICAL = "critical"  # Fix immediately - active exploitation risk
-    HIGH = "high"          # Fix within 24-48 hours
-    MEDIUM = "medium"      # Fix within 1-2 weeks
-    LOW = "low"            # Fix when convenient
+    CRITICAL = "critical"  # Fix immediately (within hours) - active exploitation risk
+    HIGH = "high"          # Fix same day / within 24 hours
+    MEDIUM = "medium"      # Fix within 1 week
+    LOW = "low"            # Fix within 30 days
     INFORMATIONAL = "informational"  # No action required, awareness only
 
 
@@ -152,83 +152,93 @@ def _register_playbook(playbook: RemediationPlaybook):
 _register_playbook(RemediationPlaybook(
     id="exposed-ssh",
     title="Secure Exposed SSH Service",
-    summary="Restrict SSH access and implement security hardening to prevent brute-force attacks.",
-    priority=RemediationPriority.MEDIUM,
+    summary="URGENT: Restrict SSH access immediately. Exposed SSH is actively targeted by automated attacks within minutes of exposure.",
+    priority=RemediationPriority.HIGH,  # Fix within 24-48 hours (ideally same day)
     effort=RemediationEffort.LOW,
-    estimated_time="1-2 hours",
+    estimated_time="30 minutes - 2 hours",
     required_access=[RequiredAccess.ADMIN, RequiredAccess.INFRASTRUCTURE],
     steps=[
         RemediationStep(
             order=1,
-            title="Implement IP-based access restrictions",
-            description="Configure firewall or ACL rules to allow SSH only from trusted IP ranges (office, VPN, management network).",
-            command="""# Linux iptables:
+            title="IMMEDIATE: Restrict access to trusted IPs only",
+            description="This is the most critical step. Block SSH from the internet and only allow access from trusted IP ranges (office, VPN, management network). Do this FIRST.",
+            command="""# Linux iptables (immediate):
 sudo iptables -A INPUT -p tcp --dport 22 -s 10.0.0.0/8 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 22 -s <your-office-ip>/32 -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 22 -j DROP
 
 # Cisco IOS/ASA:
 access-list SSH-ACCESS permit tcp 10.0.0.0 0.255.255.255 host <device-ip> eq 22
 access-list SSH-ACCESS deny tcp any host <device-ip> eq 22
+line vty 0 15
+ access-class SSH-ACCESS in
 
-# Palo Alto:
-# Security Policy: Allow SSH from trusted zones only
+# Palo Alto / Fortinet / Other NGFW:
+# Security Policy: Source=Trusted-Mgmt-IPs, Dest=<device>, Port=22, Action=Allow
+# Default deny rule for all other SSH attempts
 
 # AWS Security Group:
-aws ec2 authorize-security-group-ingress --group-id sg-xxx --protocol tcp --port 22 --cidr 10.0.0.0/8""",
-            notes="Document all allowed IP ranges. For network devices, use management VLANs or out-of-band management networks."
+aws ec2 revoke-security-group-ingress --group-id sg-xxx --protocol tcp --port 22 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id sg-xxx --protocol tcp --port 22 --cidr <your-office-ip>/32""",
+            notes="CRITICAL: This single step eliminates 99% of the risk. Automated SSH attacks start within minutes of exposure. Complete this step immediately, then proceed with hardening."
         ),
         RemediationStep(
             order=2,
-            title="Disable password authentication (where applicable)",
-            description="For Linux/Unix servers, configure SSH to only allow key-based authentication. For network devices, use TACACS+/RADIUS with MFA.",
-            command="""# Linux - Edit /etc/ssh/sshd_config:
+            title="Enable key-based or certificate authentication",
+            description="Disable password authentication where possible. Use SSH keys for servers, and TACACS+/RADIUS with MFA for network devices.",
+            command="""# Linux/Unix - Edit /etc/ssh/sshd_config:
 PasswordAuthentication no
 PubkeyAuthentication yes
-# Then restart SSH:
+PermitRootLogin prohibit-password
+# Restart SSH:
 sudo systemctl restart sshd
 
-# Cisco IOS - Use AAA with TACACS+:
+# Cisco IOS - Centralized AAA:
 aaa new-model
 aaa authentication login default group tacacs+ local
+aaa authorization exec default group tacacs+ local
 
-# For network devices without key support:
-# Use strong passwords + TACACS+/RADIUS + MFA""",
-            notes="For network devices (routers, switches, firewalls), key-based auth may not be supported. Use centralized AAA (TACACS+/RADIUS) with MFA instead."
+# Network devices without key support:
+# Use TACACS+/RADIUS server with MFA (Duo, RSA SecurID, etc.)""",
+            notes="For network devices (routers, switches, firewalls), SSH keys may not be supported. Use centralized AAA (TACACS+/RADIUS) with MFA instead."
         ),
         RemediationStep(
             order=3,
-            title="Enable login attempt limiting",
-            description="Block or rate-limit repeated failed login attempts to prevent brute-force attacks.",
-            command="""# Linux - Install fail2ban:
+            title="Enable brute-force protection",
+            description="Rate-limit or block repeated failed login attempts.",
+            command="""# Linux - fail2ban (blocks after 5 failures):
 sudo apt install fail2ban
-sudo systemctl enable fail2ban
+sudo systemctl enable --now fail2ban
 
-# Cisco IOS - Login block:
+# Cisco IOS:
 login block-for 120 attempts 5 within 60
+login delay 2
 
-# Palo Alto - Brute Force Protection:
-# Configure in Device > Setup > Management > Authentication Settings
+# Juniper:
+set system login retry-options tries-before-disconnect 3
+set system login retry-options backoff-threshold 1
+set system login retry-options backoff-factor 5
 
-# Juniper - Connection rate limiting:
-set system login retry-options tries-before-disconnect 3""",
-            notes="Most network devices have built-in brute-force protection - enable it."
+# Palo Alto:
+# Device > Setup > Management > Authentication Settings > Lockout""",
+            notes="This provides defense-in-depth but is NOT a substitute for Step 1 (IP restrictions)."
         ),
         RemediationStep(
             order=4,
-            title="Use bastion host, VPN, or management network",
-            description="Route all SSH/management access through a dedicated jump host, VPN, or isolated management network.",
+            title="Long-term: Implement VPN or bastion architecture",
+            description="For production environments, eliminate direct SSH exposure entirely by requiring VPN or using a bastion/jump host.",
             command="""# Options by environment:
 
 # On-premises / Network devices:
-# - Use out-of-band management network (OOB)
-# - Require VPN connection before accessing management interfaces
-# - Deploy a hardened bastion/jump server
+# - Out-of-band management network (OOB) - isolate management traffic
+# - Require VPN connection to reach management interfaces
+# - Hardened bastion/jump server with full audit logging
 
 # Cloud:
-# - AWS: Use Systems Manager Session Manager (no SSH needed)
+# - AWS: Use Systems Manager Session Manager (no SSH port needed)
 # - Azure: Use Azure Bastion
-# - Both: Or deploy a bastion host in a private subnet""",
-            notes="This is the most important long-term fix. Management interfaces should never be directly internet-accessible."
+# - Deploy bastion host in private subnet, SSH only from bastion""",
+            notes="This is the gold standard for SSH security. Management traffic should never traverse the public internet directly."
         ),
     ],
     verification=[
