@@ -104,6 +104,52 @@ def create_vulnerability(
     return new_vuln
 
 
+# NOTE: Static paths MUST be defined before parameterized paths like /{vuln_id}
+# Otherwise FastAPI will try to parse "duplicates" as an integer ID
+
+@router.get("/duplicates")
+def find_duplicate_findings(
+    organization_id: Optional[int] = None,
+    dry_run: bool = Query(True, description="If true, report but don't link duplicates"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Find and optionally link duplicate findings across related assets.
+    
+    This identifies cases where the same vulnerability exists on:
+    - A domain and its resolved IP address
+    - A subdomain and its parent domain
+    - Multiple assets that resolve to the same IP
+    
+    Useful for cleaning up WAF bypass scenarios where findings are
+    detected on both the domain (protected) and IP (unprotected).
+    """
+    from app.services.finding_deduplication_service import get_deduplication_service
+    
+    # Use organization from user if not specified
+    if organization_id is None and not current_user.is_superuser:
+        organization_id = current_user.organization_id
+    
+    if organization_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="organization_id is required for non-superuser users"
+        )
+    
+    dedup_service = get_deduplication_service(db)
+    result = dedup_service.deduplicate_findings_for_organization(
+        organization_id=organization_id,
+        dry_run=dry_run
+    )
+    
+    return {
+        "dry_run": dry_run,
+        "message": "Duplicate analysis complete" if dry_run else "Duplicates linked",
+        **result
+    }
+
+
 @router.get("/{vuln_id}", response_model=VulnerabilityResponse)
 def get_vulnerability(
     vuln_id: int,
@@ -444,49 +490,6 @@ def get_vulnerability_exposure(
         "severity_distribution": severity_distribution,
         "top_vulnerable_assets": top_assets,
         "exposure_trend": trend
-    }
-
-
-@router.get("/duplicates")
-def find_duplicate_findings(
-    organization_id: Optional[int] = None,
-    dry_run: bool = Query(True, description="If true, report but don't link duplicates"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_analyst)
-):
-    """
-    Find and optionally link duplicate findings across related assets.
-    
-    This identifies cases where the same vulnerability exists on:
-    - A domain and its resolved IP address
-    - A subdomain and its parent domain
-    - Multiple assets that resolve to the same IP
-    
-    Useful for cleaning up WAF bypass scenarios where findings are
-    detected on both the domain (protected) and IP (unprotected).
-    """
-    from app.services.finding_deduplication_service import get_deduplication_service
-    
-    # Use organization from user if not specified
-    if organization_id is None and not current_user.is_superuser:
-        organization_id = current_user.organization_id
-    
-    if organization_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="organization_id is required for non-superuser users"
-        )
-    
-    dedup_service = get_deduplication_service(db)
-    result = dedup_service.deduplicate_findings_for_organization(
-        organization_id=organization_id,
-        dry_run=dry_run
-    )
-    
-    return {
-        "dry_run": dry_run,
-        "message": "Duplicate analysis complete" if dry_run else "Duplicates linked",
-        **result
     }
 
 
