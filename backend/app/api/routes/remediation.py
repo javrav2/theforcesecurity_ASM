@@ -265,6 +265,7 @@ def get_remediation_workload(
     - Prioritized action list (quick wins, highest impact)
     """
     from sqlalchemy import func
+    from sqlalchemy.orm import joinedload
     from app.models.vulnerability import VulnerabilityStatus, Severity
     from app.models.asset import Asset
     
@@ -286,8 +287,10 @@ def get_remediation_workload(
         "info": 0.25,
     }
     
-    # Build base query for open findings
-    query = db.query(Vulnerability).filter(
+    # Build base query for open findings with eager loading
+    query = db.query(Vulnerability).options(
+        joinedload(Vulnerability.asset)
+    ).filter(
         Vulnerability.status.in_([
             VulnerabilityStatus.OPEN,
             VulnerabilityStatus.IN_PROGRESS,
@@ -433,10 +436,13 @@ def get_prioritized_remediation_list(
     Sorted by severity and then by effort (easier fixes first).
     Groups findings by playbook for batch remediation.
     """
+    from sqlalchemy.orm import joinedload
     from app.models.vulnerability import VulnerabilityStatus, Severity
     from app.models.asset import Asset
     
-    query = db.query(Vulnerability).filter(
+    query = db.query(Vulnerability).options(
+        joinedload(Vulnerability.asset)
+    ).filter(
         Vulnerability.status.in_([
             VulnerabilityStatus.OPEN,
             VulnerabilityStatus.IN_PROGRESS,
