@@ -252,6 +252,7 @@ def get_remediation_stats(
 @router.get("/workload")
 def get_remediation_workload(
     organization_id: Optional[int] = None,
+    include_info: bool = Query(False, description="Include informational findings in workload"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -263,6 +264,9 @@ def get_remediation_workload(
     - Comparison to 40-hour work weeks
     - Breakdown by severity, effort level, and playbook
     - Prioritized action list (quick wins, highest impact)
+    
+    Note: Informational findings are excluded by default since they 
+    typically don't require remediation. Use include_info=true to include them.
     """
     import logging
     from sqlalchemy import func
@@ -300,6 +304,10 @@ def get_remediation_workload(
                 VulnerabilityStatus.IN_PROGRESS,
             ])
         )
+        
+        # Exclude informational findings by default
+        if not include_info:
+            query = query.filter(Vulnerability.severity != Severity.INFO)
         
         if organization_id:
             query = query.join(Asset).filter(Asset.organization_id == organization_id)
@@ -444,6 +452,7 @@ def get_remediation_workload(
 @router.get("/prioritized-list")
 def get_prioritized_remediation_list(
     organization_id: Optional[int] = None,
+    include_info: bool = Query(False, description="Include informational findings"),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -453,6 +462,9 @@ def get_prioritized_remediation_list(
     
     Sorted by severity and then by effort (easier fixes first).
     Groups findings by playbook for batch remediation.
+    
+    Note: Informational findings are excluded by default since they 
+    typically don't require remediation. Use include_info=true to include them.
     """
     from sqlalchemy.orm import joinedload
     from app.models.vulnerability import VulnerabilityStatus, Severity
@@ -470,6 +482,10 @@ def get_prioritized_remediation_list(
                 VulnerabilityStatus.IN_PROGRESS,
             ])
         )
+        
+        # Exclude informational findings by default
+        if not include_info:
+            query = query.filter(Vulnerability.severity != Severity.INFO)
         
         if organization_id:
             query = query.join(Asset).filter(Asset.organization_id == organization_id)

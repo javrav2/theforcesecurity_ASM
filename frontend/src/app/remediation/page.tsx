@@ -173,6 +173,9 @@ export default function RemediationPage() {
             <p className="text-muted-foreground">
               Plan and prioritize your security remediation efforts
             </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Informational findings excluded — they typically don&apos;t require remediation
+            </p>
           </div>
           <Button onClick={handleRefresh} disabled={refreshing} variant="outline">
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
@@ -262,7 +265,7 @@ export default function RemediationPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {['critical', 'high', 'medium', 'low', 'info'].map((severity) => {
+                {['critical', 'high', 'medium', 'low'].map((severity) => {
                   const hours = workload?.by_severity?.hours?.[severity] || 0;
                   const count = workload?.by_severity?.counts?.[severity] || 0;
                   const maxHours = Math.max(...Object.values(workload?.by_severity?.hours || { a: 1 }));
