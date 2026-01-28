@@ -55,6 +55,7 @@ export default function UsersPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
+    username: '',
     password: '',
     full_name: '',
     role: 'analyst',
@@ -87,7 +88,7 @@ export default function UsersPage() {
   };
 
   const handleCreate = async () => {
-    if (!formData.email || !formData.password || !formData.full_name) {
+    if (!formData.email || !formData.username || !formData.password || !formData.full_name) {
       toast({
         title: 'Error',
         description: 'Please fill in all required fields',
@@ -104,7 +105,7 @@ export default function UsersPage() {
         description: 'User created successfully',
       });
       setCreateDialogOpen(false);
-      setFormData({ email: '', password: '', full_name: '', role: 'analyst' });
+      setFormData({ email: '', username: '', password: '', full_name: '', role: 'analyst' });
       fetchUsers();
     } catch (error: any) {
       toast({
@@ -164,6 +165,16 @@ export default function UsersPage() {
                     placeholder="John Doe"
                     value={formData.full_name}
                     onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="username">Username</Label>
+                  <Input
+                    id="username"
+                    placeholder="johndoe"
+                    value={formData.username}
+                    onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                   />
                 </div>
 

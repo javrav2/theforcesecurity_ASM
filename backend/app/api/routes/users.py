@@ -25,6 +25,48 @@ def list_users(
     return users
 
 
+@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def create_user(
+    user_data: UserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin)
+):
+    """Create a new user (admin only)."""
+    # Check if email already exists
+    existing_email = db.query(User).filter(User.email == user_data.email).first()
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Check if username already exists
+    existing_username = db.query(User).filter(User.username == user_data.username).first()
+    if existing_username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already taken"
+        )
+    
+    # Create new user
+    new_user = User(
+        email=user_data.email,
+        username=user_data.username,
+        hashed_password=get_password_hash(user_data.password),
+        full_name=user_data.full_name,
+        role=user_data.role,
+        organization_id=user_data.organization_id,
+        is_active=True,
+        is_superuser=False
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return new_user
+
+
 @router.get("/{user_id}", response_model=UserResponse)
 def get_user(
     user_id: int,

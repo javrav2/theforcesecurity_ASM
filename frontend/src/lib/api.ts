@@ -810,7 +810,7 @@ class ApiClient {
     return response.data;
   }
 
-  async createUser(data: { email: string; password: string; full_name: string; role?: string }) {
+  async createUser(data: { email: string; username: string; password: string; full_name: string; role?: string }) {
     const response = await this.client.post('/users', data);
     return response.data;
   }
