@@ -1015,12 +1015,8 @@ class ScannerWorker:
                     ).first()
                     
                     if asset:
-                        primary_ip = dns_result.ip_addresses[0]
-                        asset.ip_address = primary_ip
-                        
-                        # Store all IPs
-                        if hasattr(asset, 'set_ip_addresses'):
-                            asset.set_ip_addresses(dns_result.ip_addresses)
+                        # Update all IPs using the helper method
+                        asset.update_ip_addresses(dns_result.ip_addresses)
                         
                         # Store DNS records
                         if not asset.metadata_:
@@ -1150,8 +1146,8 @@ class ScannerWorker:
                         asset.http_status = result.status_code
                         asset.http_title = result.title
                         asset.live_url = result.url
-                        if result.ip_address and not asset.ip_address:
-                            asset.ip_address = result.ip_address
+                        if result.ip_address:
+                            asset.add_ip_address(result.ip_address)
                         asset.last_seen = datetime.utcnow()
                         live_count += 1
                 

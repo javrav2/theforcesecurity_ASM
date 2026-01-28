@@ -261,10 +261,13 @@ async def enumerate_subdomains(
                     discovery_source=r.source,
                     tags=["discovery", "subdomain-enum"],
                 )
-                # Store resolved IPs in metadata
+                # Store resolved IPs
                 if r.ip_addresses:
                     subdomain_asset.ip_address = r.ip_addresses[0]
-                    subdomain_asset.metadata_ = {"ip_addresses": r.ip_addresses}
+                    subdomain_asset.ip_addresses = r.ip_addresses
+                    if not subdomain_asset.metadata_:
+                        subdomain_asset.metadata_ = {}
+                    subdomain_asset.metadata_["dns_resolved_at"] = datetime.utcnow().isoformat()
                 
                 db.add(subdomain_asset)
                 assets_created += 1

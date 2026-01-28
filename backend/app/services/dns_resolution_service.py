@@ -383,13 +383,8 @@ class DNSResolutionService:
                 summary["failed"] += 1
                 continue
             
-            # Update asset with first IP (primary)
-            primary_ip = dns_result.ip_addresses[0]
-            asset.ip_address = primary_ip
-            
-            # Store all IPs using the multi-value method if available
-            if hasattr(asset, 'set_ip_addresses'):
-                asset.set_ip_addresses(dns_result.ip_addresses)
+            # Update asset with all resolved IPs
+            asset.update_ip_addresses(dns_result.ip_addresses)
             
             # Store DNS records in metadata
             if not asset.metadata_:
@@ -521,8 +516,8 @@ class DNSResolutionService:
                 asset.live_url = result.url
                 
                 # Update IP if discovered
-                if result.ip_address and not asset.ip_address:
-                    asset.ip_address = result.ip_address
+                if result.ip_address:
+                    asset.add_ip_address(result.ip_address)
                 
                 asset.last_seen = datetime.utcnow()
                 summary["live"] += 1

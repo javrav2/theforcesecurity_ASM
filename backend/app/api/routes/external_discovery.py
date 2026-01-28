@@ -1166,9 +1166,7 @@ async def enrich_domains_dns(
                 # Update IP addresses if found
                 ips = dns_data.get("summary", {}).get("ip_addresses", [])
                 if ips:
-                    domain_asset.ip_address = ips[0]
-                    if hasattr(domain_asset, 'ip_addresses'):
-                        domain_asset.ip_addresses = ips
+                    domain_asset.update_ip_addresses(ips)
                 
                 enriched_count += 1
                 results.append({
@@ -1255,7 +1253,7 @@ async def get_asset_dns_records(
                 
                 ips = dns_data.get("summary", {}).get("ip_addresses", [])
                 if ips:
-                    asset.ip_address = ips[0]
+                    asset.update_ip_addresses(ips)
                 
                 db.commit()
                 db.refresh(asset)

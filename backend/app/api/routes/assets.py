@@ -1378,8 +1378,8 @@ async def resolve_assets_dns(
             if asset.value in dns_map:
                 dns_result = dns_map[asset.value]
                 if dns_result.a_records:
-                    asset.ip_address = dns_result.a_records[0]
-                    asset.ip_addresses = dns_result.a_records + dns_result.aaaa_records
+                    all_ips = dns_result.a_records + dns_result.aaaa_records
+                    asset.update_ip_addresses(all_ips)
                     asset.last_seen = datetime.utcnow()
                     resolved_count += 1
         
