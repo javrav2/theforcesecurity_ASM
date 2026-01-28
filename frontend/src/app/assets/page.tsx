@@ -182,7 +182,7 @@ export default function AssetsPage() {
   const [columns, setColumns] = useState<Column[]>([
     { key: 'screenshot', label: 'Screenshot', visible: true },
     { key: 'type', label: 'Type', visible: true },
-    { key: 'hostname', label: 'Hostname', visible: true },
+    { key: 'hostname', label: 'Host', visible: true },
     { key: 'is_live', label: 'Live', visible: true },
     { key: 'has_login_portal', label: 'Login', visible: true },
     { key: 'http_status', label: 'HTTP', visible: true },
@@ -352,7 +352,7 @@ export default function AssetsPage() {
 
   const handleExport = () => {
     const csv = [
-      ['Type', 'Hostname', 'IP Address', 'Labels', 'Status', 'Findings', 'Last Seen'],
+      ['Type', 'Host', 'IP Address', 'Labels', 'Status', 'Findings', 'Last Seen'],
       ...displayedAssets.map(a => [
         a.type || a.asset_type,
         a.name || a.value,
