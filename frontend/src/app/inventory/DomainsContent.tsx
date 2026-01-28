@@ -449,7 +449,7 @@ export default function DomainsContent() {
         organization_id: 1,
         name: domain,
         value: domain,
-        asset_type: domain.split('.').length > 2 ? 'subdomain' : 'domain',
+        asset_type: domain.split('.').length > 2 ? 'SUBDOMAIN' : 'DOMAIN',
         in_scope: true,
         discovery_source: 'manual',
         association_reason: 'Manually added',
