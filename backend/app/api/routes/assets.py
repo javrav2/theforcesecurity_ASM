@@ -2446,3 +2446,172 @@ async def calculate_all_risk_drivers(
         "message": f"Calculated risk drivers for {stats['total']} assets",
         "statistics": stats
     }
+
+
+# =============================================================================
+# ASSET MERGE ENDPOINTS
+# =============================================================================
+
+@router.get("/merge/preview")
+def preview_asset_merges(
+    organization_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Preview which assets would be merged.
+    
+    Shows:
+    - IP assets that should be merged into their parent domain
+    - Duplicate domain/subdomain records
+    
+    No changes are made - this is a dry run.
+    """
+    from app.services.asset_merge_service import get_asset_merge_service
+    
+    # Use org from user if not specified
+    if not organization_id and not current_user.is_superuser:
+        organization_id = current_user.organization_id
+    
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="organization_id required")
+    
+    service = get_asset_merge_service(db)
+    results = service.find_mergeable_assets(organization_id)
+    
+    return {
+        "organization_id": organization_id,
+        "preview": results,
+        "message": f"Found {results['total_mergeable']} assets that can be merged",
+    }
+
+
+@router.post("/merge/execute")
+def execute_asset_merges(
+    organization_id: Optional[int] = None,
+    merge_ips: bool = Query(True, description="Merge IP assets into parent domains"),
+    merge_duplicates: bool = Query(True, description="Merge duplicate domain records"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Execute asset merges for an organization.
+    
+    This will:
+    1. Merge IP assets into their parent domain assets
+       - Move vulnerabilities, ports, and screenshots to the domain
+       - Delete the IP asset
+    2. Merge duplicate domain records
+       - Consolidate to the oldest record
+       - Move all findings to the primary
+    
+    Use /merge/preview first to see what will be merged.
+    """
+    from app.services.asset_merge_service import get_asset_merge_service
+    
+    # Use org from user if not specified
+    if not organization_id and not current_user.is_superuser:
+        organization_id = current_user.organization_id
+    
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="organization_id required")
+    
+    service = get_asset_merge_service(db)
+    
+    # Get mergeable assets
+    mergeable = service.find_mergeable_assets(organization_id)
+    
+    results = {
+        "organization_id": organization_id,
+        "ip_merges": [],
+        "domain_merges": [],
+        "errors": [],
+    }
+    
+    # Execute IP to domain merges
+    if merge_ips:
+        for merge in mergeable["ip_to_domain_merges"]:
+            try:
+                result = service.merge_ip_into_domain(
+                    merge["ip_asset_id"],
+                    merge["domain_asset_id"],
+                    delete_ip_asset=True,
+                )
+                results["ip_merges"].append(result)
+            except Exception as e:
+                logger.error(f"Error merging IP {merge['ip_asset_id']}: {e}")
+                results["errors"].append({
+                    "type": "ip_merge",
+                    "ip_asset_id": merge["ip_asset_id"],
+                    "error": str(e),
+                })
+    
+    # Execute duplicate domain merges
+    if merge_duplicates:
+        for dup in mergeable["duplicate_domains"]:
+            try:
+                result = service.merge_duplicate_domains(dup["asset_ids"])
+                results["domain_merges"].append(result)
+            except Exception as e:
+                logger.error(f"Error merging duplicates for {dup['value']}: {e}")
+                results["errors"].append({
+                    "type": "domain_merge",
+                    "value": dup["value"],
+                    "error": str(e),
+                })
+    
+    results["summary"] = {
+        "ip_merges_completed": len(results["ip_merges"]),
+        "domain_merges_completed": len(results["domain_merges"]),
+        "errors": len(results["errors"]),
+    }
+    
+    return results
+
+
+@router.post("/merge/specific")
+def merge_specific_assets(
+    source_asset_id: int = Query(..., description="Asset to merge FROM (will be deleted)"),
+    target_asset_id: int = Query(..., description="Asset to merge INTO (will be kept)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Merge a specific source asset into a target asset.
+    
+    The source asset's findings, ports, and screenshots are moved to the target.
+    The source asset is then deleted.
+    
+    Use this for manual merges when automatic detection doesn't work.
+    """
+    from app.services.asset_merge_service import get_asset_merge_service
+    
+    # Verify both assets exist and user has access
+    source = db.query(Asset).filter(Asset.id == source_asset_id).first()
+    target = db.query(Asset).filter(Asset.id == target_asset_id).first()
+    
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Source asset {source_asset_id} not found")
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Target asset {target_asset_id} not found")
+    
+    if source.organization_id != target.organization_id:
+        raise HTTPException(status_code=400, detail="Assets must belong to the same organization")
+    
+    if not current_user.is_superuser and current_user.organization_id != source.organization_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    service = get_asset_merge_service(db)
+    
+    # Determine merge type
+    if source.asset_type == AssetType.IP_ADDRESS and target.asset_type in [AssetType.DOMAIN, AssetType.SUBDOMAIN]:
+        result = service.merge_ip_into_domain(source_asset_id, target_asset_id, delete_ip_asset=True)
+    else:
+        # Generic merge (treat source as duplicate of target)
+        result = service.merge_duplicate_domains([target_asset_id, source_asset_id])
+    
+    return {
+        "success": True,
+        "result": result,
+        "message": f"Merged asset {source.value} into {target.value}",
+    }
