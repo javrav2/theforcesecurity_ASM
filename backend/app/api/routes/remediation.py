@@ -542,3 +542,183 @@ def get_prioritized_remediation_list(
         "findings": result,
         "total": len(result),
     }
+
+
+# =============================================================================
+# NUCLEI TEMPLATE PARSING ENDPOINTS
+# =============================================================================
+
+@router.get("/nuclei-templates/stats")
+def get_nuclei_template_stats(
+    subdirectory: Optional[str] = Query(None, description="Subdirectory to scan (e.g., 'http/cves')"),
+    severity: Optional[str] = Query(None, description="Filter by severity (comma-separated)"),
+    limit: int = Query(1000, ge=1, le=10000),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get statistics about available Nuclei templates.
+    
+    Shows counts by severity, category, and how many have built-in remediation.
+    """
+    from app.services.nuclei_template_parser_service import get_template_parser
+    
+    parser = get_template_parser()
+    
+    # Parse severity filter
+    severity_filter = None
+    if severity:
+        severity_filter = [s.strip().lower() for s in severity.split(',')]
+    
+    templates = parser.parse_templates_directory(
+        subdirectory=subdirectory,
+        limit=limit,
+        severity_filter=severity_filter,
+    )
+    
+    stats = parser.get_templates_stats(templates)
+    
+    return {
+        "templates_path": parser.templates_path,
+        **stats,
+    }
+
+
+@router.get("/nuclei-templates/search")
+def search_nuclei_templates(
+    query: str = Query(..., min_length=2, description="Search term"),
+    severity: Optional[str] = Query(None, description="Filter by severity"),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Search Nuclei templates by ID, name, or tags.
+    
+    Returns matching templates with their remediation info.
+    """
+    from app.services.nuclei_template_parser_service import get_template_parser
+    
+    parser = get_template_parser()
+    query_lower = query.lower()
+    
+    # Parse severity filter
+    severity_filter = None
+    if severity:
+        severity_filter = [s.strip().lower() for s in severity.split(',')]
+    
+    # Search through templates
+    templates = parser.parse_templates_directory(
+        limit=5000,  # Search a reasonable number
+        severity_filter=severity_filter,
+    )
+    
+    results = []
+    for t in templates:
+        # Match on id, name, or tags
+        if (query_lower in t.id.lower() or 
+            query_lower in t.name.lower() or 
+            any(query_lower in tag.lower() for tag in t.tags)):
+            
+            stub = parser.generate_playbook_stub(t)
+            results.append({
+                "template_id": t.id,
+                "name": t.name,
+                "severity": t.severity,
+                "category": t.category,
+                "tags": t.tags,
+                "has_remediation": bool(t.remediation),
+                "remediation_preview": t.remediation[:200] if t.remediation else None,
+                "cve_id": t.cve_id,
+                "cwe_id": t.cwe_id,
+                "suggested_effort": stub.effort,
+                "suggested_time": stub.estimated_time,
+            })
+            
+            if len(results) >= limit:
+                break
+    
+    return {
+        "query": query,
+        "results": results,
+        "total": len(results),
+    }
+
+
+@router.get("/nuclei-templates/{template_id}")
+def get_nuclei_template_details(
+    template_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get detailed information about a specific Nuclei template.
+    
+    Includes full remediation text and generated playbook stub.
+    """
+    from app.services.nuclei_template_parser_service import find_matching_nuclei_template, get_template_parser
+    
+    template = find_matching_nuclei_template(template_id)
+    
+    if not template:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nuclei template '{template_id}' not found"
+        )
+    
+    parser = get_template_parser()
+    stub = parser.generate_playbook_stub(template)
+    
+    return {
+        "template": template.to_dict(),
+        "generated_playbook": stub.to_dict(),
+    }
+
+
+@router.post("/nuclei-templates/generate-playbooks")
+def generate_playbooks_from_templates(
+    subdirectory: Optional[str] = Query(None, description="Subdirectory to scan"),
+    severity: Optional[str] = Query(None, description="Filter by severity (comma-separated)"),
+    only_with_remediation: bool = Query(True, description="Only include templates with remediation text"),
+    limit: int = Query(500, ge=1, le=5000),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Generate playbook stubs from Nuclei templates.
+    
+    This creates a JSON file with playbook stubs that can be imported
+    into the remediation playbook system.
+    
+    Returns statistics about generated playbooks.
+    """
+    import tempfile
+    from app.services.nuclei_template_parser_service import generate_playbooks_from_nuclei
+    
+    # Parse severity filter
+    severity_filter = None
+    if severity:
+        severity_filter = [s.strip().lower() for s in severity.split(',')]
+    
+    # Generate to temp file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        output_path = f.name
+    
+    stats = generate_playbooks_from_nuclei(
+        output_path=output_path,
+        subdirectory=subdirectory,
+        severity_filter=severity_filter,
+        only_with_remediation=only_with_remediation,
+        limit=limit,
+    )
+    
+    # Read the generated file
+    import json
+    with open(output_path, 'r') as f:
+        playbooks = json.load(f)
+    
+    # Clean up
+    import os
+    os.unlink(output_path)
+    
+    return {
+        "stats": stats,
+        "playbooks": playbooks[:50],  # Return first 50 as preview
+        "message": f"Generated {stats['exported']} playbook stubs from {stats['total']} templates",
+    }

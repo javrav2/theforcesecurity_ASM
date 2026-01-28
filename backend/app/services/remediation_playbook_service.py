@@ -279,10 +279,10 @@ set system login retry-options backoff-factor 5
 _register_playbook(RemediationPlaybook(
     id="exposed-rdp",
     title="Secure Exposed RDP Service",
-    summary="RDP exposed to internet is a critical risk - implement VPN/gateway access and enable NLA immediately.",
+    summary="RDP exposed to internet is a critical risk - block at firewall immediately, then implement VPN/gateway access.",
     priority=RemediationPriority.CRITICAL,
-    effort=RemediationEffort.MEDIUM,
-    estimated_time="2-4 hours",
+    effort=RemediationEffort.MINIMAL,  # Blocking port takes 15-30 min
+    estimated_time="15-30 minutes",
     required_access=[RequiredAccess.ADMIN, RequiredAccess.INFRASTRUCTURE],
     steps=[
         RemediationStep(
@@ -457,10 +457,10 @@ _register_playbook(RemediationPlaybook(
 _register_playbook(RemediationPlaybook(
     id="exposed-mysql",
     title="Secure Exposed MySQL Database",
-    summary="Block public MySQL access and implement proper security controls.",
+    summary="Block public MySQL access at firewall immediately.",
     priority=RemediationPriority.CRITICAL,
-    effort=RemediationEffort.MEDIUM,
-    estimated_time="2-4 hours",
+    effort=RemediationEffort.MINIMAL,  # Blocking port takes 15-30 min
+    estimated_time="15-30 minutes",
     required_access=[RequiredAccess.ADMIN, RequiredAccess.INFRASTRUCTURE],
     steps=[
         RemediationStep(
@@ -595,10 +595,10 @@ _register_playbook(RemediationPlaybook(
 _register_playbook(RemediationPlaybook(
     id="exposed-mongodb",
     title="Secure Exposed MongoDB Instance",
-    summary="MongoDB has been involved in massive data breaches - enable authentication and restrict access.",
+    summary="Block public MongoDB access at firewall immediately - MongoDB breaches have exposed billions of records.",
     priority=RemediationPriority.CRITICAL,
-    effort=RemediationEffort.MEDIUM,
-    estimated_time="2-3 hours",
+    effort=RemediationEffort.MINIMAL,  # Blocking port takes 15-30 min
+    estimated_time="15-30 minutes",
     required_access=[RequiredAccess.ADMIN],
     steps=[
         RemediationStep(
@@ -849,10 +849,10 @@ _register_playbook(RemediationPlaybook(
 _register_playbook(RemediationPlaybook(
     id="exposed-ftp",
     title="Secure or Replace Exposed FTP Service",
-    summary="FTP transmits data in cleartext - replace with SFTP or at minimum secure the configuration.",
+    summary="FTP transmits data in cleartext - block at firewall and replace with SFTP.",
     priority=RemediationPriority.HIGH,
-    effort=RemediationEffort.MEDIUM,
-    estimated_time="2-4 hours",
+    effort=RemediationEffort.LOW,  # Blocking port is quick; SFTP setup takes 1-2 hours
+    estimated_time="1-2 hours",
     required_access=[RequiredAccess.ADMIN],
     steps=[
         RemediationStep(
@@ -2586,3 +2586,100 @@ class RemediationPlaybookService:
                 results.append(playbook)
         
         return results
+    
+    @classmethod
+    def get_remediation_from_nuclei_template(
+        cls,
+        template_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get remediation info directly from a Nuclei template.
+        
+        This is a fallback when no built-in playbook matches.
+        Reads the template file and extracts remediation info.
+        """
+        try:
+            from app.services.nuclei_template_parser_service import (
+                find_matching_nuclei_template,
+                get_template_parser,
+            )
+            
+            template = find_matching_nuclei_template(template_id)
+            if not template:
+                return None
+            
+            parser = get_template_parser()
+            stub = parser.generate_playbook_stub(template)
+            
+            return {
+                "source": "nuclei_template",
+                "template_id": template.id,
+                "name": template.name,
+                "severity": template.severity,
+                "has_remediation": stub.has_remediation,
+                "remediation_text": stub.remediation_text,
+                "suggested_effort": stub.effort,
+                "suggested_time": stub.estimated_time,
+                "references": template.reference,
+                "cwe_id": template.cwe_id,
+                "cve_id": template.cve_id,
+                "tags": template.tags,
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error getting Nuclei template remediation for {template_id}: {e}")
+            return None
+    
+    @classmethod
+    def get_playbook_or_template_remediation(
+        cls,
+        title: Optional[str] = None,
+        template_id: Optional[str] = None,
+        port: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+        cwe_id: Optional[str] = None,
+        cve_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get remediation guidance from either a built-in playbook or Nuclei template.
+        
+        First tries to match a built-in playbook, then falls back to extracting
+        remediation from the Nuclei template itself.
+        
+        Returns a dict with:
+        - source: "playbook" or "nuclei_template" or "none"
+        - playbook: RemediationPlaybook dict if matched
+        - template_info: Nuclei template info if used as fallback
+        """
+        # Try built-in playbook first
+        playbook = cls.get_playbook_for_finding(
+            title=title,
+            template_id=template_id,
+            port=port,
+            tags=tags,
+            cwe_id=cwe_id,
+            cve_id=cve_id,
+        )
+        
+        if playbook:
+            return {
+                "source": "playbook",
+                "playbook": playbook.to_dict(),
+                "template_info": None,
+            }
+        
+        # Try to get remediation from Nuclei template
+        if template_id:
+            template_info = cls.get_remediation_from_nuclei_template(template_id)
+            if template_info and template_info.get("has_remediation"):
+                return {
+                    "source": "nuclei_template",
+                    "playbook": None,
+                    "template_info": template_info,
+                }
+        
+        return {
+            "source": "none",
+            "playbook": None,
+            "template_info": None,
+        }
