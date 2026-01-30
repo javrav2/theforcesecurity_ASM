@@ -207,16 +207,32 @@ class DiscoveryService:
             progress.completed_steps += 1
             self._report_progress(progress, progress_callback, scan_id)
             
-            # Step 2: Subdomain Discovery
+            # Step 2: Subdomain Discovery (with recursive multi-level enumeration)
             progress.current_step = "Subdomain discovery"
             self._report_progress(progress, progress_callback, scan_id)
             
-            logger.info(f"Starting subdomain enumeration for {domain}")
-            subdomains = await self.subdomain.enumerate_subdomains(
+            logger.info(f"Starting recursive subdomain enumeration for {domain}")
+            
+            # Use recursive enumeration to find multi-level subdomains
+            # E.g., api.cloud.example.com, portal.cloud.example.com, etc.
+            recursive_result = await self.subdomain.enumerate_recursive(
                 domain=domain,
-                wordlist=subdomain_wordlist,
-                use_crtsh=True
+                max_depth=2,  # Enumerate up to 3 levels deep
+                min_subdomains_for_recursion=2,  # Recurse into subdomains with 2+ children
+                use_crtsh=True,
+                use_subfinder=True,
+                use_chaos=True
             )
+            
+            # Convert recursive result to list of SubdomainResults
+            subdomains = recursive_result.all_subdomains
+            
+            logger.info(
+                f"Recursive enumeration complete: {recursive_result.total_subdomains} subdomains found "
+                f"across {len(recursive_result.subdomains_by_depth)} depth levels in {recursive_result.duration_seconds:.2f}s"
+            )
+            for depth, count in sorted(recursive_result.subdomains_by_depth.items()):
+                logger.info(f"  Depth {depth}: {count} subdomains")
             
             subdomain_assets = {}
             for sub_result in subdomains:

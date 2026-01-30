@@ -271,6 +271,144 @@ class ScannerWorker:
         finally:
             db.close()
     
+    def _mark_scan_running(self, scan_id: int) -> bool:
+        """Mark a scan as RUNNING immediately. Returns True if successful."""
+        db = self.get_db_session()
+        if not db:
+            logger.error(f"Scan {scan_id}: No database connection to mark RUNNING")
+            return False
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan and scan.status == ScanStatus.PENDING:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                db.commit()
+                logger.info(f"Scan {scan_id} marked as RUNNING")
+                return True
+            elif scan:
+                logger.warning(f"Scan {scan_id} already has status {scan.status.value}, skipping")
+                return False
+            else:
+                logger.error(f"Scan {scan_id} not found in database")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to mark scan {scan_id} as RUNNING: {e}")
+            db.rollback()
+            return False
+        finally:
+            db.close()
+    
+    def _mark_scan_failed(self, scan_id: int, error_message: str):
+        """Mark a scan as FAILED."""
+        db = self.get_db_session()
+        if not db:
+            logger.error(f"Scan {scan_id}: No database connection to mark FAILED")
+            return
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan and scan.status != ScanStatus.COMPLETED:
+                scan.status = ScanStatus.FAILED
+                scan.error_message = error_message[:500] if error_message else "Unknown error"
+                scan.completed_at = datetime.utcnow()
+                db.commit()
+                logger.info(f"Scan {scan_id} marked as FAILED: {error_message[:100]}")
+        except Exception as e:
+            logger.error(f"Failed to mark scan {scan_id} as FAILED: {e}")
+            db.rollback()
+        finally:
+            db.close()
+
+    async def _auto_close_stale_findings(
+        self,
+        db,
+        organization_id: int,
+        scanned_hosts: set,
+        current_findings: list,
+        scan_id: int
+    ) -> int:
+        """
+        Auto-close findings that were not detected in the current scan.
+        
+        This compares previous open findings against what was found in this scan.
+        If a finding existed before but wasn't re-detected on the same host+template,
+        it's marked as resolved (auto-closed).
+        
+        Returns the count of auto-resolved findings.
+        """
+        from app.models.vulnerability import Vulnerability, VulnerabilityStatus
+        from urllib.parse import urlparse
+        
+        # Normalize scanned hosts (remove protocol/port)
+        normalized_hosts = set()
+        for host in scanned_hosts:
+            if host.startswith(("http://", "https://")):
+                normalized = urlparse(host).netloc.split(":")[0]
+            else:
+                normalized = host.split(":")[0]
+            if normalized:
+                normalized_hosts.add(normalized.lower())
+        
+        if not normalized_hosts:
+            return 0
+        
+        # Build a set of (host, template_id) tuples from current findings
+        current_finding_keys = set()
+        for finding in current_findings:
+            if finding.host and finding.template_id:
+                host = finding.host
+                if host.startswith(("http://", "https://")):
+                    host = urlparse(host).netloc.split(":")[0]
+                else:
+                    host = host.split(":")[0]
+                if host:
+                    current_finding_keys.add((host.lower(), finding.template_id))
+        
+        # Get assets that were scanned
+        from app.models.asset import Asset
+        scanned_assets = db.query(Asset).filter(
+            Asset.organization_id == organization_id,
+            Asset.value.in_(list(normalized_hosts))
+        ).all()
+        
+        if not scanned_assets:
+            return 0
+        
+        scanned_asset_ids = [a.id for a in scanned_assets]
+        scanned_asset_values = {a.id: a.value.lower() for a in scanned_assets}
+        
+        # Find all open findings for scanned assets
+        open_findings = db.query(Vulnerability).filter(
+            Vulnerability.asset_id.in_(scanned_asset_ids),
+            Vulnerability.status == VulnerabilityStatus.OPEN
+        ).all()
+        
+        auto_resolved_count = 0
+        for finding in open_findings:
+            if not finding.template_id:
+                continue  # Skip findings without template_id
+            
+            asset_value = scanned_asset_values.get(finding.asset_id, "").lower()
+            if not asset_value:
+                continue
+            
+            # Check if this finding was re-detected
+            finding_key = (asset_value, finding.template_id)
+            if finding_key not in current_finding_keys:
+                # Finding was not re-detected - auto-close it
+                finding.status = VulnerabilityStatus.RESOLVED
+                finding.resolved_at = datetime.utcnow()
+                if finding.metadata_ is None:
+                    finding.metadata_ = {}
+                finding.metadata_['auto_resolved'] = True
+                finding.metadata_['auto_resolved_scan_id'] = scan_id
+                finding.metadata_['auto_resolved_reason'] = 'Not detected in rescan'
+                auto_resolved_count += 1
+        
+        if auto_resolved_count > 0:
+            db.commit()
+        
+        return auto_resolved_count
+
     async def process_message(self, message: dict):
         """Process a single scan job message."""
         message_id = message.get('MessageId')
@@ -284,35 +422,48 @@ class ScannerWorker:
             
             logger.info(f"Processing job {message_id}: type={job_type}, scan_id={scan_id}")
             
-            # Route to appropriate handler
-            if job_type == 'NUCLEI_SCAN':
-                await self.handle_nuclei_scan(body)
-            elif job_type == 'PORT_SCAN':
-                await self.handle_port_scan(body)
-            elif job_type == 'DISCOVERY':
-                await self.handle_discovery(body)
-            elif job_type == 'SUBDOMAIN_ENUM':
-                await self.handle_subdomain_enum(body)
-            elif job_type == 'DNS_RESOLUTION':
-                await self.handle_dns_resolution(body)
-            elif job_type == 'HTTP_PROBE':
-                await self.handle_http_probe(body)
-            elif job_type == 'LOGIN_PORTAL':
-                await self.handle_login_portal_scan(body)
-            elif job_type == 'SCREENSHOT':
-                await self.handle_screenshot_scan(body)
-            elif job_type == 'PARAMSPIDER':
-                await self.handle_paramspider_scan(body)
-            elif job_type == 'WAYBACKURLS':
-                await self.handle_waybackurls_scan(body)
-            elif job_type == 'KATANA':
-                await self.handle_katana_scan(body)
-            elif job_type == 'CLEANUP':
-                await self.handle_cleanup(body)
-            elif job_type == 'TECHNOLOGY_SCAN':
-                await self.handle_technology_scan(body)
-            else:
-                logger.warning(f"Unknown job type: {job_type}")
+            # CRITICAL: Mark scan as RUNNING immediately to prevent re-polling
+            if scan_id and not self._mark_scan_running(scan_id):
+                logger.warning(f"Scan {scan_id} could not be marked RUNNING, skipping")
+                return
+            
+            try:
+                # Route to appropriate handler
+                if job_type == 'NUCLEI_SCAN':
+                    await self.handle_nuclei_scan(body)
+                elif job_type == 'PORT_SCAN':
+                    await self.handle_port_scan(body)
+                elif job_type == 'DISCOVERY':
+                    await self.handle_discovery(body)
+                elif job_type == 'SUBDOMAIN_ENUM':
+                    await self.handle_subdomain_enum(body)
+                elif job_type == 'DNS_RESOLUTION':
+                    await self.handle_dns_resolution(body)
+                elif job_type == 'HTTP_PROBE':
+                    await self.handle_http_probe(body)
+                elif job_type == 'LOGIN_PORTAL':
+                    await self.handle_login_portal_scan(body)
+                elif job_type == 'SCREENSHOT':
+                    await self.handle_screenshot_scan(body)
+                elif job_type == 'PARAMSPIDER':
+                    await self.handle_paramspider_scan(body)
+                elif job_type == 'WAYBACKURLS':
+                    await self.handle_waybackurls_scan(body)
+                elif job_type == 'KATANA':
+                    await self.handle_katana_scan(body)
+                elif job_type == 'CLEANUP':
+                    await self.handle_cleanup(body)
+                elif job_type == 'TECHNOLOGY_SCAN':
+                    await self.handle_technology_scan(body)
+                else:
+                    logger.warning(f"Unknown job type: {job_type}")
+                    if scan_id:
+                        self._mark_scan_failed(scan_id, f"Unknown job type: {job_type}")
+            except Exception as handler_error:
+                logger.error(f"Scan {scan_id} handler failed: {handler_error}", exc_info=True)
+                if scan_id:
+                    self._mark_scan_failed(scan_id, str(handler_error))
+                raise
             
             # Delete message from SQS queue (only if not a DB message)
             if not is_db_message and self.sqs and self.queue_url:
@@ -357,16 +508,13 @@ class ScannerWorker:
         
         db = self.get_db_session()
         if not db:
-            logger.error("No database connection")
+            logger.error("No database connection for Nuclei scan")
+            self._mark_scan_failed(scan_id, "No database connection")
             return
         
         try:
-            # Update scan status
+            # Status is already set to RUNNING in process_message
             scan = db.query(Scan).filter(Scan.id == scan_id).first()
-            if scan:
-                scan.status = ScanStatus.RUNNING
-                scan.started_at = datetime.utcnow()
-                db.commit()
             
             # Run Nuclei scan
             logger.info(f"Starting Nuclei scan on {len(targets)} targets with severity: {severity}")
@@ -438,6 +586,23 @@ class ScannerWorker:
                 if finding.host:
                     unique_hosts.add(finding.host)
             
+            # Auto-close findings not found in rescan
+            # Only do this if we scanned specific assets and got results
+            auto_resolved_count = 0
+            if unique_hosts and organization_id:
+                try:
+                    auto_resolved_count = await self._auto_close_stale_findings(
+                        db=db,
+                        organization_id=organization_id,
+                        scanned_hosts=unique_hosts,
+                        current_findings=result.findings,
+                        scan_id=scan_id
+                    )
+                    if auto_resolved_count > 0:
+                        logger.info(f"Auto-resolved {auto_resolved_count} findings not found in rescan")
+                except Exception as e:
+                    logger.warning(f"Failed to auto-close stale findings: {e}")
+            
             # Update scan record
             if scan:
                 scan.status = ScanStatus.COMPLETED
@@ -451,6 +616,7 @@ class ScannerWorker:
                     'targets_scanned': result.targets_scanned,
                     'live_hosts': len(unique_hosts),
                     'findings_count': import_summary['findings_created'],
+                    'auto_resolved_count': auto_resolved_count,
                 }
                 db.commit()
             
@@ -510,6 +676,19 @@ class ScannerWorker:
         
         if not targets:
             logger.warning(f"No valid IPv4 targets after filtering (skipped {ipv6_skipped} IPv6)")
+            # Mark scan as completed with no results instead of leaving it pending
+            db = self.get_db_session()
+            if db:
+                try:
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.COMPLETED
+                        scan.completed_at = datetime.utcnow()
+                        scan.results = {"error": "No valid IPv4 targets", "ipv6_skipped": ipv6_skipped}
+                        db.commit()
+                        logger.info(f"Scan {scan_id} marked completed (no valid targets)")
+                finally:
+                    db.close()
             return
         
         # IMPORTANT: Set default ports if not specified (don't scan all 65535!)
@@ -526,16 +705,13 @@ class ScannerWorker:
         
         db = self.get_db_session()
         if not db:
-            logger.error("No database connection")
+            logger.error("No database connection for port scan")
+            self._mark_scan_failed(scan_id, "No database connection")
             return
         
         try:
-            # Update scan status
+            # Status is already set to RUNNING in process_message
             scan = db.query(Scan).filter(Scan.id == scan_id).first()
-            if scan:
-                scan.status = ScanStatus.RUNNING
-                scan.started_at = datetime.utcnow()
-                db.commit()
             
             # Map scanner type
             scanner_type_map = {
@@ -1030,9 +1206,9 @@ class ScannerWorker:
                         resolved_count += 1
                         
                         # Geo-enrich if enabled
-                        if include_geo:
+                        if include_geo and dns_result.ip_addresses:
                             geo_service = get_geolocation_service()
-                            geo_data = await geo_service.lookup_ip(primary_ip)
+                            geo_data = await geo_service.lookup_ip(dns_result.ip_addresses[0])
                             if geo_data:
                                 asset.latitude = geo_data.get('latitude')
                                 asset.longitude = geo_data.get('longitude')

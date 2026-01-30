@@ -285,6 +285,16 @@ class ApiClient {
     return response.data;
   }
 
+  async bulkUpdateVulnerabilities(data: {
+    vulnerability_ids: number[];
+    status?: string;
+    assigned_to?: string;
+    remediation_deadline?: string;
+  }) {
+    const response = await this.client.post('/vulnerabilities/bulk-update', data);
+    return response.data;
+  }
+
   // Scans
   async getScans(params?: { organization_id?: number; skip?: number; limit?: number }) {
     const response = await this.client.get('/scans/', { params });

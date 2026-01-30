@@ -40,11 +40,22 @@ import {
   Calendar,
   Link as LinkIcon,
   Info,
+  CheckCircle,
+  XCircle,
+  Users,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate, downloadCSV, cn } from '@/lib/utils';
 import { RemediationPanel } from '@/components/remediation/RemediationPanel';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -135,6 +146,10 @@ export default function FindingsPage() {
   const [stats, setStats] = useState<any>(null);
   const [remediationData, setRemediationData] = useState<any>(null);
   const [loadingRemediation, setLoadingRemediation] = useState(false);
+  const [selectedFindingIds, setSelectedFindingIds] = useState<Set<number>>(new Set());
+  const [bulkUpdating, setBulkUpdating] = useState(false);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
+  const [assignee, setAssignee] = useState('');
   const { toast } = useToast();
 
   // Fetch remediation playbook when a finding is selected
@@ -156,6 +171,164 @@ export default function FindingsPage() {
   const handleSelectFinding = (finding: Finding) => {
     setSelectedFinding(finding);
     fetchRemediation(finding.id);
+  };
+
+  // Handle status change
+  const [updatingStatus, setUpdatingStatus] = useState(false);
+  
+  const handleStatusChange = async (findingId: number, newStatus: string) => {
+    setUpdatingStatus(true);
+    try {
+      await api.updateVulnerability(findingId, { status: newStatus });
+      toast({
+        title: 'Status Updated',
+        description: `Finding marked as ${statusConfig[newStatus]?.label || newStatus}`,
+      });
+      // Update local state
+      setFindings(prev => prev.map(f => 
+        f.id === findingId ? { ...f, status: newStatus } : f
+      ));
+      // Update selected finding if it's the one being changed
+      if (selectedFinding?.id === findingId) {
+        setSelectedFinding(prev => prev ? { ...prev, status: newStatus } : null);
+      }
+      // Refresh stats
+      const summaryData = await api.getFindingsSummary();
+      setStats(summaryData);
+    } catch (err: any) {
+      console.error('Failed to update status:', err);
+      toast({
+        title: 'Error',
+        description: `Failed to update status: ${err.message || 'Unknown error'}`,
+        variant: 'destructive',
+      });
+    } finally {
+      setUpdatingStatus(false);
+    }
+  };
+
+  // Handle inline status change from table dropdown
+  const handleInlineStatusChange = async (findingId: number, newStatus: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    await handleStatusChange(findingId, newStatus);
+  };
+
+  // Handle bulk status change
+  const handleBulkStatusChange = async (newStatus: string) => {
+    if (selectedFindingIds.size === 0) return;
+    
+    setBulkUpdating(true);
+    try {
+      await api.bulkUpdateVulnerabilities({
+        vulnerability_ids: Array.from(selectedFindingIds),
+        status: newStatus,
+      });
+      toast({
+        title: 'Bulk Update Complete',
+        description: `Updated ${selectedFindingIds.size} findings to ${statusConfig[newStatus]?.label || newStatus}`,
+      });
+      // Update local state
+      setFindings(prev => prev.map(f => 
+        selectedFindingIds.has(f.id) ? { ...f, status: newStatus } : f
+      ));
+      setSelectedFindingIds(new Set());
+      // Refresh stats
+      const summaryData = await api.getFindingsSummary();
+      setStats(summaryData);
+    } catch (err: any) {
+      console.error('Failed to bulk update:', err);
+      toast({
+        title: 'Error',
+        description: `Failed to bulk update: ${err.message || 'Unknown error'}`,
+        variant: 'destructive',
+      });
+    } finally {
+      setBulkUpdating(false);
+    }
+  };
+
+  // Handle bulk assignment
+  const handleBulkAssign = async () => {
+    if (selectedFindingIds.size === 0 || !assignee.trim()) return;
+    
+    setBulkUpdating(true);
+    try {
+      await api.bulkUpdateVulnerabilities({
+        vulnerability_ids: Array.from(selectedFindingIds),
+        assigned_to: assignee.trim(),
+      });
+      toast({
+        title: 'Assignment Complete',
+        description: `Assigned ${selectedFindingIds.size} findings to ${assignee}`,
+      });
+      // Update local state
+      setFindings(prev => prev.map(f => 
+        selectedFindingIds.has(f.id) ? { ...f, assigned_to: assignee.trim() } : f
+      ));
+      setSelectedFindingIds(new Set());
+      setAssignDialogOpen(false);
+      setAssignee('');
+    } catch (err: any) {
+      console.error('Failed to assign:', err);
+      toast({
+        title: 'Error',
+        description: `Failed to assign: ${err.message || 'Unknown error'}`,
+        variant: 'destructive',
+      });
+    } finally {
+      setBulkUpdating(false);
+    }
+  };
+
+  // Handle single assignment from dialog
+  const handleAssignFinding = async (findingId: number, assigneeValue: string) => {
+    try {
+      await api.updateVulnerability(findingId, { assigned_to: assigneeValue || undefined });
+      toast({
+        title: 'Assignment Updated',
+        description: assigneeValue ? `Assigned to ${assigneeValue}` : 'Assignment removed',
+      });
+      // Update local state
+      setFindings(prev => prev.map(f => 
+        f.id === findingId ? { ...f, assigned_to: assigneeValue || undefined } : f
+      ));
+      if (selectedFinding?.id === findingId) {
+        setSelectedFinding(prev => prev ? { ...prev, assigned_to: assigneeValue || undefined } : null);
+      }
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: `Failed to update assignment: ${err.message || 'Unknown error'}`,
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Toggle selection for a single finding
+  const toggleFindingSelection = (findingId: number, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    setSelectedFindingIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(findingId)) {
+        newSet.delete(findingId);
+      } else {
+        newSet.add(findingId);
+      }
+      return newSet;
+    });
+  };
+
+  // Toggle all visible findings
+  const toggleAllFindings = () => {
+    if (selectedFindingIds.size === filteredFindings.length) {
+      setSelectedFindingIds(new Set());
+    } else {
+      setSelectedFindingIds(new Set(filteredFindings.map(f => f.id)));
+    }
   };
 
   const fetchData = async () => {
@@ -368,15 +541,87 @@ export default function FindingsPage() {
           </Card>
         )}
 
+        {/* Bulk Actions Bar */}
+        {selectedFindingIds.size > 0 && (
+          <Card className="border-primary/30 bg-primary/5">
+            <CardContent className="p-4 flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <CheckCircle className="h-5 w-5 text-primary" />
+                <span className="font-medium">{selectedFindingIds.size} selected</span>
+              </div>
+              <div className="flex-1" />
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-muted-foreground mr-2">Change Status:</span>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => handleBulkStatusChange('in_progress')}
+                  disabled={bulkUpdating}
+                  className="border-yellow-600/30 hover:bg-yellow-600/20"
+                >
+                  {bulkUpdating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                  In Progress
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => handleBulkStatusChange('resolved')}
+                  disabled={bulkUpdating}
+                  className="border-green-600/30 hover:bg-green-600/20"
+                >
+                  {bulkUpdating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                  Resolved
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => handleBulkStatusChange('false_positive')}
+                  disabled={bulkUpdating}
+                  className="border-gray-600/30 hover:bg-gray-600/20"
+                >
+                  {bulkUpdating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                  False Positive
+                </Button>
+                <div className="h-6 w-px bg-border mx-2" />
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setAssignDialogOpen(true)}
+                  disabled={bulkUpdating}
+                >
+                  <Users className="h-4 w-4 mr-1" />
+                  Assign
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => setSelectedFindingIds(new Set())}
+                >
+                  <XCircle className="h-4 w-4 mr-1" />
+                  Clear
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Findings Table */}
         <Card>
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[40px]">
+                  <Checkbox
+                    checked={filteredFindings.length > 0 && selectedFindingIds.size === filteredFindings.length}
+                    onCheckedChange={toggleAllFindings}
+                    aria-label="Select all"
+                  />
+                </TableHead>
                 <TableHead className="w-[100px]">Severity</TableHead>
                 <TableHead>Finding</TableHead>
                 <TableHead>Host</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead className="w-[140px]">Status</TableHead>
+                <TableHead>Assigned</TableHead>
                 <TableHead>CVSS</TableHead>
                 <TableHead>Detected</TableHead>
                 <TableHead className="w-[50px]"></TableHead>
@@ -385,7 +630,7 @@ export default function FindingsPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-12">
+                  <TableCell colSpan={9} className="text-center py-12">
                     <div className="flex flex-col items-center gap-2">
                       <Loader2 className="h-8 w-8 animate-spin text-primary" />
                       <p className="text-muted-foreground">Loading findings...</p>
@@ -394,7 +639,7 @@ export default function FindingsPage() {
                 </TableRow>
               ) : filteredFindings.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-12">
+                  <TableCell colSpan={9} className="text-center py-12">
                     <div className="flex flex-col items-center gap-2">
                       <Shield className="h-12 w-12 text-muted-foreground/50" />
                       <p className="text-muted-foreground">
@@ -409,9 +654,19 @@ export default function FindingsPage() {
                 filteredFindings.map((finding) => (
                   <TableRow
                     key={finding.id}
-                    className="cursor-pointer hover:bg-muted/50"
+                    className={cn(
+                      "cursor-pointer hover:bg-muted/50",
+                      selectedFindingIds.has(finding.id) && "bg-primary/5"
+                    )}
                     onClick={() => handleSelectFinding(finding)}
                   >
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selectedFindingIds.has(finding.id)}
+                        onCheckedChange={() => toggleFindingSelection(finding.id)}
+                        aria-label={`Select finding ${finding.id}`}
+                      />
+                    </TableCell>
                     <TableCell>
                       <Badge className={getSeverityBadgeClass(finding.severity)}>
                         {finding.severity}
@@ -446,8 +701,57 @@ export default function FindingsPage() {
                         <span className="text-muted-foreground">-</span>
                       )}
                     </TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <Select
+                        value={finding.status || 'open'}
+                        onValueChange={(value) => handleInlineStatusChange(finding.id, value)}
+                      >
+                        <SelectTrigger className="h-8 w-[130px] text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="open">
+                            <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-red-500" />
+                              Open
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="in_progress">
+                            <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-yellow-500" />
+                              In Progress
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="resolved">
+                            <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-green-500" />
+                              Resolved
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="accepted">
+                            <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-blue-500" />
+                              Accepted
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="false_positive">
+                            <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-gray-500" />
+                              False Positive
+                            </span>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </TableCell>
                     <TableCell>
-                      {getStatusBadge(finding.status || 'open')}
+                      {finding.assigned_to ? (
+                        <span className="text-sm flex items-center gap-1">
+                          <User className="h-3 w-3" />
+                          {finding.assigned_to}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground text-sm">-</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       {finding.cvss_score ? (
@@ -585,15 +889,33 @@ export default function FindingsPage() {
                   </div>
                 )}
 
-                {selectedFinding?.assigned_to && (
-                  <div className="flex items-start gap-2">
-                    <User className="h-4 w-4 text-muted-foreground mt-0.5" />
-                    <div>
-                      <p className="text-xs text-muted-foreground">Assigned To</p>
-                      <p className="text-sm">{selectedFinding.assigned_to}</p>
+                <div className="flex items-start gap-2">
+                  <User className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-xs text-muted-foreground mb-1">Assigned To</p>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        placeholder="Enter email or name..."
+                        defaultValue={selectedFinding?.assigned_to || ''}
+                        className="h-8 text-sm"
+                        onBlur={(e) => {
+                          if (selectedFinding && e.target.value !== (selectedFinding.assigned_to || '')) {
+                            handleAssignFinding(selectedFinding.id, e.target.value);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const input = e.target as HTMLInputElement;
+                            if (selectedFinding && input.value !== (selectedFinding.assigned_to || '')) {
+                              handleAssignFinding(selectedFinding.id, input.value);
+                            }
+                            input.blur();
+                          }
+                        }}
+                      />
                     </div>
                   </div>
-                )}
+                </div>
               </div>
 
               {/* Timestamps */}
@@ -686,6 +1008,66 @@ export default function FindingsPage() {
                 )}
               </div>
 
+              {/* Status Actions */}
+              <div className="space-y-2 pt-4 border-t border-border">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Activity className="h-4 w-4" />
+                  Update Status
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant={selectedFinding?.status === 'open' ? 'default' : 'outline'}
+                    onClick={() => selectedFinding && handleStatusChange(selectedFinding.id, 'open')}
+                    disabled={updatingStatus || selectedFinding?.status === 'open'}
+                    className="flex-1 min-w-[120px]"
+                  >
+                    {updatingStatus ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    Open
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedFinding?.status === 'in_progress' ? 'default' : 'outline'}
+                    onClick={() => selectedFinding && handleStatusChange(selectedFinding.id, 'in_progress')}
+                    disabled={updatingStatus || selectedFinding?.status === 'in_progress'}
+                    className="flex-1 min-w-[120px] border-yellow-600/30 hover:bg-yellow-600/20"
+                  >
+                    {updatingStatus ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    In Progress
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedFinding?.status === 'resolved' ? 'default' : 'outline'}
+                    onClick={() => selectedFinding && handleStatusChange(selectedFinding.id, 'resolved')}
+                    disabled={updatingStatus || selectedFinding?.status === 'resolved'}
+                    className="flex-1 min-w-[120px] border-green-600/30 hover:bg-green-600/20"
+                  >
+                    {updatingStatus ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    Resolved
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedFinding?.status === 'accepted' ? 'default' : 'outline'}
+                    onClick={() => selectedFinding && handleStatusChange(selectedFinding.id, 'accepted')}
+                    disabled={updatingStatus || selectedFinding?.status === 'accepted'}
+                    className="flex-1 min-w-[120px] border-blue-600/30 hover:bg-blue-600/20"
+                  >
+                    {updatingStatus ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    Accept Risk
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedFinding?.status === 'false_positive' ? 'default' : 'outline'}
+                    onClick={() => selectedFinding && handleStatusChange(selectedFinding.id, 'false_positive')}
+                    disabled={updatingStatus || selectedFinding?.status === 'false_positive'}
+                    className="flex-1 min-w-[120px] border-gray-600/30 hover:bg-gray-600/20"
+                  >
+                    {updatingStatus ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    False Positive
+                  </Button>
+                </div>
+              </div>
+
               {/* Tags */}
               {selectedFinding?.tags && selectedFinding.tags.length > 0 && (
                 <div className="space-y-2">
@@ -727,6 +1109,54 @@ export default function FindingsPage() {
                   </div>
                 </div>
               )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Bulk Assignment Dialog */}
+        <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Users className="h-5 w-5" />
+                Assign Findings
+              </DialogTitle>
+              <DialogDescription>
+                Assign {selectedFindingIds.size} selected finding(s) to a team member.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Assignee</label>
+                <Input
+                  placeholder="Enter email or name..."
+                  value={assignee}
+                  onChange={(e) => setAssignee(e.target.value)}
+                  className="w-full"
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setAssignDialogOpen(false);
+                    setAssignee('');
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleBulkAssign}
+                  disabled={bulkUpdating || !assignee.trim()}
+                >
+                  {bulkUpdating ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <Users className="h-4 w-4 mr-2" />
+                  )}
+                  Assign
+                </Button>
+              </div>
             </div>
           </DialogContent>
         </Dialog>

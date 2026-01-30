@@ -239,6 +239,78 @@ def delete_vulnerability(
     return None
 
 
+@router.post("/bulk-update")
+def bulk_update_vulnerabilities(
+    update_data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Bulk update multiple vulnerabilities at once.
+    
+    Body should contain:
+    - vulnerability_ids: List[int] - IDs of vulnerabilities to update
+    - status: Optional[str] - New status for all vulnerabilities
+    - assigned_to: Optional[str] - User to assign findings to
+    - remediation_deadline: Optional[str] - Deadline for remediation
+    
+    Returns count of updated vulnerabilities.
+    """
+    vuln_ids = update_data.get("vulnerability_ids", [])
+    
+    if not vuln_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="vulnerability_ids is required"
+        )
+    
+    # Get all vulnerabilities
+    vulns = db.query(Vulnerability).filter(Vulnerability.id.in_(vuln_ids)).all()
+    
+    if not vulns:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No vulnerabilities found"
+        )
+    
+    # Check access to all vulnerabilities
+    for vuln in vulns:
+        if not check_org_access(db, current_user, vuln.asset_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied for vulnerability {vuln.id}"
+            )
+    
+    updated_count = 0
+    new_status = update_data.get("status")
+    assigned_to = update_data.get("assigned_to")
+    remediation_deadline = update_data.get("remediation_deadline")
+    
+    for vuln in vulns:
+        if new_status:
+            status_enum = VulnerabilityStatus(new_status)
+            # Handle status change to resolved
+            if status_enum == VulnerabilityStatus.RESOLVED and vuln.status != VulnerabilityStatus.RESOLVED:
+                vuln.resolved_at = datetime.utcnow()
+            vuln.status = status_enum
+        
+        if assigned_to is not None:  # Allow empty string to unassign
+            vuln.assigned_to = assigned_to if assigned_to else None
+        
+        if remediation_deadline:
+            vuln.remediation_deadline = datetime.fromisoformat(remediation_deadline.replace('Z', '+00:00'))
+        
+        updated_count += 1
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "updated_count": updated_count,
+        "message": f"Updated {updated_count} vulnerabilities"
+    }
+
+
 @router.get("/stats/summary")
 def get_vulnerabilities_summary(
     db: Session = Depends(get_db),
