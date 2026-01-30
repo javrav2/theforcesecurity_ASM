@@ -55,6 +55,10 @@ VISIBILITY_TIMEOUT = int(os.getenv("VISIBILITY_TIMEOUT", "3600"))
 MAX_CONCURRENT_SCANS = int(os.getenv("MAX_CONCURRENT_SCANS", "3"))  # Max parallel scans
 PRIORITY_AD_HOC = True  # Prioritize ad-hoc scans over scheduled
 
+# Performance tuning from environment
+DEFAULT_PORT_SCAN_RATE = int(os.getenv("PORT_SCAN_RATE", "500"))  # Packets per second
+DEFAULT_NUCLEI_RATE_LIMIT = int(os.getenv("NUCLEI_RATE_LIMIT", "150"))  # Requests per second
+
 # Global shutdown flag
 shutdown_requested = False
 
@@ -520,11 +524,16 @@ class ScannerWorker:
             logger.info(f"Starting Nuclei scan on {len(targets)} targets with severity: {severity}")
             logger.debug(f"Nuclei targets: {targets[:5]}{'...' if len(targets) > 5 else ''}")
             
+            # Get rate limit from config or use environment default
+            config = job_data.get('config', {})
+            rate_limit = config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT)
+            
             result = await self.nuclei_service.scan_targets(
                 targets=targets,
                 severity=severity,
                 tags=tags if tags else None,
-                exclude_tags=exclude_tags if exclude_tags else None
+                exclude_tags=exclude_tags if exclude_tags else None,
+                rate_limit=rate_limit
             )
             
             # Log Nuclei results
@@ -650,7 +659,7 @@ class ScannerWorker:
         
         # Get advanced config options with sensible defaults for reliability
         config = job_data.get('config', {})
-        rate = config.get('rate', 500)  # Lower rate for reliability
+        rate = config.get('rate', DEFAULT_PORT_SCAN_RATE)  # Use env var for default rate
         timeout = config.get('timeout', 30)  # Longer timeout
         retries = config.get('retries', 2)  # Retry on failure
         chunk_size = config.get('chunk_size', 64)  # Chunk large scans
@@ -1907,7 +1916,7 @@ class ScannerWorker:
                         js_crawl=config.get('js_crawl', True),
                         form_extraction=config.get('form_extraction', True),
                         timeout=config.get('timeout', 600),
-                        rate_limit=config.get('rate_limit', 150),
+                        rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
                         concurrency=config.get('concurrency', 10),
                     )
                     

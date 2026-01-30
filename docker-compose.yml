@@ -121,6 +121,11 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       # ProjectDiscovery Cloud API Key (optional - for Chaos subdomain dataset)
       - PDCP_API_KEY=${PDCP_API_KEY:-}
+      # Scanner performance tuning
+      - MAX_CONCURRENT_SCANS=${MAX_CONCURRENT_SCANS:-5}
+      - POLL_INTERVAL=${POLL_INTERVAL:-10}
+      - PORT_SCAN_RATE=${PORT_SCAN_RATE:-2000}
+      - NUCLEI_RATE_LIMIT=${NUCLEI_RATE_LIMIT:-300}
     depends_on:
       db:
         condition: service_healthy
