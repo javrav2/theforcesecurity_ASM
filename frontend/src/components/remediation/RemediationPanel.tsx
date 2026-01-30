@@ -31,6 +31,10 @@ interface RemediationStep {
   command?: string;
   code_snippet?: string;
   notes?: string;
+  is_sufficient?: boolean;  // If true, completing this step alone resolves the finding
+  is_required?: boolean;    // If false, this step is optional/recommended
+  is_alternative?: boolean; // If true, this is an alternative to other steps
+  alternative_group?: string; // Group name for mutually exclusive alternatives
 }
 
 interface VerificationStep {
@@ -176,7 +180,18 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
 
   const priority = priorityConfig[playbook.priority] || priorityConfig.medium;
   const effort = effortConfig[playbook.effort] || effortConfig.medium;
-  const progressPercent = (completedSteps.size / playbook.steps.length) * 100;
+  
+  // Count required steps vs optional
+  const requiredSteps = playbook.steps.filter(s => s.is_required !== false);
+  const sufficientSteps = playbook.steps.filter(s => s.is_sufficient);
+  
+  // Check if any sufficient step is completed (finding can be resolved)
+  const canResolve = sufficientSteps.some(s => completedSteps.has(s.order));
+  
+  // Progress is based on completing at least one sufficient step, or all required steps
+  const progressPercent = canResolve 
+    ? 100 
+    : (completedSteps.size / requiredSteps.length) * 100;
 
   return (
     <div className={cn("space-y-4", className)}>
@@ -245,14 +260,50 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
               <span className="text-muted-foreground">Progress</span>
               <span className="text-muted-foreground">
                 {completedSteps.size} of {playbook.steps.length} steps complete
+                {sufficientSteps.length > 0 && (
+                  <span className="ml-2 text-cyan-400">
+                    ({sufficientSteps.length} sufficient option{sufficientSteps.length > 1 ? 's' : ''})
+                  </span>
+                )}
               </span>
             </div>
             <div className="h-2 bg-muted rounded-full overflow-hidden">
               <div 
-                className="h-full bg-green-500 transition-all duration-300"
+                className={cn(
+                  "h-full transition-all duration-300",
+                  canResolve ? "bg-green-500" : "bg-yellow-500"
+                )}
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
+            
+            {/* Ready to Resolve Indicator */}
+            {canResolve && (
+              <div className="flex items-center gap-2 p-2 bg-green-600/20 border border-green-600/30 rounded-lg mt-2">
+                <CheckCircle className="h-4 w-4 text-green-400" />
+                <span className="text-sm text-green-400 font-medium">
+                  Ready to resolve - a sufficient remediation step has been completed
+                </span>
+              </div>
+            )}
+            
+            {/* Legend for step types */}
+            {sufficientSteps.length > 0 && (
+              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground mt-2">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-cyan-500" />
+                  Sufficient alone
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-gray-500" />
+                  Optional
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-yellow-500" />
+                  Required
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Priority Warning */}
@@ -277,48 +328,78 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {playbook.steps.map((step) => (
-            <div 
-              key={step.order}
-              className={cn(
-                "border rounded-lg overflow-hidden transition-all",
-                completedSteps.has(step.order) ? "border-green-600/50 bg-green-600/5" : "border-muted"
-              )}
-            >
-              <div 
-                className="flex items-center gap-3 p-3 cursor-pointer hover:bg-muted/50"
-                onClick={() => toggleStep(step.order)}
-              >
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleCompleted(step.order);
-                  }}
+          {playbook.steps.map((step, index) => {
+            // Check if this step is an alternative (show OR divider)
+            const prevStep = index > 0 ? playbook.steps[index - 1] : null;
+            const showOrDivider = step.is_alternative && prevStep?.alternative_group === step.alternative_group;
+            
+            return (
+              <div key={step.order}>
+                {/* OR Divider for alternatives */}
+                {showOrDivider && (
+                  <div className="flex items-center gap-2 py-2">
+                    <div className="flex-1 h-px bg-cyan-600/30" />
+                    <span className="text-xs font-medium text-cyan-400 px-2">OR</span>
+                    <div className="flex-1 h-px bg-cyan-600/30" />
+                  </div>
+                )}
+                
+                <div 
                   className={cn(
-                    "flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors",
-                    completedSteps.has(step.order) 
-                      ? "bg-green-600 border-green-600 text-white" 
-                      : "border-muted-foreground hover:border-green-500"
+                    "border rounded-lg overflow-hidden transition-all",
+                    completedSteps.has(step.order) ? "border-green-600/50 bg-green-600/5" : 
+                    step.is_sufficient ? "border-cyan-600/30" : "border-muted"
                   )}
                 >
-                  {completedSteps.has(step.order) && <CheckCircle className="h-4 w-4" />}
-                </button>
-                
-                <div className="flex-1 min-w-0">
-                  <p className={cn(
-                    "font-medium text-sm",
-                    completedSteps.has(step.order) && "line-through text-muted-foreground"
-                  )}>
-                    {step.order}. {step.title}
-                  </p>
-                </div>
-                
-                {expandedSteps.has(step.order) ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                )}
-              </div>
+                  <div 
+                    className="flex items-center gap-3 p-3 cursor-pointer hover:bg-muted/50"
+                    onClick={() => toggleStep(step.order)}
+                  >
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCompleted(step.order);
+                      }}
+                      className={cn(
+                        "flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors",
+                        completedSteps.has(step.order) 
+                          ? "bg-green-600 border-green-600 text-white" 
+                          : step.is_sufficient 
+                            ? "border-cyan-500 hover:border-green-500"
+                            : "border-muted-foreground hover:border-green-500"
+                      )}
+                    >
+                      {completedSteps.has(step.order) && <CheckCircle className="h-4 w-4" />}
+                    </button>
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className={cn(
+                          "font-medium text-sm",
+                          completedSteps.has(step.order) && "line-through text-muted-foreground"
+                        )}>
+                          {step.order}. {step.title}
+                        </p>
+                        {/* Step type badges */}
+                        {step.is_sufficient && (
+                          <Badge className="text-xs bg-cyan-600/20 text-cyan-400 border-cyan-600/30">
+                            Sufficient
+                          </Badge>
+                        )}
+                        {step.is_required === false && !step.is_sufficient && (
+                          <Badge variant="outline" className="text-xs text-muted-foreground">
+                            Optional
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {expandedSteps.has(step.order) ? (
+                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    )}
+                  </div>
               
               {expandedSteps.has(step.order) && (
                 <div className="px-3 pb-3 pl-12 space-y-3">
@@ -383,8 +464,10 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
                   )}
                 </div>
               )}
-            </div>
-          ))}
+                </div>
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
 

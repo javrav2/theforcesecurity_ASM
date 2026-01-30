@@ -54,6 +54,10 @@ class RemediationStep:
     command: Optional[str] = None  # CLI command if applicable
     code_snippet: Optional[str] = None  # Code example if applicable
     notes: Optional[str] = None  # Additional notes/warnings
+    is_sufficient: bool = False  # If True, completing this step alone resolves the finding
+    is_required: bool = True  # If False, this step is optional/recommended
+    is_alternative: bool = False  # If True, this is an alternative to other steps (OR logic)
+    alternative_group: Optional[str] = None  # Group name for mutually exclusive alternatives
 
 
 @dataclass
@@ -111,6 +115,10 @@ class RemediationPlaybook:
                     "command": s.command,
                     "code_snippet": s.code_snippet,
                     "notes": s.notes,
+                    "is_sufficient": s.is_sufficient,
+                    "is_required": s.is_required,
+                    "is_alternative": s.is_alternative,
+                    "alternative_group": s.alternative_group,
                 }
                 for s in self.steps
             ],
@@ -300,7 +308,9 @@ sudo iptables -A FORWARD -p tcp --dport 3389 -j DROP
 
 # AWS Security Group:
 aws ec2 revoke-security-group-ingress --group-id sg-xxx --protocol tcp --port 3389 --cidr 0.0.0.0/0""",
-            notes="URGENT: Do this first to stop active exploitation attempts."
+            notes="URGENT: Do this first to stop active exploitation attempts.",
+            is_sufficient=True,  # Blocking at firewall alone resolves the exposed service finding
+            alternative_group="block_access"  # Alternative to VPN/Gateway
         ),
         RemediationStep(
             order=2,
@@ -312,7 +322,8 @@ Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Serv
 # Or via Group Policy:
 # Computer Configuration > Administrative Templates > Windows Components > 
 # Remote Desktop Services > Remote Desktop Session Host > Security
-# Set: Require user authentication for remote connections = Enabled"""
+# Set: Require user authentication for remote connections = Enabled""",
+            is_required=False,  # Recommended hardening but not required to close the finding
         ),
         RemediationStep(
             order=3,
@@ -329,7 +340,10 @@ Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Serv
 # - Azure: Use Azure Bastion (no public IP needed)
 # - AWS: Use Systems Manager Fleet Manager or a bastion host
 # - Any: Deploy Guacamole as web-based RDP gateway""",
-            notes="This is the most important long-term fix. Direct RDP should never be exposed."
+            notes="This is the most important long-term fix. Direct RDP should never be exposed.",
+            is_sufficient=True,  # VPN/Gateway alone also resolves the exposed service finding
+            is_alternative=True,
+            alternative_group="block_access"  # Alternative to firewall block
         ),
         RemediationStep(
             order=4,
@@ -342,7 +356,8 @@ Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Serv
 # Recommended settings:
 # - Account lockout threshold: 5 attempts
 # - Account lockout duration: 30 minutes
-# - Reset lockout counter after: 30 minutes"""
+# - Reset lockout counter after: 30 minutes""",
+            is_required=False,  # Additional hardening, not required
         ),
         RemediationStep(
             order=5,
@@ -356,7 +371,8 @@ systeminfo | findstr /B /C:"OS Version" /C:"KB"
 
 # Critical RDP patches to verify:
 # - KB4499175 (BlueKeep - CVE-2019-0708)
-# - KB4512501 (DejaBlue - CVE-2019-1181/1182)"""
+# - KB4512501 (DejaBlue - CVE-2019-1181/1182)""",
+            is_required=False,  # Should be done but not required to close the exposed RDP finding
         ),
     ],
     verification=[
