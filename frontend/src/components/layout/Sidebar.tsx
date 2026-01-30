@@ -20,6 +20,7 @@ import {
   ServerCrash,
   CalendarClock,
   Wrench,
+  FileText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/store/auth';
@@ -31,6 +32,7 @@ const navigation = [
   { name: 'Assets', href: '/assets', icon: Globe },
   { name: 'Inventory', href: '/inventory', icon: ServerCrash },
   { name: 'Findings', href: '/findings', icon: Shield },
+  { name: 'Exceptions', href: '/exceptions', icon: FileText },
   { name: 'Remediation', href: '/remediation', icon: Wrench },
   { name: 'Screenshots', href: '/screenshots', icon: Camera },
   { name: 'Scans', href: '/scans', icon: ScanLine },

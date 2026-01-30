@@ -1077,6 +1077,85 @@ class ApiClient {
     return response.data;
   }
 
+  // ==================== EXCEPTIONS ====================
+
+  async getExceptions(params?: {
+    organization_id?: number;
+    exception_type?: string;
+    status?: string;
+    include_expired?: boolean;
+    skip?: number;
+    limit?: number;
+  }) {
+    const response = await this.client.get('/exceptions/', { params });
+    return response.data;
+  }
+
+  async getExceptionStats(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/exceptions/stats', { params });
+    return response.data;
+  }
+
+  async getException(exceptionId: number) {
+    const response = await this.client.get(`/exceptions/${exceptionId}`);
+    return response.data;
+  }
+
+  async createException(data: {
+    title: string;
+    exception_type: string;
+    justification: string;
+    organization_id: number;
+    business_impact?: string;
+    compensating_controls?: string;
+    residual_risk?: string;
+    expiration_date?: string;
+    review_date?: string;
+    finding_ids?: number[];
+    tags?: string[];
+  }) {
+    const response = await this.client.post('/exceptions/', data);
+    return response.data;
+  }
+
+  async updateException(exceptionId: number, data: {
+    title?: string;
+    exception_type?: string;
+    status?: string;
+    justification?: string;
+    business_impact?: string;
+    compensating_controls?: string;
+    residual_risk?: string;
+    expiration_date?: string;
+    review_date?: string;
+    approved_by?: string;
+    tags?: string[];
+  }) {
+    const response = await this.client.put(`/exceptions/${exceptionId}`, data);
+    return response.data;
+  }
+
+  async deleteException(exceptionId: number, unlinkFindings: boolean = true) {
+    const response = await this.client.delete(`/exceptions/${exceptionId}`, {
+      params: { unlink_findings: unlinkFindings }
+    });
+    return response.data;
+  }
+
+  async linkFindingsToException(exceptionId: number, findingIds: number[]) {
+    const response = await this.client.post(`/exceptions/${exceptionId}/link-findings`, findingIds);
+    return response.data;
+  }
+
+  async unlinkFindingsFromException(exceptionId: number, findingIds: number[], resetStatus: boolean = true) {
+    const response = await this.client.post(`/exceptions/${exceptionId}/unlink-findings`, findingIds, {
+      params: { reset_status: resetStatus }
+    });
+    return response.data;
+  }
+
   // Health check
   async healthCheck() {
     const response = await axios.get(`${API_URL}/health`);

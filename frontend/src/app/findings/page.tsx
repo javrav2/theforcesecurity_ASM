@@ -132,7 +132,8 @@ const statusConfig: Record<string, { label: string; color: string }> = {
   open: { label: 'Open', color: 'bg-red-600/20 text-red-400 border-red-600/30' },
   in_progress: { label: 'In Progress', color: 'bg-yellow-600/20 text-yellow-400 border-yellow-600/30' },
   resolved: { label: 'Resolved', color: 'bg-green-600/20 text-green-400 border-green-600/30' },
-  accepted: { label: 'Accepted', color: 'bg-blue-600/20 text-blue-400 border-blue-600/30' },
+  mitigated: { label: 'Mitigated', color: 'bg-cyan-600/20 text-cyan-400 border-cyan-600/30' },
+  accepted: { label: 'Risk Accepted', color: 'bg-blue-600/20 text-blue-400 border-blue-600/30' },
   false_positive: { label: 'False Positive', color: 'bg-gray-600/20 text-gray-400 border-gray-600/30' },
 };
 
@@ -575,6 +576,16 @@ export default function FindingsPage() {
                 <Button 
                   variant="outline" 
                   size="sm" 
+                  onClick={() => handleBulkStatusChange('mitigated')}
+                  disabled={bulkUpdating}
+                  className="border-cyan-600/30 hover:bg-cyan-600/20"
+                >
+                  {bulkUpdating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                  Mitigated
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
                   onClick={() => handleBulkStatusChange('false_positive')}
                   disabled={bulkUpdating}
                   className="border-gray-600/30 hover:bg-gray-600/20"
@@ -728,10 +739,16 @@ export default function FindingsPage() {
                               Resolved
                             </span>
                           </SelectItem>
+                          <SelectItem value="mitigated">
+                            <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-cyan-500" />
+                              Mitigated
+                            </span>
+                          </SelectItem>
                           <SelectItem value="accepted">
                             <span className="flex items-center gap-2">
                               <span className="w-2 h-2 rounded-full bg-blue-500" />
-                              Accepted
+                              Risk Accepted
                             </span>
                           </SelectItem>
                           <SelectItem value="false_positive">
@@ -1044,6 +1061,16 @@ export default function FindingsPage() {
                   >
                     {updatingStatus ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                     Resolved
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedFinding?.status === 'mitigated' ? 'default' : 'outline'}
+                    onClick={() => selectedFinding && handleStatusChange(selectedFinding.id, 'mitigated')}
+                    disabled={updatingStatus || selectedFinding?.status === 'mitigated'}
+                    className="flex-1 min-w-[120px] border-cyan-600/30 hover:bg-cyan-600/20"
+                  >
+                    {updatingStatus ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    Mitigated
                   </Button>
                   <Button
                     size="sm"

@@ -3,6 +3,7 @@ from app.models.user import User, UserRole
 from app.models.organization import Organization
 from app.models.netblock import Netblock  # Must be imported BEFORE Asset due to FK reference
 from app.models.asset import Asset, AssetType, AssetStatus
+from app.models.finding_exception import FindingException, ExceptionType, ExceptionStatus
 from app.models.vulnerability import Vulnerability, Severity, VulnerabilityStatus
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.technology import Technology, asset_technologies, WAPPALYZER_CATEGORIES
@@ -23,6 +24,9 @@ __all__ = [
     "Asset",
     "AssetType",
     "AssetStatus",
+    "FindingException",
+    "ExceptionType",
+    "ExceptionStatus",
     "Vulnerability",
     "Severity",
     "VulnerabilityStatus",
