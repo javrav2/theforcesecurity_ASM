@@ -13,7 +13,7 @@ from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset
 from app.models.label import Label
 from app.models.user import User
-from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRequest
+from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRequest, BulkDomainScanRequest
 from app.api.deps import get_current_active_user, require_analyst
 from app.services.nuclei_service import count_cidr_targets
 
@@ -365,6 +365,173 @@ def create_scan_by_label(
     send_scan_to_sqs(new_scan)
     
     return new_scan
+
+
+@router.post("/bulk-domain-scan")
+def bulk_domain_port_scan(
+    request: BulkDomainScanRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Create a port scan targeting multiple domains at once.
+    
+    Accepts domains as either:
+    - A list in the `domains` field
+    - Raw text with one domain per line in `domains_text`
+    
+    Features:
+    - Optionally pre-resolves domains to IPs before scanning
+    - Creates domain assets if they don't exist
+    - Supports Naabu, Nmap, or Masscan
+    """
+    from app.models.asset import AssetType
+    import re
+    import socket
+    
+    # Check organization access
+    if not check_org_access(current_user, request.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    # Parse domains from either list or text
+    domains = list(request.domains) if request.domains else []
+    
+    if request.domains_text:
+        # Parse text input - one domain per line
+        for line in request.domains_text.strip().split('\n'):
+            line = line.strip()
+            if line and not line.startswith('#'):
+                # Remove protocol prefix if present
+                line = re.sub(r'^https?://', '', line)
+                # Remove trailing path/slash
+                line = line.split('/')[0]
+                # Remove port if present
+                line = line.split(':')[0]
+                if line and '.' in line:
+                    domains.append(line)
+    
+    # Deduplicate and validate domains
+    domain_pattern = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$')
+    valid_domains = []
+    seen = set()
+    
+    for domain in domains:
+        domain = domain.lower().strip()
+        if domain and domain not in seen:
+            if domain_pattern.match(domain):
+                valid_domains.append(domain)
+                seen.add(domain)
+    
+    if not valid_domains:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid domains provided. Domains should be in format: example.com, sub.example.com"
+        )
+    
+    # Optionally resolve domains to IPs
+    resolved_ips = None
+    targets = valid_domains.copy()
+    
+    if request.resolve_first:
+        resolved_ips = []
+        resolved_targets = []
+        
+        for domain in valid_domains:
+            try:
+                ip = socket.gethostbyname(domain)
+                resolved_ips.append(ip)
+                resolved_targets.append(ip)
+                logger.info(f"Resolved {domain} -> {ip}")
+            except socket.gaierror:
+                # Keep domain in list even if resolution fails (scanner may have better luck)
+                resolved_targets.append(domain)
+                logger.warning(f"Could not resolve {domain}, keeping as target")
+        
+        targets = list(set(resolved_targets))  # Dedupe IPs
+    
+    # Create domain assets if requested
+    assets_created = 0
+    if request.create_assets:
+        for domain in valid_domains:
+            # Check if asset already exists
+            existing = db.query(Asset).filter(
+                Asset.organization_id == request.organization_id,
+                Asset.value == domain
+            ).first()
+            
+            if not existing:
+                # Determine asset type (subdomain vs root domain)
+                parts = domain.split('.')
+                if len(parts) > 2:
+                    asset_type = AssetType.SUBDOMAIN
+                else:
+                    asset_type = AssetType.DOMAIN
+                
+                new_asset = Asset(
+                    organization_id=request.organization_id,
+                    name=domain,
+                    value=domain,
+                    asset_type=asset_type,
+                    in_scope=True,
+                    is_monitored=True,
+                    association_reason="bulk_domain_scan",
+                )
+                db.add(new_asset)
+                assets_created += 1
+        
+        if assets_created > 0:
+            db.commit()
+            logger.info(f"Created {assets_created} new domain assets")
+    
+    # Generate scan name if not provided
+    scan_name = request.name or f"Bulk Domain Scan - {len(valid_domains)} domains"
+    
+    # Build config
+    config = {
+        "scanner": request.scanner,
+        "rate": request.rate,
+        "top_ports": request.top_ports,
+        "service_detection": request.service_detection,
+        "source": "bulk_domain_scan",
+        "original_domains": valid_domains,
+        "domains_count": len(valid_domains),
+    }
+    
+    if request.ports:
+        config["ports"] = request.ports
+    
+    if resolved_ips:
+        config["resolved_ips"] = resolved_ips
+    
+    # Create the port scan
+    new_scan = Scan(
+        name=scan_name,
+        scan_type=ScanType.PORT_SCAN,
+        organization_id=request.organization_id,
+        targets=targets,
+        config=config,
+        started_by=current_user.username
+    )
+    db.add(new_scan)
+    db.commit()
+    db.refresh(new_scan)
+    
+    # Send scan job to SQS for processing
+    send_scan_to_sqs(new_scan)
+    
+    logger.info(f"Created bulk domain port scan {new_scan.id} with {len(valid_domains)} domains, {len(targets)} targets")
+    
+    return {
+        "scan_id": new_scan.id,
+        "scan_name": scan_name,
+        "domains_count": len(valid_domains),
+        "resolved_ips": resolved_ips,
+        "assets_created": assets_created,
+        "message": f"Port scan created for {len(valid_domains)} domains. Scan ID: {new_scan.id}"
+    }
 
 
 @router.get("/labels/preview")

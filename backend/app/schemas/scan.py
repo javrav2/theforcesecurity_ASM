@@ -32,6 +32,31 @@ class ScanByLabelRequest(BaseModel):
     config: dict[str, Any] = {}
 
 
+class BulkDomainScanRequest(BaseModel):
+    """Schema for bulk domain port scan."""
+    organization_id: int
+    domains: List[str] = Field(default=[], description="List of domains to scan")
+    domains_text: Optional[str] = Field(default=None, description="Raw text with one domain per line (alternative to domains list)")
+    name: Optional[str] = Field(default=None, description="Scan name (auto-generated if not provided)")
+    ports: Optional[str] = Field(default=None, description="Ports to scan (e.g., '80,443,8080' or '1-1000')")
+    top_ports: int = Field(default=100, ge=1, le=1000, description="Scan top N ports if ports not specified")
+    resolve_first: bool = Field(default=False, description="Pre-resolve domains to IPs before scanning")
+    create_assets: bool = Field(default=True, description="Create domain assets if they don't exist")
+    scanner: str = Field(default="naabu", description="Scanner to use: naabu, nmap, or masscan")
+    rate: int = Field(default=500, ge=10, le=10000, description="Scan rate (packets per second)")
+    service_detection: bool = Field(default=True, description="Enable service detection (nmap only)")
+
+
+class BulkDomainScanResponse(BaseModel):
+    """Response for bulk domain scan."""
+    scan_id: int
+    scan_name: str
+    domains_count: int
+    resolved_ips: Optional[List[str]] = None
+    assets_created: int = 0
+    message: str
+
+
 class ScanUpdate(BaseModel):
     """Schema for updating a scan."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
