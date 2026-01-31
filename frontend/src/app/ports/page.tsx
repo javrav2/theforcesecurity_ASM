@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
-import { Card } from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -28,10 +28,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Network, Search, Download, Loader2, Filter, AlertTriangle, MoreVertical, Bug, Flag } from 'lucide-react';
+import { Network, Search, Download, Loader2, Filter, AlertTriangle, MoreVertical, Bug, Flag, ExternalLink, Shield } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate, downloadCSV } from '@/lib/utils';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import Link from 'next/link';
 
 interface PortResult {
   id: number;
@@ -52,7 +54,28 @@ interface PortResult {
   first_seen: string;
   last_seen: string;
   created_at: string;
+  finding_id?: number;  // Link to associated finding
 }
+
+interface PortChartData {
+  name: string;
+  count: number;
+  color: string;
+}
+
+// Color palette for charts
+const CHART_COLORS = [
+  '#3b82f6', // blue
+  '#22c55e', // green
+  '#f59e0b', // amber
+  '#ef4444', // red
+  '#8b5cf6', // purple
+  '#06b6d4', // cyan
+  '#ec4899', // pink
+  '#f97316', // orange
+  '#84cc16', // lime
+  '#6366f1', // indigo
+];
 
 export default function PortsPage() {
   const [ports, setPorts] = useState<PortResult[]>([]);
@@ -175,6 +198,41 @@ export default function PortsPage() {
       (p.service_name?.toLowerCase() || '').includes(search.toLowerCase())
   );
 
+  // Compute top ports chart data
+  const topPortsData = useMemo((): PortChartData[] => {
+    const portCounts: Record<number, number> = {};
+    ports.forEach((p) => {
+      portCounts[p.port] = (portCounts[p.port] || 0) + 1;
+    });
+    
+    return Object.entries(portCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([port, count], index) => ({
+        name: port,
+        count,
+        color: CHART_COLORS[index % CHART_COLORS.length],
+      }));
+  }, [ports]);
+
+  // Compute top services chart data
+  const topServicesData = useMemo((): PortChartData[] => {
+    const serviceCounts: Record<string, number> = {};
+    ports.forEach((p) => {
+      const service = p.service_name || 'unknown';
+      serviceCounts[service] = (serviceCounts[service] || 0) + 1;
+    });
+    
+    return Object.entries(serviceCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([service, count], index) => ({
+        name: service,
+        count,
+        color: CHART_COLORS[index % CHART_COLORS.length],
+      }));
+  }, [ports]);
+
   const getStateColor = (state: string) => {
     switch (state?.toLowerCase()) {
       case 'open':
@@ -240,7 +298,7 @@ export default function PortsPage() {
         </div>
 
         {/* Port Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
           <Card className="p-4">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-green-500/10">
@@ -252,6 +310,19 @@ export default function PortsPage() {
               </div>
             </div>
           </Card>
+          <Link href="/findings?search=filtered+port">
+            <Card className="p-4 cursor-pointer hover:border-yellow-500/40 transition-colors">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-yellow-500/10">
+                  <AlertTriangle className="h-5 w-5 text-yellow-500" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{ports.filter((p) => p.state?.toUpperCase() === 'FILTERED').length}</p>
+                  <p className="text-sm text-muted-foreground">Filtered Ports</p>
+                </div>
+              </div>
+            </Card>
+          </Link>
           <Card className="p-4">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-blue-500/10">
@@ -309,6 +380,103 @@ export default function PortsPage() {
           </Card>
         </div>
 
+        {/* Bar Charts - Top Ports and Top Services */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          {/* Top Ports Chart */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base font-medium flex items-center gap-2">
+                <Network className="h-4 w-4 text-blue-500" />
+                Top Ports
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {topPortsData.length > 0 ? (
+                <div className="h-[250px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topPortsData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
+                      <XAxis type="number" tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                      <YAxis 
+                        dataKey="name" 
+                        type="category" 
+                        tick={{ fill: '#9ca3af', fontSize: 12 }} 
+                        width={50}
+                      />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: '#1f2937', 
+                          border: '1px solid #374151',
+                          borderRadius: '8px',
+                          color: '#f3f4f6'
+                        }}
+                        formatter={(value: number) => [`${value} hosts`, 'Count']}
+                        labelFormatter={(label) => `Port ${label}`}
+                      />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                        {topPortsData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="h-[250px] flex items-center justify-center text-muted-foreground">
+                  No port data available
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Top Services Chart */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base font-medium flex items-center gap-2">
+                <Shield className="h-4 w-4 text-green-500" />
+                Top Services
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {topServicesData.length > 0 ? (
+                <div className="h-[250px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topServicesData} layout="vertical" margin={{ top: 5, right: 30, left: 70, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
+                      <XAxis type="number" tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                      <YAxis 
+                        dataKey="name" 
+                        type="category" 
+                        tick={{ fill: '#9ca3af', fontSize: 12 }} 
+                        width={65}
+                      />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: '#1f2937', 
+                          border: '1px solid #374151',
+                          borderRadius: '8px',
+                          color: '#f3f4f6'
+                        }}
+                        formatter={(value: number) => [`${value} instances`, 'Count']}
+                        labelFormatter={(label) => `Service: ${label}`}
+                      />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                        {topServicesData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="h-[250px] flex items-center justify-center text-muted-foreground">
+                  No service data available
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Ports Table */}
         <Card>
           <Table>
@@ -321,6 +489,7 @@ export default function PortsPage() {
                 <TableHead>Product / Version</TableHead>
                 <TableHead>State</TableHead>
                 <TableHead>Risk</TableHead>
+                <TableHead>Finding</TableHead>
                 <TableHead>Last Seen</TableHead>
                 <TableHead className="w-[60px]">Actions</TableHead>
               </TableRow>
@@ -328,13 +497,13 @@ export default function PortsPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8">
+                  <TableCell colSpan={10} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : filteredPorts.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
                     No port scan results found. Run a port scan to discover services.
                   </TableCell>
                 </TableRow>
@@ -370,6 +539,38 @@ export default function PortsPage() {
                           <AlertTriangle className="h-3 w-3 mr-1" />
                           Risky
                         </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">-</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {port.finding_id ? (
+                        <Link 
+                          href={`/findings?id=${port.finding_id}`}
+                          className="inline-flex items-center gap-1 text-primary hover:underline text-sm"
+                        >
+                          <Shield className="h-3 w-3" />
+                          View
+                          <ExternalLink className="h-3 w-3" />
+                        </Link>
+                      ) : port.state?.toLowerCase() === 'filtered' ? (
+                        <Link 
+                          href={`/findings?search=filtered+port+${port.port}`}
+                          className="inline-flex items-center gap-1 text-yellow-400 hover:underline text-sm"
+                          title="View filtered port findings"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          Filtered
+                        </Link>
+                      ) : port.is_risky ? (
+                        <Link 
+                          href={`/findings?search=port+${port.port}`}
+                          className="inline-flex items-center gap-1 text-orange-400 hover:underline text-sm"
+                          title="Search for related findings"
+                        >
+                          <Bug className="h-3 w-3" />
+                          Search
+                        </Link>
                       ) : (
                         <span className="text-muted-foreground text-xs">-</span>
                       )}

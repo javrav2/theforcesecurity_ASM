@@ -429,6 +429,16 @@ class ScannerWorker:
             # CRITICAL: Mark scan as RUNNING immediately to prevent re-polling
             if scan_id and not self._mark_scan_running(scan_id):
                 logger.warning(f"Scan {scan_id} could not be marked RUNNING, skipping")
+                # IMPORTANT: Delete the SQS message even when skipping to prevent infinite reprocessing
+                if not is_db_message and self.sqs and self.queue_url:
+                    try:
+                        self.sqs.delete_message(
+                            QueueUrl=self.queue_url,
+                            ReceiptHandle=receipt_handle
+                        )
+                        logger.info(f"Deleted SQS message for skipped scan {scan_id}")
+                    except Exception as del_err:
+                        logger.warning(f"Failed to delete SQS message for scan {scan_id}: {del_err}")
                 return
             
             try:
@@ -463,6 +473,13 @@ class ScannerWorker:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
                         self._mark_scan_failed(scan_id, f"Unknown job type: {job_type}")
+                    # Delete message for unknown job types to prevent infinite reprocessing
+                    if not is_db_message and self.sqs and self.queue_url:
+                        self.sqs.delete_message(
+                            QueueUrl=self.queue_url,
+                            ReceiptHandle=receipt_handle
+                        )
+                    return
             except Exception as handler_error:
                 logger.error(f"Scan {scan_id} handler failed: {handler_error}", exc_info=True)
                 if scan_id:

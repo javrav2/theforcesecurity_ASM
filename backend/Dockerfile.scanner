@@ -25,37 +25,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Download pre-built ProjectDiscovery tools (much faster than compiling)
+# Automatically detect architecture (amd64 or arm64)
 WORKDIR /tools
 
-# Nuclei
-RUN wget -q https://github.com/projectdiscovery/nuclei/releases/download/v3.3.7/nuclei_3.3.7_linux_amd64.zip \
-    && unzip -o -q nuclei_3.3.7_linux_amd64.zip -d /tools \
-    && rm nuclei_3.3.7_linux_amd64.zip
-
-# Subfinder
-RUN wget -q https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip \
-    && unzip -o -q subfinder_2.6.7_linux_amd64.zip -d /tools \
-    && rm subfinder_2.6.7_linux_amd64.zip
-
-# HTTPX
-RUN wget -q https://github.com/projectdiscovery/httpx/releases/download/v1.6.10/httpx_1.6.10_linux_amd64.zip \
-    && unzip -o -q httpx_1.6.10_linux_amd64.zip -d /tools \
-    && rm httpx_1.6.10_linux_amd64.zip
-
-# Naabu
-RUN wget -q https://github.com/projectdiscovery/naabu/releases/download/v2.3.3/naabu_2.3.3_linux_amd64.zip \
-    && unzip -o -q naabu_2.3.3_linux_amd64.zip -d /tools \
-    && rm naabu_2.3.3_linux_amd64.zip
-
-# DNSX
-RUN wget -q https://github.com/projectdiscovery/dnsx/releases/download/v1.2.1/dnsx_1.2.1_linux_amd64.zip \
-    && unzip -o -q dnsx_1.2.1_linux_amd64.zip -d /tools \
-    && rm dnsx_1.2.1_linux_amd64.zip
-
-# Katana
-RUN wget -q https://github.com/projectdiscovery/katana/releases/download/v1.1.0/katana_1.1.0_linux_amd64.zip \
-    && unzip -o -q katana_1.1.0_linux_amd64.zip -d /tools \
-    && rm katana_1.1.0_linux_amd64.zip
+# Set architecture variable and download tools using curl (more reliable with GitHub redirects)
+# Updated to latest versions with arm64 support (Jan 2026)
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then PD_ARCH="arm64"; else PD_ARCH="amd64"; fi && \
+    echo "Building for architecture: $PD_ARCH" && \
+    # Nuclei v3.7.0
+    curl -sL "https://github.com/projectdiscovery/nuclei/releases/download/v3.7.0/nuclei_3.7.0_linux_${PD_ARCH}.zip" -o nuclei.zip && \
+    unzip -o -q nuclei.zip -d /tools && rm nuclei.zip && \
+    # Subfinder v2.12.0
+    curl -sL "https://github.com/projectdiscovery/subfinder/releases/download/v2.12.0/subfinder_2.12.0_linux_${PD_ARCH}.zip" -o subfinder.zip && \
+    unzip -o -q subfinder.zip -d /tools && rm subfinder.zip && \
+    # HTTPX v1.8.1
+    curl -sL "https://github.com/projectdiscovery/httpx/releases/download/v1.8.1/httpx_1.8.1_linux_${PD_ARCH}.zip" -o httpx.zip && \
+    unzip -o -q httpx.zip -d /tools && rm httpx.zip && \
+    # Naabu v2.4.0
+    curl -sL "https://github.com/projectdiscovery/naabu/releases/download/v2.4.0/naabu_2.4.0_linux_${PD_ARCH}.zip" -o naabu.zip && \
+    unzip -o -q naabu.zip -d /tools && rm naabu.zip && \
+    # DNSX v1.2.3
+    curl -sL "https://github.com/projectdiscovery/dnsx/releases/download/v1.2.3/dnsx_1.2.3_linux_${PD_ARCH}.zip" -o dnsx.zip && \
+    unzip -o -q dnsx.zip -d /tools && rm dnsx.zip && \
+    # Katana v1.4.0
+    curl -sL "https://github.com/projectdiscovery/katana/releases/download/v1.4.0/katana_1.4.0_linux_${PD_ARCH}.zip" -o katana.zip && \
+    unzip -o -q katana.zip -d /tools && rm katana.zip
 
 # Make all tools executable
 RUN chmod +x /tools/*
