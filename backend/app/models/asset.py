@@ -104,6 +104,9 @@ class Asset(Base):
     has_login_portal = Column(Boolean, default=False, index=True)  # Has detected login/admin pages
     login_portals = Column(JSON, default=list)  # List of detected login URLs [{"url": "...", "type": "...", "status": 200}]
     
+    # Screenshot cache (denormalized for performance - avoids loading all screenshots for list views)
+    latest_screenshot_id = Column(Integer, nullable=True)  # ID of most recent successful screenshot
+    
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

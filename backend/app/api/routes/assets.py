@@ -105,10 +105,14 @@ def build_asset_response(asset: Asset) -> dict:
     except Exception:
         pass
     
-    # Get the latest successful screenshot ID
+    # Get the latest successful screenshot ID (using cached field for performance)
     screenshot_id = None
     try:
-        if asset.screenshots:
+        # First try the cached field (fast - no relationship loading)
+        screenshot_id = getattr(asset, 'latest_screenshot_id', None)
+        
+        # Fallback to relationship if cache not set (for backward compatibility)
+        if screenshot_id is None and hasattr(asset, 'screenshots') and asset.screenshots:
             # screenshots are ordered by captured_at desc, so first is most recent
             for screenshot in asset.screenshots:
                 if screenshot.status.value == 'success' and screenshot.file_path:

@@ -190,6 +190,11 @@ async def capture_asset_screenshot(
     db.commit()
     db.refresh(screenshot)
     
+    # Update asset's cached screenshot ID for faster list queries
+    if screenshot.status == ScreenshotStatus.SUCCESS and screenshot.file_path:
+        asset.latest_screenshot_id = screenshot.id
+        db.commit()
+    
     return ScreenshotResponse(
         id=screenshot.id,
         asset_id=screenshot.asset_id,
@@ -375,6 +380,8 @@ async def capture_bulk_screenshots(
         
         if result.success:
             successful += 1
+            # Update asset's cached screenshot ID (will be updated after commit with actual ID)
+            asset._pending_screenshot = screenshot
         else:
             failed += 1
         
@@ -401,6 +408,13 @@ async def capture_bulk_screenshots(
         "failed": failed,
     }
     
+    db.commit()
+    
+    # Update assets' cached screenshot IDs (now that we have the actual IDs)
+    for asset in assets:
+        if hasattr(asset, '_pending_screenshot') and asset._pending_screenshot:
+            asset.latest_screenshot_id = asset._pending_screenshot.id
+            delattr(asset, '_pending_screenshot')
     db.commit()
     
     return BulkScreenshotResponse(

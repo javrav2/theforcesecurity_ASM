@@ -229,9 +229,13 @@ class ScreenshotScheduler:
                     screenshot.previous_screenshot_id = previous.id
             
             db.add(screenshot)
+            db.flush()  # Get the screenshot ID
             
             if result.success:
                 successful += 1
+                # Update asset's cached screenshot ID for faster list queries
+                if screenshot.file_path:
+                    asset.latest_screenshot_id = screenshot.id
             else:
                 failed += 1
         
@@ -322,9 +326,13 @@ class ScreenshotScheduler:
                         screenshot.previous_screenshot_id = previous.id
                 
                 db.add(screenshot)
+                db.flush()  # Get the screenshot ID
                 
                 if result.success:
                     results["successful"] += 1
+                    # Update asset's cached screenshot ID for faster list queries
+                    if screenshot.file_path:
+                        asset.latest_screenshot_id = screenshot.id
                 else:
                     results["failed"] += 1
                 

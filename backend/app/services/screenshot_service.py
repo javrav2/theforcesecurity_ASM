@@ -147,9 +147,13 @@ async def _capture_screenshots_async(
                         screenshot.previous_screenshot_id = previous.id
                 
                 db.add(screenshot)
+                db.flush()  # Get the screenshot ID
                 
                 if result.success:
                     total_captured += 1
+                    # Update asset's cached screenshot ID for faster list queries
+                    if screenshot.file_path:
+                        asset.latest_screenshot_id = screenshot.id
                 else:
                     total_failed += 1
             

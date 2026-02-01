@@ -159,6 +159,9 @@ class AssetResponse(AssetBase):
     medium_vuln_count: int = 0
     low_vuln_count: int = 0
     
+    # Screenshot
+    screenshot_id: Optional[int] = None  # Latest successful screenshot ID
+    
     created_at: datetime
     updated_at: datetime
     
