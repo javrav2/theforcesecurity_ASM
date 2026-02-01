@@ -25,6 +25,7 @@ from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType
 from app.models.label import Label
 from app.models.netblock import Netblock
+from app.api.routes.scans import send_scan_to_sqs
 
 # Scan types that require IPv4 only (don't support IPv6)
 IPV4_ONLY_SCAN_TYPES = [
@@ -338,7 +339,11 @@ class ScheduleWorker:
         db.commit()
         db.refresh(scan)
         
-        logger.info(f"Created scan {scan.id} for schedule {schedule.name}, {len(targets)} targets")
+        # Send to SQS for processing (if SQS is configured)
+        if send_scan_to_sqs(scan):
+            logger.info(f"Created scan {scan.id} for schedule {schedule.name}, {len(targets)} targets (sent to SQS)")
+        else:
+            logger.info(f"Created scan {scan.id} for schedule {schedule.name}, {len(targets)} targets (database polling)")
     
     async def run(self):
         """Main worker loop."""

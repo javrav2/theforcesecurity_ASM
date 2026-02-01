@@ -162,24 +162,39 @@ class ScannerWorker:
         return None
     
     async def poll_for_jobs(self):
-        """Poll for scan jobs from SQS or database."""
-        # If SQS is configured, use it
+        """Poll for scan jobs from SQS and database (hybrid approach).
+        
+        This ensures scans are processed whether they were queued to SQS or not.
+        SQS messages are processed first, then database PENDING scans are checked.
+        """
+        messages = []
+        
+        # If SQS is configured, poll it first
         if self.sqs and self.queue_url:
             try:
                 response = self.sqs.receive_message(
                     QueueUrl=self.queue_url,
                     MaxNumberOfMessages=1,
-                    WaitTimeSeconds=POLL_INTERVAL,
+                    WaitTimeSeconds=5,  # Shorter wait for hybrid polling
                     VisibilityTimeout=VISIBILITY_TIMEOUT,
                     MessageAttributeNames=['All']
                 )
-                return response.get('Messages', [])
+                messages = response.get('Messages', [])
             except ClientError as e:
                 logger.error(f"Error polling SQS: {e}")
-                return []
         
-        # Otherwise, poll database for pending scans
-        return await self.poll_database_for_jobs()
+        # Also check database for any PENDING scans not in SQS
+        # This catches scheduled scans that failed to queue, or scans created when SQS was down
+        if not messages:
+            db_messages = await self.poll_database_for_jobs()
+            if db_messages:
+                messages.extend(db_messages)
+        
+        # If no messages from either source, wait before next poll
+        if not messages:
+            await asyncio.sleep(POLL_INTERVAL)
+        
+        return messages
     
     async def poll_database_for_jobs(self):
         """
@@ -322,6 +337,36 @@ class ScannerWorker:
         finally:
             db.close()
 
+    def _delete_sqs_message_safe(self, message_id: str, receipt_handle: str, is_db_message: bool, scan_id: int = None):
+        """Safely delete an SQS message with comprehensive logging."""
+        if is_db_message:
+            logger.debug(f"Skipping SQS delete for database message {message_id}")
+            return
+        
+        if not self.sqs:
+            logger.warning(f"Cannot delete SQS message for scan {scan_id}: SQS client not initialized")
+            return
+            
+        if not self.queue_url:
+            logger.warning(f"Cannot delete SQS message for scan {scan_id}: Queue URL not configured")
+            return
+            
+        if not receipt_handle:
+            logger.warning(f"Cannot delete SQS message for scan {scan_id}: No receipt handle")
+            return
+        
+        try:
+            self.sqs.delete_message(
+                QueueUrl=self.queue_url,
+                ReceiptHandle=receipt_handle
+            )
+            logger.info(f"Deleted SQS message {message_id} for scan {scan_id}")
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            logger.error(f"AWS error deleting SQS message for scan {scan_id}: {error_code} - {e}")
+        except Exception as e:
+            logger.error(f"Failed to delete SQS message for scan {scan_id}: {type(e).__name__}: {e}")
+
     async def _auto_close_stale_findings(
         self,
         db,
@@ -430,15 +475,7 @@ class ScannerWorker:
             if scan_id and not self._mark_scan_running(scan_id):
                 logger.warning(f"Scan {scan_id} could not be marked RUNNING, skipping")
                 # IMPORTANT: Delete the SQS message even when skipping to prevent infinite reprocessing
-                if not is_db_message and self.sqs and self.queue_url:
-                    try:
-                        self.sqs.delete_message(
-                            QueueUrl=self.queue_url,
-                            ReceiptHandle=receipt_handle
-                        )
-                        logger.info(f"Deleted SQS message for skipped scan {scan_id}")
-                    except Exception as del_err:
-                        logger.warning(f"Failed to delete SQS message for scan {scan_id}: {del_err}")
+                self._delete_sqs_message_safe(message_id, receipt_handle, is_db_message, scan_id)
                 return
             
             try:
@@ -474,24 +511,18 @@ class ScannerWorker:
                     if scan_id:
                         self._mark_scan_failed(scan_id, f"Unknown job type: {job_type}")
                     # Delete message for unknown job types to prevent infinite reprocessing
-                    if not is_db_message and self.sqs and self.queue_url:
-                        self.sqs.delete_message(
-                            QueueUrl=self.queue_url,
-                            ReceiptHandle=receipt_handle
-                        )
+                    self._delete_sqs_message_safe(message_id, receipt_handle, is_db_message, scan_id)
                     return
             except Exception as handler_error:
                 logger.error(f"Scan {scan_id} handler failed: {handler_error}", exc_info=True)
                 if scan_id:
                     self._mark_scan_failed(scan_id, str(handler_error))
+                # Delete message even on failure to prevent infinite reprocessing
+                self._delete_sqs_message_safe(message_id, receipt_handle, is_db_message, scan_id)
                 raise
             
-            # Delete message from SQS queue (only if not a DB message)
-            if not is_db_message and self.sqs and self.queue_url:
-                self.sqs.delete_message(
-                    QueueUrl=self.queue_url,
-                    ReceiptHandle=receipt_handle
-                )
+            # Delete message from SQS queue after successful processing
+            self._delete_sqs_message_safe(message_id, receipt_handle, is_db_message, scan_id)
             
             logger.info(f"Job {message_id} completed successfully")
             
