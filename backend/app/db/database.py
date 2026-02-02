@@ -11,7 +11,8 @@ engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
     pool_size=10,
-    max_overflow=20
+    max_overflow=20,
+    pool_reset_on_return='rollback'  # Ensure clean state when connection returns to pool
 )
 
 # Create session factory
@@ -26,6 +27,9 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
