@@ -79,11 +79,15 @@ async def query_agent(
     - Answer security questions
     
     For exploitation or active scanning, the agent will request approval.
+    
+    Supports multiple AI providers:
+    - OpenAI (set OPENAI_API_KEY)
+    - Anthropic/Claude (set ANTHROPIC_API_KEY)
     """
-    if not settings.OPENAI_API_KEY:
+    if not settings.OPENAI_API_KEY and not settings.ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="AI agent not available - OPENAI_API_KEY not configured"
+            detail="AI agent not available - Configure OPENAI_API_KEY or ANTHROPIC_API_KEY"
         )
     
     orchestrator = await get_agent_orchestrator()
@@ -137,7 +141,7 @@ async def approve_phase_transition(
     - "modify": Proceed with modifications (include modification text)
     - "abort": Cancel and end the session
     """
-    if not settings.OPENAI_API_KEY:
+    if not settings.OPENAI_API_KEY and not settings.ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=503,
             detail="AI agent not available"
@@ -189,7 +193,7 @@ async def answer_agent_question(
     """
     Answer a question from the AI agent.
     """
-    if not settings.OPENAI_API_KEY:
+    if not settings.OPENAI_API_KEY and not settings.ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=503,
             detail="AI agent not available"
@@ -230,12 +234,41 @@ async def answer_agent_question(
 async def get_agent_status():
     """
     Check if the AI agent is available.
+    
+    Supports multiple providers:
+    - OpenAI (GPT-4, GPT-4o)
+    - Anthropic (Claude 3.5 Sonnet, Claude 3 Opus)
     """
-    available = bool(settings.OPENAI_API_KEY)
+    has_openai = bool(settings.OPENAI_API_KEY)
+    has_anthropic = bool(settings.ANTHROPIC_API_KEY)
+    available = has_openai or has_anthropic
+    
+    # Determine active provider
+    provider = settings.AI_PROVIDER.lower()
+    if provider == "anthropic" and has_anthropic:
+        active_provider = "anthropic"
+        active_model = settings.ANTHROPIC_MODEL
+    elif provider == "openai" and has_openai:
+        active_provider = "openai"
+        active_model = settings.OPENAI_MODEL
+    elif has_anthropic:
+        active_provider = "anthropic"
+        active_model = settings.ANTHROPIC_MODEL
+    elif has_openai:
+        active_provider = "openai"
+        active_model = settings.OPENAI_MODEL
+    else:
+        active_provider = None
+        active_model = None
     
     return {
         "available": available,
-        "model": settings.OPENAI_MODEL if available else None,
+        "provider": active_provider,
+        "model": active_model,
+        "providers_configured": {
+            "openai": has_openai,
+            "anthropic": has_anthropic,
+        },
         "max_iterations": settings.AGENT_MAX_ITERATIONS if available else None,
         "features": {
             "attack_surface_analysis": True,

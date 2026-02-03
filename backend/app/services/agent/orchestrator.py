@@ -13,8 +13,17 @@ from typing import Optional, List, Dict, Any
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
+
+# Conditionally import Anthropic
+try:
+    from langchain_anthropic import ChatAnthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+    ChatAnthropic = None
 
 from app.core.config import settings
 from app.services.agent.state import (
@@ -79,14 +88,19 @@ class AgentOrchestrator:
     - LLM-managed todo lists
     - Checkpoint-based approval for phase transitions
     - Full execution trace in memory
+    
+    Supports multiple LLM providers:
+    - OpenAI (GPT-4, GPT-4o, etc.)
+    - Anthropic (Claude 3.5 Sonnet, Claude 3 Opus, etc.)
     """
     
     def __init__(self):
         """Initialize the orchestrator."""
-        self.llm: Optional[ChatOpenAI] = None
+        self.llm: Optional[BaseChatModel] = None
         self.tool_manager: Optional[ASMToolsManager] = None
         self.graph = None
         self._initialized = False
+        self._provider = None
     
     async def initialize(self) -> None:
         """Initialize all components asynchronously."""
@@ -96,8 +110,12 @@ class AgentOrchestrator:
         
         logger.info("Initializing AgentOrchestrator...")
         
-        if not settings.OPENAI_API_KEY:
-            logger.warning("OPENAI_API_KEY not set - AI agent will not function")
+        # Check for available API keys
+        has_openai = bool(settings.OPENAI_API_KEY)
+        has_anthropic = bool(settings.ANTHROPIC_API_KEY)
+        
+        if not has_openai and not has_anthropic:
+            logger.warning("No AI API key configured (OPENAI_API_KEY or ANTHROPIC_API_KEY) - AI agent will not function")
             return
         
         self._setup_llm()
@@ -105,16 +123,49 @@ class AgentOrchestrator:
         self._build_graph()
         self._initialized = True
         
-        logger.info("AgentOrchestrator initialized successfully")
+        logger.info(f"AgentOrchestrator initialized successfully with {self._provider} provider")
     
     def _setup_llm(self) -> None:
-        """Initialize the OpenAI LLM."""
-        logger.info(f"Setting up LLM: {settings.OPENAI_MODEL}")
+        """Initialize the LLM based on configuration."""
+        provider = settings.AI_PROVIDER.lower()
+        
+        # Auto-detect provider if not explicitly set or if configured provider is unavailable
+        if provider == "anthropic" and settings.ANTHROPIC_API_KEY:
+            self._setup_anthropic()
+        elif provider == "openai" and settings.OPENAI_API_KEY:
+            self._setup_openai()
+        elif settings.ANTHROPIC_API_KEY:
+            # Fallback to Anthropic if available
+            self._setup_anthropic()
+        elif settings.OPENAI_API_KEY:
+            # Fallback to OpenAI if available
+            self._setup_openai()
+        else:
+            raise ValueError("No valid AI provider configuration found")
+    
+    def _setup_openai(self) -> None:
+        """Initialize OpenAI LLM."""
+        logger.info(f"Setting up OpenAI LLM: {settings.OPENAI_MODEL}")
         self.llm = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             api_key=settings.OPENAI_API_KEY,
             temperature=0
         )
+        self._provider = "openai"
+    
+    def _setup_anthropic(self) -> None:
+        """Initialize Anthropic/Claude LLM."""
+        if not ANTHROPIC_AVAILABLE:
+            raise ImportError("langchain-anthropic is not installed. Run: pip install langchain-anthropic")
+        
+        logger.info(f"Setting up Anthropic LLM: {settings.ANTHROPIC_MODEL}")
+        self.llm = ChatAnthropic(
+            model=settings.ANTHROPIC_MODEL,
+            api_key=settings.ANTHROPIC_API_KEY,
+            temperature=0,
+            max_tokens=4096
+        )
+        self._provider = "anthropic"
     
     def _setup_tools(self) -> None:
         """Set up ASM tools for the agent."""

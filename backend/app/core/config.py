@@ -45,8 +45,18 @@ class Settings(BaseSettings):
     PDCP_API_KEY: str = ""
     
     # AI Agent Configuration
+    # Supported providers: "openai", "anthropic"
+    AI_PROVIDER: str = "openai"
+    
+    # OpenAI Configuration
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o"
+    
+    # Anthropic/Claude Configuration
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+    
+    # Agent settings
     AGENT_MAX_ITERATIONS: int = 15
     AGENT_TOOL_OUTPUT_MAX_CHARS: int = 10000
     

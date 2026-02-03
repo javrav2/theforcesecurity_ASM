@@ -41,12 +41,19 @@ PDCP_API_KEY=
 # AI Agent Configuration (optional)
 # =============================================================================
 
-# OpenAI API Key for AI Agent features
+# AI Provider: "openai" or "anthropic" (default: openai)
+# The agent will auto-detect based on which API key is set
+AI_PROVIDER=openai
+
+# OpenAI Configuration
 # Get API key at: https://platform.openai.com/api-keys
 OPENAI_API_KEY=
-
-# OpenAI model to use (default: gpt-4o)
 OPENAI_MODEL=gpt-4o
+
+# Anthropic/Claude Configuration (alternative to OpenAI)
+# Get API key at: https://console.anthropic.com/
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 # =============================================================================
 # Neo4j Graph Database (optional - for asset relationship modeling)
