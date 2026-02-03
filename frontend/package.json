@@ -19,6 +19,7 @@
     "recharts": "^2.10.3",
     "lucide-react": "^0.303.0",
     "react-simple-maps": "^3.0.0",
+    "react-force-graph-2d": "^1.25.0",
     "topojson-client": "^3.1.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",

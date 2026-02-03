@@ -21,6 +21,7 @@ import {
   CalendarClock,
   Wrench,
   FileText,
+  GitBranch,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/store/auth';
@@ -31,6 +32,7 @@ const navigation = [
   { name: 'Organizations', href: '/organizations', icon: Building2 },
   { name: 'Assets', href: '/assets', icon: Globe },
   { name: 'Inventory', href: '/inventory', icon: ServerCrash },
+  { name: 'Graph', href: '/graph', icon: GitBranch },
   { name: 'Findings', href: '/findings', icon: Shield },
   { name: 'Exceptions', href: '/exceptions', icon: FileText },
   { name: 'Remediation', href: '/remediation', icon: Wrench },

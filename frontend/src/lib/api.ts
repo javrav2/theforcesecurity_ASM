@@ -1161,6 +1161,54 @@ class ApiClient {
     const response = await axios.get(`${API_URL}/health`);
     return response.data;
   }
+
+  // ==================== GRAPH (Neo4j) ====================
+
+  async getGraphStatus() {
+    const response = await this.client.get('/graph/status');
+    return response.data;
+  }
+
+  async syncGraph(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.post('/graph/sync', null, { params });
+    return response.data;
+  }
+
+  async getAssetRelationships(assetId: number, depth: number = 2) {
+    const response = await this.client.get(`/graph/asset/${assetId}/relationships`, {
+      params: { depth }
+    });
+    return response.data;
+  }
+
+  async getAttackPaths(params: {
+    source_id?: number;
+    target_id?: number;
+    organization_id?: number;
+    max_paths?: number;
+  }) {
+    const response = await this.client.get('/graph/attack-paths', { params });
+    return response.data;
+  }
+
+  async getVulnerabilityImpact(vulnerabilityId: number) {
+    const response = await this.client.get(`/graph/vulnerability/${vulnerabilityId}/impact`);
+    return response.data;
+  }
+
+  async queryGraph(cypher: string, params?: Record<string, any>) {
+    const response = await this.client.post('/graph/query', { cypher, params });
+    return response.data;
+  }
+
+  async getGraphOverview(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/graph/overview', { params });
+    return response.data;
+  }
 }
 
 export const api = new ApiClient();

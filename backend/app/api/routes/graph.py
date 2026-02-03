@@ -79,48 +79,63 @@ async def get_graph_status():
         connected = graph._connected
         
         # Test query
+        node_count = 0
+        relationship_count = 0
         if connected:
             result = graph.query("RETURN 1 AS test")
             connected = bool(result)
+            
+            if connected:
+                # Get counts
+                node_result = graph.query("MATCH (n) RETURN count(n) AS count")
+                if node_result:
+                    node_count = node_result[0].get("count", 0)
+                
+                rel_result = graph.query("MATCH ()-[r]->() RETURN count(r) AS count")
+                if rel_result:
+                    relationship_count = rel_result[0].get("count", 0)
         
         return {
-            "available": connected,
+            "connected": connected,
+            "enabled": bool(settings.NEO4J_URI),
             "uri": settings.NEO4J_URI if connected else None,
+            "node_count": node_count,
+            "relationship_count": relationship_count,
         }
     except Exception as e:
         return {
-            "available": False,
+            "connected": False,
+            "enabled": bool(settings.NEO4J_URI),
             "error": str(e)
         }
 
 
-@router.post("/sync", response_model=SyncResult)
+@router.post("/sync")
 async def sync_organization_graph(
+    organization_id: Optional[int] = Query(default=None),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Sync the current organization's assets to the graph database.
+    Sync organization's assets to the graph database.
     
     This creates nodes and relationships for all assets, vulnerabilities,
     ports, and technologies in the organization.
     """
-    org_id = current_user.organization_id if hasattr(current_user, 'organization_id') else None
-    if not org_id:
-        raise HTTPException(
-            status_code=400,
-            detail="User must belong to an organization"
-        )
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
     
     try:
         graph = get_graph_service()
         result = graph.sync_organization(org_id)
-        return SyncResult(**result)
+        return {
+            "assets_synced": result.get("synced", 0),
+            "error": result.get("error"),
+        }
     except Exception as e:
         logger.error(f"Graph sync error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/asset/{asset_id}/relationships", response_model=GraphData)
+@router.get("/asset/{asset_id}/relationships")
 async def get_asset_relationships(
     asset_id: int,
     depth: int = Query(default=2, ge=1, le=5),
@@ -129,54 +144,126 @@ async def get_asset_relationships(
     """
     Get all relationships for an asset up to a specified depth.
     
-    Returns nodes and edges suitable for graph visualization.
+    Returns nodes and relationships suitable for graph visualization.
     """
     try:
         graph = get_graph_service()
         result = graph.get_asset_relationships(asset_id, depth)
-        return GraphData(**result)
+        
+        # Transform to frontend format
+        nodes = []
+        relationships = []
+        seen_nodes = set()
+        
+        for record in result.get("nodes", []):
+            node_id = record.get("id") or record.get("element_id")
+            if node_id and node_id not in seen_nodes:
+                seen_nodes.add(node_id)
+                nodes.append({
+                    "id": node_id,
+                    "element_id": node_id,
+                    "labels": record.get("labels", []),
+                    "properties": record.get("properties", {}),
+                })
+        
+        for record in result.get("edges", []):
+            relationships.append({
+                "source": record.get("source"),
+                "target": record.get("target"),
+                "start_node": record.get("source"),
+                "end_node": record.get("target"),
+                "type": record.get("type"),
+                "properties": record.get("properties", {}),
+            })
+        
+        return {
+            "nodes": nodes,
+            "relationships": relationships,
+        }
     except Exception as e:
         logger.error(f"Relationship query error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/attack-paths", response_model=List[AttackPath])
+@router.get("/attack-paths")
 async def get_attack_paths(
-    target_asset_id: Optional[int] = None,
-    max_depth: int = Query(default=5, ge=1, le=10),
+    source_id: Optional[int] = None,
+    target_id: Optional[int] = None,
+    organization_id: Optional[int] = None,
+    max_paths: int = Query(default=5, ge=1, le=20),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Find potential attack paths in the organization's infrastructure.
+    Find potential attack paths between assets.
     
     Attack paths show chains of relationships that could be exploited
-    by an attacker to reach critical assets.
+    by an attacker to move between assets.
     
     Args:
-        target_asset_id: Optional specific target asset
-        max_depth: Maximum path depth to search
+        source_id: Starting asset (entry point)
+        target_id: Ending asset (goal)
+        organization_id: Filter by organization
+        max_paths: Maximum number of paths to return
     """
-    org_id = current_user.organization_id if hasattr(current_user, 'organization_id') else None
-    if not org_id:
-        raise HTTPException(
-            status_code=400,
-            detail="User must belong to an organization"
-        )
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
     
     try:
         graph = get_graph_service()
-        results = graph.get_attack_paths(org_id, target_asset_id, max_depth)
+        
+        # Build query based on parameters
+        if source_id and target_id:
+            # Find paths between specific assets
+            query = """
+            MATCH path = shortestPath((source:Asset {id: $source_id})-[*1..6]-(target:Asset {id: $target_id}))
+            RETURN path
+            LIMIT $max_paths
+            """
+            params = {"source_id": source_id, "target_id": target_id, "max_paths": max_paths}
+        else:
+            # Find paths to vulnerable assets
+            query = """
+            MATCH path = (entry:Asset)-[*1..4]->(vuln:Vulnerability)
+            WHERE vuln.severity IN ['critical', 'high']
+            RETURN path
+            LIMIT $max_paths
+            """
+            params = {"max_paths": max_paths}
+            if org_id:
+                query = query.replace("MATCH path", "MATCH path = (entry:Asset {organization_id: $org_id})")
+                params["org_id"] = org_id
+        
+        results = graph.query(query, params)
         
         paths = []
-        for r in results:
-            paths.append(AttackPath(
-                assets=r.get("assets", []),
-                relationships=r.get("relationships", []),
-                target_cve=r.get("target_cve"),
-                severity=r.get("severity"),
-            ))
+        for record in results:
+            path_data = record.get("path")
+            if path_data:
+                nodes = []
+                relationships = []
+                
+                # Extract nodes and relationships from path
+                if hasattr(path_data, 'nodes'):
+                    for node in path_data.nodes:
+                        nodes.append({
+                            "id": node.element_id if hasattr(node, 'element_id') else str(node.id),
+                            "labels": list(node.labels) if hasattr(node, 'labels') else [],
+                            "properties": dict(node) if node else {},
+                        })
+                
+                if hasattr(path_data, 'relationships'):
+                    for rel in path_data.relationships:
+                        relationships.append({
+                            "type": rel.type if hasattr(rel, 'type') else str(type(rel)),
+                            "source": rel.start_node.element_id if hasattr(rel, 'start_node') else None,
+                            "target": rel.end_node.element_id if hasattr(rel, 'end_node') else None,
+                        })
+                
+                paths.append({
+                    "nodes": nodes,
+                    "relationships": relationships,
+                })
         
-        return paths
+        return {"paths": paths}
     except Exception as e:
         logger.error(f"Attack path query error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
