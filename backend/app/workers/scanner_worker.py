@@ -124,7 +124,11 @@ class ScannerWorker:
         
         # Database connection
         if DATABASE_URL:
-            self.engine = create_engine(DATABASE_URL)
+            self.engine = create_engine(
+                DATABASE_URL,
+                pool_pre_ping=True,  # Verify connections before use
+                pool_reset_on_return='rollback'  # Ensure clean state on connection return
+            )
             self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         else:
             logger.warning("DATABASE_URL not set, running in test mode")
@@ -156,9 +160,15 @@ class ScannerWorker:
         return DiscoveryService(db)
     
     def get_db_session(self):
-        """Get a database session."""
+        """Get a fresh database session with clean transaction state."""
         if self.SessionLocal:
-            return self.SessionLocal()
+            session = self.SessionLocal()
+            # Ensure we start with a clean transaction state
+            try:
+                session.rollback()
+            except Exception:
+                pass  # Ignore if no transaction to rollback
+            return session
         return None
     
     async def poll_for_jobs(self):

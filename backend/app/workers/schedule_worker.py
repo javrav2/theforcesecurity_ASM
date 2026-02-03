@@ -115,7 +115,11 @@ class ScheduleWorker:
     def __init__(self):
         """Initialize the schedule worker."""
         if DATABASE_URL:
-            self.engine = create_engine(DATABASE_URL)
+            self.engine = create_engine(
+                DATABASE_URL,
+                pool_pre_ping=True,  # Verify connections before use
+                pool_reset_on_return='rollback'  # Ensure clean state on connection return
+            )
             self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         else:
             logger.warning("DATABASE_URL not set")
@@ -125,9 +129,15 @@ class ScheduleWorker:
         logger.info("Schedule worker initialized")
     
     def get_db_session(self) -> Optional[Session]:
-        """Get a database session."""
+        """Get a fresh database session with clean transaction state."""
         if self.SessionLocal:
-            return self.SessionLocal()
+            session = self.SessionLocal()
+            # Ensure we start with a clean transaction state
+            try:
+                session.rollback()
+            except Exception:
+                pass  # Ignore if no transaction to rollback
+            return session
         return None
     
     async def check_and_run_schedules(self):
