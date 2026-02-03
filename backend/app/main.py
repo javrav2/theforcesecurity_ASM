@@ -11,7 +11,7 @@ from app.db.database import engine, Base, SessionLocal
 from app.core.security import get_password_hash
 from app.models.user import User, UserRole
 from app.models.netblock import Netblock  # Import to ensure table creation
-from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, remediation, exceptions
+from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, remediation, exceptions, agent, graph, github_secrets, mitre, gvm, mcp
 
 # Configure logging
 logging.basicConfig(
@@ -84,6 +84,12 @@ app.include_router(scan_config.router, prefix=settings.API_PREFIX)
 app.include_router(acquisitions.router, prefix=settings.API_PREFIX)
 app.include_router(remediation.router, prefix=settings.API_PREFIX)
 app.include_router(exceptions.router, prefix=settings.API_PREFIX)
+app.include_router(agent.router, prefix=settings.API_PREFIX)
+app.include_router(graph.router, prefix=settings.API_PREFIX)
+app.include_router(github_secrets.router, prefix=settings.API_PREFIX)
+app.include_router(mitre.router, prefix=settings.API_PREFIX)
+app.include_router(gvm.router, prefix=settings.API_PREFIX)
+app.include_router(mcp.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")

@@ -36,6 +36,44 @@ SQS_QUEUE_URL=
 # ProjectDiscovery Cloud (optional - for Chaos subdomain dataset)
 # Get API key at: https://cloud.projectdiscovery.io
 PDCP_API_KEY=
+
+# =============================================================================
+# AI Agent Configuration (optional)
+# =============================================================================
+
+# OpenAI API Key for AI Agent features
+# Get API key at: https://platform.openai.com/api-keys
+OPENAI_API_KEY=
+
+# OpenAI model to use (default: gpt-4o)
+OPENAI_MODEL=gpt-4o
+
+# =============================================================================
+# Neo4j Graph Database (optional - for asset relationship modeling)
+# =============================================================================
+
+# Enable with: docker compose --profile graph up -d
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=neo4j_password
+NEO4J_HTTP_PORT=7474
+NEO4J_BOLT_PORT=7687
+
+# =============================================================================
+# GitHub Secret Scanning (optional)
+# =============================================================================
+
+# GitHub Personal Access Token for secret scanning
+# Create at: https://github.com/settings/tokens
+GITHUB_TOKEN=
+
+# =============================================================================
+# GVM/OpenVAS Integration (optional - for deep vulnerability scanning)
+# =============================================================================
+
+# Enable with: docker compose --profile gvm up -d
+GVM_ENABLED=false
+GVM_PASSWORD=admin
+GVM_HTTP_PORT=9392
 ```
 
 ## Quick Setup

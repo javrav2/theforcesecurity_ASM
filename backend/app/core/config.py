@@ -2,6 +2,7 @@
 
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -42,6 +43,31 @@ class Settings(BaseSettings):
     
     # ProjectDiscovery Cloud API Key (for Chaos subdomain dataset)
     PDCP_API_KEY: str = ""
+    
+    # AI Agent Configuration
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o"
+    AGENT_MAX_ITERATIONS: int = 15
+    AGENT_TOOL_OUTPUT_MAX_CHARS: int = 10000
+    
+    # Neo4j Graph Database Configuration
+    NEO4J_URI: str = "bolt://neo4j:7687"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = "neo4j_password"
+    
+    # GitHub Secret Scanning Configuration
+    GITHUB_TOKEN: Optional[str] = None
+    GITHUB_SECRET_SCAN_ENABLED: bool = True
+    
+    # GVM/OpenVAS Configuration
+    GVM_SOCKET_PATH: str = "/run/gvmd/gvmd.sock"
+    GVM_USERNAME: str = "admin"
+    GVM_PASSWORD: str = "admin"
+    GVM_SCAN_CONFIG: str = "Full and fast"
+    GVM_ENABLED: bool = False
+    
+    # MITRE ATT&CK Enrichment
+    MITRE_ENRICHMENT_ENABLED: bool = True
     
     class Config:
         env_file = ".env"
