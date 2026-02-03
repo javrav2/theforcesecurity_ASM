@@ -188,7 +188,21 @@ export default function DomainsContent() {
   const [addDomainDialogOpen, setAddDomainDialogOpen] = useState(false);
   const [addingDomains, setAddingDomains] = useState(false);
   const [newDomainsInput, setNewDomainsInput] = useState('');
+  const [expandedDomains, setExpandedDomains] = useState<Set<number>>(new Set());
   const { toast } = useToast();
+
+  // Toggle expanded state for a domain row
+  const toggleExpandDomain = (domainId: number) => {
+    setExpandedDomains(prev => {
+      const next = new Set(prev);
+      if (next.has(domainId)) {
+        next.delete(domainId);
+      } else {
+        next.add(domainId);
+      }
+      return next;
+    });
+  };
 
   // Debounce search input - waits 300ms after user stops typing
   useEffect(() => {
@@ -1012,7 +1026,8 @@ export default function DomainsContent() {
                   </TableHeader>
                   <TableBody>
                     {filteredDomains.map((domain: Domain) => (
-                      <TableRow key={domain.id} className={!domain.in_scope ? 'opacity-60' : ''}>
+                      <React.Fragment key={domain.id}>
+                      <TableRow className={!domain.in_scope ? 'opacity-60' : ''}>
                         <TableCell>
                           <input
                             type="checkbox"
@@ -1136,30 +1151,37 @@ export default function DomainsContent() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          {/* Web Crawl Results - Endpoints, Params, JS */}
+                          {/* Web Crawl Results - Endpoints, Params, JS - Clickable to expand */}
                           {((domain.endpoints?.length ?? 0) > 0 || 
                             (domain.parameters?.length ?? 0) > 0 || 
                             (domain.js_files?.length ?? 0) > 0) ? (
-                            <div className="flex flex-col gap-1">
+                            <button
+                              onClick={() => toggleExpandDomain(domain.id)}
+                              className="flex flex-col gap-1 hover:bg-muted/50 rounded p-1 -m-1 transition-colors text-left"
+                            >
+                              <div className="flex items-center gap-1">
+                                <ChevronDown className={`h-3 w-3 transition-transform ${expandedDomains.has(domain.id) ? '' : '-rotate-90'}`} />
+                                <span className="text-xs font-medium">View Details</span>
+                              </div>
                               {(domain.endpoints?.length ?? 0) > 0 && (
-                                <span className="text-xs flex items-center gap-1 text-blue-600">
+                                <span className="text-xs flex items-center gap-1 text-blue-600 ml-4">
                                   <Link2 className="h-3 w-3" />
                                   {domain.endpoints!.length} endpoints
                                 </span>
                               )}
                               {(domain.parameters?.length ?? 0) > 0 && (
-                                <span className="text-xs flex items-center gap-1 text-orange-600">
+                                <span className="text-xs flex items-center gap-1 text-orange-600 ml-4">
                                   <Hash className="h-3 w-3" />
                                   {domain.parameters!.length} params
                                 </span>
                               )}
                               {(domain.js_files?.length ?? 0) > 0 && (
-                                <span className="text-xs flex items-center gap-1 text-yellow-600">
+                                <span className="text-xs flex items-center gap-1 text-yellow-600 ml-4">
                                   <Code className="h-3 w-3" />
                                   {domain.js_files!.length} JS files
                                 </span>
                               )}
-                            </div>
+                            </button>
                           ) : (
                             <span className="text-xs text-muted-foreground">Not crawled</span>
                           )}
@@ -1205,6 +1227,105 @@ export default function DomainsContent() {
                           </div>
                         </TableCell>
                       </TableRow>
+                      {/* Expandable Web Crawl Details Row */}
+                      {expandedDomains.has(domain.id) && (
+                        <TableRow className="bg-muted/30 hover:bg-muted/40">
+                          <TableCell colSpan={10} className="p-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              {/* Endpoints */}
+                              {domain.endpoints && domain.endpoints.length > 0 && (
+                                <div className="bg-background rounded-lg p-3 border">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Link2 className="h-4 w-4 text-blue-500" />
+                                    <h4 className="text-sm font-medium">Endpoints ({domain.endpoints.length})</h4>
+                                  </div>
+                                  <div className="max-h-48 overflow-y-auto space-y-1">
+                                    {domain.endpoints.slice(0, 25).map((endpoint, idx) => (
+                                      <a
+                                        key={idx}
+                                        href={endpoint.startsWith('http') ? endpoint : `https://${domain.value}${endpoint}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="block font-mono text-xs text-muted-foreground hover:text-blue-500 transition-colors truncate"
+                                        title={endpoint}
+                                      >
+                                        {endpoint}
+                                      </a>
+                                    ))}
+                                    {domain.endpoints.length > 25 && (
+                                      <div className="text-xs text-muted-foreground pt-2 border-t mt-2">
+                                        +{domain.endpoints.length - 25} more
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Parameters */}
+                              {domain.parameters && domain.parameters.length > 0 && (
+                                <div className="bg-background rounded-lg p-3 border">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Hash className="h-4 w-4 text-orange-500" />
+                                    <h4 className="text-sm font-medium">Parameters ({domain.parameters.length})</h4>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1 max-h-48 overflow-y-auto">
+                                    {domain.parameters.slice(0, 50).map((param, idx) => (
+                                      <Badge 
+                                        key={idx} 
+                                        variant="outline" 
+                                        className="font-mono text-[10px] bg-orange-500/10 text-orange-600 border-orange-500/30"
+                                      >
+                                        {param}
+                                      </Badge>
+                                    ))}
+                                    {domain.parameters.length > 50 && (
+                                      <Badge variant="outline" className="text-[10px]">
+                                        +{domain.parameters.length - 50} more
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground mt-2">
+                                    May be vulnerable to XSS, SQLi, SSRF
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* JavaScript Files */}
+                              {domain.js_files && domain.js_files.length > 0 && (
+                                <div className="bg-background rounded-lg p-3 border">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Code className="h-4 w-4 text-yellow-500" />
+                                    <h4 className="text-sm font-medium">JavaScript Files ({domain.js_files.length})</h4>
+                                  </div>
+                                  <div className="max-h-48 overflow-y-auto space-y-1">
+                                    {domain.js_files.slice(0, 25).map((jsFile, idx) => (
+                                      <a
+                                        key={idx}
+                                        href={jsFile.startsWith('http') ? jsFile : `https://${domain.value}${jsFile}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="block font-mono text-xs text-muted-foreground hover:text-yellow-500 transition-colors truncate"
+                                        title={jsFile}
+                                      >
+                                        {jsFile}
+                                      </a>
+                                    ))}
+                                    {domain.js_files.length > 25 && (
+                                      <div className="text-xs text-muted-foreground pt-2 border-t mt-2">
+                                        +{domain.js_files.length - 25} more JS files
+                                      </div>
+                                    )}
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground mt-2">
+                                    May contain API endpoints or secrets
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      </React.Fragment>
                     ))}
                   </TableBody>
                 </Table>
