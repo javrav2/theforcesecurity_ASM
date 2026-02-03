@@ -1195,7 +1195,15 @@ async def scan_asset_ports(
                 
                 if existing:
                     existing.last_seen = datetime.utcnow()
-                    existing.state = PortState.OPEN
+                    # Use actual state from scan result
+                    state_map = {
+                        "open": PortState.OPEN,
+                        "closed": PortState.CLOSED,
+                        "filtered": PortState.FILTERED,
+                        "open|filtered": PortState.OPEN_FILTERED,
+                        "closed|filtered": PortState.CLOSED_FILTERED,
+                    }
+                    existing.state = state_map.get(port_result.state.lower(), PortState.OPEN)
                     if port_result.service_name:
                         existing.service_name = port_result.service_name
                     if port_result.service_product:
