@@ -61,6 +61,16 @@ services:
       - CC_S3_BUCKET=${CC_S3_BUCKET:-}
       # ProjectDiscovery Cloud API Key (optional - for Chaos subdomain dataset)
       - PDCP_API_KEY=${PDCP_API_KEY:-}
+      # Neo4j Graph Database (optional - for asset relationship visualization)
+      - NEO4J_URI=${NEO4J_URI:-}
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
+      # AI Agent Configuration (optional)
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # GitHub Secret Scanning (optional)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
