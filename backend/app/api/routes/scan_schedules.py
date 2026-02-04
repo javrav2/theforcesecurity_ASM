@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES, CRITICAL_PORTS, ALL_CRITICAL_PORTS
+from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES, CRITICAL_PORTS, ALL_CRITICAL_PORTS, ICS_OT_PORTS, ALL_ICS_OT_PORTS
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType
 from app.models.label import Label
@@ -30,8 +30,11 @@ IPV4_ONLY_SCAN_TYPES = [
     "port_scan", "masscan", "critical_ports", 
     "http_probe", "screenshot", "login_portal",
     "nuclei", "nuclei_critical", "nuclei_high", "nuclei_critical_high",
-    "nuclei_medium", "nuclei_low_info", "vulnerability", "technology",
+    "nuclei_medium", "nuclei_low_info", "nuclei_ics", "vulnerability", "technology",
     "katana", "paramspider", "waybackurls",
+    # ICS/OT scan types
+    "ics_ot_ports", "ics_plc_scan", "ics_scada_scan", 
+    "ics_building_automation", "ics_full_discovery",
 ]
 
 
@@ -147,6 +150,39 @@ def get_critical_ports():
         "all_ports": ALL_CRITICAL_PORTS,
         "total_count": len(ALL_CRITICAL_PORTS),
         "description": "These ports are monitored for exposure and generate security findings when found open."
+    }
+
+
+@router.get("/ics-ot-ports")
+def get_ics_ot_ports():
+    """
+    Get the list of ICS/OT/SCADA ports monitored by the system.
+    
+    These are industrial control system ports that should NEVER be exposed
+    to untrusted networks. Exposure indicates critical infrastructure risk.
+    """
+    return {
+        "categories": ICS_OT_PORTS,
+        "all_ports": ALL_ICS_OT_PORTS,
+        "total_count": len(ALL_ICS_OT_PORTS),
+        "description": "Industrial Control System and Operational Technology ports. Exposure is a CRITICAL finding.",
+        "compliance_frameworks": [
+            "NERC CIP (Power Grid)",
+            "IEC 62443 (Industrial Automation)",
+            "NIST SP 800-82 (ICS Security)",
+            "TSA Security Directive (Pipelines)",
+        ],
+        "port_details": {
+            "102": "Siemens S7comm (Stuxnet targeted)",
+            "502": "Modbus/TCP (No authentication)",
+            "20000": "DNP3 (SCADA/Utilities)",
+            "44818": "EtherNet/IP (Rockwell/Allen-Bradley)",
+            "47808": "BACnet (Building Automation)",
+            "2404": "IEC 60870-5-104 (Power Grid)",
+            "4840": "OPC UA (Industrial Data)",
+            "9600": "OMRON FINS",
+            "5007": "Mitsubishi MELSEC",
+        }
     }
 
 
@@ -485,9 +521,15 @@ def trigger_scheduled_scan(
         "nuclei_critical_high": ScanType.VULNERABILITY,
         "nuclei_medium": ScanType.VULNERABILITY,
         "nuclei_low_info": ScanType.VULNERABILITY,
+        "nuclei_ics": ScanType.VULNERABILITY,
         "port_scan": ScanType.PORT_SCAN,
         "masscan": ScanType.PORT_SCAN,
         "critical_ports": ScanType.PORT_SCAN,
+        "ics_ot_ports": ScanType.PORT_SCAN,
+        "ics_plc_scan": ScanType.PORT_SCAN,
+        "ics_scada_scan": ScanType.PORT_SCAN,
+        "ics_building_automation": ScanType.PORT_SCAN,
+        "ics_full_discovery": ScanType.PORT_SCAN,
         "discovery": ScanType.DISCOVERY,
         "full_discovery": ScanType.DISCOVERY,
         "screenshot": ScanType.SCREENSHOT,

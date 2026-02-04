@@ -160,6 +160,65 @@ CRITICAL_PORTS = {
     "web": [80, 443, 8080, 8000, 8443, 8888, 3000],
 }
 
+# ICS/OT/SCADA ports for industrial control system monitoring
+ICS_OT_PORTS = {
+    # PLC Protocols - Direct control of industrial equipment
+    "plc_protocols": [
+        102,    # Siemens S7comm (ISO-TSAP) - Stuxnet targeted
+        502,    # Modbus/TCP - Most common ICS protocol
+        44818,  # EtherNet/IP (Rockwell/Allen-Bradley)
+        2222,   # EtherNet/IP I/O implicit messaging
+        9600,   # OMRON FINS
+        5007,   # Mitsubishi MELSEC-Q
+        18245, 18246,  # GE SRTP
+        2455,   # Codesys
+    ],
+    # SCADA/Utilities - Critical infrastructure
+    "scada_utilities": [
+        20000,  # DNP3 - Used in power grids, water systems
+        2404,   # IEC 60870-5-104 - Power grid telecontrol
+        4000,   # Emerson ROC - Oil & gas pipelines
+        4911,   # Niagara Fox/Tridium - Smart grid
+    ],
+    # Building Automation - HVAC, access control
+    "building_automation": [
+        47808,  # BACnet - Building automation
+        1911, 1962,  # Niagara Fox - Building management
+        789,    # Red Lion Crimson - HMI
+    ],
+    # Industrial Automation
+    "industrial_automation": [
+        4840,   # OPC UA - Industrial data exchange
+        1089, 1090, 1091,  # Foundation Fieldbus HSE
+        5094, 5095,  # HART-IP - Field devices
+        34962, 34963, 34964,  # PROFINET
+        2000,   # MMS (Manufacturing Message Specification)
+    ],
+    # HMI/SCADA Servers
+    "hmi_scada_servers": [
+        1433,   # Historian databases (SQL Server)
+        4712,   # ABB TDC
+        5450,   # OSIsoft PI
+        11234,  # Inductive Automation Ignition
+        8088,   # Ignition web interface
+        62900,  # GE iFIX
+        502,    # Modbus gateway (secondary)
+    ],
+    # Remote Access to OT
+    "ot_remote_access": [
+        5900, 5901,  # VNC to HMI
+        3389,   # RDP to engineering workstations
+        22,     # SSH to embedded devices
+        23,     # Telnet (legacy ICS)
+        4911,   # Niagara
+    ],
+}
+
+# All ICS/OT ports flattened
+ALL_ICS_OT_PORTS = sorted(set(
+    port for ports in ICS_OT_PORTS.values() for port in ports
+))
+
 # Flatten all critical ports for quick scanning
 ALL_CRITICAL_PORTS = sorted(set(
     port for ports in CRITICAL_PORTS.values() for port in ports
@@ -370,6 +429,100 @@ CONTINUOUS_SCAN_TYPES = {
             "dry_run": False,
         },
         "recommended_frequency": "weekly",
+    },
+    
+    # ==================== ICS/OT/SCADA SCAN TYPES ====================
+    "ics_ot_ports": {
+        "name": "ICS/OT Port Monitoring",
+        "description": "Monitor for exposed Industrial Control System and Operational Technology ports. Detects PLCs, SCADA systems, building automation, and industrial protocols. Critical for OT security and compliance (NERC CIP, IEC 62443).",
+        "default_config": {
+            "ports": ",".join(str(p) for p in ALL_ICS_OT_PORTS),
+            "scanner": "masscan",
+            "rate": 5000,  # Lower rate - OT devices can be fragile
+            "service_detection": True,
+            "generate_findings": True,
+            "alert_on_new": True,
+            "finding_category": "ics_ot",
+        },
+        "recommended_frequency": "daily",
+        "tags": ["ics", "ot", "scada", "critical-infrastructure"],
+    },
+    "ics_plc_scan": {
+        "name": "PLC Protocol Detection",
+        "description": "Scan for exposed PLC (Programmable Logic Controller) protocols including Modbus, S7comm, EtherNet/IP, FINS, and MELSEC. These should NEVER be exposed to untrusted networks.",
+        "default_config": {
+            "ports": "102,502,2222,2455,5007,9600,18245,18246,44818",
+            "scanner": "nmap",
+            "rate": 1000,
+            "service_detection": True,
+            "nse_scripts": ["modbus-discover", "s7-info", "enip-info", "omron-info"],
+            "generate_findings": True,
+            "finding_category": "ics_plc",
+        },
+        "recommended_frequency": "daily",
+        "tags": ["ics", "plc", "modbus", "s7", "ethernet-ip"],
+    },
+    "ics_scada_scan": {
+        "name": "SCADA/Utility Protocol Scan",
+        "description": "Scan for exposed SCADA and utility protocols like DNP3 and IEC 60870-5-104. Used in power grids, water systems, and oil & gas. Critical infrastructure exposure.",
+        "default_config": {
+            "ports": "2404,4000,4911,20000",
+            "scanner": "nmap",
+            "rate": 1000,
+            "service_detection": True,
+            "nse_scripts": ["dnp3-info", "iec-identify"],
+            "generate_findings": True,
+            "finding_category": "ics_scada",
+        },
+        "recommended_frequency": "daily",
+        "tags": ["ics", "scada", "dnp3", "iec104", "utilities", "critical-infrastructure"],
+    },
+    "ics_building_automation": {
+        "name": "Building Automation Scan",
+        "description": "Scan for exposed building automation protocols like BACnet, Niagara Fox, and KNX. Controls HVAC, lighting, and physical access systems.",
+        "default_config": {
+            "ports": "789,1911,1962,47808",
+            "scanner": "nmap",
+            "rate": 1000,
+            "service_detection": True,
+            "nse_scripts": ["bacnet-info", "fox-info"],
+            "generate_findings": True,
+            "finding_category": "ics_building",
+        },
+        "recommended_frequency": "weekly",
+        "tags": ["ics", "bacnet", "building-automation", "hvac"],
+    },
+    "nuclei_ics": {
+        "name": "Nuclei ICS/SCADA Vulnerabilities",
+        "description": "Scan for ICS/SCADA specific vulnerabilities using Nuclei ICS templates. Detects vulnerable HMIs, exposed historians, default credentials on industrial devices, and known CVEs.",
+        "default_config": {
+            "tags": ["ics", "scada", "iot", "plc"],
+            "severity": ["critical", "high", "medium"],
+            "rate_limit": 50,  # Lower rate for OT devices
+            "timeout": 15,
+        },
+        "recommended_frequency": "weekly",
+        "tags": ["ics", "scada", "nuclei", "vulnerability"],
+    },
+    "ics_full_discovery": {
+        "name": "Full ICS/OT Discovery",
+        "description": "Comprehensive ICS/OT discovery combining port scanning, protocol detection, and vulnerability assessment. Use for initial OT network assessment or periodic audits.",
+        "default_config": {
+            "ports": ",".join(str(p) for p in ALL_ICS_OT_PORTS),
+            "scanner": "nmap",
+            "rate": 500,  # Very conservative for OT networks
+            "service_detection": True,
+            "nse_scripts": [
+                "modbus-discover", "s7-info", "enip-info", "bacnet-info",
+                "fox-info", "omron-info", "dnp3-info", "iec-identify",
+                "codesys-v2-discover", "opcua-info"
+            ],
+            "nuclei_tags": ["ics", "scada"],
+            "generate_findings": True,
+            "run_nuclei": True,
+        },
+        "recommended_frequency": "monthly",
+        "tags": ["ics", "ot", "scada", "full-discovery", "assessment"],
     },
 }
 

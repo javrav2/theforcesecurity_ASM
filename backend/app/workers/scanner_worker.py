@@ -811,6 +811,11 @@ class ScannerWorker:
             elif selected_scanner == ScannerType.NMAP:
                 # Nmap doesn't use rate/timeout in the same way
                 scan_kwargs["service_detection"] = service_detection
+                # Pass NSE scripts for ICS/OT protocol detection
+                nse_scripts = config.get('nse_scripts', [])
+                if nse_scripts:
+                    scan_kwargs["scripts"] = nse_scripts
+                    logger.info(f"Using NSE scripts for ICS detection: {nse_scripts}")
             
             logger.info(f"Starting port scan with rate={rate}, timeout={timeout}, retries={retries}")
             

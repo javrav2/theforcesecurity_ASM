@@ -14,7 +14,7 @@ from app.models.asset import Asset, AssetType
 from app.models.label import Label
 from app.models.user import User
 from app.models.netblock import Netblock
-from app.models.scan_schedule import CONTINUOUS_SCAN_TYPES, ALL_CRITICAL_PORTS
+from app.models.scan_schedule import CONTINUOUS_SCAN_TYPES, ALL_CRITICAL_PORTS, ALL_ICS_OT_PORTS
 from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRequest, BulkDomainScanRequest, AdhocScanRequest
 from app.api.deps import get_current_active_user, require_analyst
 from app.services.nuclei_service import count_cidr_targets
@@ -409,9 +409,15 @@ def create_adhoc_scan(
         "nuclei_critical_high": ScanType.VULNERABILITY,
         "nuclei_medium": ScanType.VULNERABILITY,
         "nuclei_low_info": ScanType.VULNERABILITY,
+        "nuclei_ics": ScanType.VULNERABILITY,
         "port_scan": ScanType.PORT_SCAN,
         "masscan": ScanType.PORT_SCAN,
         "critical_ports": ScanType.PORT_SCAN,
+        "ics_ot_ports": ScanType.PORT_SCAN,
+        "ics_plc_scan": ScanType.PORT_SCAN,
+        "ics_scada_scan": ScanType.PORT_SCAN,
+        "ics_building_automation": ScanType.PORT_SCAN,
+        "ics_full_discovery": ScanType.PORT_SCAN,
         "discovery": ScanType.DISCOVERY,
         "full_discovery": ScanType.DISCOVERY,
         "screenshot": ScanType.SCREENSHOT,
@@ -442,6 +448,12 @@ def create_adhoc_scan(
         config["generate_findings"] = True
         config["scanner"] = config.get("scanner", "masscan")
         config["rate"] = config.get("rate", 10000)
+    
+    # Special handling for ICS/OT scans
+    if request.scan_type in ["ics_ot_ports", "ics_full_discovery"]:
+        config["ports"] = config.get("ports", ",".join(str(p) for p in ALL_ICS_OT_PORTS))
+        config["generate_findings"] = True
+        config["finding_category"] = "ics_ot"
     
     # Create the scan
     new_scan = Scan(
