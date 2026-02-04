@@ -92,6 +92,19 @@ class ScanResponse(ScanBase):
         from_attributes = True
 
 
+class AdhocScanRequest(BaseModel):
+    """Schema for creating an adhoc scan with any scan type (including scheduled scan types)."""
+    name: str = Field(..., min_length=1, max_length=255, description="Name for the scan")
+    scan_type: str = Field(..., description="Scan type (any from CONTINUOUS_SCAN_TYPES)")
+    organization_id: int = Field(..., description="Organization ID")
+    targets: List[str] = Field(default=[], description="Explicit list of targets (optional)")
+    label_ids: List[int] = Field(default=[], description="Target assets with these labels")
+    match_all_labels: bool = Field(default=False, description="Require assets to have ALL labels")
+    use_all_in_scope: bool = Field(default=False, description="If no targets/labels, use all in-scope assets")
+    include_netblocks: bool = Field(default=True, description="Include in-scope netblocks as targets")
+    config: dict[str, Any] = Field(default={}, description="Override default scan config")
+
+
 
 
 

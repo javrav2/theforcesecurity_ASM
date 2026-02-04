@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.scan import Scan, ScanType, ScanStatus
-from app.models.asset import Asset
+from app.models.asset import Asset, AssetType
 from app.models.label import Label
 from app.models.user import User
-from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRequest, BulkDomainScanRequest
+from app.models.netblock import Netblock
+from app.models.scan_schedule import CONTINUOUS_SCAN_TYPES, ALL_CRITICAL_PORTS
+from app.schemas.scan import ScanCreate, ScanUpdate, ScanResponse, ScanByLabelRequest, BulkDomainScanRequest, AdhocScanRequest
 from app.api.deps import get_current_active_user, require_analyst
 from app.services.nuclei_service import count_cidr_targets
 
@@ -291,6 +293,189 @@ def create_scan(
     send_scan_to_sqs(new_scan)
     
     return new_scan
+
+
+@router.get("/scan-types")
+def get_available_scan_types():
+    """
+    Get all available scan types for adhoc scans.
+    
+    Returns all scan types from CONTINUOUS_SCAN_TYPES that can be used
+    for both scheduled and adhoc scans.
+    """
+    return CONTINUOUS_SCAN_TYPES
+
+
+@router.post("/adhoc", status_code=status.HTTP_201_CREATED)
+def create_adhoc_scan(
+    request: AdhocScanRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Create an adhoc scan using any scan type (including scheduled scan types).
+    
+    This endpoint supports all scan types from CONTINUOUS_SCAN_TYPES like:
+    - nuclei, nuclei_critical, nuclei_high, nuclei_critical_high
+    - critical_ports, masscan, port_scan
+    - discovery, full_discovery, subdomain_enum
+    - http_probe, dns_resolution, technology
+    - screenshot, login_portal, paramspider, waybackurls, katana, cleanup
+    
+    Targets can be specified via:
+    - Explicit list in `targets`
+    - Assets with specific labels via `label_ids`
+    - All in-scope assets via `use_all_in_scope=true`
+    """
+    # Check organization access
+    if not check_org_access(current_user, request.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    # Validate scan type
+    if request.scan_type not in CONTINUOUS_SCAN_TYPES:
+        valid_types = list(CONTINUOUS_SCAN_TYPES.keys())
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid scan type '{request.scan_type}'. Valid types: {valid_types}"
+        )
+    
+    # Build targets
+    targets = list(request.targets) if request.targets else []
+    
+    # Add targets from labels
+    if request.label_ids:
+        query = db.query(Asset).filter(
+            Asset.organization_id == request.organization_id,
+            Asset.in_scope == True
+        )
+        
+        if request.match_all_labels:
+            for label_id in request.label_ids:
+                query = query.filter(Asset.labels.any(Label.id == label_id))
+        else:
+            query = query.filter(Asset.labels.any(Label.id.in_(request.label_ids)))
+        
+        assets = query.distinct().all()
+        targets.extend([a.value for a in assets])
+    
+    # Use all in-scope assets if requested and no other targets
+    if request.use_all_in_scope and not targets:
+        assets = db.query(Asset).filter(
+            Asset.organization_id == request.organization_id,
+            Asset.in_scope == True,
+            Asset.asset_type.in_([
+                AssetType.DOMAIN,
+                AssetType.SUBDOMAIN,
+                AssetType.IP_ADDRESS,
+                AssetType.IP_RANGE,
+            ])
+        ).all()
+        targets.extend([a.value for a in assets])
+        
+        # Add netblocks if requested
+        if request.include_netblocks:
+            netblocks = db.query(Netblock).filter(
+                Netblock.organization_id == request.organization_id,
+                Netblock.in_scope == True
+            ).all()
+            
+            for nb in netblocks:
+                if nb.cidr_notation:
+                    for sep in [';', ',']:
+                        if sep in nb.cidr_notation:
+                            cidrs = [c.strip() for c in nb.cidr_notation.split(sep) if c.strip()]
+                            targets.extend(cidrs)
+                            break
+                    else:
+                        targets.append(nb.cidr_notation.strip())
+    
+    # Deduplicate targets
+    targets = list(set(targets))
+    
+    if not targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No targets specified. Provide targets, label_ids, or set use_all_in_scope=true"
+        )
+    
+    # Map scan type string to ScanType enum
+    scan_type_map = {
+        "nuclei": ScanType.VULNERABILITY,
+        "nuclei_critical": ScanType.VULNERABILITY,
+        "nuclei_high": ScanType.VULNERABILITY,
+        "nuclei_critical_high": ScanType.VULNERABILITY,
+        "nuclei_medium": ScanType.VULNERABILITY,
+        "nuclei_low_info": ScanType.VULNERABILITY,
+        "port_scan": ScanType.PORT_SCAN,
+        "masscan": ScanType.PORT_SCAN,
+        "critical_ports": ScanType.PORT_SCAN,
+        "discovery": ScanType.DISCOVERY,
+        "full_discovery": ScanType.DISCOVERY,
+        "screenshot": ScanType.SCREENSHOT,
+        "technology": ScanType.TECHNOLOGY,
+        "http_probe": ScanType.HTTP_PROBE,
+        "dns_resolution": ScanType.DNS_RESOLUTION,
+        "subdomain_enum": ScanType.SUBDOMAIN_ENUM,
+        "login_portal": ScanType.LOGIN_PORTAL,
+        "paramspider": ScanType.PARAMSPIDER,
+        "waybackurls": ScanType.WAYBACKURLS,
+        "katana": ScanType.KATANA,
+        "cleanup": ScanType.CLEANUP,
+    }
+    
+    scan_type_enum = scan_type_map.get(request.scan_type, ScanType.VULNERABILITY)
+    
+    # Build config with defaults from CONTINUOUS_SCAN_TYPES
+    default_config = CONTINUOUS_SCAN_TYPES[request.scan_type].get("default_config", {})
+    config = {
+        **default_config,
+        **request.config,
+        "adhoc_scan_type": request.scan_type,
+    }
+    
+    # Special handling for critical_ports
+    if request.scan_type == "critical_ports":
+        config["ports"] = config.get("ports", ",".join(str(p) for p in ALL_CRITICAL_PORTS))
+        config["generate_findings"] = True
+        config["scanner"] = config.get("scanner", "masscan")
+        config["rate"] = config.get("rate", 10000)
+    
+    # Create the scan
+    new_scan = Scan(
+        name=request.name,
+        scan_type=scan_type_enum,
+        organization_id=request.organization_id,
+        targets=targets,
+        config=config,
+        started_by=current_user.username,
+        status=ScanStatus.PENDING,
+    )
+    
+    db.add(new_scan)
+    db.commit()
+    db.refresh(new_scan)
+    
+    # Send scan job to SQS for processing
+    send_scan_to_sqs(new_scan)
+    
+    scan_type_info = CONTINUOUS_SCAN_TYPES[request.scan_type]
+    
+    return {
+        "id": new_scan.id,
+        "name": new_scan.name,
+        "scan_type": request.scan_type,
+        "scan_type_name": scan_type_info.get("name"),
+        "scan_type_description": scan_type_info.get("description"),
+        "organization_id": new_scan.organization_id,
+        "targets_count": len(targets),
+        "status": new_scan.status.value,
+        "config": config,
+        "created_at": new_scan.created_at.isoformat() if new_scan.created_at else None,
+        "message": f"Adhoc {scan_type_info.get('name')} scan created with {len(targets)} targets"
+    }
 
 
 @router.post("/by-label", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
