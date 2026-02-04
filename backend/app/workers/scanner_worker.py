@@ -1136,8 +1136,18 @@ class ScannerWorker:
     async def handle_subdomain_enum(self, job_data: dict):
         """Handle subdomain enumeration job."""
         scan_id = job_data.get('scan_id')
+        # Support both 'domain' and 'targets' for flexibility
         domain = job_data.get('domain')
+        targets = job_data.get('targets', [])
         organization_id = job_data.get('organization_id')
+        
+        # If no domain specified, use first target
+        if not domain and targets:
+            domain = targets[0] if isinstance(targets, list) else targets
+        
+        if not domain:
+            logger.error(f"Scan {scan_id}: No domain specified for subdomain enumeration")
+            return
         
         db = self.get_db_session()
         if not db:
@@ -1156,13 +1166,23 @@ class ScannerWorker:
             from app.services.subdomain_service import SubdomainService
             subdomain_service = SubdomainService()
             
-            result = await subdomain_service.enumerate_subdomains(domain)
+            # enumerate_subdomains returns list[SubdomainResult]
+            results = await subdomain_service.enumerate_subdomains(domain)
             
             # Create assets for discovered subdomains
             from app.models.asset import AssetType
             assets_created = 0
+            sources_used = set()
+            all_subdomains = []
             
-            for subdomain in result.subdomains:
+            # Results is a list of SubdomainResult objects
+            for result in results:
+                subdomain = result.subdomain if hasattr(result, 'subdomain') else str(result)
+                source = result.source if hasattr(result, 'source') else 'unknown'
+                
+                all_subdomains.append(subdomain)
+                sources_used.add(source)
+                
                 existing = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
                     Asset.value == subdomain
@@ -1174,7 +1194,7 @@ class ScannerWorker:
                         name=subdomain,
                         value=subdomain,
                         asset_type=AssetType.SUBDOMAIN,
-                        discovery_source="subfinder"
+                        discovery_source=source
                     )
                     db.add(asset)
                     assets_created += 1
@@ -1186,23 +1206,29 @@ class ScannerWorker:
                 scan.status = ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
                 scan.results = {
-                    'subdomains_found': len(result.subdomains),
+                    'subdomains_found': len(all_subdomains),
                     'assets_created': assets_created,
-                    'sources': result.sources
+                    'sources': list(sources_used)
                 }
                 db.commit()
             
-            logger.info(f"Subdomain enum complete: {len(result.subdomains)} found, {assets_created} created")
+            logger.info(f"Subdomain enum complete: {len(all_subdomains)} found, {assets_created} created")
             
         except Exception as e:
             logger.error(f"Subdomain enum failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    # Rollback any failed transaction first
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    db.rollback()
             raise
         finally:
             if db:
