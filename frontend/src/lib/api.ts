@@ -342,6 +342,11 @@ class ApiClient {
     return response.data;
   }
 
+  async retryScan(id: number) {
+    const response = await this.client.post(`/scans/${id}/retry`);
+    return response.data;
+  }
+
   async rescan(id: number) {
     const response = await this.client.post(`/scans/${id}/rescan`);
     return response.data;
@@ -1159,6 +1164,39 @@ class ApiClient {
   // Health check
   async healthCheck() {
     const response = await axios.get(`${API_URL}/health`);
+    return response.data;
+  }
+
+  // ==================== APPLICATION STRUCTURE ====================
+
+  async getAppStructure(params?: {
+    organization_id?: number;
+    item_type?: string;
+    search?: string;
+    limit?: number;
+  }) {
+    const response = await this.client.get('/app-structure/', { params });
+    return response.data;
+  }
+
+  async getAppStructureSummary(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/app-structure/summary', { params });
+    return response.data;
+  }
+
+  async getAppStructureByDomain(domain: string, organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get(`/app-structure/by-domain/${domain}`, { params });
+    return response.data;
+  }
+
+  async getAppStructureScans(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/app-structure/scans', { params });
     return response.data;
   }
 

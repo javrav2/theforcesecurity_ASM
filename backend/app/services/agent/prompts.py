@@ -225,8 +225,6 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
     post_exploitation_tools = """
 ### Post-Exploitation Phase Tools (requires approval)
 - All Exploitation tools
-- **msf_session_run**: Run commands on active sessions
-- **msf_list_sessions**: List active sessions
 """
 
     tools = informational_tools
@@ -267,10 +265,6 @@ TOOL_PHASE_MAP = {
     "run_nuclei_scan": ["exploitation", "post_exploitation"],
     "run_port_scan": ["exploitation", "post_exploitation"],
     "check_http_status": ["exploitation", "post_exploitation"],
-    
-    # Post-exploitation tools
-    "msf_session_run": ["post_exploitation"],
-    "msf_list_sessions": ["post_exploitation"],
 }
 
 

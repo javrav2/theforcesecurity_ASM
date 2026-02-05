@@ -346,6 +346,73 @@ class ScannerWorker:
             db.rollback()
         finally:
             db.close()
+    
+    async def recover_stale_scans(self) -> int:
+        """
+        Detect and recover scans that are stuck in RUNNING status.
+        
+        Scans are considered stale if they:
+        - Have been RUNNING for more than STALE_SCAN_THRESHOLD_MINUTES
+        - Are not currently being processed by this worker (not in active_scans)
+        
+        Stale scans are reset to PENDING to be retried.
+        
+        Returns the count of recovered scans.
+        """
+        STALE_SCAN_THRESHOLD_MINUTES = 60  # Scans running > 1 hour are considered stale
+        
+        db = self.get_db_session()
+        if not db:
+            return 0
+        
+        try:
+            from datetime import timedelta
+            threshold = datetime.utcnow() - timedelta(minutes=STALE_SCAN_THRESHOLD_MINUTES)
+            
+            # Find scans that are RUNNING but started too long ago
+            stale_scans = db.query(Scan).filter(
+                Scan.status == ScanStatus.RUNNING,
+                Scan.started_at < threshold,
+                ~Scan.id.in_(active_scans)  # Exclude scans actively being processed
+            ).all()
+            
+            recovered_count = 0
+            for scan in stale_scans:
+                # Reset to PENDING so it will be retried
+                old_error = scan.error_message or ""
+                scan.status = ScanStatus.PENDING
+                scan.started_at = None
+                scan.error_message = f"Recovered from stale RUNNING state after {STALE_SCAN_THRESHOLD_MINUTES}+ minutes. Previous error: {old_error[:200]}"
+                
+                # Track retry count in config
+                config = scan.config or {}
+                retry_count = config.get('_retry_count', 0) + 1
+                config['_retry_count'] = retry_count
+                config['_last_recovery'] = datetime.utcnow().isoformat()
+                scan.config = config
+                
+                # If too many retries, mark as failed instead
+                if retry_count >= 3:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = f"Failed after {retry_count} automatic recovery attempts. Manual investigation required."
+                    scan.completed_at = datetime.utcnow()
+                    logger.warning(f"Scan {scan.id} failed after {retry_count} recovery attempts")
+                else:
+                    logger.info(f"Recovered stale scan {scan.id} (attempt {retry_count})")
+                    recovered_count += 1
+            
+            if stale_scans:
+                db.commit()
+                logger.info(f"Recovered {recovered_count} stale scans, {len(stale_scans) - recovered_count} marked as failed")
+            
+            return recovered_count
+            
+        except Exception as e:
+            logger.error(f"Error recovering stale scans: {e}")
+            db.rollback()
+            return 0
+        finally:
+            db.close()
 
     def _delete_sqs_message_safe(self, message_id: str, receipt_handle: str, is_db_message: bool, scan_id: int = None):
         """Safely delete an SQS message with comprehensive logging."""
@@ -1746,7 +1813,13 @@ class ScannerWorker:
                 ).limit(config.get('max_domains', 50)).all()
                 targets = [a.value for a in domain_assets]
             
-            logger.info(f"Running ParamSpider on {len(targets)} targets")
+            # Limit targets to prevent excessively long scans
+            max_targets = config.get('max_domains', 30)
+            if len(targets) > max_targets:
+                logger.info(f"Limiting ParamSpider scan from {len(targets)} to {max_targets} targets")
+                targets = targets[:max_targets]
+            
+            logger.info(f"Running ParamSpider on {len(targets)} targets (parallel)")
             
             total_urls = 0
             total_params = 0
@@ -1754,14 +1827,21 @@ class ScannerWorker:
             total_js_files = 0
             assets_updated = 0
             
-            for target in targets:
+            # Update progress tracking
+            if scan:
+                scan.current_step = f"Discovering params from {len(targets)} domains (parallel)"
+                db.commit()
+            
+            # Use parallel processing for faster completion
+            results = await paramspider.scan_multiple_domains(
+                domains=targets,
+                max_concurrent=config.get('max_concurrent', 5),
+                level=config.get('level', 'high'),
+                timeout=config.get('timeout', 120),  # Reduced from 300 to 120 seconds per target
+            )
+            
+            for result in results:
                 try:
-                    result = await paramspider.scan_domain(
-                        domain=target,
-                        level=config.get('level', 'high'),
-                        timeout=config.get('timeout', 300)
-                    )
-                    
                     if result.success:
                         total_urls += len(result.urls)
                         total_params += len(result.parameters)
@@ -1771,7 +1851,7 @@ class ScannerWorker:
                         # Update the asset with discovered data
                         asset = db.query(Asset).filter(
                             Asset.organization_id == organization_id,
-                            Asset.value == target
+                            Asset.value == result.domain
                         ).first()
                         
                         if asset:
@@ -1786,12 +1866,12 @@ class ScannerWorker:
                             asset.last_seen = datetime.utcnow()
                             assets_updated += 1
                         
-                        logger.info(f"ParamSpider for {target}: {len(result.parameters)} params, {len(result.endpoints)} endpoints")
+                        logger.info(f"ParamSpider for {result.domain}: {len(result.parameters)} params, {len(result.endpoints)} endpoints")
                     else:
-                        logger.warning(f"ParamSpider failed for {target}: {result.error}")
+                        logger.warning(f"ParamSpider failed for {result.domain}: {result.error}")
                         
                 except Exception as e:
-                    logger.warning(f"ParamSpider error for {target}: {e}")
+                    logger.warning(f"ParamSpider result processing error: {e}")
             
             db.commit()
             
@@ -1988,7 +2068,13 @@ class ScannerWorker:
                 ).limit(config.get('max_targets', 50)).all()
                 targets = [a.value for a in live_assets]
             
-            logger.info(f"Running Katana on {len(targets)} targets with depth={config.get('depth', 5)}")
+            # Limit targets to prevent excessively long scans
+            max_targets = config.get('max_targets', 20)  # Reduced from 50
+            if len(targets) > max_targets:
+                logger.info(f"Limiting Katana scan from {len(targets)} to {max_targets} targets")
+                targets = targets[:max_targets]
+            
+            logger.info(f"Running Katana on {len(targets)} targets with depth={config.get('depth', 3)}")
             
             total_urls = 0
             total_endpoints = 0
@@ -1996,24 +2082,42 @@ class ScannerWorker:
             total_js = 0
             assets_updated = 0
             
-            # Process each target
-            for target in targets:
+            # Use parallel processing for faster completion
+            # Default: 3 concurrent crawls, 3 minutes timeout per target
+            per_target_timeout = config.get('timeout', 180)  # Reduced from 600 to 180 seconds
+            max_concurrent = config.get('max_concurrent', 3)
+            
+            # Update progress tracking
+            if scan:
+                scan.current_step = f"Deep crawling {len(targets)} targets (parallel)"
+                db.commit()
+            
+            # Use crawl_multiple for parallel processing
+            results = await katana.crawl_multiple(
+                targets=targets,
+                max_concurrent=max_concurrent,
+                depth=config.get('depth', 3),  # Reduced default depth from 5 to 3
+                js_crawl=config.get('js_crawl', True),
+                form_extraction=config.get('form_extraction', True),
+                timeout=per_target_timeout,
+                rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
+                concurrency=config.get('concurrency', 10),
+            )
+            
+            # Process results and update assets
+            for result in results:
                 try:
-                    result = await katana.crawl(
-                        target=target,
-                        depth=config.get('depth', 5),
-                        js_crawl=config.get('js_crawl', True),
-                        form_extraction=config.get('form_extraction', True),
-                        timeout=config.get('timeout', 600),
-                        rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
-                        concurrency=config.get('concurrency', 10),
-                    )
-                    
                     if result.success:
                         total_urls += len(result.urls)
                         total_endpoints += len(result.endpoints)
                         total_params += len(result.parameters)
                         total_js += len(result.js_files)
+                        
+                        # Extract target domain from result
+                        target = result.target
+                        if target.startswith(('http://', 'https://')):
+                            from urllib.parse import urlparse
+                            target = urlparse(target).netloc
                         
                         # Update the asset with discovered data
                         asset = db.query(Asset).filter(
@@ -2048,14 +2152,14 @@ class ScannerWorker:
                             assets_updated += 1
                         
                         logger.info(
-                            f"Katana crawl of {target}: {len(result.endpoints)} endpoints, "
+                            f"Katana crawl of {result.target}: {len(result.endpoints)} endpoints, "
                             f"{len(result.parameters)} params, {len(result.js_files)} JS files"
                         )
                     else:
-                        logger.warning(f"Katana failed for {target}: {result.error}")
+                        logger.warning(f"Katana failed for {result.target}: {result.error}")
                         
                 except Exception as e:
-                    logger.warning(f"Katana error for {target}: {e}")
+                    logger.warning(f"Katana result processing error: {e}")
             
             db.commit()
             
@@ -2327,13 +2431,34 @@ class ScannerWorker:
         - Runs up to MAX_CONCURRENT_SCANS in parallel
         - Prioritizes ad-hoc scans over scheduled scans
         - Graceful shutdown with active scan tracking
+        - Periodic recovery of stale RUNNING scans
         """
         logger.info(f"Starting scanner worker (max_concurrent={MAX_CONCURRENT_SCANS})...")
         
         pending_tasks = set()
+        last_stale_check = datetime.utcnow()
+        STALE_CHECK_INTERVAL = 300  # Check for stale scans every 5 minutes
+        
+        # Initial stale scan recovery on startup
+        try:
+            recovered = await self.recover_stale_scans()
+            if recovered > 0:
+                logger.info(f"Startup: recovered {recovered} stale scans")
+        except Exception as e:
+            logger.error(f"Error during startup stale scan recovery: {e}")
         
         while not shutdown_requested:
             try:
+                # Periodic stale scan recovery
+                if (datetime.utcnow() - last_stale_check).total_seconds() > STALE_CHECK_INTERVAL:
+                    try:
+                        recovered = await self.recover_stale_scans()
+                        if recovered > 0:
+                            logger.info(f"Periodic recovery: recovered {recovered} stale scans")
+                    except Exception as e:
+                        logger.error(f"Error during periodic stale scan recovery: {e}")
+                    last_stale_check = datetime.utcnow()
+                
                 messages = await self.poll_for_jobs()
                 
                 # Create tasks for each message

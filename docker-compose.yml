@@ -219,29 +219,6 @@ services:
     profiles:
       - graph
 
-  # GVM/OpenVAS Vulnerability Scanner
-  gvm:
-    image: greenbone/community-container:stable
-    container_name: asm_gvm
-    restart: unless-stopped
-    environment:
-      - GVM_PASSWORD=${GVM_PASSWORD:-admin}
-    ports:
-      - "${GVM_HTTP_PORT:-9392}:9392"
-    volumes:
-      - gvm_data:/var/lib/gvm
-      - gvm_scap:/var/lib/gvm/scap-data
-      - gvm_cert:/var/lib/gvm/cert-data
-      - gvm_data_objects:/var/lib/gvm/data-objects/gvmd
-      - gvm_socket:/run/gvmd
-    networks:
-      - asm_network
-    profiles:
-      - gvm
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-
 networks:
   asm_network:
     driver: bridge
@@ -260,14 +237,4 @@ volumes:
   neo4j_data:
     driver: local
   neo4j_logs:
-    driver: local
-  gvm_data:
-    driver: local
-  gvm_scap:
-    driver: local
-  gvm_cert:
-    driver: local
-  gvm_data_objects:
-    driver: local
-  gvm_socket:
     driver: local

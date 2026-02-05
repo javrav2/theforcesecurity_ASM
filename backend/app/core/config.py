@@ -69,13 +69,6 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: Optional[str] = None
     GITHUB_SECRET_SCAN_ENABLED: bool = True
     
-    # GVM/OpenVAS Configuration
-    GVM_SOCKET_PATH: str = "/run/gvmd/gvmd.sock"
-    GVM_USERNAME: str = "admin"
-    GVM_PASSWORD: str = "admin"
-    GVM_SCAN_CONFIG: str = "Full and fast"
-    GVM_ENABLED: bool = False
-    
     # MITRE ATT&CK Enrichment
     MITRE_ENRICHMENT_ENABLED: bool = True
     

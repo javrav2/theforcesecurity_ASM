@@ -56,7 +56,8 @@ def send_scan_to_sqs(scan: Scan) -> bool:
     if not sqs:
         return False
     
-    # Build job message
+    # Build job message - map ScanType to worker job_type
+    # IMPORTANT: Keep this in sync with scanner_worker.py job_type_map
     job_type_map = {
         ScanType.VULNERABILITY: 'NUCLEI_SCAN',
         ScanType.PORT_SCAN: 'PORT_SCAN',
@@ -69,6 +70,10 @@ def send_scan_to_sqs(scan: Scan) -> bool:
         ScanType.LOGIN_PORTAL: 'LOGIN_PORTAL',
         ScanType.SCREENSHOT: 'SCREENSHOT',
         ScanType.TECHNOLOGY: 'TECHNOLOGY_SCAN',
+        ScanType.PARAMSPIDER: 'PARAMSPIDER',
+        ScanType.WAYBACKURLS: 'WAYBACKURLS',
+        ScanType.KATANA: 'KATANA',
+        ScanType.CLEANUP: 'CLEANUP',
     }
     
     job_type = job_type_map.get(scan.scan_type, 'NUCLEI_SCAN')
@@ -905,6 +910,69 @@ def cancel_scan(
     
     db.commit()
     db.refresh(scan)
+    
+    return scan
+
+
+@router.post("/{scan_id}/retry", response_model=ScanResponse)
+def retry_scan(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Retry a stuck or failed scan by resetting it to PENDING status.
+    
+    This is useful for scans that got stuck in RUNNING status due to
+    worker crashes or other issues. Unlike rescan, this does not create
+    a new scan - it resets the existing one.
+    
+    Can only be called on scans with status: RUNNING, FAILED, or CANCELLED.
+    """
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    
+    if not scan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Scan not found"
+        )
+    
+    if not check_org_access(current_user, scan.organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    
+    # Only allow retry for stuck/failed scans, not pending or completed
+    if scan.status not in [ScanStatus.RUNNING, ScanStatus.FAILED, ScanStatus.CANCELLED]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot retry scan with status {scan.status.value}. Only RUNNING, FAILED, or CANCELLED scans can be retried."
+        )
+    
+    # Reset scan to pending
+    scan.status = ScanStatus.PENDING
+    scan.started_at = None
+    scan.completed_at = None
+    scan.error_message = None
+    scan.current_step = None
+    scan.progress = 0
+    
+    # Track manual retry in config
+    config = scan.config or {}
+    manual_retries = config.get('_manual_retries', 0) + 1
+    config['_manual_retries'] = manual_retries
+    config['_last_manual_retry'] = datetime.utcnow().isoformat()
+    config['_retried_by'] = current_user.username
+    scan.config = config
+    
+    db.commit()
+    db.refresh(scan)
+    
+    # Optionally send to SQS for faster pickup
+    send_scan_to_sqs(scan)
+    
+    logger.info(f"Scan {scan_id} manually retried by {current_user.username}")
     
     return scan
 

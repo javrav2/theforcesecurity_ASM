@@ -77,5 +77,3 @@ PyGithub==2.1.1
 # MITRE ATT&CK data
 mitreattack-python==3.0.0
 
-# GVM/OpenVAS integration
-python-gvm==24.1.0

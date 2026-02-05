@@ -81,6 +81,7 @@ export default function ScanDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [rescanning, setRescanning] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const { toast } = useToast();
 
   const fetchScan = async () => {
@@ -157,6 +158,28 @@ export default function ScanDetailPage() {
       });
     } finally {
       setRescanning(false);
+    }
+  };
+
+  const handleRetry = async () => {
+    if (!scan) return;
+    
+    setRetrying(true);
+    try {
+      await api.retryScan(scan.id);
+      toast({
+        title: 'Scan Retry Started',
+        description: 'The scan has been reset to pending and will be processed shortly.',
+      });
+      fetchScan();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to retry scan',
+        variant: 'destructive',
+      });
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -260,6 +283,20 @@ export default function ScanDetailPage() {
                   <StopCircle className="h-4 w-4 mr-2" />
                 )}
                 Stop Scan
+              </Button>
+            )}
+            {(scan.status === 'running' || scan.status === 'failed' || scan.status === 'cancelled') && (
+              <Button 
+                variant="outline"
+                onClick={handleRetry} 
+                disabled={retrying}
+              >
+                {retrying ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Retry
               </Button>
             )}
             {(scan.status === 'completed' || scan.status === 'failed' || scan.status === 'cancelled') && (

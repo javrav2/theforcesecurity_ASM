@@ -231,6 +231,24 @@ export default function ScansPage() {
     }
   };
 
+  const handleRetryScan = async (scanId: number, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent row click navigation
+    try {
+      await api.retryScan(scanId);
+      toast({
+        title: 'Scan Retry Started',
+        description: 'The scan has been reset and will be processed shortly.',
+      });
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to retry scan',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status?.toLowerCase()) {
       case 'completed':
@@ -647,16 +665,30 @@ export default function ScansPage() {
                         : '—'}
                     </TableCell>
                     <TableCell>
-                      {(scan.status?.toLowerCase() === 'running' || scan.status?.toLowerCase() === 'pending') && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-500/10"
-                          onClick={(e) => handleCancelScan(scan.id, e)}
-                        >
-                          <StopCircle className="h-4 w-4" />
-                        </Button>
-                      )}
+                      <div className="flex gap-1">
+                        {(scan.status?.toLowerCase() === 'running' || scan.status?.toLowerCase() === 'pending') && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                            onClick={(e) => handleCancelScan(scan.id, e)}
+                            title="Cancel scan"
+                          >
+                            <StopCircle className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {(scan.status?.toLowerCase() === 'running' || scan.status?.toLowerCase() === 'failed' || scan.status?.toLowerCase() === 'cancelled') && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-blue-500 hover:text-blue-600 hover:bg-blue-500/10"
+                            onClick={(e) => handleRetryScan(scan.id, e)}
+                            title="Retry scan"
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))

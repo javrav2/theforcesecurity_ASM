@@ -73,14 +73,6 @@ NEO4J_BOLT_PORT=7687
 # Create at: https://github.com/settings/tokens
 GITHUB_TOKEN=
 
-# =============================================================================
-# GVM/OpenVAS Integration (optional - for deep vulnerability scanning)
-# =============================================================================
-
-# Enable with: docker compose --profile gvm up -d
-GVM_ENABLED=false
-GVM_PASSWORD=admin
-GVM_HTTP_PORT=9392
 ```
 
 ## Quick Setup
