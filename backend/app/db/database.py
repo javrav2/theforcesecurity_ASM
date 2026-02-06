@@ -26,6 +26,12 @@ def get_db():
     """Dependency to get database session."""
     db = SessionLocal()
     try:
+        # Ensure we start with a clean transaction state
+        # This handles cases where connection pool returns a connection with a failed transaction
+        try:
+            db.rollback()
+        except Exception:
+            pass
         yield db
     except Exception:
         db.rollback()

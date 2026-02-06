@@ -736,6 +736,11 @@ class ScannerWorker:
                         logger.info(f"Auto-resolved {auto_resolved_count} findings not found in rescan")
                 except Exception as e:
                     logger.warning(f"Failed to auto-close stale findings: {e}")
+                    # Rollback failed transaction to allow subsequent queries
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             
             # Update scan record
             if scan:
@@ -762,12 +767,21 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Nuclei scan failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    # Rollback any failed transaction first
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -904,6 +918,11 @@ class ScannerWorker:
                 logger.info(f"Scan {scan_id}: imported {import_summary.get('ports_imported', 0)} ports")
             except Exception as import_error:
                 logger.error(f"Scan {scan_id}: import_results_to_assets failed: {import_error}", exc_info=True)
+                # CRITICAL: Rollback the failed transaction to allow subsequent queries
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
                 import_summary = {"ports_imported": 0, "ports_updated": 0, "errors": [str(import_error)]}
             
             # Generate findings from port scan results
@@ -917,6 +936,11 @@ class ScannerWorker:
                 logger.info(f"Scan {scan_id}: created {findings_summary.get('findings_created', 0)} findings")
             except Exception as findings_error:
                 logger.error(f"Scan {scan_id}: create_findings_from_scan failed: {findings_error}", exc_info=True)
+                # CRITICAL: Rollback the failed transaction to allow subsequent queries
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
                 findings_summary = {"findings_created": 0, "by_severity": {}}
             
             # Calculate unique live hosts (assets discovered)
@@ -1065,12 +1089,21 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Port scan {scan_id} failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    # Rollback any failed transaction first
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -1152,6 +1185,11 @@ class ScannerWorker:
                     logger.info(f"Discovery for {domain_target}: {result.get('assets_created', 0)} assets")
                 except Exception as domain_error:
                     logger.error(f"Discovery failed for {domain_target}: {domain_error}")
+                    # Rollback failed transaction to allow subsequent queries
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             
             # Update scan record
             if scan:
@@ -1170,12 +1208,21 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Discovery failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    # Rollback any failed transaction first
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -1419,12 +1466,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"DNS resolution failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -1526,12 +1581,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"HTTP probe failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -1683,12 +1746,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Login portal scan failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -1764,12 +1835,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Screenshot scan failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -1872,6 +1951,11 @@ class ScannerWorker:
                         
                 except Exception as e:
                     logger.warning(f"ParamSpider result processing error: {e}")
+                    # Rollback failed transaction to allow subsequent queries
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             
             db.commit()
             
@@ -1896,12 +1980,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"ParamSpider scan failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -2010,12 +2102,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"WaybackURLs scan failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -2160,6 +2260,11 @@ class ScannerWorker:
                         
                 except Exception as e:
                     logger.warning(f"Katana result processing error: {e}")
+                    # Rollback failed transaction to allow subsequent queries
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             
             db.commit()
             
@@ -2187,12 +2292,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Katana scan failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -2270,12 +2383,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Cleanup failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
@@ -2391,12 +2512,20 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"Technology scan failed: {e}", exc_info=True)
             if db and scan_id:
-                scan = db.query(Scan).filter(Scan.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    scan.error_message = str(e)
-                    scan.completed_at = datetime.utcnow()
-                    db.commit()
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if db:
