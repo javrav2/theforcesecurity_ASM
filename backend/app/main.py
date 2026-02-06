@@ -2,9 +2,11 @@
 
 import logging
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.db.database import engine, Base, SessionLocal
@@ -61,6 +63,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Global exception handler for database errors
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
+    """
+    Handle SQLAlchemy errors globally.
+    
+    This catches database errors including InFailedSqlTransaction and ensures
+    a clean response is returned to the client.
+    """
+    error_msg = str(exc)
+    logger.error(f"Database error on {request.url.path}: {error_msg[:200]}")
+    
+    # Check for transaction-related errors
+    if "InFailedSqlTransaction" in error_msg or "current transaction is aborted" in error_msg:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Database transaction error. Please retry your request.",
+                "error_type": "transaction_error"
+            }
+        )
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "A database error occurred. Please try again.",
+            "error_type": "database_error"
+        }
+    )
+
 
 # Include routers
 app.include_router(auth.router, prefix=settings.API_PREFIX)
