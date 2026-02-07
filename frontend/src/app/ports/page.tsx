@@ -173,7 +173,7 @@ export default function PortsPage() {
   };
 
   const handleVerifyPort = async (portId: number) => {
-    setVerifyingPorts((prev: Set<number>) => new Set([...prev, portId]));
+    setVerifyingPorts((prev: Set<number>) => new Set(Array.from(prev).concat(portId)));
     
     try {
       const response = await api.request(`/ports/${portId}/verify`, {
