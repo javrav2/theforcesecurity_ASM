@@ -1794,13 +1794,15 @@ class ScannerWorker:
             from app.services.screenshot_service import _capture_screenshots_async
             
             # If no specific targets, get live assets from the organization
+            # Use live_url when available for better screenshot accuracy
             if not targets:
                 live_assets = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
                     Asset.is_live == True,
                     Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
                 ).limit(config.get('max_hosts', 200)).all()
-                targets = [a.value for a in live_assets]
+                # Prefer live_url (the actual responding URL) over just the domain name
+                targets = [a.live_url or f"https://{a.value}" for a in live_assets]
             
             logger.info(f"Starting screenshot capture for {len(targets)} targets")
             
@@ -2160,13 +2162,15 @@ class ScannerWorker:
                 raise Exception("Katana not installed. Install: go install github.com/projectdiscovery/katana/cmd/katana@latest")
             
             # If no specific targets, get live domains from the organization
+            # Use live_url when available (from HTTP probe), otherwise fall back to domain
             if not targets:
                 live_assets = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
                     Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
                     Asset.is_live == True
                 ).limit(config.get('max_targets', 50)).all()
-                targets = [a.value for a in live_assets]
+                # Prefer live_url (the actual responding URL) over just the domain name
+                targets = [a.live_url or f"https://{a.value}" for a in live_assets]
             
             # Limit targets to prevent excessively long scans
             max_targets = config.get('max_targets', 20)  # Reduced from 50
