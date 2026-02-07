@@ -83,6 +83,12 @@ class PortServiceResponse(PortServiceBase):
     # IP where port was discovered (important for domain assets)
     scanned_ip: Optional[str] = None
     
+    # Nmap verification fields
+    verified: bool = False
+    verified_at: Optional[datetime] = None
+    verified_state: Optional[str] = None  # open, filtered, closed from nmap
+    verification_scanner: Optional[str] = None
+    
     # Asset info (populated by API)
     hostname: Optional[str] = None
     ip_address: Optional[str] = None

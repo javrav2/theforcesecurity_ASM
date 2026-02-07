@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType
 from app.models.netblock import Netblock
+from app.models.port_service import PortService, PortState, Protocol
 from app.services.nuclei_service import NucleiService
 from app.services.nuclei_findings_service import NucleiFindingsService
 from app.services.port_scanner_service import PortScannerService, ScannerType
@@ -243,6 +244,8 @@ class ScannerWorker:
             job_type_map = {
                 ScanType.VULNERABILITY: 'NUCLEI_SCAN',
                 ScanType.PORT_SCAN: 'PORT_SCAN',
+                ScanType.PORT_VERIFY: 'PORT_VERIFY',
+                ScanType.SERVICE_DETECT: 'SERVICE_DETECT',
                 ScanType.DISCOVERY: 'DISCOVERY',
                 ScanType.FULL: 'DISCOVERY',  # FULL uses the same discovery handler
                 ScanType.SUBDOMAIN_ENUM: 'SUBDOMAIN_ENUM',
@@ -561,6 +564,10 @@ class ScannerWorker:
                     await self.handle_nuclei_scan(body)
                 elif job_type == 'PORT_SCAN':
                     await self.handle_port_scan(body)
+                elif job_type == 'PORT_VERIFY':
+                    await self.handle_port_verify(body)
+                elif job_type == 'SERVICE_DETECT':
+                    await self.handle_service_detect(body)
                 elif job_type == 'DISCOVERY':
                     await self.handle_discovery(body)
                 elif job_type == 'SUBDOMAIN_ENUM':
@@ -644,6 +651,94 @@ class ScannerWorker:
         try:
             # Status is already set to RUNNING in process_message
             scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            
+            # IMPORTANT: Create assets for ALL targets BEFORE scanning
+            # This ensures assets appear in the assets table even if no vulnerabilities are found
+            from urllib.parse import urlparse
+            assets_created = 0
+            assets_updated = 0
+            
+            if scan:
+                scan.current_step = "Creating assets for scan targets"
+                db.commit()
+            
+            for target in targets:
+                try:
+                    # Extract hostname from URL
+                    target_str = target.strip()
+                    if target_str.startswith(('http://', 'https://')):
+                        parsed = urlparse(target_str)
+                        hostname = parsed.hostname or parsed.netloc
+                        if hostname and ':' in hostname:
+                            hostname = hostname.split(':')[0]
+                    else:
+                        hostname = target_str.split(':')[0] if ':' in target_str else target_str
+                    
+                    if not hostname:
+                        continue
+                    
+                    hostname = hostname.lower().strip()
+                    
+                    # Check if asset already exists
+                    existing_asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == hostname
+                    ).first()
+                    
+                    if existing_asset:
+                        # Update last seen
+                        existing_asset.last_seen = datetime.utcnow()
+                        assets_updated += 1
+                    else:
+                        # Determine asset type based on hostname pattern
+                        import re
+                        is_ip = bool(re.match(r'^[\d.]+$', hostname) or ':' in hostname)  # IPv4 or IPv6
+                        
+                        # Determine if it's a subdomain or root domain
+                        parts = hostname.split('.')
+                        if is_ip:
+                            asset_type = AssetType.IP_ADDRESS
+                        elif len(parts) > 2:
+                            asset_type = AssetType.SUBDOMAIN
+                        else:
+                            asset_type = AssetType.DOMAIN
+                        
+                        # Extract root domain for subdomain assets
+                        root_domain = None
+                        if asset_type == AssetType.SUBDOMAIN and len(parts) >= 2:
+                            # Get last two parts (e.g., rockwell.com from sub.domain.rockwell.com)
+                            root_domain = '.'.join(parts[-2:])
+                        
+                        # Create the asset
+                        new_asset = Asset(
+                            organization_id=organization_id,
+                            name=hostname,
+                            value=hostname,
+                            asset_type=asset_type,
+                            root_domain=root_domain,
+                            discovery_source="nuclei_scan",
+                            association_reason=f"Added as target for vulnerability scan {scan_id}",
+                            status=AssetStatus.DISCOVERED,
+                            in_scope=True,
+                            # For IP assets, also populate ip_address fields
+                            ip_address=hostname if is_ip else None,
+                            ip_addresses=[hostname] if is_ip else [],
+                        )
+                        db.add(new_asset)
+                        assets_created += 1
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to create asset for target {target}: {e}")
+                    continue
+            
+            # Commit assets before running scan
+            if assets_created > 0 or assets_updated > 0:
+                db.commit()
+                logger.info(f"Pre-scan asset creation: {assets_created} created, {assets_updated} updated")
+            
+            if scan:
+                scan.current_step = "Running Nuclei vulnerability scan"
+                db.commit()
             
             # Run Nuclei scan
             logger.info(f"Starting Nuclei scan on {len(targets)} targets with severity: {severity}")
@@ -1091,6 +1186,442 @@ class ScannerWorker:
             if db and scan_id:
                 try:
                     # Rollback any failed transaction first
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_port_verify(self, job_data: dict):
+        """
+        Handle port verification job - runs nmap on all unverified open ports.
+        
+        This is the background scan that verifies masscan-discovered ports using
+        nmap to determine if they're truly open or filtered.
+        """
+        import subprocess
+        import re as regex_module
+        from app.models.port_service import PortService, PortState, Protocol
+        
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        config = job_data.get('config', {})
+        
+        # Config options
+        max_ports = config.get('max_ports', 500)  # Max ports to verify per scan
+        port_ids = config.get('port_ids')  # Specific port IDs to verify (from bulk verify)
+        verify_filtered = config.get('verify_filtered', False)  # Also re-verify filtered ports
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for port verification")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+        
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.current_step = "Gathering unverified ports"
+                db.commit()
+            
+            # Get ports to verify
+            if port_ids:
+                # Specific ports requested (from bulk verify)
+                ports_query = db.query(PortService).filter(PortService.id.in_(port_ids))
+            else:
+                # Get all unverified open ports for the organization
+                ports_query = db.query(PortService).join(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    PortService.verified == False,
+                    PortService.state == PortState.OPEN
+                )
+                
+                if verify_filtered:
+                    # Also include filtered ports that haven't been verified
+                    ports_query = db.query(PortService).join(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        PortService.verified == False,
+                        PortService.state.in_([PortState.OPEN, PortState.FILTERED])
+                    )
+            
+            ports_to_verify = ports_query.limit(max_ports).all()
+            
+            if not ports_to_verify:
+                logger.info(f"Scan {scan_id}: No unverified ports found")
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    scan.completed_at = datetime.utcnow()
+                    scan.results = {"message": "No unverified ports to verify", "ports_verified": 0}
+                    db.commit()
+                return
+            
+            logger.info(f"Scan {scan_id}: Verifying {len(ports_to_verify)} ports with nmap")
+            
+            verified_count = 0
+            open_count = 0
+            filtered_count = 0
+            closed_count = 0
+            errors = []
+            
+            # Process ports - group by IP for efficiency
+            ip_ports = {}
+            for port_record in ports_to_verify:
+                # Get IP address for this port
+                ip = port_record.scanned_ip
+                if not ip and port_record.asset:
+                    if port_record.asset.ip_addresses:
+                        ip = port_record.asset.ip_addresses[0]
+                    elif port_record.asset.value and regex_module.match(r'^[\d.]+$', port_record.asset.value):
+                        ip = port_record.asset.value
+                
+                if ip:
+                    if ip not in ip_ports:
+                        ip_ports[ip] = []
+                    ip_ports[ip].append(port_record)
+            
+            total_ips = len(ip_ports)
+            processed_ips = 0
+            
+            for ip, port_records in ip_ports.items():
+                processed_ips += 1
+                
+                # Update progress
+                if scan:
+                    progress = int((processed_ips / total_ips) * 100)
+                    scan.progress = progress
+                    scan.current_step = f"Verifying {ip} ({processed_ips}/{total_ips})"
+                    db.commit()
+                
+                # Build port list for this IP
+                port_list = ",".join([str(p.port) for p in port_records])
+                
+                # Run nmap for this IP (batch all ports together)
+                cmd = [
+                    "nmap", "-Pn", "-sT", "-sV", "--version-light",
+                    "-p", port_list, ip,
+                    "--max-retries", "2",
+                    "-T4",
+                    "-oG", "-"  # Greppable output for easier parsing
+                ]
+                
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=120  # 2 minute timeout per IP
+                    )
+                    
+                    output = result.stdout
+                    
+                    # Parse greppable output for each port
+                    # Format: "Host: 1.2.3.4 (hostname)  Ports: 80/open/tcp//http//, 443/open/tcp//https//"
+                    for port_record in port_records:
+                        port_num = port_record.port
+                        protocol = port_record.protocol.value
+                        
+                        # Look for port in output
+                        # Pattern: "PORT/STATE/PROTOCOL//SERVICE//"
+                        port_pattern = rf'{port_num}/(\w+)/{protocol}//([^/]*)//'
+                        match = regex_module.search(port_pattern, output)
+                        
+                        if match:
+                            state = match.group(1)  # open, closed, filtered
+                            service = match.group(2).strip() if match.group(2) else None
+                        else:
+                            # Try standard output format
+                            std_pattern = rf'{port_num}/{protocol}\s+(\w+)\s+(\S+)'
+                            std_match = regex_module.search(std_pattern, output)
+                            if std_match:
+                                state = std_match.group(1)
+                                service = std_match.group(2) if std_match.group(2) != "unknown" else None
+                            else:
+                                state = "unknown"
+                                service = None
+                        
+                        # Update port record
+                        port_record.verified = True
+                        port_record.verified_at = datetime.utcnow()
+                        port_record.verified_state = state
+                        port_record.verification_scanner = "nmap"
+                        
+                        # Update service if detected
+                        if service and service not in ["unknown", ""]:
+                            port_record.service_name = service
+                        
+                        # Update port state based on nmap result
+                        if state == "open":
+                            port_record.state = PortState.OPEN
+                            open_count += 1
+                        elif state == "filtered":
+                            port_record.state = PortState.FILTERED
+                            filtered_count += 1
+                        elif state == "closed":
+                            port_record.state = PortState.CLOSED
+                            closed_count += 1
+                        
+                        verified_count += 1
+                    
+                    db.commit()
+                    
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"Nmap timeout for {ip}")
+                    errors.append(f"Timeout scanning {ip}")
+                except Exception as e:
+                    logger.error(f"Error verifying {ip}: {e}")
+                    errors.append(f"Error scanning {ip}: {str(e)[:100]}")
+                    db.rollback()
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.progress = 100
+                scan.results = {
+                    "ports_verified": verified_count,
+                    "open_confirmed": open_count,
+                    "filtered_detected": filtered_count,
+                    "closed_detected": closed_count,
+                    "ips_scanned": total_ips,
+                    "errors": errors[:10] if errors else []
+                }
+                if errors:
+                    scan.error_message = f"{len(errors)} errors during verification"
+                db.commit()
+            
+            logger.info(
+                f"Port verification {scan_id} complete: {verified_count} ports verified "
+                f"(open={open_count}, filtered={filtered_count}, closed={closed_count})"
+            )
+            
+        except Exception as e:
+            logger.error(f"Port verification {scan_id} failed: {e}", exc_info=True)
+            if db and scan_id:
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_service_detect(self, job_data: dict):
+        """
+        Handle service detection job - runs deep nmap scans on unknown services.
+        
+        This scans ports where service_name is 'unknown' or NULL to identify
+        what service is actually running using nmap's version detection.
+        """
+        import subprocess
+        import re as regex_module
+        from app.models.port_service import PortService, PortState, Protocol
+        
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        config = job_data.get('config', {})
+        
+        # Config options
+        max_ports = config.get('max_ports', 200)  # Max ports to scan (deep scan is slower)
+        intensity = config.get('intensity', 7)  # Version detection intensity (1-9)
+        include_scripts = config.get('include_scripts', True)  # Run default NSE scripts
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for service detection")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+        
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.current_step = "Finding ports with unknown services"
+                db.commit()
+            
+            # Get ports with unknown services
+            from sqlalchemy import or_
+            ports_to_scan = db.query(PortService).join(Asset).filter(
+                Asset.organization_id == organization_id,
+                PortService.state == PortState.OPEN,
+                or_(
+                    PortService.service_name.is_(None),
+                    PortService.service_name == '',
+                    PortService.service_name == 'unknown',
+                    PortService.service_name == 'tcpwrapped'
+                )
+            ).limit(max_ports).all()
+            
+            if not ports_to_scan:
+                logger.info(f"Scan {scan_id}: No unknown services found")
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    scan.completed_at = datetime.utcnow()
+                    scan.results = {"message": "No unknown services to identify", "services_detected": 0}
+                    db.commit()
+                return
+            
+            logger.info(f"Scan {scan_id}: Deep scanning {len(ports_to_scan)} unknown services")
+            
+            detected_count = 0
+            errors = []
+            service_results = []
+            
+            # Group by IP
+            ip_ports = {}
+            for port_record in ports_to_scan:
+                ip = port_record.scanned_ip
+                if not ip and port_record.asset:
+                    if port_record.asset.ip_addresses:
+                        ip = port_record.asset.ip_addresses[0]
+                    elif port_record.asset.value and regex_module.match(r'^[\d.]+$', port_record.asset.value):
+                        ip = port_record.asset.value
+                
+                if ip:
+                    if ip not in ip_ports:
+                        ip_ports[ip] = []
+                    ip_ports[ip].append(port_record)
+            
+            total_ips = len(ip_ports)
+            processed_ips = 0
+            
+            for ip, port_records in ip_ports.items():
+                processed_ips += 1
+                
+                # Update progress
+                if scan:
+                    progress = int((processed_ips / total_ips) * 100)
+                    scan.progress = progress
+                    scan.current_step = f"Deep scanning {ip} ({processed_ips}/{total_ips})"
+                    db.commit()
+                
+                port_list = ",".join([str(p.port) for p in port_records])
+                
+                # Run deep nmap scan with version detection
+                cmd = [
+                    "nmap", "-Pn", "-sT", "-sV",
+                    f"--version-intensity", str(intensity),
+                    "-p", port_list, ip,
+                    "-T4"
+                ]
+                
+                # Add NSE scripts for service identification
+                if include_scripts:
+                    cmd.extend(["-sC"])  # Default scripts
+                
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout for deep scans
+                    )
+                    
+                    output = result.stdout
+                    
+                    # Parse output for each port
+                    for port_record in port_records:
+                        port_num = port_record.port
+                        protocol = port_record.protocol.value
+                        
+                        # Look for detailed service info
+                        # Format: "443/tcp open  https   nginx 1.18.0"
+                        # Or: "443/tcp open  ssl/http nginx 1.18.0"
+                        pattern = rf'{port_num}/{protocol}\s+\w+\s+([^\s]+)\s*(.*)?$'
+                        
+                        for line in output.split('\n'):
+                            match = regex_module.search(pattern, line)
+                            if match:
+                                service = match.group(1).strip()
+                                extra = match.group(2).strip() if match.group(2) else ""
+                                
+                                # Clean up service name
+                                if service and service not in ["unknown", ""]:
+                                    # Handle ssl/http style services
+                                    if '/' in service:
+                                        parts = service.split('/')
+                                        port_record.is_ssl = 'ssl' in parts
+                                        service = parts[-1]  # Get the actual service
+                                    
+                                    port_record.service_name = service
+                                    
+                                    # Parse product and version from extra
+                                    if extra:
+                                        # Try to extract product and version
+                                        version_match = regex_module.match(r'([^\d\s]+)\s*([\d.]+.*)?', extra)
+                                        if version_match:
+                                            port_record.service_product = version_match.group(1).strip()
+                                            if version_match.group(2):
+                                                port_record.service_version = version_match.group(2).strip()
+                                        else:
+                                            port_record.service_extra_info = extra
+                                    
+                                    detected_count += 1
+                                    service_results.append({
+                                        "ip": ip,
+                                        "port": port_num,
+                                        "service": service,
+                                        "product": port_record.service_product,
+                                        "version": port_record.service_version
+                                    })
+                                break
+                    
+                    db.commit()
+                    
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"Deep scan timeout for {ip}")
+                    errors.append(f"Timeout scanning {ip}")
+                except Exception as e:
+                    logger.error(f"Error scanning {ip}: {e}")
+                    errors.append(f"Error scanning {ip}: {str(e)[:100]}")
+                    db.rollback()
+            
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.progress = 100
+                scan.results = {
+                    "services_detected": detected_count,
+                    "ports_scanned": len(ports_to_scan),
+                    "ips_scanned": total_ips,
+                    "detected_services": service_results[:50],  # First 50 for display
+                    "errors": errors[:10] if errors else []
+                }
+                if errors:
+                    scan.error_message = f"{len(errors)} errors during detection"
+                db.commit()
+            
+            logger.info(
+                f"Service detection {scan_id} complete: {detected_count} services identified "
+                f"from {len(ports_to_scan)} unknown ports"
+            )
+            
+        except Exception as e:
+            logger.error(f"Service detection {scan_id} failed: {e}", exc_info=True)
+            if db and scan_id:
+                try:
                     db.rollback()
                     scan = db.query(Scan).filter(Scan.id == scan_id).first()
                     if scan:
@@ -1795,14 +2326,24 @@ class ScannerWorker:
             
             # If no specific targets, get live assets from the organization
             # Use live_url when available for better screenshot accuracy
+            # Include domains, subdomains, AND IP addresses
             if not targets:
                 live_assets = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
                     Asset.is_live == True,
-                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS])
                 ).limit(config.get('max_hosts', 200)).all()
-                # Prefer live_url (the actual responding URL) over just the domain name
-                targets = [a.live_url or f"https://{a.value}" for a in live_assets]
+                
+                # Prefer live_url (the actual responding URL) over just the domain/IP
+                # This ensures we screenshot the actual endpoint (e.g., /global-protect/login.esp)
+                targets = []
+                for a in live_assets:
+                    if a.live_url:
+                        # Use the actual live URL from HTTP probe
+                        targets.append(a.live_url)
+                    else:
+                        # Fallback to https://value
+                        targets.append(f"https://{a.value}")
             
             logger.info(f"Starting screenshot capture for {len(targets)} targets")
             

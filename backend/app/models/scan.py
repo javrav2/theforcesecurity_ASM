@@ -15,6 +15,8 @@ class ScanType(str, enum.Enum):
     DNS_ENUM = "dns_enum"             # DNS record enumeration
     DNS_RESOLUTION = "dns_resolution" # Resolve domains to IPs + geo enrichment
     PORT_SCAN = "port_scan"           # Port/service scanning
+    PORT_VERIFY = "port_verify"       # Nmap verification of masscan-discovered ports
+    SERVICE_DETECT = "service_detect" # Deep nmap scan for unknown services
     WEB_SCAN = "web_scan"             # Web application scanning
     HTTP_PROBE = "http_probe"         # HTTP probing for live web assets
     TECHNOLOGY = "technology"          # Wappalyzer technology fingerprinting

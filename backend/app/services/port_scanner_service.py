@@ -1361,7 +1361,10 @@ class PortScannerService:
                     discovery_chain=discovery_chain,
                     association_reason=association_reason,
                     is_live=is_live,
-                    in_scope=True  # Mark as in-scope since it was scanned from our netblocks
+                    in_scope=True,  # Mark as in-scope since it was scanned from our netblocks
+                    # For IP assets, populate the ip_address field with the value
+                    ip_address=host if asset_type == AssetType.IP_ADDRESS else None,
+                    ip_addresses=[host] if asset_type == AssetType.IP_ADDRESS else []
                 )
                 db.add(asset)
                 db.flush()

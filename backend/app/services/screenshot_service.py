@@ -7,10 +7,13 @@ discovered domains and subdomains using EyeWitness.
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Iterable, List, Optional
+from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.db.database import SessionLocal
 from app.models.asset import Asset, AssetType
@@ -26,6 +29,48 @@ logger = logging.getLogger(__name__)
 # Batch settings
 BATCH_SIZE = 20  # How many hosts to screenshot in parallel
 BATCH_DELAY = 2.0  # Seconds between batches
+
+
+def _extract_hostname_from_url(url_or_host: str) -> str:
+    """
+    Extract the hostname from a URL or return the input if it's already a hostname.
+    
+    Examples:
+        'https://example.com/path' -> 'example.com'
+        'https://192.168.1.1:8443/login' -> '192.168.1.1'
+        'example.com' -> 'example.com'
+        '192.168.1.1' -> '192.168.1.1'
+    """
+    url_or_host = url_or_host.strip()
+    
+    # If it starts with http:// or https://, parse it
+    if url_or_host.startswith('http://') or url_or_host.startswith('https://'):
+        parsed = urlparse(url_or_host)
+        hostname = parsed.hostname or parsed.netloc
+        # Remove port if present
+        if ':' in hostname and not hostname.startswith('['):  # Not IPv6
+            hostname = hostname.split(':')[0]
+        return hostname.lower() if hostname else url_or_host.lower()
+    
+    # Otherwise it's already a hostname/IP
+    return url_or_host.lower()
+
+
+def _normalize_url(url_or_host: str) -> str:
+    """
+    Normalize to a full URL, handling cases where input is already a URL.
+    
+    Examples:
+        'example.com' -> 'https://example.com'
+        'https://example.com' -> 'https://example.com' (unchanged)
+        'http://example.com/path' -> 'http://example.com/path' (unchanged)
+    """
+    url_or_host = url_or_host.strip()
+    
+    if url_or_host.startswith('http://') or url_or_host.startswith('https://'):
+        return url_or_host
+    
+    return f"https://{url_or_host}"
 
 
 async def _capture_screenshots_async(
@@ -61,22 +106,27 @@ async def _capture_screenshots_async(
             "screenshots_captured": 0,
         }
     
-    hosts_to_scan = [h.strip().lower() for h in hosts[:max_hosts] if h and h.strip()]
+    # Normalize inputs - can be hostnames or full URLs (from live_url)
+    hosts_to_scan = [h.strip() for h in hosts[:max_hosts] if h and h.strip()]
     total_hosts = len(hosts_to_scan)
     
     logger.info(f"Starting screenshot capture for {total_hosts} hosts (organization_id={organization_id})")
     
     total_captured = 0
     total_failed = 0
+    assets_updated = 0
     
-    # Build URLs from hosts
+    # Build URLs from hosts, handling both hostnames and full URLs
     urls = []
-    host_url_map = {}
+    url_to_original = {}  # Map normalized URL -> original input
+    url_to_hostname = {}  # Map normalized URL -> extracted hostname/IP
+    
     for host in hosts_to_scan:
-        url = f"https://{host}"
+        # Normalize to full URL (handles case where host is already a URL)
+        url = _normalize_url(host)
         urls.append(url)
-        host_url_map[url] = host
-        host_url_map[host] = host
+        url_to_original[url] = host
+        url_to_hostname[url] = _extract_hostname_from_url(host)
     
     # Process in batches
     config = EyeWitnessConfig(timeout=timeout, threads=BATCH_SIZE)
@@ -93,22 +143,44 @@ async def _capture_screenshots_async(
             
             # Process results and create screenshot records
             for result in results:
-                # Find matching asset
-                host = host_url_map.get(result.url) or host_url_map.get(
-                    result.url.replace("https://", "").replace("http://", "")
-                )
+                # Extract hostname from the result URL for matching
+                result_hostname = _extract_hostname_from_url(result.url)
+                original_input = url_to_original.get(result.url)
                 
-                if not host:
-                    continue
+                # Find matching asset using multiple strategies
+                asset = None
                 
-                # Find asset
+                # Strategy 1: Match by value (hostname/IP)
                 asset = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
-                    Asset.value == host,
-                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                    Asset.value == result_hostname,
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS]),
                 ).first()
                 
+                # Strategy 2: Match by live_url (for assets where HTTP probe saved the URL)
+                if not asset and original_input:
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.live_url == original_input,
+                    ).first()
+                
+                # Strategy 3: Match by IP address field
                 if not asset:
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.ip_address == result_hostname,
+                    ).first()
+                
+                # Strategy 4: Match IP in the ip_addresses JSON array
+                if not asset:
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.ip_addresses.contains([result_hostname]),
+                    ).first()
+                
+                if not asset:
+                    logger.debug(f"No matching asset found for {result.url} (hostname: {result_hostname})")
+                    total_failed += 1
                     continue
                 
                 # Get previous screenshot for change detection
@@ -154,6 +226,7 @@ async def _capture_screenshots_async(
                     # Update asset's cached screenshot ID for faster list queries
                     if screenshot.file_path:
                         asset.latest_screenshot_id = screenshot.id
+                        assets_updated += 1
                 else:
                     total_failed += 1
             
@@ -161,19 +234,21 @@ async def _capture_screenshots_async(
             db.commit()
             
         except Exception as e:
-            logger.error(f"Batch screenshot error: {e}")
+            logger.error(f"Batch screenshot error: {e}", exc_info=True)
+            db.rollback()
             total_failed += len(batch_urls)
         
         # Delay between batches
         if i + BATCH_SIZE < len(urls):
             await asyncio.sleep(BATCH_DELAY)
     
-    logger.info(f"Screenshot capture complete: {total_captured} captured, {total_failed} failed")
+    logger.info(f"Screenshot capture complete: {total_captured} captured, {total_failed} failed, {assets_updated} assets updated")
     
     return {
         "hosts_requested": total_hosts,
         "screenshots_captured": total_captured,
         "screenshots_failed": total_failed,
+        "assets_updated": assets_updated,
     }
 
 
@@ -222,37 +297,66 @@ async def capture_all_org_screenshots(
     organization_id: int,
     max_hosts: int = 500,
     timeout: int = 30,
+    live_only: bool = True,
 ) -> dict:
     """
-    Capture screenshots for all domains and subdomains in an organization.
+    Capture screenshots for all web assets in an organization.
+    
+    Includes domains, subdomains, and IP addresses. Prefers using the live_url
+    (from HTTP probe) when available for accurate screenshots of the actual
+    responding endpoint.
     
     Args:
         organization_id: Organization ID
         max_hosts: Maximum hosts to screenshot
         timeout: Timeout per screenshot
+        live_only: Only include assets marked as live (recommended)
         
     Returns:
         Summary dict with capture statistics
     """
     db = SessionLocal()
     try:
-        # Get all domains and subdomains for the organization
-        hosts = db.query(Asset.value).filter(
+        # Get all web assets for the organization
+        # Include DOMAIN, SUBDOMAIN, and IP_ADDRESS types
+        query = db.query(Asset).filter(
             Asset.organization_id == organization_id,
-            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
-        ).limit(max_hosts).all()
+            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS]),
+        )
         
-        host_list = [h[0] for h in hosts]
+        # Optionally filter to live assets only
+        if live_only:
+            query = query.filter(Asset.is_live == True)
         
-        if not host_list:
-            return {"total_hosts": 0, "message": "No domains/subdomains found"}
+        assets = query.limit(max_hosts).all()
         
-        logger.info(f"Capturing screenshots for {len(host_list)} hosts in organization {organization_id}")
+        if not assets:
+            return {
+                "total_hosts": 0, 
+                "message": "No assets found" + (" (try with live_only=False)" if live_only else "")
+            }
+        
+        # Build URL list - prefer live_url (from HTTP probe) when available
+        # This ensures we screenshot the actual responding endpoint
+        # e.g., https://131.200.250.120/global-protect/login.esp instead of just https://131.200.250.120
+        url_list = []
+        for asset in assets:
+            if asset.live_url:
+                # Use the actual live URL from HTTP probe
+                url_list.append(asset.live_url)
+            elif asset.asset_type == AssetType.IP_ADDRESS:
+                # For IP assets without live_url, try both HTTP and HTTPS
+                url_list.append(f"https://{asset.value}")
+            else:
+                # For domains/subdomains without live_url
+                url_list.append(f"https://{asset.value}")
+        
+        logger.info(f"Capturing screenshots for {len(url_list)} assets in organization {organization_id}")
         
         return await _capture_screenshots_async(
             db,
             organization_id=organization_id,
-            hosts=host_list,
+            hosts=url_list,
             max_hosts=max_hosts,
             timeout=timeout,
         )

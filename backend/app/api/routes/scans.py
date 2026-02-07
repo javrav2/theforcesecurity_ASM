@@ -61,6 +61,8 @@ def send_scan_to_sqs(scan: Scan) -> bool:
     job_type_map = {
         ScanType.VULNERABILITY: 'NUCLEI_SCAN',
         ScanType.PORT_SCAN: 'PORT_SCAN',
+        ScanType.PORT_VERIFY: 'PORT_VERIFY',
+        ScanType.SERVICE_DETECT: 'SERVICE_DETECT',
         ScanType.DISCOVERY: 'DISCOVERY',
         ScanType.FULL: 'DISCOVERY',
         ScanType.SUBDOMAIN_ENUM: 'SUBDOMAIN_ENUM',
@@ -1791,6 +1793,147 @@ def import_hisac_results(
     }
 
 
+# ==================== PORT VERIFICATION SCANS ====================
+
+@router.post("/port-verify/{organization_id}")
+def create_port_verification_scan(
+    organization_id: int,
+    max_ports: int = Query(500, ge=1, le=2000, description="Maximum ports to verify"),
+    verify_filtered: bool = Query(False, description="Also re-verify filtered ports"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Create a port verification scan to validate all unverified open ports with nmap.
+    
+    This runs nmap on ports discovered by masscan/naabu to determine:
+    - If they're truly open or filtered by a firewall
+    - Service version information
+    
+    Use this after running a fast port scan to get accurate results.
+    """
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    # Count unverified ports
+    from app.models.port_service import PortService, PortState
+    unverified_count = db.query(PortService).join(Asset).filter(
+        Asset.organization_id == organization_id,
+        PortService.verified == False,
+        PortService.state == PortState.OPEN
+    ).count()
+    
+    if unverified_count == 0:
+        return {
+            "message": "No unverified ports to verify",
+            "unverified_count": 0
+        }
+    
+    # Create the scan
+    scan = Scan(
+        name=f"Port Verification ({min(unverified_count, max_ports)} ports)",
+        scan_type=ScanType.PORT_VERIFY,
+        organization_id=organization_id,
+        targets=[],
+        config={
+            "max_ports": max_ports,
+            "verify_filtered": verify_filtered
+        },
+        status=ScanStatus.PENDING,
+        started_by=current_user.email
+    )
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+    
+    # Queue for processing
+    send_scan_to_sqs(scan)
+    
+    return {
+        "scan_id": scan.id,
+        "message": f"Port verification scan queued for up to {max_ports} ports",
+        "unverified_count": unverified_count,
+        "ports_to_verify": min(unverified_count, max_ports)
+    }
+
+
+@router.post("/service-detect/{organization_id}")
+def create_service_detection_scan(
+    organization_id: int,
+    max_ports: int = Query(200, ge=1, le=500, description="Maximum ports to scan"),
+    intensity: int = Query(7, ge=1, le=9, description="Nmap version detection intensity"),
+    include_scripts: bool = Query(True, description="Run NSE scripts"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Create a service detection scan for ports with unknown services.
+    
+    This runs deep nmap version detection (-sV) on ports where the service
+    is currently "unknown" or empty to identify what's actually running.
+    
+    Intensity levels:
+    - 1-3: Quick (faster but less accurate)
+    - 4-6: Default
+    - 7-9: Thorough (slower but more accurate)
+    """
+    if not check_org_access(current_user, organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to this organization"
+        )
+    
+    # Count unknown services
+    from app.models.port_service import PortService, PortState
+    from sqlalchemy import or_
+    
+    unknown_count = db.query(PortService).join(Asset).filter(
+        Asset.organization_id == organization_id,
+        PortService.state == PortState.OPEN,
+        or_(
+            PortService.service_name.is_(None),
+            PortService.service_name == '',
+            PortService.service_name == 'unknown',
+            PortService.service_name == 'tcpwrapped'
+        )
+    ).count()
+    
+    if unknown_count == 0:
+        return {
+            "message": "No unknown services to identify",
+            "unknown_count": 0
+        }
+    
+    # Create the scan
+    scan = Scan(
+        name=f"Service Detection ({min(unknown_count, max_ports)} ports)",
+        scan_type=ScanType.SERVICE_DETECT,
+        organization_id=organization_id,
+        targets=[],
+        config={
+            "max_ports": max_ports,
+            "intensity": intensity,
+            "include_scripts": include_scripts
+        },
+        status=ScanStatus.PENDING,
+        started_by=current_user.email
+    )
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+    
+    # Queue for processing
+    send_scan_to_sqs(scan)
+    
+    return {
+        "scan_id": scan.id,
+        "message": f"Service detection scan queued for up to {max_ports} ports",
+        "unknown_count": unknown_count,
+        "ports_to_scan": min(unknown_count, max_ports)
+    }
 
 
 

@@ -469,7 +469,7 @@ class DNSResolutionService:
         limit: int = 500
     ) -> Dict[str, Any]:
         """
-        HTTP probe domains/subdomains and update with live status, title, etc.
+        HTTP probe domains/subdomains/IPs and update with live status, title, etc.
         
         Args:
             organization_id: Organization to process
@@ -488,10 +488,10 @@ class DNSResolutionService:
             "errors": []
         }
         
-        # Get domains/subdomains to probe
+        # Get domains/subdomains/IPs to probe
         assets = self.db.query(Asset).filter(
             Asset.organization_id == organization_id,
-            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS]),
         ).limit(limit).all()
         
         summary["total_assets"] = len(assets)

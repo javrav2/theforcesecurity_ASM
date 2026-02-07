@@ -86,6 +86,12 @@ class PortService(Base):
     is_risky = Column(Boolean, default=False)  # Flagged as potentially risky
     risk_reason = Column(String(500), nullable=True)  # Why it's risky
     
+    # Nmap verification (deeper inspection after masscan)
+    verified = Column(Boolean, default=False)  # Whether nmap verification has been run
+    verified_at = Column(DateTime, nullable=True)  # When verification was performed
+    verified_state = Column(String(50), nullable=True)  # open, filtered, closed from nmap
+    verification_scanner = Column(String(50), nullable=True)  # nmap version used
+    
     # Tags and metadata
     tags = Column(JSON, default=list)
     metadata_ = Column("metadata", JSON, default=dict)

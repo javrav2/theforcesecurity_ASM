@@ -28,7 +28,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Network, Search, Download, Loader2, Filter, AlertTriangle, MoreVertical, Bug, Flag, ExternalLink, Shield } from 'lucide-react';
+import { Network, Search, Download, Loader2, Filter, AlertTriangle, MoreVertical, Bug, Flag, ExternalLink, Shield, CheckCircle2, ScanLine, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate, downloadCSV } from '@/lib/utils';
@@ -41,6 +41,7 @@ interface PortResult {
   hostname: string | null;
   ip_address: string | null;
   asset_value: string | null;
+  scanned_ip?: string;  // Actual IP where port was found
   port: number;
   protocol: string;
   service_name?: string;
@@ -55,6 +56,11 @@ interface PortResult {
   last_seen: string;
   created_at: string;
   finding_id?: number;  // Link to associated finding
+  // Nmap verification fields
+  verified: boolean;
+  verified_at?: string;
+  verified_state?: string;  // open, filtered, closed from nmap
+  verification_scanner?: string;
 }
 
 interface PortChartData {
@@ -84,6 +90,7 @@ export default function PortsPage() {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [orgFilter, setOrgFilter] = useState<string>('all');
   const [riskyFilter, setRiskyFilter] = useState<string>('all');
+  const [verifyingPorts, setVerifyingPorts] = useState<Set<number>>(new Set());
   const { toast } = useToast();
 
   const fetchData = async () => {
@@ -160,6 +167,150 @@ export default function PortsPage() {
       toast({
         title: 'Error',
         description: error.response?.data?.detail || 'Failed to mark port as risky',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleVerifyPort = async (portId: number) => {
+    setVerifyingPorts((prev: Set<number>) => new Set([...prev, portId]));
+    
+    try {
+      const response = await api.request(`/ports/${portId}/verify`, {
+        method: 'POST',
+      });
+      
+      toast({
+        title: 'Port Verified',
+        description: `Port ${response.port} is ${response.state.toUpperCase()}${response.service ? ` (${response.service})` : ''}`,
+        variant: response.state === 'open' ? 'default' : 'destructive',
+      });
+      
+      // Refresh to show updated verification status
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Verification Failed',
+        description: error.response?.data?.detail || 'Failed to verify port with nmap',
+        variant: 'destructive',
+      });
+    } finally {
+      setVerifyingPorts((prev: Set<number>) => {
+        const next = new Set(prev);
+        next.delete(portId);
+        return next;
+      });
+    }
+  };
+
+  const handleBulkVerify = async () => {
+    const unverifiedPorts = filteredPorts.filter(p => !p.verified && p.state?.toLowerCase() === 'open');
+    
+    if (unverifiedPorts.length === 0) {
+      toast({
+        title: 'No Ports to Verify',
+        description: 'All displayed open ports have been verified.',
+      });
+      return;
+    }
+    
+    if (unverifiedPorts.length > 100) {
+      toast({
+        title: 'Too Many Ports',
+        description: `Can only verify up to 100 ports at once. Found ${unverifiedPorts.length} unverified ports.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    
+    try {
+      const response = await api.request('/ports/verify-bulk', {
+        method: 'POST',
+        body: JSON.stringify(unverifiedPorts.map(p => p.id)),
+      });
+      
+      toast({
+        title: 'Bulk Verification Queued',
+        description: `Verification queued for ${response.ports_queued} ports. Scan ID: ${response.scan_id}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to queue bulk verification',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleBackgroundVerify = async () => {
+    // Get the first organization from the list (or use the filtered one)
+    const orgId = orgFilter !== 'all' ? parseInt(orgFilter) : organizations[0]?.id;
+    if (!orgId) {
+      toast({
+        title: 'Error',
+        description: 'Please select an organization first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const response = await api.request(`/scans/port-verify/${orgId}?max_ports=500`, {
+        method: 'POST',
+      });
+      
+      if (response.unverified_count === 0) {
+        toast({
+          title: 'No Ports to Verify',
+          description: 'All ports have already been verified.',
+        });
+      } else {
+        toast({
+          title: 'Background Verification Started',
+          description: `Scan ${response.scan_id} queued to verify ${response.ports_to_verify} ports. Check Scans page for progress.`,
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to start background verification',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleServiceDetection = async () => {
+    // Get the first organization from the list (or use the filtered one)
+    const orgId = orgFilter !== 'all' ? parseInt(orgFilter) : organizations[0]?.id;
+    if (!orgId) {
+      toast({
+        title: 'Error',
+        description: 'Please select an organization first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const response = await api.request(`/scans/service-detect/${orgId}?max_ports=200&intensity=7`, {
+        method: 'POST',
+      });
+      
+      if (response.unknown_count === 0) {
+        toast({
+          title: 'No Unknown Services',
+          description: 'All services have already been identified.',
+        });
+      } else {
+        toast({
+          title: 'Service Detection Started',
+          description: `Scan ${response.scan_id} queued to identify ${response.ports_to_scan} unknown services. Check Scans page for progress.`,
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to start service detection',
         variant: 'destructive',
       });
     }
@@ -290,6 +441,32 @@ export default function PortsPage() {
               </SelectContent>
             </Select>
 
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <ScanLine className="h-4 w-4 mr-2" />
+                  Nmap Scans
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleBackgroundVerify}>
+                  <CheckCircle2 className="h-4 w-4 mr-2 text-green-500" />
+                  Verify All Ports (Background)
+                  <span className="ml-2 text-xs text-muted-foreground">Confirm open/filtered</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleServiceDetection}>
+                  <Search className="h-4 w-4 mr-2 text-blue-500" />
+                  Detect Unknown Services
+                  <span className="ml-2 text-xs text-muted-foreground">Identify service versions</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleBulkVerify}>
+                  <RefreshCw className="h-4 w-4 mr-2 text-yellow-500" />
+                  Quick Verify (Displayed)
+                  <span className="ml-2 text-xs text-muted-foreground">Max 100 ports</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="h-4 w-4 mr-2" />
               Export
@@ -298,7 +475,7 @@ export default function PortsPage() {
         </div>
 
         {/* Port Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4 mb-6">
           <Card className="p-4">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-green-500/10">
@@ -375,6 +552,40 @@ export default function PortsPage() {
                   {ports.filter((p) => [21, 22, 23, 3389, 5900, 3306, 5432, 27017, 6379].includes(p.port)).length}
                 </p>
                 <p className="text-sm text-muted-foreground">Critical Ports</p>
+              </div>
+            </div>
+          </Card>
+          <Card 
+            className="p-4 cursor-pointer hover:border-blue-500/40 transition-colors"
+            onClick={handleBackgroundVerify}
+            title="Click to start background verification scan"
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-blue-500/10">
+                <ScanLine className="h-5 w-5 text-blue-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">
+                  {ports.filter((p) => !p.verified && p.state?.toLowerCase() === 'open').length}
+                </p>
+                <p className="text-sm text-muted-foreground">Unverified Ports</p>
+              </div>
+            </div>
+          </Card>
+          <Card 
+            className="p-4 cursor-pointer hover:border-orange-500/40 transition-colors"
+            onClick={handleServiceDetection}
+            title="Click to start service detection scan"
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-orange-500/10">
+                <Search className="h-5 w-5 text-orange-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">
+                  {ports.filter((p) => !p.service_name || p.service_name === 'unknown').length}
+                </p>
+                <p className="text-sm text-muted-foreground">Unknown Services</p>
               </div>
             </div>
           </Card>
@@ -488,6 +699,7 @@ export default function PortsPage() {
                 <TableHead>Service</TableHead>
                 <TableHead>Product / Version</TableHead>
                 <TableHead>State</TableHead>
+                <TableHead>Verified</TableHead>
                 <TableHead>Risk</TableHead>
                 <TableHead>Finding</TableHead>
                 <TableHead>Last Seen</TableHead>
@@ -497,13 +709,13 @@ export default function PortsPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center py-8">
+                  <TableCell colSpan={11} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : filteredPorts.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
                     No port scan results found. Run a port scan to discover services.
                   </TableCell>
                 </TableRow>
@@ -532,6 +744,48 @@ export default function PortsPage() {
                     </TableCell>
                     <TableCell>
                       <Badge className={getStateColor(port.state)}>{port.state}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      {verifyingPorts.has(port.id) ? (
+                        <div className="flex items-center gap-1 text-blue-400">
+                          <RefreshCw className="h-3 w-3 animate-spin" />
+                          <span className="text-xs">Verifying...</span>
+                        </div>
+                      ) : port.verified ? (
+                        <div 
+                          className="flex items-center gap-1"
+                          title={`Verified: ${port.verified_state?.toUpperCase() || 'unknown'} at ${port.verified_at ? new Date(port.verified_at).toLocaleString() : 'unknown time'}`}
+                        >
+                          <CheckCircle2 className={`h-4 w-4 ${
+                            port.verified_state === 'open' ? 'text-green-500' : 
+                            port.verified_state === 'filtered' ? 'text-yellow-500' : 
+                            port.verified_state === 'closed' ? 'text-red-500' : 
+                            'text-gray-500'
+                          }`} />
+                          <Badge 
+                            variant="outline" 
+                            className={`text-xs ${
+                              port.verified_state === 'open' ? 'border-green-500/50 text-green-400' : 
+                              port.verified_state === 'filtered' ? 'border-yellow-500/50 text-yellow-400' : 
+                              port.verified_state === 'closed' ? 'border-red-500/50 text-red-400' : 
+                              'border-gray-500/50 text-gray-400'
+                            }`}
+                          >
+                            {port.verified_state || 'verified'}
+                          </Badge>
+                        </div>
+                      ) : (
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-6 px-2 text-xs text-muted-foreground hover:text-primary"
+                          onClick={() => handleVerifyPort(port.id)}
+                          title="Run nmap verification scan"
+                        >
+                          <ScanLine className="h-3 w-3 mr-1" />
+                          Verify
+                        </Button>
+                      )}
                     </TableCell>
                     <TableCell>
                       {port.is_risky ? (
@@ -586,6 +840,13 @@ export default function PortsPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          <DropdownMenuItem 
+                            onClick={() => handleVerifyPort(port.id)}
+                            disabled={verifyingPorts.has(port.id)}
+                          >
+                            <ScanLine className="h-4 w-4 mr-2 text-blue-500" />
+                            {port.verified ? 'Re-verify with Nmap' : 'Verify with Nmap'}
+                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleCreateFinding(port.id, 'critical')}>
                             <Bug className="h-4 w-4 mr-2 text-red-500" />
                             Create Critical Finding

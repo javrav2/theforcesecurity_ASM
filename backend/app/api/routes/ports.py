@@ -1520,3 +1520,258 @@ async def scan_and_generate_findings(
             detail=f"Scan failed: {str(e)}"
         )
 
+
+# ==================== PORT VERIFICATION (NMAP) ====================
+
+from pydantic import BaseModel
+
+class PortVerifyRequest(BaseModel):
+    """Request to verify a port with nmap."""
+    ip: str
+    port: int
+    protocol: str = "tcp"
+
+
+class PortVerifyResponse(BaseModel):
+    """Response from port verification."""
+    ip: str
+    port: int
+    protocol: str
+    state: str  # open, closed, filtered
+    service: Optional[str] = None
+    version: Optional[str] = None
+    verified: bool
+    verification_time: datetime
+    raw_output: Optional[str] = None
+
+
+@router.post("/verify", response_model=PortVerifyResponse)
+async def verify_port(
+    request: PortVerifyRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Verify a specific port using nmap for deeper inspection.
+    
+    This performs a more thorough check than masscan to determine if a port is:
+    - open: Port is accepting connections
+    - filtered: Port is blocked by firewall (packets dropped)
+    - closed: Port is not accepting connections (RST response)
+    
+    Also attempts service detection to identify what's running.
+    """
+    import subprocess
+    import re
+    
+    ip = request.ip
+    port = request.port
+    protocol = request.protocol.lower()
+    
+    # Validate inputs
+    if not re.match(r'^[\d.]+$', ip) and not re.match(r'^[a-fA-F\d:]+$', ip):
+        raise HTTPException(status_code=400, detail="Invalid IP address format")
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
+    if protocol not in ["tcp", "udp"]:
+        raise HTTPException(status_code=400, detail="Protocol must be tcp or udp")
+    
+    # Build nmap command
+    # -Pn: Skip host discovery (assume host is up)
+    # -sT: TCP connect scan (for tcp) or -sU for UDP
+    # -sV: Version detection
+    # --version-light: Faster version detection
+    scan_type = "-sT" if protocol == "tcp" else "-sU"
+    cmd = [
+        "nmap", "-Pn", scan_type, "-sV", "--version-light",
+        "-p", str(port), ip,
+        "--max-retries", "2",
+        "-T4"  # Aggressive timing
+    ]
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60  # 60 second timeout
+        )
+        
+        output = result.stdout
+        
+        # Parse nmap output
+        state = "unknown"
+        service = None
+        version = None
+        
+        # Look for port state in output
+        # Format: "1521/tcp filtered oracle"
+        port_pattern = rf'{port}/{protocol}\s+(\w+)\s+(\S+)(?:\s+(.+))?'
+        match = re.search(port_pattern, output)
+        
+        if match:
+            state = match.group(1)  # open, closed, filtered
+            service = match.group(2) if match.group(2) != "unknown" else None
+            version = match.group(3).strip() if match.group(3) else None
+        
+        # Update the port record in database if it exists
+        port_record = db.query(PortService).join(Asset).filter(
+            Asset.value == ip,
+            PortService.port == port,
+            PortService.protocol == Protocol(protocol)
+        ).first()
+        
+        if not port_record:
+            # Try by IP in different asset
+            asset = db.query(Asset).filter(
+                Asset.ip_addresses.contains([ip])
+            ).first()
+            if asset:
+                port_record = db.query(PortService).filter(
+                    PortService.asset_id == asset.id,
+                    PortService.port == port,
+                    PortService.protocol == Protocol(protocol)
+                ).first()
+        
+        if port_record:
+            # Update verification info
+            port_record.verified = True
+            port_record.verified_at = datetime.utcnow()
+            port_record.verified_state = state
+            if service:
+                port_record.service = service
+            if version:
+                port_record.version = version
+            # Map nmap state to our PortState enum
+            if state == "open":
+                port_record.state = PortState.OPEN
+            elif state == "filtered":
+                port_record.state = PortState.FILTERED
+            elif state == "closed":
+                port_record.state = PortState.CLOSED
+            db.commit()
+        
+        return PortVerifyResponse(
+            ip=ip,
+            port=port,
+            protocol=protocol,
+            state=state,
+            service=service,
+            version=version,
+            verified=True,
+            verification_time=datetime.utcnow(),
+            raw_output=output if len(output) < 2000 else output[:2000] + "..."
+        )
+        
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=408,
+            detail="Nmap scan timed out after 60 seconds"
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=500,
+            detail="Nmap is not installed on this system"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Verification failed: {str(e)}"
+        )
+
+
+@router.post("/{port_id}/verify", response_model=PortVerifyResponse)
+async def verify_port_by_id(
+    port_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Verify a port by its database ID.
+    
+    Looks up the port record and runs nmap verification on it.
+    """
+    port_record = db.query(PortService).filter(PortService.id == port_id).first()
+    
+    if not port_record:
+        raise HTTPException(status_code=404, detail="Port record not found")
+    
+    # Get the asset to find the IP
+    asset = db.query(Asset).filter(Asset.id == port_record.asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Associated asset not found")
+    
+    # Check access
+    if not current_user.is_superuser and current_user.organization_id != asset.organization_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get IP address - prefer resolved IP, otherwise use asset value if it's an IP
+    ip = None
+    if asset.ip_addresses and len(asset.ip_addresses) > 0:
+        ip = asset.ip_addresses[0]
+    elif asset.value and (asset.value.replace('.', '').isdigit() or ':' in asset.value):
+        ip = asset.value
+    else:
+        raise HTTPException(
+            status_code=400, 
+            detail="No IP address available for this asset. Run DNS resolution first."
+        )
+    
+    # Call the main verify endpoint
+    request = PortVerifyRequest(
+        ip=ip,
+        port=port_record.port,
+        protocol=port_record.protocol.value
+    )
+    
+    return await verify_port(request, db, current_user)
+
+
+@router.post("/verify-bulk")
+async def verify_ports_bulk(
+    port_ids: List[int],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Verify multiple ports in bulk.
+    
+    Creates a background scan to verify all specified ports.
+    Useful for verifying all open ports found by masscan.
+    """
+    if len(port_ids) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 ports per bulk verification")
+    
+    # Get all port records
+    ports = db.query(PortService).filter(PortService.id.in_(port_ids)).all()
+    
+    if not ports:
+        raise HTTPException(status_code=404, detail="No port records found")
+    
+    # Create a scan record for tracking
+    scan = Scan(
+        name=f"Bulk Port Verification ({len(ports)} ports)",
+        scan_type=ScanType.PORT_SCAN,
+        organization_id=ports[0].asset.organization_id if ports[0].asset else None,
+        targets=[],
+        config={
+            "verification_mode": True,
+            "port_ids": port_ids,
+            "scanner": "nmap"
+        },
+        status=ScanStatus.PENDING
+    )
+    db.add(scan)
+    db.commit()
+    
+    # Queue for background processing
+    # The scanner worker will handle this
+    from app.api.routes.scans import send_scan_to_sqs
+    send_scan_to_sqs(scan)
+    
+    return {
+        "message": f"Bulk verification queued for {len(ports)} ports",
+        "scan_id": scan.id,
+        "ports_queued": len(ports)
+    }
+

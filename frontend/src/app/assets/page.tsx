@@ -1025,18 +1025,26 @@ export default function AssetsPage() {
                         {/* IP Address - must come after HTTP to match column order */}
                         {columns.find(c => c.key === 'ip_address')?.visible && (
                           <TableCell className="font-mono text-sm">
-                            {asset.ip_address ? (
-                              <div className="flex flex-col gap-0.5">
-                                <span className="text-foreground">{asset.ip_address}</span>
-                                {asset.ip_addresses && asset.ip_addresses.length > 1 && (
-                                  <span className="text-xs text-muted-foreground">
-                                    +{asset.ip_addresses.length - 1} more
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-muted-foreground">—</span>
-                            )}
+                            {(() => {
+                              // For IP_ADDRESS type assets, the IP is in the value field
+                              const assetType = (asset.asset_type || asset.type || '').toLowerCase();
+                              const isIpAsset = assetType === 'ip_address' || assetType === 'ip';
+                              const displayIp = asset.ip_address || (isIpAsset ? asset.value : null);
+                              
+                              if (displayIp) {
+                                return (
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className="text-foreground">{displayIp}</span>
+                                    {asset.ip_addresses && asset.ip_addresses.length > 1 && (
+                                      <span className="text-xs text-muted-foreground">
+                                        +{asset.ip_addresses.length - 1} more
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              }
+                              return <span className="text-muted-foreground">—</span>;
+                            })()}
                           </TableCell>
                         )}
 

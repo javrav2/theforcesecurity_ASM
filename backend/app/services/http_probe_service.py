@@ -173,12 +173,19 @@ async def _probe_hosts_async(
             
             total_probed += 1
             
-            # Find the asset
+            # Find the asset - include IP_ADDRESS type as well
             asset = db.query(Asset).filter(
                 Asset.organization_id == organization_id,
                 Asset.value == host,
-                Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS]),
             ).first()
+            
+            # Also try matching by IP address field for domain/subdomain assets
+            if not asset:
+                asset = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.ip_address == host,
+                ).first()
             
             if not asset:
                 continue

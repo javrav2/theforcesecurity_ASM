@@ -386,7 +386,16 @@ def create_asset(
             detail="Asset with this type and value already exists"
         )
     
-    new_asset = Asset(**asset_data.model_dump())
+    asset_dict = asset_data.model_dump()
+    
+    # For IP_ADDRESS type assets, auto-populate ip_address and ip_addresses fields
+    if asset_data.asset_type == AssetType.IP_ADDRESS:
+        if not asset_dict.get('ip_address'):
+            asset_dict['ip_address'] = asset_data.value
+        if not asset_dict.get('ip_addresses'):
+            asset_dict['ip_addresses'] = [asset_data.value]
+    
+    new_asset = Asset(**asset_dict)
     db.add(new_asset)
     db.commit()
     db.refresh(new_asset)
@@ -416,7 +425,16 @@ def create_assets_bulk(
         ).first()
         
         if not existing:
-            new_asset = Asset(**asset_data.model_dump())
+            asset_dict = asset_data.model_dump()
+            
+            # For IP_ADDRESS type assets, auto-populate ip_address and ip_addresses fields
+            if asset_data.asset_type == AssetType.IP_ADDRESS:
+                if not asset_dict.get('ip_address'):
+                    asset_dict['ip_address'] = asset_data.value
+                if not asset_dict.get('ip_addresses'):
+                    asset_dict['ip_addresses'] = [asset_data.value]
+            
+            new_asset = Asset(**asset_dict)
             db.add(new_asset)
             created_assets.append(new_asset)
     
@@ -2618,4 +2636,55 @@ def merge_specific_assets(
         "success": True,
         "result": result,
         "message": f"Merged asset {source.value} into {target.value}",
+    }
+
+
+@router.post("/fix-ip-fields")
+def fix_ip_address_fields(
+    organization_id: Optional[int] = Query(None, description="Limit to specific organization"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Fix IP_ADDRESS assets that don't have their ip_address field populated.
+    
+    For IP_ADDRESS type assets, the value field contains the IP, but the
+    ip_address and ip_addresses fields should also be populated for consistency.
+    This endpoint fixes any assets where that data is missing.
+    """
+    from sqlalchemy import or_
+    
+    # Build query for IP assets with missing ip_address field
+    query = db.query(Asset).filter(
+        Asset.asset_type == AssetType.IP_ADDRESS,
+        or_(
+            Asset.ip_address.is_(None),
+            Asset.ip_address == ''
+        )
+    )
+    
+    if organization_id:
+        if not check_org_access(current_user, organization_id):
+            raise HTTPException(status_code=403, detail="Access denied to this organization")
+        query = query.filter(Asset.organization_id == organization_id)
+    elif not current_user.is_superuser:
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    # Get assets to fix
+    assets_to_fix = query.all()
+    
+    fixed_count = 0
+    for asset in assets_to_fix:
+        if asset.value:
+            asset.ip_address = asset.value
+            if not asset.ip_addresses or asset.value not in asset.ip_addresses:
+                asset.ip_addresses = [asset.value] if not asset.ip_addresses else asset.ip_addresses + [asset.value]
+            fixed_count += 1
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "fixed_count": fixed_count,
+        "message": f"Fixed {fixed_count} IP_ADDRESS assets with missing ip_address field"
     }
