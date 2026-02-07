@@ -109,8 +109,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install ParamSpider for URL parameter discovery
-RUN pip install --no-cache-dir paramspider
+# Install ParamSpider for URL parameter discovery (from GitHub since not on PyPI)
+RUN pip install --no-cache-dir git+https://github.com/devanshbatham/ParamSpider.git || echo "ParamSpider installation skipped"
 
 # Install EyeWitness for screenshots
 RUN git clone --depth 1 https://github.com/RedSiege/EyeWitness.git /opt/EyeWitness && \
