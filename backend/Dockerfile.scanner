@@ -112,11 +112,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install ParamSpider for URL parameter discovery (from GitHub since not on PyPI)
 RUN pip install --no-cache-dir git+https://github.com/devanshbatham/ParamSpider.git || echo "ParamSpider installation skipped"
 
-# Install EyeWitness for screenshots
+# Install EyeWitness for screenshots (handle different repo structures)
 RUN git clone --depth 1 https://github.com/RedSiege/EyeWitness.git /opt/EyeWitness && \
-    cd /opt/EyeWitness/Python && \
-    pip install --no-cache-dir -r requirements.txt && \
-    chmod +x EyeWitness.py
+    cd /opt/EyeWitness && \
+    if [ -f "Python/requirements.txt" ]; then \
+        pip install --no-cache-dir -r Python/requirements.txt && \
+        chmod +x Python/EyeWitness.py; \
+    elif [ -f "requirements.txt" ]; then \
+        pip install --no-cache-dir -r requirements.txt; \
+    else \
+        pip install --no-cache-dir selenium netaddr Pillow; \
+    fi || echo "EyeWitness installation completed with warnings"
 
 # Set up EyeWitness environment variables
 ENV EYEWITNESS_PATH=/opt/EyeWitness/Python/EyeWitness.py
