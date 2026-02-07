@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from app.models.scan import Scan, ScanType, ScanStatus
-from app.models.asset import Asset, AssetType
+from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.netblock import Netblock
 from app.models.port_service import PortService, PortState, Protocol
 from app.services.nuclei_service import NucleiService
@@ -842,6 +842,7 @@ class ScannerWorker:
                 scan.status = ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
                 scan.vulnerabilities_found = import_summary['findings_created']
+                scan.assets_discovered = assets_created  # Record assets created from targets
                 scan.results = {
                     'summary': result.summary,
                     'import_summary': import_summary,
@@ -851,6 +852,8 @@ class ScannerWorker:
                     'live_hosts': len(unique_hosts),
                     'findings_count': import_summary['findings_created'],
                     'auto_resolved_count': auto_resolved_count,
+                    'assets_created_from_targets': assets_created,
+                    'assets_updated': assets_updated,
                 }
                 db.commit()
             
