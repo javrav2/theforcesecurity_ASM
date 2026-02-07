@@ -33,6 +33,13 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
+  Layers,
+  Cpu,
+  Network,
+  Server,
+  ExternalLink,
+  Lock,
+  Globe,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -73,6 +80,10 @@ export default function GraphPage() {
   const [attackPathTarget, setAttackPathTarget] = useState<string>('');
   const [attackPaths, setAttackPaths] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState('explorer');
+  const [attackSurface, setAttackSurface] = useState<any>(null);
+  const [techGrouping, setTechGrouping] = useState<any>(null);
+  const [portGrouping, setPortGrouping] = useState<any>(null);
+  const [attackSurfaceLoading, setAttackSurfaceLoading] = useState(false);
   const { toast } = useToast();
 
   // Fetch graph status
@@ -232,6 +243,26 @@ export default function GraphPage() {
     }
   };
 
+  // Fetch attack surface data
+  const fetchAttackSurface = async () => {
+    setAttackSurfaceLoading(true);
+    try {
+      const orgId = selectedOrg !== 'all' ? parseInt(selectedOrg) : undefined;
+      const [overview, techData, portData] = await Promise.all([
+        api.getAttackSurfaceOverview(orgId),
+        api.getAssetsByTechnology({ organization_id: orgId }),
+        api.getAssetsByPort({ organization_id: orgId }),
+      ]);
+      setAttackSurface(overview);
+      setTechGrouping(techData);
+      setPortGrouping(portData);
+    } catch (error) {
+      console.error('Failed to fetch attack surface:', error);
+    } finally {
+      setAttackSurfaceLoading(false);
+    }
+  };
+
   // Map Neo4j labels to our node types
   const mapNeo4jLabelToType = (label: string): GraphNode['type'] => {
     const mapping: Record<string, GraphNode['type']> = {
@@ -259,6 +290,13 @@ export default function GraphPage() {
     fetchStatus();
     fetchOrganizations();
   }, []);
+
+  // Fetch attack surface when tab changes
+  useEffect(() => {
+    if (activeTab === 'attack-surface' && !attackSurface && !attackSurfaceLoading) {
+      fetchAttackSurface();
+    }
+  }, [activeTab]);
 
   // Fetch assets when org changes
   useEffect(() => {
@@ -359,9 +397,13 @@ export default function GraphPage() {
         {status?.connected && (
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList>
+              <TabsTrigger value="attack-surface" className="flex items-center gap-2">
+                <Layers className="h-4 w-4" />
+                Attack Surface
+              </TabsTrigger>
               <TabsTrigger value="explorer" className="flex items-center gap-2">
                 <GitBranch className="h-4 w-4" />
-                Relationship Explorer
+                Relationships
               </TabsTrigger>
               <TabsTrigger value="attack-paths" className="flex items-center gap-2">
                 <Route className="h-4 w-4" />
@@ -372,6 +414,285 @@ export default function GraphPage() {
                 Vulnerability Impact
               </TabsTrigger>
             </TabsList>
+
+            {/* Attack Surface Tab */}
+            <TabsContent value="attack-surface" className="space-y-6">
+              {attackSurfaceLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                  <span className="ml-2 text-muted-foreground">Loading attack surface data...</span>
+                </div>
+              ) : (
+                <>
+                  {/* Risk Distribution Summary */}
+                  {attackSurface?.risk_distribution && (
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <div className="text-3xl font-bold text-red-500">
+                            {attackSurface.risk_distribution.critical_risk || 0}
+                          </div>
+                          <div className="text-xs text-muted-foreground">Critical Risk</div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <div className="text-3xl font-bold text-orange-500">
+                            {attackSurface.risk_distribution.high_risk || 0}
+                          </div>
+                          <div className="text-xs text-muted-foreground">High Risk</div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <div className="text-3xl font-bold text-yellow-500">
+                            {attackSurface.risk_distribution.medium_risk || 0}
+                          </div>
+                          <div className="text-xs text-muted-foreground">Medium Risk</div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <div className="text-3xl font-bold text-green-500">
+                            {attackSurface.risk_distribution.low_risk || 0}
+                          </div>
+                          <div className="text-xs text-muted-foreground">Low Risk</div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="p-4 text-center">
+                          <div className="text-3xl font-bold">
+                            {attackSurface.risk_distribution.total_assets || 0}
+                          </div>
+                          <div className="text-xs text-muted-foreground">Total Assets</div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Technology Grouping */}
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Cpu className="h-5 w-5 text-cyan-500" />
+                            <CardTitle className="text-base">Technologies ({techGrouping?.total_technologies || 0})</CardTitle>
+                          </div>
+                        </div>
+                        <CardDescription>Assets grouped by CMS, frameworks, and libraries</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {techGrouping?.technologies && techGrouping.technologies.length > 0 ? (
+                          <div className="space-y-2 max-h-96 overflow-y-auto">
+                            {techGrouping.technologies.map((tech: any, idx: number) => (
+                              <div
+                                key={idx}
+                                className="p-3 bg-muted/50 rounded-lg hover:bg-muted transition-colors cursor-pointer"
+                              >
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="font-medium">{tech.technology}</span>
+                                  <Badge variant="secondary">{tech.asset_count} assets</Badge>
+                                </div>
+                                {tech.categories && (
+                                  <div className="text-xs text-muted-foreground mb-2">{tech.categories}</div>
+                                )}
+                                <div className="flex flex-wrap gap-1">
+                                  {tech.assets?.slice(0, 5).map((asset: any, i: number) => (
+                                    <Badge key={i} variant="outline" className="text-xs">
+                                      {asset.value}
+                                      {asset.has_login_portal && <Lock className="h-2 w-2 ml-1" />}
+                                    </Badge>
+                                  ))}
+                                  {tech.assets?.length > 5 && (
+                                    <Badge variant="outline" className="text-xs">
+                                      +{tech.assets.length - 5} more
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 text-muted-foreground">
+                            <Cpu className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                            <p>No technology data available</p>
+                            <p className="text-xs">Sync data to populate</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* Port Grouping */}
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Network className="h-5 w-5 text-amber-500" />
+                            <CardTitle className="text-base">Open Ports ({portGrouping?.total_unique_ports || 0})</CardTitle>
+                          </div>
+                          {portGrouping?.risky_summary && (
+                            <Badge variant="destructive" className="text-xs">
+                              {portGrouping.risky_summary.risky_port_count} risky
+                            </Badge>
+                          )}
+                        </div>
+                        <CardDescription>Assets grouped by exposed ports and services</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {portGrouping?.ports && portGrouping.ports.length > 0 ? (
+                          <div className="space-y-2 max-h-96 overflow-y-auto">
+                            {portGrouping.ports.map((port: any, idx: number) => (
+                              <div
+                                key={idx}
+                                className={`p-3 rounded-lg hover:bg-muted transition-colors cursor-pointer ${
+                                  port.is_risky ? 'bg-red-500/10 border border-red-500/30' : 'bg-muted/50'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono font-bold">{port.port_number}</span>
+                                    <span className="text-muted-foreground">/{port.protocol}</span>
+                                    {port.service_name && (
+                                      <Badge variant="outline" className="text-xs">{port.service_name}</Badge>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {port.is_risky && (
+                                      <AlertTriangle className="h-4 w-4 text-red-500" />
+                                    )}
+                                    <Badge variant="secondary">{port.asset_count} assets</Badge>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-1">
+                                  {port.assets?.slice(0, 5).map((asset: any, i: number) => (
+                                    <Badge key={i} variant="outline" className="text-xs font-mono">
+                                      {asset.scanned_ip || asset.value}
+                                    </Badge>
+                                  ))}
+                                  {port.assets?.length > 5 && (
+                                    <Badge variant="outline" className="text-xs">
+                                      +{port.assets.length - 5} more
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 text-muted-foreground">
+                            <Network className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                            <p>No port data available</p>
+                            <p className="text-xs">Run port scans to populate</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Entry Points */}
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-center gap-2">
+                          <Globe className="h-5 w-5 text-green-500" />
+                          <CardTitle className="text-base">Entry Points</CardTitle>
+                        </div>
+                        <CardDescription>Live assets with open ports - potential attack entry points</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {attackSurface?.entry_points && attackSurface.entry_points.length > 0 ? (
+                          <div className="space-y-2 max-h-80 overflow-y-auto">
+                            {attackSurface.entry_points.map((entry: any, idx: number) => (
+                              <div key={idx} className="flex items-center justify-between p-2 bg-muted/50 rounded">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-sm">{entry.asset}</span>
+                                  {entry.has_login && <Lock className="h-3 w-3 text-yellow-500" />}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="outline" className="text-xs">{entry.port_count} ports</Badge>
+                                  {entry.critical_vulns > 0 && (
+                                    <Badge variant="destructive" className="text-xs">
+                                      {entry.critical_vulns} critical
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center py-6 text-muted-foreground">
+                            <p>No entry points found</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* High Value Targets */}
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-center gap-2">
+                          <Target className="h-5 w-5 text-red-500" />
+                          <CardTitle className="text-base">High-Value Targets</CardTitle>
+                        </div>
+                        <CardDescription>Login portals and critical assets</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {attackSurface?.high_value_targets && attackSurface.high_value_targets.length > 0 ? (
+                          <div className="space-y-2 max-h-80 overflow-y-auto">
+                            {attackSurface.high_value_targets.map((target: any, idx: number) => (
+                              <div key={idx} className="flex items-center justify-between p-2 bg-muted/50 rounded">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-sm">{target.asset}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {target.has_login && (
+                                    <Badge className="text-xs bg-yellow-500/20 text-yellow-600 border-yellow-500/30">
+                                      <Lock className="h-3 w-3 mr-1" />
+                                      Login
+                                    </Badge>
+                                  )}
+                                  {target.criticality === 'critical' && (
+                                    <Badge variant="destructive" className="text-xs">Critical</Badge>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-center py-6 text-muted-foreground">
+                            <p>No high-value targets identified</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Discovery Sources */}
+                  {attackSurface?.discovery_sources && attackSurface.discovery_sources.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-center gap-2">
+                          <Search className="h-5 w-5" />
+                          <CardTitle className="text-base">Discovery Sources</CardTitle>
+                        </div>
+                        <CardDescription>How assets were discovered</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex flex-wrap gap-3">
+                          {attackSurface.discovery_sources.map((source: any, idx: number) => (
+                            <div key={idx} className="flex items-center gap-2 p-2 bg-muted/50 rounded">
+                              <span className="capitalize">{source.source?.replace(/_/g, ' ') || 'Unknown'}</span>
+                              <Badge variant="secondary">{source.count}</Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </>
+              )}
+            </TabsContent>
 
             {/* Relationship Explorer Tab */}
             <TabsContent value="explorer" className="space-y-4">

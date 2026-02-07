@@ -227,6 +227,7 @@ const assetTypeIcons: Record<string, any> = {
 
 const TABS = [
   { id: 'details', label: 'Details', icon: FileText },
+  { id: 'app-structure', label: 'App Structure', icon: FolderSearch },
   { id: 'findings', label: 'Findings', icon: Shield },
   { id: 'ports', label: 'Open Ports', icon: Network },
   { id: 'activity', label: 'Activity', icon: Activity },
@@ -250,6 +251,17 @@ export default function AssetDetailPage() {
   const [acsDialogOpen, setAcsDialogOpen] = useState(false);
   const [editingAcs, setEditingAcs] = useState(5);
   const [savingAcs, setSavingAcs] = useState(false);
+  const [appStructure, setAppStructure] = useState<{
+    summary: { total_paths: number; total_urls: number; total_parameters: number; total_js_files: number; total_api_endpoints: number; total_interesting_urls: number; scans_included: number };
+    paths: string[];
+    urls: string[];
+    parameters: string[];
+    js_files: string[];
+    api_endpoints: string[];
+    interesting_urls: string[];
+    source_breakdown: Record<string, Record<string, number>>;
+  } | null>(null);
+  const [appStructureLoading, setAppStructureLoading] = useState(false);
   const { toast } = useToast();
 
   const handleVirusTotalLookup = async () => {
@@ -301,6 +313,31 @@ export default function AssetDetailPage() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const fetchAppStructure = async () => {
+    if (appStructureLoading || appStructure) return;
+    
+    setAppStructureLoading(true);
+    try {
+      const data = await api.getAppStructureByAsset(parseInt(assetId));
+      setAppStructure(data);
+    } catch (error) {
+      console.error('Failed to fetch app structure:', error);
+      // Set empty structure if API fails
+      setAppStructure({
+        summary: { total_paths: 0, total_urls: 0, total_parameters: 0, total_js_files: 0, total_api_endpoints: 0, total_interesting_urls: 0, scans_included: 0 },
+        paths: [],
+        urls: [],
+        parameters: [],
+        js_files: [],
+        api_endpoints: [],
+        interesting_urls: [],
+        source_breakdown: {}
+      });
+    } finally {
+      setAppStructureLoading(false);
     }
   };
 
@@ -376,6 +413,13 @@ export default function AssetDetailPage() {
   useEffect(() => {
     fetchAsset();
   }, [assetId]);
+
+  // Fetch app structure when tab is selected
+  useEffect(() => {
+    if (activeTab === 'app-structure' && !appStructure && !appStructureLoading) {
+      fetchAppStructure();
+    }
+  }, [activeTab]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -1160,102 +1204,48 @@ export default function AssetDetailPage() {
           </Card>
         )}
 
-        {/* Web Crawl Results (Katana/ParamSpider) */}
+        {/* App Structure Summary - Links to App Structure Tab */}
         {((asset.endpoints && asset.endpoints.length > 0) || 
           (asset.parameters && asset.parameters.length > 0) || 
-          (asset.js_files && asset.js_files.length > 0)) && (
-          <Card>
+          (asset.js_files && asset.js_files.length > 0) ||
+          (asset.technologies && asset.technologies.length > 0)) && (
+          <Card 
+            className="cursor-pointer hover:border-primary/50 transition-colors"
+            onClick={() => setActiveTab('app-structure')}
+          >
             <CardHeader>
-              <div className="flex items-center gap-2">
-                <FolderSearch className="h-5 w-5" />
-                <CardTitle>Web Crawl Results</CardTitle>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FolderSearch className="h-5 w-5" />
+                  <CardTitle>Application Structure</CardTitle>
+                </div>
+                <Badge variant="outline" className="text-xs">
+                  Click to view details →
+                </Badge>
               </div>
               <CardDescription>
-                Discovered endpoints, parameters, and JS files from Katana/ParamSpider scans
+                Discovered technologies, endpoints, parameters, and JS files
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Endpoints */}
-              {asset.endpoints && asset.endpoints.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Link2 className="h-4 w-4 text-blue-500" />
-                    <h4 className="text-sm font-medium">Endpoints ({asset.endpoints.length})</h4>
-                  </div>
-                  <div className="max-h-48 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
-                    {asset.endpoints.slice(0, 50).map((endpoint, idx) => (
-                      <div key={idx} className="font-mono text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        {endpoint}
-                      </div>
-                    ))}
-                    {asset.endpoints.length > 50 && (
-                      <div className="text-xs text-muted-foreground pt-2 border-t">
-                        +{asset.endpoints.length - 50} more endpoints
-                      </div>
-                    )}
-                  </div>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center p-3 bg-muted/30 rounded-lg">
+                  <p className="text-2xl font-bold text-purple-500">{asset.technologies?.length || 0}</p>
+                  <p className="text-xs text-muted-foreground">Technologies</p>
                 </div>
-              )}
-
-              {/* Parameters */}
-              {asset.parameters && asset.parameters.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Hash className="h-4 w-4 text-orange-500" />
-                    <h4 className="text-sm font-medium">URL Parameters ({asset.parameters.length})</h4>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {asset.parameters.slice(0, 100).map((param, idx) => (
-                      <Badge 
-                        key={idx} 
-                        variant="outline" 
-                        className="font-mono text-xs bg-orange-500/10 text-orange-600 border-orange-500/30"
-                      >
-                        {param}
-                      </Badge>
-                    ))}
-                    {asset.parameters.length > 100 && (
-                      <Badge variant="outline" className="text-xs">
-                        +{asset.parameters.length - 100} more
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    These parameters may be vulnerable to XSS, SQLi, SSRF, or other injection attacks
-                  </p>
+                <div className="text-center p-3 bg-muted/30 rounded-lg">
+                  <p className="text-2xl font-bold text-blue-500">{asset.endpoints?.length || 0}</p>
+                  <p className="text-xs text-muted-foreground">Endpoints</p>
                 </div>
-              )}
-
-              {/* JavaScript Files */}
-              {asset.js_files && asset.js_files.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Code className="h-4 w-4 text-yellow-500" />
-                    <h4 className="text-sm font-medium">JavaScript Files ({asset.js_files.length})</h4>
-                  </div>
-                  <div className="max-h-48 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
-                    {asset.js_files.slice(0, 30).map((jsFile, idx) => (
-                      <a
-                        key={idx}
-                        href={jsFile.startsWith('http') ? jsFile : `https://${asset.value}${jsFile}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block font-mono text-xs text-muted-foreground hover:text-blue-500 transition-colors truncate"
-                      >
-                        {jsFile}
-                      </a>
-                    ))}
-                    {asset.js_files.length > 30 && (
-                      <div className="text-xs text-muted-foreground pt-2 border-t">
-                        +{asset.js_files.length - 30} more JS files
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    JS files may contain API endpoints, secrets, or other sensitive information
-                  </p>
+                <div className="text-center p-3 bg-muted/30 rounded-lg">
+                  <p className="text-2xl font-bold text-orange-500">{asset.parameters?.length || 0}</p>
+                  <p className="text-xs text-muted-foreground">Parameters</p>
                 </div>
-              )}
+                <div className="text-center p-3 bg-muted/30 rounded-lg">
+                  <p className="text-2xl font-bold text-yellow-500">{asset.js_files?.length || 0}</p>
+                  <p className="text-xs text-muted-foreground">JS Files</p>
+                </div>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -1430,6 +1420,370 @@ export default function AssetDetailPage() {
               )}
             </CardContent>
           </Card>
+        )}
+
+        {/* App Structure Tab */}
+        {activeTab === 'app-structure' && (
+          <div className="space-y-6">
+            {appStructureLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin" />
+                <span className="ml-2 text-muted-foreground">Loading app structure data...</span>
+              </div>
+            ) : (
+              <>
+                {/* Summary Stats - Shows data from all scans containing this asset */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <FolderSearch className="h-4 w-4" />
+                      Discovered from {appStructure?.summary?.scans_included || 0} Scans
+                    </CardTitle>
+                    <CardDescription>
+                      All paths, URLs, parameters, and JS files from Katana, ParamSpider, and Wayback scans that contain <code className="text-primary">{asset.value}</code>
+                    </CardDescription>
+                  </CardHeader>
+                </Card>
+
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Link2 className="h-6 w-6 text-blue-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{appStructure?.summary?.total_paths || 0}</p>
+                          <p className="text-xs text-muted-foreground">Paths</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Globe className="h-6 w-6 text-green-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{appStructure?.summary?.total_urls || 0}</p>
+                          <p className="text-xs text-muted-foreground">URLs</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Hash className="h-6 w-6 text-orange-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{appStructure?.summary?.total_parameters || 0}</p>
+                          <p className="text-xs text-muted-foreground">Parameters</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Code className="h-6 w-6 text-yellow-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{appStructure?.summary?.total_js_files || 0}</p>
+                          <p className="text-xs text-muted-foreground">JS Files</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <Server className="h-6 w-6 text-cyan-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{appStructure?.summary?.total_api_endpoints || 0}</p>
+                          <p className="text-xs text-muted-foreground">API Endpoints</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <AlertTriangle className="h-6 w-6 text-red-500" />
+                        <div>
+                          <p className="text-2xl font-bold">{appStructure?.summary?.total_interesting_urls || 0}</p>
+                          <p className="text-xs text-muted-foreground">Interesting</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Technologies (from asset) */}
+                {asset.technologies && asset.technologies.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-5 w-5" />
+                        <CardTitle>Technologies ({asset.technologies.length})</CardTitle>
+                      </div>
+                      <CardDescription>Detected technologies, frameworks, and libraries</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-wrap gap-2">
+                        {asset.technologies.map((tech: Technology, idx: number) => (
+                          <Badge key={idx} variant="outline" className="py-1.5 px-3">
+                            <span className="font-medium">{tech.name}</span>
+                            {tech.version && <span className="text-muted-foreground ml-1">v{tech.version}</span>}
+                            {tech.categories && tech.categories.length > 0 && (
+                              <span className="text-xs text-muted-foreground ml-2">({tech.categories[0]})</span>
+                            )}
+                          </Badge>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* URLs (Full URLs from scans) */}
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center gap-2">
+                      <Globe className="h-5 w-5 text-green-500" />
+                      <CardTitle>URLs ({appStructure?.urls?.length || 0})</CardTitle>
+                    </div>
+                    <CardDescription>Full URLs discovered from web crawling</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {appStructure?.urls && appStructure.urls.length > 0 ? (
+                      <div className="max-h-80 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
+                        {appStructure.urls.slice(0, 100).map((url: string, idx: number) => (
+                          <a
+                            key={idx}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 font-mono text-xs text-muted-foreground hover:text-blue-500 transition-colors py-1 border-b border-border/50 last:border-0"
+                          >
+                            <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                            <span className="truncate">{url}</span>
+                          </a>
+                        ))}
+                        {appStructure.urls.length > 100 && (
+                          <div className="text-xs text-muted-foreground pt-2 border-t">
+                            +{appStructure.urls.length - 100} more URLs
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center py-8">
+                        <Globe className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                        <p className="text-muted-foreground">No URLs discovered yet</p>
+                        <p className="text-xs text-muted-foreground mt-1">Run Katana or WaybackURLs scan on this domain</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Paths/Endpoints */}
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center gap-2">
+                      <Link2 className="h-5 w-5 text-blue-500" />
+                      <CardTitle>Paths ({appStructure?.paths?.length || 0})</CardTitle>
+                    </div>
+                    <CardDescription>Discovered URL paths and routes</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {appStructure?.paths && appStructure.paths.length > 0 ? (
+                      <div className="max-h-80 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
+                        {appStructure.paths.slice(0, 100).map((path: string, idx: number) => (
+                          <div key={idx} className="font-mono text-xs text-muted-foreground hover:text-foreground transition-colors py-1 border-b border-border/50 last:border-0">
+                            {path}
+                          </div>
+                        ))}
+                        {appStructure.paths.length > 100 && (
+                          <div className="text-xs text-muted-foreground pt-2 border-t">
+                            +{appStructure.paths.length - 100} more paths
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center py-8">
+                        <Link2 className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                        <p className="text-muted-foreground">No paths discovered yet</p>
+                        <p className="text-xs text-muted-foreground mt-1">Run a Katana scan to discover paths</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Parameters */}
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center gap-2">
+                      <Hash className="h-5 w-5 text-orange-500" />
+                      <CardTitle>URL Parameters ({appStructure?.parameters?.length || 0})</CardTitle>
+                    </div>
+                    <CardDescription>Query parameters that may be vulnerable to injection attacks</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {appStructure?.parameters && appStructure.parameters.length > 0 ? (
+                      <div className="space-y-4">
+                        <div className="flex flex-wrap gap-2">
+                          {appStructure.parameters.slice(0, 150).map((param: string, idx: number) => (
+                            <Badge 
+                              key={idx} 
+                              variant="outline" 
+                              className="font-mono text-xs bg-orange-500/10 text-orange-600 border-orange-500/30"
+                            >
+                              {param}
+                            </Badge>
+                          ))}
+                          {appStructure.parameters.length > 150 && (
+                            <Badge variant="outline" className="text-xs">
+                              +{appStructure.parameters.length - 150} more
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Test for XSS, SQLi, SSRF, or other injection attacks using Burp Suite or SQLMap.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8">
+                        <Hash className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                        <p className="text-muted-foreground">No parameters discovered yet</p>
+                        <p className="text-xs text-muted-foreground mt-1">Run ParamSpider or Katana to discover URL parameters</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* JavaScript Files */}
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center gap-2">
+                      <Code className="h-5 w-5 text-yellow-500" />
+                      <CardTitle>JavaScript Files ({appStructure?.js_files?.length || 0})</CardTitle>
+                    </div>
+                    <CardDescription>JS files that may contain API endpoints, secrets, or sensitive information</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {appStructure?.js_files && appStructure.js_files.length > 0 ? (
+                      <div className="max-h-80 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
+                        {appStructure.js_files.slice(0, 50).map((jsFile: string, idx: number) => (
+                          <a
+                            key={idx}
+                            href={jsFile.startsWith('http') ? jsFile : `https://${asset.value}${jsFile}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 font-mono text-xs text-muted-foreground hover:text-blue-500 transition-colors py-1 border-b border-border/50 last:border-0"
+                          >
+                            <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                            <span className="truncate">{jsFile}</span>
+                          </a>
+                        ))}
+                        {appStructure.js_files.length > 50 && (
+                          <div className="text-xs text-muted-foreground pt-2 border-t">
+                            +{appStructure.js_files.length - 50} more JS files
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center py-8">
+                        <Code className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                        <p className="text-muted-foreground">No JavaScript files discovered yet</p>
+                        <p className="text-xs text-muted-foreground mt-1">Run a Katana scan to discover JS files</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Interesting URLs (from Wayback) */}
+                {appStructure?.interesting_urls && appStructure.interesting_urls.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="h-5 w-5 text-red-500" />
+                        <CardTitle>Interesting URLs ({appStructure.interesting_urls.length})</CardTitle>
+                      </div>
+                      <CardDescription>Potentially sensitive URLs discovered from Wayback Machine</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="max-h-80 overflow-y-auto space-y-1 bg-muted/30 rounded-lg p-3">
+                        {appStructure.interesting_urls.slice(0, 50).map((url: string, idx: number) => (
+                          <a
+                            key={idx}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 font-mono text-xs text-red-400 hover:text-red-300 transition-colors py-1 border-b border-border/50 last:border-0"
+                          >
+                            <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                            <span className="truncate">{url}</span>
+                          </a>
+                        ))}
+                        {appStructure.interesting_urls.length > 50 && (
+                          <div className="text-xs text-muted-foreground pt-2 border-t">
+                            +{appStructure.interesting_urls.length - 50} more interesting URLs
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Source Breakdown */}
+                {appStructure?.source_breakdown && Object.keys(appStructure.source_breakdown).length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm">Source Breakdown</CardTitle>
+                      <CardDescription>Where this data was discovered from</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {Object.entries(appStructure.source_breakdown).map(([source, counts]: [string, any]) => (
+                          <div key={source} className="p-4 bg-muted/30 rounded-lg">
+                            <h4 className="font-medium capitalize mb-2">{source}</h4>
+                            <div className="flex flex-wrap gap-1">
+                              {Object.entries(counts).filter(([_, v]) => (v as number) > 0).map(([key, value]) => (
+                                <Badge key={key} variant="secondary" className="text-xs">
+                                  {key.replace(/_/g, ' ')}: {value as number}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Testing Recommendations */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">Testing Recommendations</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-sm text-muted-foreground space-y-2">
+                    <p>Based on the discovered application structure, consider the following testing approaches:</p>
+                    <ul className="list-disc pl-6 space-y-1">
+                      {(appStructure?.parameters?.length || 0) > 0 && (
+                        <li><strong>Parameter Testing:</strong> {appStructure?.parameters?.length} parameters found - test for XSS, SQLi, SSRF, IDOR</li>
+                      )}
+                      {(appStructure?.js_files?.length || 0) > 0 && (
+                        <li><strong>JS Analysis:</strong> {appStructure?.js_files?.length} JS files - search for hardcoded secrets, API keys, and internal endpoints</li>
+                      )}
+                      {(appStructure?.paths?.length || 0) > 0 && (
+                        <li><strong>Endpoint Fuzzing:</strong> {appStructure?.paths?.length} paths - test for authentication bypass, authorization flaws</li>
+                      )}
+                      {asset.technologies && asset.technologies.length > 0 && (
+                        <li><strong>Technology-specific:</strong> Check for known CVEs in {asset.technologies.slice(0, 3).map((t: Technology) => t.name).join(', ')}</li>
+                      )}
+                      {(appStructure?.interesting_urls?.length || 0) > 0 && (
+                        <li><strong>Historical URLs:</strong> {appStructure?.interesting_urls?.length} interesting URLs from Wayback - check for exposed configs, backups, admin panels</li>
+                      )}
+                    </ul>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+          </div>
         )}
 
         {/* Open Ports Tab */}

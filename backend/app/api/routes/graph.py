@@ -331,6 +331,292 @@ async def execute_graph_query(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/group-by-technology")
+async def get_assets_by_technology(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    category: Optional[str] = Query(None, description="Filter by technology category (e.g., 'cms', 'web-servers')"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Group assets by technology for attack surface analysis.
+    
+    Returns technologies with their associated assets, useful for identifying:
+    - All WordPress sites (potential attack vectors)
+    - All Apache servers (version-specific vulnerabilities)
+    - All jQuery instances (client-side risks)
+    """
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
+    
+    try:
+        graph = get_graph_service()
+        
+        # Query for technologies and their associated assets
+        if category:
+            cypher = """
+                MATCH (a:Asset)-[:USES_TECHNOLOGY]->(t:Technology)
+                WHERE a.organization_id = $org_id
+                  AND t.categories CONTAINS $category
+                WITH t, collect(DISTINCT {
+                    id: a.asset_id,
+                    value: a.value,
+                    is_live: a.is_live,
+                    risk_score: a.risk_score,
+                    has_login_portal: a.has_login_portal
+                }) AS assets
+                RETURN t.name AS technology,
+                       t.categories AS categories,
+                       t.cpe AS cpe,
+                       size(assets) AS asset_count,
+                       assets
+                ORDER BY asset_count DESC
+            """
+            params = {"org_id": org_id, "category": category}
+        else:
+            cypher = """
+                MATCH (a:Asset)-[:USES_TECHNOLOGY]->(t:Technology)
+                WHERE a.organization_id = $org_id
+                WITH t, collect(DISTINCT {
+                    id: a.asset_id,
+                    value: a.value,
+                    is_live: a.is_live,
+                    risk_score: a.risk_score,
+                    has_login_portal: a.has_login_portal
+                }) AS assets
+                RETURN t.name AS technology,
+                       t.categories AS categories,
+                       t.cpe AS cpe,
+                       size(assets) AS asset_count,
+                       assets
+                ORDER BY asset_count DESC
+                LIMIT 50
+            """
+            params = {"org_id": org_id}
+        
+        results = graph.query(cypher, params)
+        
+        # Also get category summary
+        category_cypher = """
+            MATCH (a:Asset)-[:USES_TECHNOLOGY]->(t:Technology)
+            WHERE a.organization_id = $org_id
+              AND t.categories IS NOT NULL
+            WITH t.categories AS cat, count(DISTINCT a) AS count
+            RETURN cat AS category, count
+            ORDER BY count DESC
+        """
+        category_results = graph.query(category_cypher, {"org_id": org_id})
+        
+        return {
+            "technologies": results,
+            "categories": category_results,
+            "total_technologies": len(results)
+        }
+    except Exception as e:
+        logger.error(f"Technology grouping error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/group-by-port")
+async def get_assets_by_port(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    risky_only: bool = Query(False, description="Only show risky ports"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Group assets by open ports for attack surface analysis.
+    
+    Returns ports with their associated assets, useful for identifying:
+    - All assets with SSH (port 22) exposed
+    - All assets with RDP (port 3389) exposed
+    - All assets with database ports exposed
+    """
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
+    
+    try:
+        graph = get_graph_service()
+        
+        # Query for ports and their associated assets
+        if risky_only:
+            cypher = """
+                MATCH (a:Asset)-[:HAS_PORT]->(p:Port)
+                WHERE a.organization_id = $org_id
+                  AND p.is_risky = true
+                WITH p.port AS port_number, p.protocol AS protocol,
+                     collect(DISTINCT {
+                         id: a.asset_id,
+                         value: a.value,
+                         is_live: a.is_live,
+                         scanned_ip: p.scanned_ip
+                     }) AS assets
+                OPTIONAL MATCH (p2:Port {port: port_number})-[:RUNS_SERVICE]->(s:Service)
+                WITH port_number, protocol, assets, collect(DISTINCT s.name)[0] AS service_name
+                RETURN port_number,
+                       protocol,
+                       service_name,
+                       size(assets) AS asset_count,
+                       assets,
+                       true AS is_risky
+                ORDER BY asset_count DESC
+            """
+        else:
+            cypher = """
+                MATCH (a:Asset)-[:HAS_PORT]->(p:Port)
+                WHERE a.organization_id = $org_id
+                WITH p.port AS port_number, p.protocol AS protocol, p.is_risky AS is_risky,
+                     collect(DISTINCT {
+                         id: a.asset_id,
+                         value: a.value,
+                         is_live: a.is_live,
+                         scanned_ip: p.scanned_ip
+                     }) AS assets
+                OPTIONAL MATCH (p2:Port {port: port_number})-[:RUNS_SERVICE]->(s:Service)
+                WITH port_number, protocol, is_risky, assets, collect(DISTINCT s.name)[0] AS service_name
+                RETURN port_number,
+                       protocol,
+                       service_name,
+                       size(assets) AS asset_count,
+                       assets,
+                       is_risky
+                ORDER BY asset_count DESC
+                LIMIT 50
+            """
+        
+        results = graph.query(cypher, {"org_id": org_id})
+        
+        # Get risky port summary
+        risky_cypher = """
+            MATCH (a:Asset)-[:HAS_PORT]->(p:Port)
+            WHERE a.organization_id = $org_id
+              AND p.is_risky = true
+            RETURN count(DISTINCT p) AS risky_port_count,
+                   count(DISTINCT a) AS affected_asset_count
+        """
+        risky_summary = graph.query(risky_cypher, {"org_id": org_id})
+        
+        return {
+            "ports": results,
+            "risky_summary": risky_summary[0] if risky_summary else {"risky_port_count": 0, "affected_asset_count": 0},
+            "total_unique_ports": len(results)
+        }
+    except Exception as e:
+        logger.error(f"Port grouping error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/attack-surface-overview")
+async def get_attack_surface_overview(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get a comprehensive attack surface overview with groupings.
+    
+    Returns:
+    - Entry points (externally accessible assets)
+    - High-value targets (critical assets, login portals)
+    - Attack vectors (risky ports, vulnerable technologies)
+    - Risk distribution
+    """
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
+    
+    try:
+        graph = get_graph_service()
+        
+        # Entry points - live assets with open ports
+        entry_points = graph.query("""
+            MATCH (a:Asset)-[:HAS_PORT]->(p:Port)
+            WHERE a.organization_id = $org_id
+              AND a.is_live = true
+            WITH a, count(DISTINCT p) AS port_count
+            OPTIONAL MATCH (a)-[:HAS_VULNERABILITY]->(v:Vulnerability)
+            WHERE v.severity IN ['critical', 'high']
+            WITH a, port_count, count(DISTINCT v) AS critical_vulns
+            RETURN a.value AS asset,
+                   a.asset_type AS type,
+                   a.has_login_portal AS has_login,
+                   port_count,
+                   critical_vulns,
+                   a.risk_score AS risk_score
+            ORDER BY critical_vulns DESC, port_count DESC
+            LIMIT 20
+        """, {"org_id": org_id})
+        
+        # High-value targets - login portals and critical assets
+        high_value = graph.query("""
+            MATCH (a:Asset)
+            WHERE a.organization_id = $org_id
+              AND (a.has_login_portal = true OR a.criticality = 'critical')
+            OPTIONAL MATCH (a)-[:HAS_VULNERABILITY]->(v:Vulnerability)
+            WITH a, collect(DISTINCT v.severity) AS vuln_severities
+            RETURN a.value AS asset,
+                   a.asset_type AS type,
+                   a.has_login_portal AS has_login,
+                   a.criticality AS criticality,
+                   vuln_severities
+            ORDER BY a.risk_score DESC
+            LIMIT 20
+        """, {"org_id": org_id})
+        
+        # Technology attack vectors - technologies with known issues
+        tech_vectors = graph.query("""
+            MATCH (a:Asset)-[:USES_TECHNOLOGY]->(t:Technology)
+            WHERE a.organization_id = $org_id
+            WITH t.name AS technology, t.categories AS categories, t.cpe AS cpe,
+                 count(DISTINCT a) AS usage_count
+            WHERE usage_count > 1
+            RETURN technology, categories, cpe, usage_count
+            ORDER BY usage_count DESC
+            LIMIT 15
+        """, {"org_id": org_id})
+        
+        # Port attack vectors - commonly exploited ports
+        port_vectors = graph.query("""
+            MATCH (a:Asset)-[:HAS_PORT]->(p:Port)
+            WHERE a.organization_id = $org_id
+              AND p.is_risky = true
+            OPTIONAL MATCH (p)-[:RUNS_SERVICE]->(s:Service)
+            WITH p.port AS port, s.name AS service, count(DISTINCT a) AS exposure_count
+            RETURN port, service, exposure_count
+            ORDER BY exposure_count DESC
+            LIMIT 15
+        """, {"org_id": org_id})
+        
+        # Risk distribution
+        risk_dist = graph.query("""
+            MATCH (a:Asset)
+            WHERE a.organization_id = $org_id
+            RETURN 
+                sum(CASE WHEN a.risk_score >= 80 THEN 1 ELSE 0 END) AS critical_risk,
+                sum(CASE WHEN a.risk_score >= 60 AND a.risk_score < 80 THEN 1 ELSE 0 END) AS high_risk,
+                sum(CASE WHEN a.risk_score >= 40 AND a.risk_score < 60 THEN 1 ELSE 0 END) AS medium_risk,
+                sum(CASE WHEN a.risk_score < 40 THEN 1 ELSE 0 END) AS low_risk,
+                count(a) AS total_assets
+        """, {"org_id": org_id})
+        
+        # Discovery sources
+        discovery_sources = graph.query("""
+            MATCH (a:Asset)
+            WHERE a.organization_id = $org_id
+            WITH CASE 
+                WHEN a.discovery_source IS NULL THEN 'manual'
+                ELSE a.discovery_source
+            END AS source, count(a) AS count
+            RETURN source, count
+            ORDER BY count DESC
+        """, {"org_id": org_id})
+        
+        return {
+            "entry_points": entry_points,
+            "high_value_targets": high_value,
+            "technology_vectors": tech_vectors,
+            "port_vectors": port_vectors,
+            "risk_distribution": risk_dist[0] if risk_dist else {},
+            "discovery_sources": discovery_sources
+        }
+    except Exception as e:
+        logger.error(f"Attack surface overview error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/statistics")
 async def get_graph_statistics(
     current_user: User = Depends(get_current_user)

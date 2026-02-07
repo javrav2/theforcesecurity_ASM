@@ -1200,6 +1200,11 @@ class ApiClient {
     return response.data;
   }
 
+  async getAppStructureByAsset(assetId: number) {
+    const response = await this.client.get(`/app-structure/by-asset/${assetId}`);
+    return response.data;
+  }
+
   // ==================== GRAPH (Neo4j) ====================
 
   async getGraphStatus() {
@@ -1228,6 +1233,23 @@ class ApiClient {
     max_paths?: number;
   }) {
     const response = await this.client.get('/graph/attack-paths', { params });
+    return response.data;
+  }
+
+  async getAssetsByTechnology(params?: { organization_id?: number; category?: string }) {
+    const response = await this.client.get('/graph/group-by-technology', { params });
+    return response.data;
+  }
+
+  async getAssetsByPort(params?: { organization_id?: number; risky_only?: boolean }) {
+    const response = await this.client.get('/graph/group-by-port', { params });
+    return response.data;
+  }
+
+  async getAttackSurfaceOverview(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/graph/attack-surface-overview', { params });
     return response.data;
   }
 
