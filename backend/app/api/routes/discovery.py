@@ -430,33 +430,55 @@ async def detect_login_portals(
         use_wayback=use_wayback
     )
     
-    # Store detected portals as assets with metadata
+    # Attach portals to host (subdomain/domain) assets only; do not create per-URL assets.
     if result.get("portals"):
+        from urllib.parse import urlparse
+        portals_by_host = {}
         for portal in result["portals"]:
-            # Check if asset already exists
-            existing = db.query(Asset).filter(
-                Asset.organization_id == organization_id,
-                Asset.value == portal.get("url")
-            ).first()
-            
-            if not existing:
-                asset = Asset(
-                    organization_id=organization_id,
-                    value=portal.get("url"),
-                    asset_type=AssetType.URL,
-                    hostname=domain,
-                    is_active=portal.get("verified", False),
-                    discovery_method="login_portal_scan",
-                    metadata_={
-                        "portal_type": portal.get("portal_type"),
-                        "status_code": portal.get("status_code"),
+            url = portal.get("url", "")
+            try:
+                parsed = urlparse(url)
+                host = parsed.netloc.split(":")[0]
+                if host:
+                    if host not in portals_by_host:
+                        portals_by_host[host] = []
+                    portals_by_host[host].append({
+                        "url": url,
+                        "type": portal.get("portal_type"),
+                        "status": portal.get("status_code"),
                         "title": portal.get("title"),
-                        "detected_at": portal.get("detected_at"),
-                        "is_login_portal": True
-                    }
+                        "verified": portal.get("verified", False),
+                    })
+            except Exception:
+                pass
+        for host, host_portals in portals_by_host.items():
+            asset = db.query(Asset).filter(
+                Asset.organization_id == organization_id,
+                Asset.value == host
+            ).first()
+            if asset:
+                asset.has_login_portal = True
+                existing_portals = asset.login_portals or []
+                existing_urls = {p.get("url") for p in existing_portals}
+                for p in host_portals:
+                    if p["url"] not in existing_urls:
+                        existing_portals.append(p)
+                asset.login_portals = existing_portals
+                asset.last_seen = datetime.utcnow()
+            else:
+                # Create host asset so we have one record for the subdomain with endpoints listed
+                new_asset = Asset(
+                    organization_id=organization_id,
+                    name=host,
+                    value=host,
+                    asset_type=AssetType.SUBDOMAIN if host != domain else AssetType.DOMAIN,
+                    root_domain=domain if host != domain else None,
+                    is_live=any(p.get("verified") for p in host_portals),
+                    has_login_portal=True,
+                    login_portals=host_portals,
+                    discovery_source="login_portal_scan",
                 )
-                db.add(asset)
-        
+                db.add(new_asset)
         db.commit()
     
     return {

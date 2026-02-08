@@ -2067,6 +2067,7 @@ export default function AssetDetailPage() {
           assetType={asset.asset_type}
           portServices={asset.port_services || []}
           technologies={asset.technologies || []}
+          loginPortals={asset.login_portals || []}
           httpStatus={asset.http_status}
           httpTitle={asset.http_title}
         />

@@ -2238,9 +2238,8 @@ class ScannerWorker:
                     except Exception:
                         pass
                 
-                # Flag parent domain/subdomain assets
+                # Attach portals to host (subdomain/domain) asset only; create host asset if missing
                 for host, host_portals in portals_by_host.items():
-                    # Find the asset for this host
                     asset = db.query(Asset).filter(
                         Asset.organization_id == organization_id,
                         Asset.value == host
@@ -2248,7 +2247,6 @@ class ScannerWorker:
                     
                     if asset:
                         asset.has_login_portal = True
-                        # Merge with existing portals
                         existing_portals = asset.login_portals or []
                         existing_urls = {p.get("url") for p in existing_portals}
                         for p in host_portals:
@@ -2258,34 +2256,25 @@ class ScannerWorker:
                         asset.last_seen = datetime.utcnow()
                         assets_flagged += 1
                         logger.info(f"Flagged {host} with {len(host_portals)} login portals")
-                
-                # Also create URL assets for discovered portals (optional - for detailed tracking)
-                for portal in portals:
-                    existing = db.query(Asset).filter(
-                        Asset.organization_id == organization_id,
-                        Asset.value == portal.get("url")
-                    ).first()
-                    
-                    if not existing:
-                        asset = Asset(
+                    else:
+                        # Create host asset so one record per subdomain with endpoints in Application Map
+                        root = target if host != target else None
+                        new_asset = Asset(
                             organization_id=organization_id,
-                            name=portal.get("url", "")[:255],
-                            value=portal.get("url"),
-                            asset_type=AssetType.URL,
-                            root_domain=target,  # Store the domain this portal was found from
-                            is_live=portal.get("verified", False),
+                            name=host,
+                            value=host,
+                            asset_type=AssetType.SUBDOMAIN if host != target else AssetType.DOMAIN,
+                            root_domain=root,
+                            is_live=any(p.get("verified") for p in host_portals),
                             has_login_portal=True,
+                            login_portals=host_portals,
                             discovery_source="login_portal_scan",
-                            metadata_={
-                                "portal_type": portal.get("portal_type"),
-                                "status_code": portal.get("status_code"),
-                                "title": portal.get("title"),
-                                "detected_at": portal.get("detected_at"),
-                                "is_login_portal": True,
-                                "source_domain": target  # Also store in metadata for reference
-                            }
                         )
-                        db.add(asset)
+                        db.add(new_asset)
+                        assets_flagged += 1
+                        logger.info(f"Created host asset {host} with {len(host_portals)} login portals")
+                
+                # Do not create per-URL assets; endpoints are listed on the host asset's Application Map (login_portals).
                 
                 db.commit()
                 logger.info(f"Found {len(portals)} login portals for {target}, flagged {assets_flagged} assets")

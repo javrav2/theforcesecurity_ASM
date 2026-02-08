@@ -17,6 +17,7 @@ import {
   Code,
   AlertTriangle,
   CheckCircle,
+  Link2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -41,11 +42,20 @@ interface Technology {
   version?: string;
 }
 
+export interface LoginPortalItem {
+  url: string;
+  type?: string;
+  status?: number;
+  title?: string;
+  verified?: boolean;
+}
+
 interface ApplicationMapProps {
   assetValue: string;
   assetType: string;
   portServices: PortService[];
   technologies: Technology[];
+  loginPortals?: LoginPortalItem[];
   httpStatus?: number;
   httpTitle?: string;
 }
@@ -146,6 +156,7 @@ export function ApplicationMap({
   assetType, 
   portServices, 
   technologies,
+  loginPortals = [],
   httpStatus,
   httpTitle,
 }: ApplicationMapProps) {
@@ -171,7 +182,7 @@ export function ApplicationMap({
     techsByCategory[category].push(tech);
   });
 
-  const hasData = portServices.length > 0 || technologies.length > 0;
+  const hasData = portServices.length > 0 || technologies.length > 0 || loginPortals.length > 0;
 
   if (!hasData) {
     return (
@@ -294,6 +305,75 @@ export function ApplicationMap({
           </div>
         )}
 
+        {/* Discovered endpoints (login portals / paths on this host) */}
+        {loginPortals.length > 0 && (
+          <div className="mb-6">
+            <h4 className="text-sm font-semibold mb-3 text-muted-foreground uppercase tracking-wider">
+              Discovered endpoints
+            </h4>
+            <div className="rounded-lg border border-border bg-secondary/20 overflow-hidden">
+              <div className="divide-y divide-border max-h-[320px] overflow-y-auto">
+                {loginPortals.map((portal, idx) => {
+                  try {
+                    const u = new URL(portal.url);
+                    const path = u.pathname || '/';
+                    const pathDisplay = path === '/' ? '/' : path;
+                    return (
+                      <div
+                        key={portal.url + String(idx)}
+                        className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-muted/50"
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <Link2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <a
+                            href={portal.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono text-sm truncate text-primary hover:underline"
+                          >
+                            {pathDisplay}
+                          </a>
+                          {portal.type && (
+                            <Badge className="bg-secondary text-secondary-foreground text-xs shrink-0">
+                              {portal.type}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {portal.status != null && (
+                            <span className={cn(
+                              "text-xs font-medium tabular-nums",
+                              portal.status >= 200 && portal.status < 300 ? "text-green-500" :
+                              portal.status >= 400 ? "text-amber-500" : "text-muted-foreground"
+                            )}>
+                              {portal.status}
+                            </span>
+                          )}
+                          {portal.verified && (
+                            <CheckCircle className="h-4 w-4 text-green-500" />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  } catch {
+                    return (
+                      <div key={portal.url + String(idx)} className="flex items-center gap-3 px-4 py-2.5">
+                        <Link2 className="h-4 w-4 text-muted-foreground" />
+                        <a href={portal.url} target="_blank" rel="noopener noreferrer" className="font-mono text-sm truncate text-primary hover:underline">
+                          {portal.url}
+                        </a>
+                      </div>
+                    );
+                  }
+                })}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Paths identified on this host — open links in new tab to visit.
+            </p>
+          </div>
+        )}
+
         {/* Technologies Section */}
         {Object.keys(techsByCategory).length > 0 && (
           <div>
@@ -328,6 +408,12 @@ export function ApplicationMap({
 
         {/* Summary Stats */}
         <div className="mt-6 pt-4 border-t border-border flex flex-wrap gap-4 text-sm">
+          {loginPortals.length > 0 && (
+            <div className="flex items-center gap-2">
+              <Link2 className="h-4 w-4 text-muted-foreground" />
+              <span className="text-muted-foreground">{loginPortals.length} endpoints</span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <Server className="h-4 w-4 text-muted-foreground" />
             <span className="text-muted-foreground">{portServices.length} ports</span>
