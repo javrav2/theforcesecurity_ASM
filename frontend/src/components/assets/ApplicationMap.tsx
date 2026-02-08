@@ -270,7 +270,7 @@ export function ApplicationMap({
                                 <Lock className="h-3 w-3 text-green-400" />
                               )}
                               {(service.state?.toLowerCase() === 'filtered' || service.verified_state?.toLowerCase() === 'filtered') && (
-                                <AlertTriangle className="h-3 w-3 text-yellow-400" title="Filtered port" />
+                                <AlertTriangle className="h-3 w-3 text-yellow-400" />
                               )}
                               {service.is_risky && !(service.state?.toLowerCase() === 'filtered' || service.verified_state?.toLowerCase() === 'filtered') && (
                                 <AlertTriangle className="h-3 w-3 text-red-400" />

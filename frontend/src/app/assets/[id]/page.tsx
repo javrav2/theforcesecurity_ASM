@@ -1916,7 +1916,7 @@ export default function AssetDetailPage() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           {port.service || '—'}
-                          {port.is_ssl && <Lock className="h-3 w-3 text-green-400" title="SSL/TLS" />}
+                          {port.is_ssl && <Lock className="h-3 w-3 text-green-400" />}
                         </div>
                       </TableCell>
                       <TableCell className="font-mono text-sm text-blue-400">

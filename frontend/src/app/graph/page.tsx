@@ -562,7 +562,7 @@ export default function GraphPage() {
                                   </div>
                                   <div className="flex items-center gap-2">
                                     {isFiltered && (
-                                      <AlertTriangle className="h-4 w-4 text-yellow-500" title="Filtered port" />
+                                      <AlertTriangle className="h-4 w-4 text-yellow-500" />
                                     )}
                                     {port.is_risky && !isFiltered && (
                                       <AlertTriangle className="h-4 w-4 text-red-500" />
