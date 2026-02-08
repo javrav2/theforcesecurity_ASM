@@ -86,12 +86,13 @@ async def _scan_single_host(
     if not host:
         return {"host": host, "scanned": False, "techs_found": 0}
 
+    # Look up asset - support DOMAIN, SUBDOMAIN, and IP_ADDRESS types
     host_asset = (
         db.query(Asset)
         .filter(
             Asset.organization_id == organization_id,
             Asset.value == host,
-            Asset.asset_type.in_([AssetType.SUBDOMAIN, AssetType.DOMAIN]),
+            Asset.asset_type.in_([AssetType.SUBDOMAIN, AssetType.DOMAIN, AssetType.IP_ADDRESS]),
         )
         .first()
     )
@@ -102,11 +103,36 @@ async def _scan_single_host(
     all_detected_techs: List[DetectedTechnology] = []
     live_url = None
     
-    # Try https first, then http
+    # Build list of URLs to try
+    # Priority: 1) asset.live_url, 2) https://{host}, 3) http://{host}
+    urls_to_try = []
+    
+    # If asset has a live_url from HTTP probe, try that first (most reliable)
+    if host_asset.live_url:
+        urls_to_try.append(host_asset.live_url)
+        # Also extract hostname from live_url for WhatRuns
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(host_asset.live_url)
+            live_hostname = parsed.netloc.split(':')[0]  # Remove port if present
+        except Exception:
+            live_hostname = host
+    else:
+        live_hostname = host
+    
+    # For IP addresses, we should prefer live_url if available
+    # Otherwise construct URLs - for IPs this may not work well with WhatRuns
+    is_ip = host_asset.asset_type == AssetType.IP_ADDRESS
+    
+    # Add constructed URLs if not already covered by live_url
     for scheme in ("https", "http"):
-        url = f"{scheme}://{host}"
-
-        # Wappalyzer detection
+        constructed_url = f"{scheme}://{host}"
+        if constructed_url not in urls_to_try:
+            urls_to_try.append(constructed_url)
+    
+    # Try each URL until we get results
+    for url in urls_to_try:
+        # Wappalyzer detection (works with any URL including IPs)
         if source in ("wappalyzer", "both"):
             try:
                 wappalyzer_techs = await wappalyzer.analyze_url(url)
@@ -116,10 +142,11 @@ async def _scan_single_host(
             except Exception as e:
                 logger.debug(f"Wappalyzer scan failed for {url}: {e}")
         
-        # WhatRuns detection
-        if source in ("whatruns", "both") and whatruns:
+        # WhatRuns detection (needs hostname, not IP - use live_hostname)
+        # WhatRuns doesn't work well with raw IPs, so only try if we have a hostname
+        if source in ("whatruns", "both") and whatruns and not is_ip:
             try:
-                whatruns_techs = await whatruns.detect_technologies(host, url)
+                whatruns_techs = await whatruns.detect_technologies(live_hostname, url)
                 if whatruns_techs:
                     live_url = url
                     # Convert WhatRuns results to DetectedTechnology format
@@ -128,7 +155,7 @@ async def _scan_single_host(
             except Exception as e:
                 logger.debug(f"WhatRuns scan failed for {url}: {e}")
         
-        # If we got any detections on this scheme, break
+        # If we got any detections on this URL, break
         if all_detected_techs:
             break
 
@@ -225,14 +252,27 @@ async def _scan_hosts_async(
         
         results = await _scan_hosts_batch(wappalyzer, db, organization_id, batch, source, whatruns)
         
-        # Process results
+        # Process results with detailed logging
+        skipped_no_asset = 0
+        skipped_errors = 0
         for result in results:
             if isinstance(result, Exception):
                 logger.warning(f"Batch scan error: {result}")
+                skipped_errors += 1
                 continue
             if result.get("scanned"):
                 total_scanned += 1
                 total_techs_found += result.get("techs_found", 0)
+                if result.get("techs_found", 0) == 0:
+                    logger.debug(f"Host {result.get('host')} scanned but no technologies detected")
+            else:
+                reason = result.get("reason", "unknown")
+                if reason == "no_asset":
+                    skipped_no_asset += 1
+                logger.debug(f"Host {result.get('host')} skipped: {reason}")
+        
+        if skipped_no_asset > 0 or skipped_errors > 0:
+            logger.info(f"Batch {batch_num}: {skipped_no_asset} hosts skipped (no matching asset), {skipped_errors} errors")
         
         # Commit after each batch to avoid long transactions
         db.commit()

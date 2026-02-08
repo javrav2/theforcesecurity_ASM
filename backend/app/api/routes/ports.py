@@ -1,10 +1,13 @@
 """Port and Service routes for asset reporting."""
 
+import logging
 from typing import Optional, List
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
+
+logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
 from app.models.user import User
@@ -1611,8 +1614,13 @@ async def verify_port(
         
         if match:
             state = match.group(1)  # open, closed, filtered
-            service = match.group(2) if match.group(2) != "unknown" else None
+            service = match.group(2) if match.group(2) not in ('unknown', '-') else None
             version = match.group(3).strip() if match.group(3) else None
+        
+        # Fallback to SERVICE_NAMES mapping if nmap didn't detect service
+        if not service and port in SERVICE_NAMES:
+            service = SERVICE_NAMES[port]
+            logger.info(f"Using SERVICE_NAMES fallback for port {port}: {service}")
         
         # Update the port record in database if it exists
         port_record = db.query(PortService).join(Asset).filter(
@@ -1638,10 +1646,25 @@ async def verify_port(
             port_record.verified = True
             port_record.verified_at = datetime.utcnow()
             port_record.verified_state = state
-            if service:
-                port_record.service = service
-            if version:
-                port_record.version = version
+            port_record.verification_scanner = "nmap"
+            
+            # Update service name if detected (use correct field name)
+            if service and service not in ('unknown', '-'):
+                port_record.service_name = service
+                logger.info(f"Port {port}/{protocol} on {ip}: detected service '{service}'")
+            
+            # Update service version if detected (use correct field name)
+            if version and version.strip():
+                port_record.service_version = version.strip()
+                # Try to extract product from version string if it contains product info
+                # e.g., "OpenSSH 8.4p1" -> product="OpenSSH", version="8.4p1"
+                version_parts = version.strip().split(' ', 1)
+                if len(version_parts) >= 1:
+                    port_record.service_product = version_parts[0]
+                if len(version_parts) >= 2:
+                    port_record.service_version = version_parts[1]
+                logger.info(f"Port {port}/{protocol} on {ip}: detected version '{version}'")
+            
             # Map nmap state to our PortState enum
             if state == "open":
                 port_record.state = PortState.OPEN
@@ -1649,7 +1672,10 @@ async def verify_port(
                 port_record.state = PortState.FILTERED
             elif state == "closed":
                 port_record.state = PortState.CLOSED
+            
+            port_record.last_seen = datetime.utcnow()
             db.commit()
+            logger.info(f"Updated port {port}/{protocol} on {ip}: state={state}, service={service}")
         
         return PortVerifyResponse(
             ip=ip,

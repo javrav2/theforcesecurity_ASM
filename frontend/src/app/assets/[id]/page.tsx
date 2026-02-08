@@ -56,6 +56,8 @@ import {
   Code,
   Link2,
   FolderSearch,
+  ScanLine,
+  CheckCircle2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -82,6 +84,11 @@ interface PortService {
   is_risky: boolean;
   port_string: string;
   scanned_ip?: string;  // IP address where port was found
+  // Nmap verification fields
+  verified?: boolean;
+  verified_at?: string;
+  verified_state?: string;  // open, filtered, closed from nmap
+  verification_scanner?: string;
 }
 
 interface DiscoveryStep {
@@ -262,7 +269,81 @@ export default function AssetDetailPage() {
     source_breakdown: Record<string, Record<string, number>>;
   } | null>(null);
   const [appStructureLoading, setAppStructureLoading] = useState(false);
+  const [verifyingPorts, setVerifyingPorts] = useState<Set<number>>(new Set());
   const { toast } = useToast();
+
+  // Handle port verification with nmap
+  const handleVerifyPort = async (portId: number) => {
+    setVerifyingPorts((prev: Set<number>) => new Set(Array.from(prev).concat(portId)));
+    
+    try {
+      const response = await api.request(`/ports/${portId}/verify`, {
+        method: 'POST',
+      });
+      
+      toast({
+        title: 'Port Verified',
+        description: `Port ${response.port} is ${response.state?.toUpperCase() || 'UNKNOWN'}${response.service ? ` (${response.service})` : ''}`,
+        variant: response.state === 'open' ? 'default' : 'destructive',
+      });
+      
+      // Refresh asset data to show updated verification status
+      fetchAsset();
+    } catch (error: any) {
+      toast({
+        title: 'Verification Failed',
+        description: error?.response?.data?.detail || 'Failed to verify port with nmap',
+        variant: 'destructive',
+      });
+    } finally {
+      setVerifyingPorts((prev: Set<number>) => {
+        const newSet = new Set(prev);
+        newSet.delete(portId);
+        return newSet;
+      });
+    }
+  };
+
+  // Handle verifying all ports on this asset
+  const handleVerifyAllPorts = async () => {
+    if (!asset?.port_services?.length) return;
+    
+    const unverifiedPorts = asset.port_services.filter(p => !p.verified && p.state?.toLowerCase() === 'open');
+    
+    if (unverifiedPorts.length === 0) {
+      toast({
+        title: 'All Ports Verified',
+        description: 'All open ports on this asset have already been verified.',
+      });
+      return;
+    }
+    
+    if (unverifiedPorts.length > 20) {
+      // For many ports, use bulk verify
+      try {
+        const response = await api.request('/ports/verify-bulk', {
+          method: 'POST',
+          body: JSON.stringify(unverifiedPorts.map(p => p.id)),
+        });
+        
+        toast({
+          title: 'Bulk Verification Queued',
+          description: `Background scan created to verify ${unverifiedPorts.length} ports. Check Scans page for progress.`,
+        });
+      } catch (error: any) {
+        toast({
+          title: 'Bulk Verification Failed',
+          description: error?.response?.data?.detail || 'Failed to queue bulk verification',
+          variant: 'destructive',
+        });
+      }
+    } else {
+      // Verify ports one by one for smaller counts
+      for (const port of unverifiedPorts) {
+        await handleVerifyPort(port.id);
+      }
+    }
+  };
 
   const handleVirusTotalLookup = async () => {
     if (!asset) return;
@@ -1790,10 +1871,26 @@ export default function AssetDetailPage() {
         {activeTab === 'ports' && (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Network className="h-5 w-5" />
-                Open Ports ({asset.port_services?.length || 0})
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Network className="h-5 w-5" />
+                  Open Ports ({asset.port_services?.length || 0})
+                </CardTitle>
+                {asset.port_services && asset.port_services.length > 0 && (
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={handleVerifyAllPorts}
+                    disabled={asset.port_services.every(p => p.verified)}
+                  >
+                    <ScanLine className="h-4 w-4 mr-2" />
+                    Verify All with Nmap
+                  </Button>
+                )}
+              </div>
+              <CardDescription>
+                {asset.port_services?.filter(p => p.verified).length || 0} of {asset.port_services?.length || 0} ports verified with nmap
+              </CardDescription>
             </CardHeader>
             <CardContent>
               {asset.port_services && asset.port_services.length > 0 ? (
@@ -1805,9 +1902,10 @@ export default function AssetDetailPage() {
                     <TableHead>Service</TableHead>
                     <TableHead>Found at IP</TableHead>
                     <TableHead>Product</TableHead>
-                    <TableHead>Version</TableHead>
                     <TableHead>State</TableHead>
+                    <TableHead>Verified</TableHead>
                     <TableHead>Risk</TableHead>
+                    <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1818,23 +1916,68 @@ export default function AssetDetailPage() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           {port.service || '—'}
-                            {port.is_ssl && <Lock className="h-3 w-3 text-green-400" />}
+                          {port.is_ssl && <Lock className="h-3 w-3 text-green-400" title="SSL/TLS" />}
                         </div>
                       </TableCell>
                       <TableCell className="font-mono text-sm text-blue-400">
                         {port.scanned_ip || asset.ip_address || '—'}
                       </TableCell>
-                      <TableCell>{port.product || '—'}</TableCell>
-                      <TableCell className="font-mono text-sm">{port.version || '—'}</TableCell>
                       <TableCell>
-                          <Badge className={port.state === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}>
+                        <div className="flex flex-col">
+                          <span>{port.product || '—'}</span>
+                          {port.version && <span className="text-xs text-muted-foreground font-mono">{port.version}</span>}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={port.state === 'open' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}>
                           {port.state}
                         </Badge>
                       </TableCell>
                       <TableCell>
+                        {port.verified ? (
+                          <div className="flex items-center gap-1">
+                            <CheckCircle2 className="h-4 w-4 text-green-500" />
+                            <div className="flex flex-col">
+                              <Badge className={
+                                port.verified_state === 'open' ? 'bg-green-500/20 text-green-400' :
+                                port.verified_state === 'filtered' ? 'bg-yellow-500/20 text-yellow-400' :
+                                port.verified_state === 'closed' ? 'bg-red-500/20 text-red-400' :
+                                'bg-gray-500/20 text-gray-400'
+                              }>
+                                {port.verified_state || 'verified'}
+                              </Badge>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">Not verified</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
                         {port.is_risky ? (
-                            <Badge className="bg-red-500/20 text-red-400"><AlertTriangle className="h-3 w-3 mr-1" />Risky</Badge>
-                          ) : '—'}
+                          <Badge className="bg-red-500/20 text-red-400">
+                            <AlertTriangle className="h-3 w-3 mr-1" />
+                            Risky
+                          </Badge>
+                        ) : '—'}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => handleVerifyPort(port.id)}
+                          disabled={verifyingPorts.has(port.id)}
+                          title={port.verified ? 'Re-verify with nmap' : 'Verify with nmap'}
+                        >
+                          {verifyingPorts.has(port.id) ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <>
+                              <ScanLine className="h-3 w-3 mr-1" />
+                              {port.verified ? 'Re-verify' : 'Verify'}
+                            </>
+                          )}
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1844,6 +1987,7 @@ export default function AssetDetailPage() {
                 <div className="text-center py-12">
                   <Network className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                   <p className="text-muted-foreground">No open ports detected for this asset</p>
+                  <p className="text-xs text-muted-foreground mt-2">Run a port scan to discover open ports</p>
                 </div>
               )}
             </CardContent>

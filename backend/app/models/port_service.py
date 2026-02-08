@@ -148,6 +148,9 @@ RISKY_PORTS = {
     3389: "RDP - remote desktop",
     5432: "PostgreSQL - database access",
     5900: "VNC - remote desktop",
+    5901: "VNC - remote desktop (display :1)",
+    5902: "VNC - remote desktop (display :2)",
+    5903: "VNC - remote desktop (display :3)",
     5984: "CouchDB - NoSQL database",
     6379: "Redis - in-memory database",
     8080: "HTTP-Alt - web proxy",
@@ -214,6 +217,9 @@ SERVICE_NAMES = {
     5432: "postgresql",
     5672: "amqp",
     5900: "vnc",
+    5901: "vnc",  # VNC display :1
+    5902: "vnc",  # VNC display :2
+    5903: "vnc",  # VNC display :3
     5984: "couchdb",
     6379: "redis",
     6443: "kubernetes",

@@ -788,7 +788,12 @@ export default function PortsPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {port.is_risky ? (
+                      {port.state?.toLowerCase() === 'filtered' || port.verified_state?.toLowerCase() === 'filtered' ? (
+                        <Badge className="bg-yellow-500/20 text-yellow-400" title="Port is filtered - may be behind firewall">
+                          <AlertTriangle className="h-3 w-3 mr-1" />
+                          Filtered
+                        </Badge>
+                      ) : port.is_risky ? (
                         <Badge className="bg-red-500/20 text-red-400" title={port.risk_reason}>
                           <AlertTriangle className="h-3 w-3 mr-1" />
                           Risky

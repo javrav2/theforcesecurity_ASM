@@ -542,10 +542,13 @@ export default function GraphPage() {
                       <CardContent>
                         {portGrouping?.ports && portGrouping.ports.length > 0 ? (
                           <div className="space-y-2 max-h-96 overflow-y-auto">
-                            {portGrouping.ports.map((port: any, idx: number) => (
+                            {portGrouping.ports.map((port: any, idx: number) => {
+                              const isFiltered = port.state?.toLowerCase() === 'filtered' || port.verified_state?.toLowerCase() === 'filtered';
+                              return (
                               <div
                                 key={idx}
                                 className={`p-3 rounded-lg hover:bg-muted transition-colors cursor-pointer ${
+                                  isFiltered ? 'bg-yellow-500/10 border border-yellow-500/30' :
                                   port.is_risky ? 'bg-red-500/10 border border-red-500/30' : 'bg-muted/50'
                                 }`}
                               >
@@ -558,7 +561,10 @@ export default function GraphPage() {
                                     )}
                                   </div>
                                   <div className="flex items-center gap-2">
-                                    {port.is_risky && (
+                                    {isFiltered && (
+                                      <AlertTriangle className="h-4 w-4 text-yellow-500" title="Filtered port" />
+                                    )}
+                                    {port.is_risky && !isFiltered && (
                                       <AlertTriangle className="h-4 w-4 text-red-500" />
                                     )}
                                     <Badge variant="secondary">{port.asset_count} assets</Badge>
@@ -577,7 +583,8 @@ export default function GraphPage() {
                                   )}
                                 </div>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         ) : (
                           <div className="text-center py-8 text-muted-foreground">

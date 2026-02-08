@@ -388,11 +388,21 @@ export default function ScansPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="vulnerability">Vulnerability Scan (Nuclei)</SelectItem>
+                      <SelectItem value="nuclei_critical">Nuclei - Critical Only</SelectItem>
+                      <SelectItem value="nuclei_critical_high">Nuclei - Critical & High</SelectItem>
+                      <SelectItem value="web_scan">Web Application Scan</SelectItem>
                       <SelectItem value="discovery">Asset Discovery</SelectItem>
                       <SelectItem value="subdomain_enum">Subdomain Enumeration</SelectItem>
                       <SelectItem value="port_scan">Port Scan</SelectItem>
-                      <SelectItem value="web_scan">Web Scan</SelectItem>
+                      <SelectItem value="critical_ports">Critical Port Monitoring</SelectItem>
                       <SelectItem value="technology">Technology Detection</SelectItem>
+                      <SelectItem value="http_probe">HTTP Probe</SelectItem>
+                      <SelectItem value="screenshot">Screenshot Capture</SelectItem>
+                      <SelectItem value="katana">Deep Web Crawl (Katana)</SelectItem>
+                      <SelectItem value="paramspider">Parameter Discovery</SelectItem>
+                      <SelectItem value="waybackurls">Historical URLs (Wayback)</SelectItem>
+                      <SelectItem value="login_portal">Login Portal Detection</SelectItem>
+                      <SelectItem value="dns_resolution">DNS Resolution</SelectItem>
                       <SelectItem value="full">Full Scan (All)</SelectItem>
                     </SelectContent>
                   </Select>

@@ -107,7 +107,7 @@ interface Asset {
   is_live?: boolean;
   open_ports_count?: number;
   risky_ports_count?: number;
-  port_services?: Array<{ port: number; protocol: string; service?: string; is_risky?: boolean }>;
+  port_services?: Array<{ port: number; protocol: string; service?: string; is_risky?: boolean; state?: string; verified_state?: string }>;
   endpoints?: string[];
   parameters?: string[];
   js_files?: string[];
@@ -1053,20 +1053,25 @@ export default function AssetsPage() {
                           <TableCell>
                             {asset.port_services && asset.port_services.length > 0 ? (
                               <div className="flex items-center gap-1 flex-wrap max-w-[200px]">
-                                {asset.port_services.slice(0, 5).map((port, i) => (
-                                  <Badge
-                                    key={i}
-                                    variant="outline"
-                                    className={`text-[10px] px-1.5 py-0 h-5 font-mono ${
-                                      port.is_risky 
-                                        ? 'bg-red-500/10 text-red-400 border-red-500/30' 
-                                        : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                                    }`}
-                                  >
-                                    {port.port}
-                                    {port.service && <span className="text-muted-foreground">/{port.service}</span>}
-                                  </Badge>
-                                ))}
+                                {asset.port_services.slice(0, 5).map((port, i) => {
+                                  // Determine color based on state: filtered=yellow, risky=red, open=blue
+                                  const isFiltered = port.state?.toLowerCase() === 'filtered' || port.verified_state?.toLowerCase() === 'filtered';
+                                  const colorClass = isFiltered
+                                    ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
+                                    : port.is_risky 
+                                      ? 'bg-red-500/10 text-red-400 border-red-500/30' 
+                                      : 'bg-blue-500/10 text-blue-400 border-blue-500/30';
+                                  return (
+                                    <Badge
+                                      key={i}
+                                      variant="outline"
+                                      className={`text-[10px] px-1.5 py-0 h-5 font-mono ${colorClass}`}
+                                    >
+                                      {port.port}
+                                      {port.service && <span className="text-muted-foreground">/{port.service}</span>}
+                                    </Badge>
+                                  );
+                                })}
                                 {asset.port_services.length > 5 && (
                                   <Badge variant="outline" className="text-[10px] px-1 py-0 h-5">
                                     +{asset.port_services.length - 5}

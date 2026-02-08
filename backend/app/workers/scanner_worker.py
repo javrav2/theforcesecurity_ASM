@@ -2244,7 +2244,7 @@ class ScannerWorker:
                             name=portal.get("url", "")[:255],
                             value=portal.get("url"),
                             asset_type=AssetType.URL,
-                            hostname=target,
+                            root_domain=target,  # Store the domain this portal was found from
                             is_live=portal.get("verified", False),
                             has_login_portal=True,
                             discovery_source="login_portal_scan",
@@ -2253,7 +2253,8 @@ class ScannerWorker:
                                 "status_code": portal.get("status_code"),
                                 "title": portal.get("title"),
                                 "detected_at": portal.get("detected_at"),
-                                "is_login_portal": True
+                                "is_login_portal": True,
+                                "source_domain": target  # Also store in metadata for reference
                             }
                         )
                         db.add(asset)
@@ -2993,18 +2994,29 @@ class ScannerWorker:
             
             from app.services.technology_scan_service import run_technology_scan_for_hosts
             
-            # If no specific targets, get domains/subdomains from the organization
+            # If no specific targets, get domains/subdomains/IPs from the organization
+            # Include IP addresses that have live_url (detected via HTTP probe)
             if not targets:
                 query = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
-                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN])
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS])
                 )
                 
                 if only_live:
                     query = query.filter(Asset.is_live == True)
+                else:
+                    # For IP addresses, only include if they have a live_url (HTTP responds)
+                    # This prevents scanning IPs that don't have web services
+                    from sqlalchemy import or_
+                    query = query.filter(
+                        or_(
+                            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                            Asset.live_url.isnot(None)  # IP assets must have live_url
+                        )
+                    )
                 
-                domain_assets = query.limit(max_hosts).all()
-                targets = [a.value for a in domain_assets]
+                assets = query.limit(max_hosts).all()
+                targets = [a.value for a in assets]
             
             if not targets:
                 logger.warning(f"No targets found for technology scan {scan_id}")
@@ -3012,7 +3024,7 @@ class ScannerWorker:
                     scan.status = ScanStatus.COMPLETED
                     scan.completed_at = datetime.utcnow()
                     scan.results = {
-                        'message': 'No domains/subdomains to scan',
+                        'message': 'No domains/subdomains/IPs to scan',
                         'targets': 0
                     }
                     db.commit()

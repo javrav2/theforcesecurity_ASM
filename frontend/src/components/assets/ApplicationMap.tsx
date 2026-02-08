@@ -31,6 +31,7 @@ interface PortService {
   is_ssl: boolean;
   is_risky: boolean;
   port_string: string;
+  verified_state?: string;
 }
 
 interface Technology {
@@ -248,9 +249,12 @@ export function ApplicationMap({
                           key={service.id || `${service.port}-${service.protocol}`}
                           className={cn(
                             "flex items-center gap-3 p-2 rounded-md transition-colors",
-                            service.is_risky 
-                              ? "bg-red-500/10 border border-red-500/30" 
-                              : "bg-background/50 hover:bg-background"
+                            // Filtered ports show yellow, risky show red, otherwise neutral
+                            (service.state?.toLowerCase() === 'filtered' || service.verified_state?.toLowerCase() === 'filtered')
+                              ? "bg-yellow-500/10 border border-yellow-500/30"
+                              : service.is_risky 
+                                ? "bg-red-500/10 border border-red-500/30" 
+                                : "bg-background/50 hover:bg-background"
                           )}
                         >
                           <Icon className={cn("h-5 w-5", color)} />
@@ -265,7 +269,10 @@ export function ApplicationMap({
                               {service.is_ssl && (
                                 <Lock className="h-3 w-3 text-green-400" />
                               )}
-                              {service.is_risky && (
+                              {(service.state?.toLowerCase() === 'filtered' || service.verified_state?.toLowerCase() === 'filtered') && (
+                                <AlertTriangle className="h-3 w-3 text-yellow-400" title="Filtered port" />
+                              )}
+                              {service.is_risky && !(service.state?.toLowerCase() === 'filtered' || service.verified_state?.toLowerCase() === 'filtered') && (
                                 <AlertTriangle className="h-3 w-3 text-red-400" />
                               )}
                             </div>

@@ -385,6 +385,29 @@ CONTINUOUS_SCAN_TYPES = {
             "dns_bruteforce": False,
         }
     },
+    "full": {
+        "name": "Full Scan (All)",
+        "description": "Complete comprehensive scan: asset discovery, subdomain enumeration, port scanning, technology detection, and vulnerability scanning. Use for thorough assessment of new targets.",
+        "default_config": {
+            "passive": True,
+            "active": True,
+            "include_vuln_scan": True,
+            "include_port_scan": True,
+            "include_tech_detection": True,
+        },
+        "recommended_frequency": "weekly",
+    },
+    "web_scan": {
+        "name": "Web Application Scan",
+        "description": "Comprehensive web application vulnerability scanning using Nuclei. Focuses on web-specific vulnerabilities like XSS, SQLi, SSRF, and misconfigurations.",
+        "default_config": {
+            "severity": ["critical", "high", "medium"],
+            "rate_limit": 150,
+            "timeout": 10,
+            "tags": ["web", "xss", "sqli", "ssrf", "lfi", "rfi", "rce"],
+        },
+        "recommended_frequency": "weekly",
+    },
     "paramspider": {
         "name": "Parameter Discovery (ParamSpider)",
         "description": "Discover URL parameters from web archives for vulnerability testing. Finds XSS, SQLi, and other injection points.",

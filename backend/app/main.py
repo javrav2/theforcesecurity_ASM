@@ -174,11 +174,83 @@ def api_info():
     }
 
 
+def apply_database_migrations():
+    """
+    Apply database migrations at startup.
+    
+    This ensures required columns exist, fixing issues like missing
+    verification columns that cause "column does not exist" errors.
+    """
+    from sqlalchemy import text
+    
+    db = SessionLocal()
+    try:
+        # Check if port_services table exists
+        result = db.execute(text("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_name = 'port_services'
+            )
+        """)).scalar()
+        
+        if result:
+            # Add port verification columns if missing
+            columns_to_add = [
+                ("verified", "BOOLEAN DEFAULT FALSE"),
+                ("verified_at", "TIMESTAMP"),
+                ("verified_state", "VARCHAR(50)"),
+                ("verification_scanner", "VARCHAR(50)"),
+            ]
+            
+            for col_name, col_def in columns_to_add:
+                exists = db.execute(text(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'port_services' AND column_name = '{col_name}'
+                    )
+                """)).scalar()
+                
+                if not exists:
+                    db.execute(text(f"ALTER TABLE port_services ADD COLUMN {col_name} {col_def}"))
+                    logger.info(f"✓ Added missing column: port_services.{col_name}")
+            
+            db.commit()
+            
+            # Create indexes if missing
+            indexes = [
+                ("idx_port_services_verified", "port_services", "verified"),
+                ("idx_port_services_verified_state", "port_services", "verified_state"),
+            ]
+            
+            for idx_name, table, column in indexes:
+                idx_exists = db.execute(text(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_indexes 
+                        WHERE indexname = '{idx_name}'
+                    )
+                """)).scalar()
+                
+                if not idx_exists:
+                    db.execute(text(f"CREATE INDEX {idx_name} ON {table} ({column})"))
+                    logger.info(f"✓ Created missing index: {idx_name}")
+            
+            db.commit()
+            logger.info("✓ Database migrations verified")
+    except Exception as e:
+        logger.error(f"Database migration check failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 async def startup_event():
     """Run on application startup."""
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info("API documentation available at /api/docs")
+    
+    # Apply database migrations first
+    apply_database_migrations()
     
     # Check ProjectDiscovery tools installation
     from app.services.nuclei_service import NucleiService

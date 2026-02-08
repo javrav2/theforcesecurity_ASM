@@ -427,6 +427,8 @@ def create_adhoc_scan(
         "ics_full_discovery": ScanType.PORT_SCAN,
         "discovery": ScanType.DISCOVERY,
         "full_discovery": ScanType.DISCOVERY,
+        "full": ScanType.FULL,  # Full scan (discovery + all scans)
+        "web_scan": ScanType.VULNERABILITY,  # Web scan uses Nuclei vulnerability scanner
         "screenshot": ScanType.SCREENSHOT,
         "technology": ScanType.TECHNOLOGY,
         "http_probe": ScanType.HTTP_PROBE,
