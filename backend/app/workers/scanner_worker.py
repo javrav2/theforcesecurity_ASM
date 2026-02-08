@@ -38,6 +38,22 @@ from app.services.geolocation_service import get_geolocation_service
 import ipaddress
 import re
 
+
+def trigger_graph_sync(organization_id: int) -> None:
+    """
+    Trigger a background graph sync after scan completion.
+    This is non-blocking and failures are logged but not raised.
+    """
+    try:
+        from app.services.graph_service import sync_organization_background
+        result = sync_organization_background(organization_id)
+        if result.get("error"):
+            logger.debug(f"Graph sync skipped: {result['error']}")
+        elif result.get("synced", 0) > 0:
+            logger.info(f"Graph sync completed: {result['synced']} assets synced to Neo4j")
+    except Exception as e:
+        logger.debug(f"Graph sync not available: {e}")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -1182,6 +1198,11 @@ class ScannerWorker:
                     f"Port scan {scan_id} complete: {len(result.ports_found)} ports, "
                     f"{findings_summary.get('findings_created', 0)} findings"
                 )
+                
+                # Trigger graph sync after port scan (updates port relationships)
+                if organization_id and len(result.ports_found) > 0:
+                    trigger_graph_sync(organization_id)
+                
             except Exception as commit_error:
                 logger.error(f"Scan {scan_id}: Failed to commit results: {commit_error}", exc_info=True)
                 db.rollback()
@@ -1741,6 +1762,10 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"Discovery complete: {total_assets} assets from {len(valid_domains)} domains")
+            
+            # Trigger graph sync after discovery completes
+            if organization_id and total_assets > 0:
+                trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Discovery failed: {e}", exc_info=True)
@@ -3071,6 +3096,10 @@ class ScannerWorker:
                 f"Technology scan complete: {result.get('technologies_found', 0)} technologies "
                 f"on {result.get('hosts_scanned', 0)}/{result.get('total_hosts', 0)} hosts"
             )
+            
+            # Trigger graph sync after technology scan (updates technology relationships)
+            if organization_id and result.get('technologies_found', 0) > 0:
+                trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Technology scan failed: {e}", exc_info=True)

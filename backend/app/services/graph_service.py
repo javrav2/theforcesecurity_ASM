@@ -640,5 +640,56 @@ def get_graph_service() -> GraphService:
     if _graph_service is None:
         _graph_service = GraphService()
         _graph_service.connect()
-        _graph_service.initialize_schema()
+        if _graph_service._connected:
+            _graph_service.initialize_schema()
     return _graph_service
+
+
+def sync_asset_to_graph(asset_id: int, organization_id: int) -> bool:
+    """
+    Sync a single asset to the graph database.
+    
+    This is designed to be called after asset creation/updates
+    to keep the graph in sync.
+    
+    Returns True if sync succeeded, False otherwise.
+    """
+    try:
+        graph = get_graph_service()
+        if not graph._connected:
+            return False
+        
+        db = SessionLocal()
+        try:
+            asset = db.query(Asset).filter(Asset.id == asset_id).first()
+            if not asset:
+                return False
+            
+            with graph.session() as session:
+                graph._sync_asset(session, asset, organization_id)
+            
+            logger.info(f"Synced asset {asset_id} to graph")
+            return True
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to sync asset {asset_id} to graph: {e}")
+        return False
+
+
+def sync_organization_background(organization_id: int) -> dict:
+    """
+    Sync all assets for an organization to the graph.
+    
+    This is designed to be called from background tasks.
+    Returns sync statistics.
+    """
+    try:
+        graph = get_graph_service()
+        if not graph._connected:
+            return {"synced": 0, "error": "Neo4j not connected"}
+        
+        return graph.sync_organization(organization_id)
+    except Exception as e:
+        logger.error(f"Background graph sync error: {e}")
+        return {"synced": 0, "error": str(e)}

@@ -665,3 +665,367 @@ async def get_graph_statistics(
     except Exception as e:
         logger.error(f"Statistics query error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# POSTGRESQL FALLBACK ENDPOINTS (work without Neo4j)
+# =============================================================================
+
+@router.get("/fallback/group-by-technology")
+async def get_assets_by_technology_fallback(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Group assets by technology using PostgreSQL (works without Neo4j).
+    
+    Returns technologies with their associated assets for attack surface analysis.
+    """
+    from app.db.database import SessionLocal
+    from app.models.asset import Asset
+    from app.models.technology import Technology, asset_technologies
+    from sqlalchemy import func
+    from sqlalchemy.orm import Session
+    
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
+    
+    db = SessionLocal()
+    try:
+        # Query technologies with asset counts
+        tech_query = db.query(
+            Technology.name,
+            Technology.slug,
+            Technology.categories,
+            Technology.cpe,
+            func.count(Asset.id).label('asset_count')
+        ).join(
+            asset_technologies,
+            Technology.id == asset_technologies.c.technology_id
+        ).join(
+            Asset,
+            Asset.id == asset_technologies.c.asset_id
+        )
+        
+        if org_id:
+            tech_query = tech_query.filter(Asset.organization_id == org_id)
+        
+        tech_results = tech_query.group_by(
+            Technology.name,
+            Technology.slug,
+            Technology.categories,
+            Technology.cpe
+        ).order_by(func.count(Asset.id).desc()).limit(50).all()
+        
+        technologies = []
+        for tech in tech_results:
+            # Get assets for this technology
+            assets_query = db.query(
+                Asset.id,
+                Asset.value,
+                Asset.is_live,
+                Asset.has_login_portal
+            ).join(
+                asset_technologies,
+                Asset.id == asset_technologies.c.asset_id
+            ).join(
+                Technology,
+                Technology.id == asset_technologies.c.technology_id
+            ).filter(Technology.name == tech.name)
+            
+            if org_id:
+                assets_query = assets_query.filter(Asset.organization_id == org_id)
+            
+            assets = [
+                {
+                    "id": a.id,
+                    "value": a.value,
+                    "is_live": a.is_live,
+                    "has_login_portal": a.has_login_portal
+                }
+                for a in assets_query.limit(20).all()
+            ]
+            
+            technologies.append({
+                "technology": tech.name,
+                "slug": tech.slug,
+                "categories": tech.categories,
+                "cpe": tech.cpe,
+                "asset_count": tech.asset_count,
+                "assets": assets
+            })
+        
+        # Get category summary
+        category_counts = {}
+        for tech in technologies:
+            if tech["categories"]:
+                for cat in tech["categories"]:
+                    category_counts[cat] = category_counts.get(cat, 0) + tech["asset_count"]
+        
+        return {
+            "technologies": technologies,
+            "categories": [{"category": k, "count": v} for k, v in sorted(category_counts.items(), key=lambda x: -x[1])],
+            "total_technologies": len(technologies),
+            "source": "postgresql"  # Indicates this is fallback data
+        }
+    finally:
+        db.close()
+
+
+@router.get("/fallback/group-by-port")
+async def get_assets_by_port_fallback(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    risky_only: bool = Query(False, description="Only show risky ports"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Group assets by open ports using PostgreSQL (works without Neo4j).
+    
+    Returns ports with their associated assets for attack surface analysis.
+    """
+    from app.db.database import SessionLocal
+    from app.models.asset import Asset
+    from app.models.port_service import PortService
+    from sqlalchemy import func
+    
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
+    
+    db = SessionLocal()
+    try:
+        # Query ports with asset counts
+        port_query = db.query(
+            PortService.port,
+            PortService.protocol,
+            PortService.service_name,
+            PortService.is_risky,
+            func.count(Asset.id).label('asset_count')
+        ).join(
+            Asset,
+            Asset.id == PortService.asset_id
+        )
+        
+        if org_id:
+            port_query = port_query.filter(Asset.organization_id == org_id)
+        
+        if risky_only:
+            port_query = port_query.filter(PortService.is_risky == True)
+        
+        port_results = port_query.group_by(
+            PortService.port,
+            PortService.protocol,
+            PortService.service_name,
+            PortService.is_risky
+        ).order_by(func.count(Asset.id).desc()).limit(50).all()
+        
+        ports = []
+        for port in port_results:
+            # Get assets for this port
+            assets_query = db.query(
+                Asset.id,
+                Asset.value,
+                Asset.is_live,
+                PortService.scanned_ip
+            ).join(
+                PortService,
+                Asset.id == PortService.asset_id
+            ).filter(
+                PortService.port == port.port,
+                PortService.protocol == port.protocol
+            )
+            
+            if org_id:
+                assets_query = assets_query.filter(Asset.organization_id == org_id)
+            
+            assets = [
+                {
+                    "id": a.id,
+                    "value": a.value,
+                    "is_live": a.is_live,
+                    "scanned_ip": a.scanned_ip
+                }
+                for a in assets_query.limit(20).all()
+            ]
+            
+            ports.append({
+                "port_number": port.port,
+                "protocol": port.protocol.value if hasattr(port.protocol, 'value') else str(port.protocol),
+                "service_name": port.service_name,
+                "asset_count": port.asset_count,
+                "is_risky": port.is_risky,
+                "assets": assets
+            })
+        
+        # Get risky summary
+        risky_summary = db.query(
+            func.count(func.distinct(PortService.id)).label('risky_port_count'),
+            func.count(func.distinct(Asset.id)).label('affected_asset_count')
+        ).join(
+            Asset,
+            Asset.id == PortService.asset_id
+        ).filter(PortService.is_risky == True)
+        
+        if org_id:
+            risky_summary = risky_summary.filter(Asset.organization_id == org_id)
+        
+        risky_result = risky_summary.first()
+        
+        return {
+            "ports": ports,
+            "risky_summary": {
+                "risky_port_count": risky_result.risky_port_count if risky_result else 0,
+                "affected_asset_count": risky_result.affected_asset_count if risky_result else 0
+            },
+            "total_unique_ports": len(ports),
+            "source": "postgresql"
+        }
+    finally:
+        db.close()
+
+
+@router.get("/fallback/attack-surface-overview")
+async def get_attack_surface_overview_fallback(
+    organization_id: Optional[int] = Query(None, description="Filter by organization"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get attack surface overview using PostgreSQL (works without Neo4j).
+    """
+    from app.db.database import SessionLocal
+    from app.models.asset import Asset, AssetType
+    from app.models.port_service import PortService
+    from app.models.technology import Technology, asset_technologies
+    from app.models.vulnerability import Vulnerability
+    from sqlalchemy import func, and_
+    
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
+    
+    db = SessionLocal()
+    try:
+        # Entry points - live assets with open ports
+        entry_points_query = db.query(
+            Asset.value,
+            Asset.asset_type,
+            Asset.has_login_portal,
+            func.count(PortService.id).label('port_count'),
+        ).outerjoin(
+            PortService,
+            Asset.id == PortService.asset_id
+        ).filter(
+            Asset.is_live == True
+        )
+        
+        if org_id:
+            entry_points_query = entry_points_query.filter(Asset.organization_id == org_id)
+        
+        entry_points = entry_points_query.group_by(
+            Asset.value,
+            Asset.asset_type,
+            Asset.has_login_portal
+        ).order_by(func.count(PortService.id).desc()).limit(20).all()
+        
+        entry_points_data = [
+            {
+                "asset": e.value,
+                "type": e.asset_type.value if e.asset_type else None,
+                "has_login": e.has_login_portal,
+                "port_count": e.port_count
+            }
+            for e in entry_points
+        ]
+        
+        # High-value targets - login portals
+        high_value = db.query(
+            Asset.value,
+            Asset.asset_type,
+            Asset.has_login_portal
+        ).filter(
+            Asset.has_login_portal == True
+        )
+        
+        if org_id:
+            high_value = high_value.filter(Asset.organization_id == org_id)
+        
+        high_value_data = [
+            {
+                "asset": h.value,
+                "type": h.asset_type.value if h.asset_type else None,
+                "has_login": h.has_login_portal
+            }
+            for h in high_value.limit(20).all()
+        ]
+        
+        # Technology vectors
+        tech_query = db.query(
+            Technology.name,
+            Technology.categories,
+            func.count(Asset.id).label('usage_count')
+        ).join(
+            asset_technologies,
+            Technology.id == asset_technologies.c.technology_id
+        ).join(
+            Asset,
+            Asset.id == asset_technologies.c.asset_id
+        )
+        
+        if org_id:
+            tech_query = tech_query.filter(Asset.organization_id == org_id)
+        
+        tech_vectors = [
+            {
+                "technology": t.name,
+                "categories": t.categories,
+                "usage_count": t.usage_count
+            }
+            for t in tech_query.group_by(
+                Technology.name,
+                Technology.categories
+            ).order_by(func.count(Asset.id).desc()).limit(15).all()
+        ]
+        
+        # Port vectors - risky ports
+        port_query = db.query(
+            PortService.port,
+            PortService.service_name,
+            func.count(Asset.id).label('exposure_count')
+        ).join(
+            Asset,
+            Asset.id == PortService.asset_id
+        ).filter(
+            PortService.is_risky == True
+        )
+        
+        if org_id:
+            port_query = port_query.filter(Asset.organization_id == org_id)
+        
+        port_vectors = [
+            {
+                "port": p.port,
+                "service": p.service_name,
+                "exposure_count": p.exposure_count
+            }
+            for p in port_query.group_by(
+                PortService.port,
+                PortService.service_name
+            ).order_by(func.count(Asset.id).desc()).limit(15).all()
+        ]
+        
+        # Total counts
+        total_assets = db.query(func.count(Asset.id)).filter(Asset.organization_id == org_id).scalar() if org_id else 0
+        live_assets = db.query(func.count(Asset.id)).filter(
+            Asset.organization_id == org_id,
+            Asset.is_live == True
+        ).scalar() if org_id else 0
+        
+        return {
+            "entry_points": entry_points_data,
+            "high_value_targets": high_value_data,
+            "technology_vectors": tech_vectors,
+            "port_vectors": port_vectors,
+            "summary": {
+                "total_assets": total_assets,
+                "live_assets": live_assets,
+                "login_portals": len(high_value_data)
+            },
+            "source": "postgresql"
+        }
+    finally:
+        db.close()

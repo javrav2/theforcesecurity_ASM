@@ -1236,20 +1236,50 @@ class ApiClient {
     return response.data;
   }
 
-  async getAssetsByTechnology(params?: { organization_id?: number; category?: string }) {
-    const response = await this.client.get('/graph/group-by-technology', { params });
+  async getAssetsByTechnology(params?: { organization_id?: number; category?: string }, useFallback?: boolean) {
+    try {
+      // Try Neo4j first if not explicitly requesting fallback
+      if (!useFallback) {
+        const response = await this.client.get('/graph/group-by-technology', { params });
+        return response.data;
+      }
+    } catch (error) {
+      // Fall through to PostgreSQL fallback
+    }
+    // Use PostgreSQL fallback
+    const response = await this.client.get('/graph/fallback/group-by-technology', { params });
     return response.data;
   }
 
-  async getAssetsByPort(params?: { organization_id?: number; risky_only?: boolean }) {
-    const response = await this.client.get('/graph/group-by-port', { params });
+  async getAssetsByPort(params?: { organization_id?: number; risky_only?: boolean }, useFallback?: boolean) {
+    try {
+      // Try Neo4j first if not explicitly requesting fallback
+      if (!useFallback) {
+        const response = await this.client.get('/graph/group-by-port', { params });
+        return response.data;
+      }
+    } catch (error) {
+      // Fall through to PostgreSQL fallback
+    }
+    // Use PostgreSQL fallback
+    const response = await this.client.get('/graph/fallback/group-by-port', { params });
     return response.data;
   }
 
-  async getAttackSurfaceOverview(organizationId?: number) {
+  async getAttackSurfaceOverview(organizationId?: number, useFallback?: boolean) {
     const params: any = {};
     if (organizationId) params.organization_id = organizationId;
-    const response = await this.client.get('/graph/attack-surface-overview', { params });
+    try {
+      // Try Neo4j first if not explicitly requesting fallback
+      if (!useFallback) {
+        const response = await this.client.get('/graph/attack-surface-overview', { params });
+        return response.data;
+      }
+    } catch (error) {
+      // Fall through to PostgreSQL fallback
+    }
+    // Use PostgreSQL fallback
+    const response = await this.client.get('/graph/fallback/attack-surface-overview', { params });
     return response.data;
   }
 

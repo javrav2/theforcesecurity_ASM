@@ -243,21 +243,28 @@ export default function GraphPage() {
     }
   };
 
-  // Fetch attack surface data
+  // Fetch attack surface data (with fallback to PostgreSQL if Neo4j unavailable)
   const fetchAttackSurface = async () => {
     setAttackSurfaceLoading(true);
     try {
       const orgId = selectedOrg !== 'all' ? parseInt(selectedOrg) : undefined;
+      // If Neo4j is not connected, use PostgreSQL fallback
+      const useFallback = !status?.connected;
       const [overview, techData, portData] = await Promise.all([
-        api.getAttackSurfaceOverview(orgId),
-        api.getAssetsByTechnology({ organization_id: orgId }),
-        api.getAssetsByPort({ organization_id: orgId }),
+        api.getAttackSurfaceOverview(orgId, useFallback),
+        api.getAssetsByTechnology({ organization_id: orgId }, useFallback),
+        api.getAssetsByPort({ organization_id: orgId }, useFallback),
       ]);
       setAttackSurface(overview);
       setTechGrouping(techData);
       setPortGrouping(portData);
     } catch (error) {
       console.error('Failed to fetch attack surface:', error);
+      toast({
+        title: 'Error loading attack surface',
+        description: 'Failed to fetch grouping data. Try syncing the graph first.',
+        variant: 'destructive',
+      });
     } finally {
       setAttackSurfaceLoading(false);
     }
@@ -291,12 +298,16 @@ export default function GraphPage() {
     fetchOrganizations();
   }, []);
 
-  // Fetch attack surface when tab changes
+  // Fetch attack surface when tab changes or status is determined
   useEffect(() => {
-    if (activeTab === 'attack-surface' && !attackSurface && !attackSurfaceLoading) {
-      fetchAttackSurface();
+    if (activeTab === 'attack-surface' && !attackSurfaceLoading) {
+      // Always fetch when we're on attack surface tab after status is known
+      // This handles both Neo4j connected and fallback scenarios
+      if (status !== null && (!attackSurface || attackSurface.source !== (status?.connected ? 'neo4j' : 'postgresql'))) {
+        fetchAttackSurface();
+      }
     }
-  }, [activeTab]);
+  }, [activeTab, status]);
 
   // Fetch assets when org changes
   useEffect(() => {
@@ -379,9 +390,10 @@ export default function GraphPage() {
               <div className="flex items-start gap-4">
                 <AlertTriangle className="h-6 w-6 text-yellow-500 flex-shrink-0" />
                 <div>
-                  <h3 className="font-semibold text-yellow-500">Neo4j Not Connected</h3>
+                  <h3 className="font-semibold text-yellow-500">Neo4j Not Connected (Using PostgreSQL)</h3>
                   <p className="text-sm text-muted-foreground mt-1">
-                    The graph database is not connected. To enable graph visualization:
+                    The graph database is not connected. Attack Surface grouping still works using PostgreSQL.
+                    For full graph visualization and attack path analysis, enable Neo4j:
                   </p>
                   <ol className="list-decimal list-inside text-sm text-muted-foreground mt-2 space-y-1">
                     <li>Set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD environment variables</li>
@@ -394,26 +406,29 @@ export default function GraphPage() {
           </Card>
         )}
 
-        {status?.connected && (
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList>
-              <TabsTrigger value="attack-surface" className="flex items-center gap-2">
-                <Layers className="h-4 w-4" />
-                Attack Surface
-              </TabsTrigger>
-              <TabsTrigger value="explorer" className="flex items-center gap-2">
-                <GitBranch className="h-4 w-4" />
-                Relationships
-              </TabsTrigger>
-              <TabsTrigger value="attack-paths" className="flex items-center gap-2">
-                <Route className="h-4 w-4" />
-                Attack Paths
-              </TabsTrigger>
-              <TabsTrigger value="impact" className="flex items-center gap-2">
-                <Shield className="h-4 w-4" />
-                Vulnerability Impact
-              </TabsTrigger>
-            </TabsList>
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList>
+            <TabsTrigger value="attack-surface" className="flex items-center gap-2">
+              <Layers className="h-4 w-4" />
+              Attack Surface
+            </TabsTrigger>
+            {status?.connected && (
+              <>
+                <TabsTrigger value="explorer" className="flex items-center gap-2">
+                  <GitBranch className="h-4 w-4" />
+                  Relationships
+                </TabsTrigger>
+                <TabsTrigger value="attack-paths" className="flex items-center gap-2">
+                  <Route className="h-4 w-4" />
+                  Attack Paths
+                </TabsTrigger>
+                <TabsTrigger value="impact" className="flex items-center gap-2">
+                  <Shield className="h-4 w-4" />
+                  Vulnerability Impact
+                </TabsTrigger>
+              </>
+            )}
+          </TabsList>
 
             {/* Attack Surface Tab */}
             <TabsContent value="attack-surface" className="space-y-6">
@@ -701,7 +716,8 @@ export default function GraphPage() {
               )}
             </TabsContent>
 
-            {/* Relationship Explorer Tab */}
+            {/* Relationship Explorer Tab (requires Neo4j) */}
+            {status?.connected && (
             <TabsContent value="explorer" className="space-y-4">
               <Card>
                 <CardHeader>
@@ -798,8 +814,10 @@ export default function GraphPage() {
                 </Card>
               </div>
             </TabsContent>
+            )}
 
-            {/* Attack Paths Tab */}
+            {/* Attack Paths Tab (requires Neo4j) */}
+            {status?.connected && (
             <TabsContent value="attack-paths" className="space-y-4">
               <Card>
                 <CardHeader>
@@ -909,8 +927,10 @@ export default function GraphPage() {
                 </CardContent>
               </Card>
             </TabsContent>
+            )}
 
-            {/* Vulnerability Impact Tab */}
+            {/* Vulnerability Impact Tab (requires Neo4j) */}
+            {status?.connected && (
             <TabsContent value="impact" className="space-y-4">
               <Card>
                 <CardHeader>
@@ -939,8 +959,8 @@ export default function GraphPage() {
                 </CardContent>
               </Card>
             </TabsContent>
+            )}
           </Tabs>
-        )}
       </div>
     </MainLayout>
   );
