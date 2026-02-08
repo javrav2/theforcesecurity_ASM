@@ -453,6 +453,15 @@ CONTINUOUS_SCAN_TYPES = {
         },
         "recommended_frequency": "weekly",
     },
+    "geo_enrich": {
+        "name": "Geolocation Enrichment",
+        "description": "Enrich all assets with country, region, and lat/lon coordinates. Uses netblock country data (no API) and IP geolocation APIs. Essential for geographic risk analysis and compliance mapping.",
+        "default_config": {
+            "max_assets": 10000,
+            "force": False,  # Don't re-enrich assets that already have geo data
+        },
+        "recommended_frequency": "weekly",
+    },
     
     # ==================== ICS/OT/SCADA SCAN TYPES ====================
     "ics_ot_ports": {

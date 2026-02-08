@@ -981,6 +981,118 @@ def get_assets_geo_stats(
     }
 
 
+@router.post("/enrich-from-netblocks")
+def enrich_assets_from_netblocks_endpoint(
+    organization_id: Optional[int] = None,
+    force: bool = Query(False, description="Re-enrich assets that already have country data"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst)
+):
+    """
+    Enrich assets with country/geo data from their associated netblocks.
+    
+    WhoisXML netblock discovery already contains country information.
+    This endpoint propagates that country data to all assets that:
+    1. Have a netblock_id (already linked to a netblock)
+    2. Have an IP address that falls within an owned netblock's CIDR
+    
+    This is fast because it uses existing data from netblocks - no external API calls.
+    """
+    from app.services.http_probe_service import enrich_assets_from_netblocks
+    
+    # Get organization ID
+    if current_user.is_superuser and organization_id:
+        org_id = organization_id
+    else:
+        org_id = current_user.organization_id
+        
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Organization ID required"
+        )
+    
+    result = enrich_assets_from_netblocks(db, org_id, force=force)
+    
+    return {
+        "success": True,
+        "organization_id": org_id,
+        **result,
+        "message": f"Enriched {result.get('enriched_from_netblock_link', 0) + result.get('enriched_from_cidr_match', 0)} assets from netblock country data"
+    }
+
+
+@router.get("/by-country")
+def get_assets_by_country(
+    country: str = Query(..., description="Country name or code to filter by (e.g., 'United States', 'US', 'CN')"),
+    organization_id: Optional[int] = None,
+    asset_type: Optional[AssetType] = None,
+    in_scope: bool = Query(True, description="Only return in-scope assets"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get assets filtered by country. Useful for understanding geographic exposure
+    and identifying assets in specific countries (e.g., for compliance, risk assessment).
+    
+    Examples:
+    - GET /api/assets/by-country?country=CN (assets in China)
+    - GET /api/assets/by-country?country=RU (assets in Russia)
+    - GET /api/assets/by-country?country=United%20States
+    """
+    # Filter by country (support both country name and country code)
+    query = db.query(Asset).filter(
+        (Asset.country.ilike(f"%{country}%")) |
+        (Asset.country_code.ilike(f"%{country}%"))
+    )
+    
+    # Organization filter
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Asset.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"items": [], "total": 0}
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+    
+    if in_scope:
+        query = query.filter(Asset.in_scope == True)
+    
+    if asset_type:
+        query = query.filter(Asset.asset_type == asset_type)
+    
+    total = query.count()
+    
+    assets = query.order_by(Asset.created_at.desc()).offset(skip).limit(limit).all()
+    
+    return {
+        "items": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "value": a.value,
+                "asset_type": a.asset_type.value if a.asset_type else None,
+                "ip_address": a.ip_address,
+                "country": a.country,
+                "country_code": a.country_code,
+                "city": a.city,
+                "region": a.region,
+                "latitude": a.latitude,
+                "longitude": a.longitude,
+                "is_live": a.is_live,
+                "in_scope": a.in_scope,
+            }
+            for a in assets
+        ],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "country_filter": country
+    }
+
+
 @router.get("/by-region")
 def get_assets_by_region(
     region: str = Query(..., description="Region to filter by (e.g., 'North America', 'Europe', 'Asia')"),

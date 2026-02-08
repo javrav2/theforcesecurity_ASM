@@ -259,6 +259,7 @@ class ScannerWorker:
                 ScanType.KATANA: 'KATANA',
                 ScanType.CLEANUP: 'CLEANUP',
                 ScanType.TECHNOLOGY: 'TECHNOLOGY_SCAN',
+                ScanType.GEO_ENRICH: 'GEO_ENRICH',
             }
             
             messages = []
@@ -590,6 +591,8 @@ class ScannerWorker:
                     await self.handle_cleanup(body)
                 elif job_type == 'TECHNOLOGY_SCAN':
                     await self.handle_technology_scan(body)
+                elif job_type == 'GEO_ENRICH':
+                    await self.handle_geo_enrichment(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -3071,6 +3074,112 @@ class ScannerWorker:
             
         except Exception as e:
             logger.error(f"Technology scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update scan {scan_id} status: {db_error}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    async def handle_geo_enrichment(self, job_data: dict):
+        """
+        Handle geo-location enrichment scan job.
+        
+        Enriches all assets with country/geo data using:
+        1. Netblock country data (fast, no API calls) - for assets in known CIDR ranges
+        2. IP geolocation API lookup for remaining assets
+        
+        Config options:
+        - max_assets: Maximum assets to enrich via API (default: 10000)
+        - force: Re-enrich assets that already have geo data (default: False)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        config = job_data.get('config', {})
+        
+        max_assets = config.get('max_assets', 10000)
+        force = config.get('force', False)
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            # Update scan status
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Enriching assets with geolocation data"
+                db.commit()
+            
+            from app.services.http_probe_service import run_full_geo_enrichment
+            
+            logger.info(f"Starting geo enrichment for organization {organization_id}")
+            
+            def progress_callback(pct, step):
+                """Update scan progress."""
+                try:
+                    progress_db = self.get_db_session()
+                    if progress_db:
+                        progress_scan = progress_db.query(Scan).filter(Scan.id == scan_id).first()
+                        if progress_scan:
+                            progress_scan.progress = pct
+                            progress_scan.current_step = step
+                            progress_db.commit()
+                        progress_db.close()
+                except Exception as e:
+                    logger.debug(f"Progress callback error: {e}")
+            
+            # Run geo enrichment
+            result = await run_full_geo_enrichment(
+                db,
+                organization_id=organization_id,
+                max_assets=max_assets,
+                force=force,
+                progress_callback=progress_callback,
+            )
+            
+            # Update scan record
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                total_enriched = result.get('from_netblocks', 0) + result.get('from_ip_lookup', 0)
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.progress = 100
+                scan.assets_discovered = total_enriched
+                scan.results = {
+                    'total_assets': result.get('total_assets', 0),
+                    'from_netblocks': result.get('from_netblocks', 0),
+                    'from_ip_lookup': result.get('from_ip_lookup', 0),
+                    'failed_lookup': result.get('failed_lookup', 0),
+                    'countries': result.get('countries', {}),
+                    'regions': result.get('regions', {}),
+                }
+                db.commit()
+            
+            logger.info(
+                f"Geo enrichment complete: {result.get('from_netblocks', 0)} from netblocks, "
+                f"{result.get('from_ip_lookup', 0)} from IP lookup"
+            )
+            
+        except Exception as e:
+            logger.error(f"Geo enrichment failed: {e}", exc_info=True)
             if db and scan_id:
                 try:
                     db.rollback()

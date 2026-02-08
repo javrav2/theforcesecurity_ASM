@@ -403,6 +403,7 @@ export default function ScansPage() {
                       <SelectItem value="waybackurls">Historical URLs (Wayback)</SelectItem>
                       <SelectItem value="login_portal">Login Portal Detection</SelectItem>
                       <SelectItem value="dns_resolution">DNS Resolution</SelectItem>
+                      <SelectItem value="geo_enrich">Geolocation Enrichment</SelectItem>
                       <SelectItem value="full">Full Scan (All)</SelectItem>
                     </SelectContent>
                   </Select>

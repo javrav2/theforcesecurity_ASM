@@ -752,3 +752,327 @@ def run_ip_assets_geo_enrichment(
         return {"error": str(e)}
     finally:
         db.close()
+
+
+# =============================================================================
+# Netblock-based Geo Enrichment
+# =============================================================================
+
+def enrich_assets_from_netblocks(
+    db: Session,
+    organization_id: int,
+    force: bool = False
+) -> dict:
+    """
+    Enrich assets with country/geo data from their associated netblocks.
+    
+    WhoisXML netblock discovery already has country information.
+    This function propagates that country data to all assets that:
+    1. Have a netblock_id (already linked to a netblock)
+    2. Have an IP address that falls within an owned netblock's CIDR
+    
+    Args:
+        db: Database session
+        organization_id: Organization ID
+        force: Re-enrich assets that already have country data
+        
+    Returns:
+        Summary dict with enrichment statistics
+    """
+    from app.models.netblock import Netblock
+    import ipaddress
+    
+    summary = {
+        "total_assets": 0,
+        "enriched_from_netblock_link": 0,
+        "enriched_from_cidr_match": 0,
+        "already_had_country": 0,
+        "no_netblock_match": 0,
+        "countries": {}
+    }
+    
+    # Get all netblocks with country info for this org
+    netblocks = db.query(Netblock).filter(
+        Netblock.organization_id == organization_id,
+        Netblock.country.isnot(None)
+    ).all()
+    
+    if not netblocks:
+        logger.info(f"No netblocks with country data found for org {organization_id}")
+        return {"message": "No netblocks with country data found", **summary}
+    
+    logger.info(f"Found {len(netblocks)} netblocks with country data")
+    
+    # Build CIDR network lookup structures
+    cidr_lookup = []
+    for nb in netblocks:
+        if nb.cidr_notation:
+            # CIDR notation may contain multiple CIDRs separated by comma
+            for cidr in nb.cidr_notation.split(','):
+                cidr = cidr.strip()
+                if cidr:
+                    try:
+                        network = ipaddress.ip_network(cidr, strict=False)
+                        cidr_lookup.append({
+                            "network": network,
+                            "netblock": nb
+                        })
+                    except ValueError:
+                        logger.debug(f"Invalid CIDR: {cidr}")
+    
+    logger.info(f"Built CIDR lookup with {len(cidr_lookup)} networks")
+    
+    # Query assets that need enrichment
+    query = db.query(Asset).filter(Asset.organization_id == organization_id)
+    
+    if not force:
+        # Only get assets without country data
+        query = query.filter(
+            (Asset.country.is_(None)) | (Asset.country == '')
+        )
+    
+    assets = query.all()
+    summary["total_assets"] = len(assets)
+    
+    if not assets:
+        return {"message": "No assets need geo enrichment from netblocks", **summary}
+    
+    logger.info(f"Processing {len(assets)} assets for netblock geo enrichment")
+    
+    for asset in assets:
+        # Skip if already has country and not forcing
+        if not force and asset.country:
+            summary["already_had_country"] += 1
+            continue
+        
+        enriched = False
+        
+        # Method 1: Use linked netblock if available
+        if asset.netblock_id:
+            for nb in netblocks:
+                if nb.id == asset.netblock_id and nb.country:
+                    asset.country = nb.country
+                    asset.country_code = nb.country  # Often same as country in netblocks
+                    asset.region = nb.region
+                    asset.city = nb.city
+                    summary["enriched_from_netblock_link"] += 1
+                    summary["countries"][nb.country] = summary["countries"].get(nb.country, 0) + 1
+                    enriched = True
+                    break
+        
+        # Method 2: Check if asset IP falls within any CIDR
+        if not enriched and asset.ip_address:
+            try:
+                ip_obj = ipaddress.ip_address(asset.ip_address)
+                for entry in cidr_lookup:
+                    if ip_obj in entry["network"]:
+                        nb = entry["netblock"]
+                        asset.country = nb.country
+                        asset.country_code = nb.country
+                        asset.region = nb.region
+                        asset.city = nb.city
+                        asset.netblock_id = nb.id  # Link asset to netblock
+                        summary["enriched_from_cidr_match"] += 1
+                        summary["countries"][nb.country] = summary["countries"].get(nb.country, 0) + 1
+                        enriched = True
+                        break
+            except ValueError:
+                logger.debug(f"Invalid IP address: {asset.ip_address}")
+        
+        if not enriched:
+            summary["no_netblock_match"] += 1
+    
+    db.commit()
+    
+    total_enriched = summary["enriched_from_netblock_link"] + summary["enriched_from_cidr_match"]
+    logger.info(f"Netblock geo enrichment: {total_enriched}/{len(assets)} assets enriched")
+    
+    return summary
+
+
+async def run_full_geo_enrichment(
+    db: Session,
+    organization_id: int,
+    max_assets: int = 10000,
+    force: bool = False,
+    progress_callback=None,
+) -> dict:
+    """
+    Run comprehensive geo-enrichment for all assets in an organization.
+    
+    This is the main function for the GEO_ENRICH scan type. It:
+    1. First enriches assets from netblock country data (fast, no API calls)
+    2. Then does IP geo-lookup for remaining assets without country data
+    
+    Args:
+        db: Database session
+        organization_id: Organization ID
+        max_assets: Maximum assets to geo-lookup via API
+        force: Re-enrich assets that already have geo data
+        progress_callback: Optional callback for progress updates
+        
+    Returns:
+        Comprehensive summary dict
+    """
+    from app.services.geolocation_service import get_geolocation_service, get_region_from_country
+    
+    summary = {
+        "total_assets": 0,
+        "from_netblocks": 0,
+        "from_ip_lookup": 0,
+        "already_had_geo": 0,
+        "failed_lookup": 0,
+        "countries": {},
+        "regions": {},
+    }
+    
+    logger.info(f"Starting full geo enrichment for organization {organization_id}")
+    
+    # Step 1: Enrich from netblocks (fast, no API calls)
+    if progress_callback:
+        progress_callback(5, "Enriching from netblock country data...")
+    
+    netblock_result = enrich_assets_from_netblocks(db, organization_id, force=force)
+    summary["from_netblocks"] = (
+        netblock_result.get("enriched_from_netblock_link", 0) +
+        netblock_result.get("enriched_from_cidr_match", 0)
+    )
+    
+    logger.info(f"Netblock enrichment: {summary['from_netblocks']} assets")
+    
+    if progress_callback:
+        progress_callback(20, f"Enriched {summary['from_netblocks']} assets from netblocks")
+    
+    # Step 2: Get remaining assets without geo data
+    query = db.query(Asset).filter(
+        Asset.organization_id == organization_id,
+        (Asset.country.is_(None)) | (Asset.country == ''),
+        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS, AssetType.URL])
+    )
+    
+    if not force:
+        query = query.filter(
+            (Asset.latitude.is_(None)) | (Asset.latitude == '')
+        )
+    
+    assets_to_lookup = query.limit(max_assets).all()
+    summary["total_assets"] = len(assets_to_lookup) + summary["from_netblocks"]
+    
+    if not assets_to_lookup:
+        if progress_callback:
+            progress_callback(100, "All assets already have geo data")
+        logger.info("All assets already have geo data or netblock enrichment covered everything")
+        return summary
+    
+    logger.info(f"Looking up geo for {len(assets_to_lookup)} remaining assets via API")
+    
+    if progress_callback:
+        progress_callback(30, f"Looking up {len(assets_to_lookup)} assets via IP geolocation API...")
+    
+    # Step 3: IP geo-lookup for remaining assets
+    geo_service = get_geolocation_service()
+    
+    batch_size = 20
+    processed = 0
+    
+    for i in range(0, len(assets_to_lookup), batch_size):
+        batch = assets_to_lookup[i:i + batch_size]
+        batch_num = (i // batch_size) + 1
+        total_batches = (len(assets_to_lookup) + batch_size - 1) // batch_size
+        
+        for asset in batch:
+            try:
+                geo_data = None
+                
+                # Determine IP to lookup
+                ip_to_lookup = asset.ip_address or asset.value
+                
+                if asset.asset_type == AssetType.IP_ADDRESS:
+                    geo_data = await geo_service.lookup_ip(asset.value)
+                elif asset.ip_address:
+                    geo_data = await geo_service.lookup_ip(asset.ip_address)
+                else:
+                    # Resolve hostname first
+                    geo_data = await geo_service.lookup_hostname(asset.value)
+                
+                if geo_data:
+                    asset.latitude = geo_data.get("latitude")
+                    asset.longitude = geo_data.get("longitude")
+                    asset.city = geo_data.get("city")
+                    asset.country = geo_data.get("country")
+                    asset.country_code = geo_data.get("country_code")
+                    asset.isp = geo_data.get("isp")
+                    asset.asn = geo_data.get("asn")
+                    
+                    # Set region from country
+                    country_code = geo_data.get("country_code") or geo_data.get("country")
+                    if country_code and len(country_code) == 2:
+                        region = get_region_from_country(country_code)
+                        if region:
+                            asset.region = region
+                            summary["regions"][region] = summary["regions"].get(region, 0) + 1
+                    
+                    country = geo_data.get("country") or geo_data.get("country_code")
+                    if country:
+                        summary["countries"][country] = summary["countries"].get(country, 0) + 1
+                    
+                    summary["from_ip_lookup"] += 1
+                else:
+                    summary["failed_lookup"] += 1
+                    
+            except Exception as e:
+                logger.debug(f"Geo lookup failed for {asset.value}: {e}")
+                summary["failed_lookup"] += 1
+        
+        processed += len(batch)
+        db.commit()
+        
+        if progress_callback:
+            pct = 30 + int((processed / len(assets_to_lookup)) * 65)
+            progress_callback(pct, f"Processed {processed}/{len(assets_to_lookup)} assets")
+        
+        # Rate limiting
+        if i + batch_size < len(assets_to_lookup):
+            await asyncio.sleep(0.5)
+    
+    # Merge country counts from netblock enrichment
+    for country, count in netblock_result.get("countries", {}).items():
+        summary["countries"][country] = summary["countries"].get(country, 0) + count
+    
+    total_enriched = summary["from_netblocks"] + summary["from_ip_lookup"]
+    logger.info(f"Full geo enrichment complete: {total_enriched} total assets enriched")
+    
+    if progress_callback:
+        progress_callback(100, f"Completed: {total_enriched} assets geo-enriched")
+    
+    return summary
+
+
+def run_full_geo_enrichment_sync(
+    organization_id: int,
+    max_assets: int = 10000,
+    force: bool = False,
+) -> dict:
+    """
+    Synchronous entrypoint for full geo enrichment.
+    
+    Creates its own DB session and runs the async enricher.
+    """
+    db = SessionLocal()
+    try:
+        logger.info(f"Starting full geo enrichment for organization {organization_id}")
+        result = asyncio.run(
+            run_full_geo_enrichment(
+                db,
+                organization_id=organization_id,
+                max_assets=max_assets,
+                force=force,
+            )
+        )
+        logger.info(f"Full geo enrichment complete: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Full geo enrichment failed: {e}")
+        return {"error": str(e)}
+    finally:
+        db.close()

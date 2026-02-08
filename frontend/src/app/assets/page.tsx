@@ -200,7 +200,32 @@ export default function AssetsPage() {
   ]);
 
   const [serverStats, setServerStats] = useState<any>(null);
+  const [geoStats, setGeoStats] = useState<any>(null);
   const [probingLive, setProbingLive] = useState(false);
+  const [enrichingGeo, setEnrichingGeo] = useState(false);
+
+  const handleEnrichGeo = async () => {
+    try {
+      setEnrichingGeo(true);
+      const response = await api.request('/assets/enrich-from-netblocks', {
+        method: 'POST',
+        params: { force: false }
+      });
+      toast({
+        title: 'Geo Enrichment Complete',
+        description: `Enriched ${response.enriched_from_netblock_link + response.enriched_from_cidr_match} assets from netblock data.`,
+      });
+      fetchData();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error?.response?.data?.detail || 'Failed to enrich assets',
+        variant: 'destructive',
+      });
+    } finally {
+      setEnrichingGeo(false);
+    }
+  };
 
   const handleProbeLive = async () => {
     try {
@@ -231,7 +256,7 @@ export default function AssetsPage() {
     setLoading(true);
     try {
       const skip = (page - 1) * PAGE_SIZE;
-      const [assetsData, orgsData, summaryData] = await Promise.all([
+      const [assetsData, orgsData, summaryData, geoData] = await Promise.all([
         api.getAssets({
           organization_id: orgFilter !== 'all' ? parseInt(orgFilter) : undefined,
           asset_type: typeFilter !== 'all' ? typeFilter : undefined,
@@ -243,10 +268,14 @@ export default function AssetsPage() {
         }),
         api.getOrganizations(),
         api.getAssetsSummary(orgFilter !== 'all' ? parseInt(orgFilter) : undefined),
+        api.request('/assets/geo-stats', {
+          params: { organization_id: orgFilter !== 'all' ? parseInt(orgFilter) : undefined }
+        }).catch(() => null),
       ]);
       
       // Store server-side stats for accurate counts
       setServerStats(summaryData);
+      setGeoStats(geoData);
       
       // Get total count from response
       const total = assetsData.total || assetsData.items?.length || assetsData.length || 0;
@@ -685,6 +714,37 @@ export default function AssetsPage() {
                 </div>
               </Card>
             )}
+            
+            {/* Geo Coverage Card */}
+            <Card 
+              className={`p-4 bg-gradient-to-br from-teal-500/10 to-teal-600/5 border-teal-500/20 cursor-pointer hover:border-teal-500/40 transition-colors ${enrichingGeo ? 'opacity-50' : ''}`}
+              onClick={!enrichingGeo ? handleEnrichGeo : undefined}
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-teal-500/20">
+                  {enrichingGeo ? (
+                    <Loader2 className="h-5 w-5 text-teal-400 animate-spin" />
+                  ) : (
+                    <MapPin className="h-5 w-5 text-teal-400" />
+                  )}
+                </div>
+                <div>
+                  {geoStats ? (
+                    <>
+                      <p className="text-2xl font-bold text-foreground">{geoStats.with_geo || 0}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {geoStats.coverage_percent || 0}% geo coverage ({Object.keys(geoStats.by_country || {}).length} countries)
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-bold text-foreground">{enrichingGeo ? 'Enriching...' : 'Enrich Geo'}</p>
+                      <p className="text-xs text-muted-foreground">Add country data</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            </Card>
             
             {attackSurfaceStats.outOfScope > 0 && (
               <Card 
