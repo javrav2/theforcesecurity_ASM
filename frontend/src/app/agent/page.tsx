@@ -151,7 +151,7 @@ export default function AgentPage() {
 
   return (
     <MainLayout>
-      <Header title="Agent" description="Ask questions and run tests. The agent uses security tools (Nuclei, Naabu, HTTPX, etc.) to perform scans and discovery." />
+      <Header title="Agent" subtitle="Ask questions and run tests. The agent uses security tools (Nuclei, Naabu, HTTPX, etc.) to perform scans and discovery." />
       <div className="space-y-4">
         {agentAvailable === false && (
           <Card className="border-amber-500/50 bg-amber-500/5">
