@@ -219,6 +219,8 @@ interface Asset {
   endpoints?: string[];
   parameters?: string[];
   js_files?: string[];
+  // Login portals / discovered paths on this host (from login portal scan)
+  login_portals?: Array<{ url: string; type?: string; status?: number; title?: string; verified?: boolean }>;
 }
 
 const assetTypeIcons: Record<string, any> = {
