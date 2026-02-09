@@ -1299,6 +1299,40 @@ class ApiClient {
     const response = await this.client.get('/graph/overview', { params });
     return response.data;
   }
+
+  // ---------------------------------------------------------------------------
+  // Agent (ask a question → agent uses MCP tools for testing)
+  // ---------------------------------------------------------------------------
+
+  async getAgentStatus() {
+    const response = await this.client.get('/agent/status');
+    return response.data;
+  }
+
+  async queryAgent(question: string, sessionId?: string) {
+    const response = await this.client.post('/agent/query', {
+      question,
+      session_id: sessionId ?? undefined,
+    });
+    return response.data;
+  }
+
+  async approveAgent(sessionId: string, decision: 'approve' | 'modify' | 'abort', modification?: string) {
+    const response = await this.client.post('/agent/approve', {
+      session_id: sessionId,
+      decision,
+      modification: modification ?? undefined,
+    });
+    return response.data;
+  }
+
+  async answerAgentQuestion(sessionId: string, answer: string) {
+    const response = await this.client.post('/agent/answer', {
+      session_id: sessionId,
+      answer,
+    });
+    return response.data;
+  }
 }
 
 export const api = new ApiClient();

@@ -15,6 +15,15 @@ from app.models.label import Label, asset_labels
 from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS_SCAN_TYPES
 from app.models.scan_config import ScanConfig, DEFAULT_PORT_LISTS, seed_default_port_lists
 from app.models.acquisition import Acquisition, AcquisitionStatus, AcquisitionType
+from app.models.project_settings import (
+    ProjectSettings,
+    ALL_MODULES,
+    get_default_config,
+    MODULE_AGENT,
+    MODULE_WAPPALYZER,
+    MODULE_NUCLEI,
+    MODULE_SCAN_TOGGLES,
+)
 
 __all__ = [
     "User",
@@ -61,4 +70,11 @@ __all__ = [
     "Acquisition",
     "AcquisitionStatus",
     "AcquisitionType",
+    "ProjectSettings",
+    "ALL_MODULES",
+    "get_default_config",
+    "MODULE_AGENT",
+    "MODULE_WAPPALYZER",
+    "MODULE_NUCLEI",
+    "MODULE_SCAN_TOGGLES",
 ]

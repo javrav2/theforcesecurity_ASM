@@ -11,6 +11,7 @@ class DiscoveryRequest(BaseModel):
     include_subdomains: bool = Field(default=True, description="Whether to enumerate subdomains")
     include_technology_scan: bool = Field(default=True, description="Whether to run Wappalyzer detection")
     custom_wordlist: Optional[List[str]] = Field(default=None, description="Custom subdomain wordlist")
+    use_tldfinder: bool = Field(default=False, description="Run ProjectDiscovery tldfinder for additional TLD/domain coverage (e.g. for keyword-driven discovery)")
 
 
 class DiscoveryProgressResponse(BaseModel):

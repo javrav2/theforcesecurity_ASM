@@ -462,6 +462,15 @@ CONTINUOUS_SCAN_TYPES = {
         },
         "recommended_frequency": "weekly",
     },
+    "tldfinder": {
+        "name": "TLD/Domain Discovery (tldfinder)",
+        "description": "Discover subdomains and domains using ProjectDiscovery tldfinder. Run against org root domain or keywords (e.g. Rockwell Automation). Improves coverage from multiple sources (Wayback, whoisxmlapi, etc.).",
+        "default_config": {
+            "discovery_mode": "domain",
+            "max_time_minutes": 10,
+        },
+        "recommended_frequency": "weekly",
+    },
     
     # ==================== ICS/OT/SCADA SCAN TYPES ====================
     "ics_ot_ports": {

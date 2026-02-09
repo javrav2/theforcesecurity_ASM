@@ -30,6 +30,7 @@ class ScanType(str, enum.Enum):
     CLEANUP = "cleanup"                # System maintenance and file cleanup
     FULL = "full"                      # Complete discovery + all scans
     GEO_ENRICH = "geo_enrich"          # Geo-location enrichment for all assets
+    TLDFINDER = "tldfinder"            # TLD/domain discovery via ProjectDiscovery tldfinder
 
 
 class ScanStatus(str, enum.Enum):

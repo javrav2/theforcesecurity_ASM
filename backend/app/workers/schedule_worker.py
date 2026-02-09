@@ -306,6 +306,7 @@ class ScheduleWorker:
             "paramspider": ScanType.PARAMSPIDER,
             "waybackurls": ScanType.WAYBACKURLS,
             "katana": ScanType.KATANA,
+            "tldfinder": ScanType.TLDFINDER,
             "cleanup": ScanType.CLEANUP,
         }
         

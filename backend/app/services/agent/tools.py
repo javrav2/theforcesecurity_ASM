@@ -4,6 +4,7 @@ Agent Tools
 Tools for the AI agent to interact with the ASM platform.
 """
 
+import json
 import logging
 from typing import List, Optional, Dict, Any
 from contextvars import ContextVar
@@ -56,6 +57,7 @@ class ASMToolsManager:
             "query_vulnerabilities": self.query_vulnerabilities,
             "query_ports": self.query_ports,
             "query_technologies": self.query_technologies,
+            "query_graph": self.query_graph,
             "analyze_attack_surface": self.analyze_attack_surface,
             "get_asset_details": self.get_asset_details,
             "search_cve": self.search_cve,
@@ -67,6 +69,16 @@ class ASMToolsManager:
             "execute_dnsx": self.execute_mcp_tool,
             "execute_katana": self.execute_mcp_tool,
             "execute_curl": self.execute_mcp_tool,
+            "execute_tldfinder": self.execute_mcp_tool,
+            "execute_waybackurls": self.execute_mcp_tool,
+            "nuclei_help": self.execute_mcp_tool,
+            "naabu_help": self.execute_mcp_tool,
+            "httpx_help": self.execute_mcp_tool,
+            "subfinder_help": self.execute_mcp_tool,
+            "dnsx_help": self.execute_mcp_tool,
+            "katana_help": self.execute_mcp_tool,
+            "tldfinder_help": self.execute_mcp_tool,
+            "waybackurls_help": self.execute_mcp_tool,
         }
     
     def get_tool(self, name: str) -> Optional[callable]:
@@ -79,10 +91,11 @@ class ASMToolsManager:
     
     async def execute(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool with the given arguments."""
-        # Check if this is an MCP tool (starts with execute_)
-        if tool_name.startswith("execute_"):
+        # Route MCP tools: execute_* and *_help (dynamic CLI + help)
+        if tool_name.startswith("execute_") or tool_name.endswith("_help"):
             try:
                 mcp = self._get_mcp_server()
+                # MCP expects args for execute_* tools; help tools use {}
                 result = await mcp.call_tool(tool_name, tool_args)
                 
                 if result.get("success"):
@@ -379,6 +392,48 @@ class ASMToolsManager:
             )
         finally:
             db.close()
+    
+    async def query_graph(
+        self,
+        cypher: str,
+        params: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+    ) -> str:
+        """
+        Run a Cypher query against the Neo4j attack surface graph.
+        
+        Use this to understand relationships: Domain → Subdomain → IP → Port → Service
+        → Technology → Vulnerability → CVE. Always include a filter on organization_id
+        for tenant safety (use $org_id in your WHERE clause).
+        
+        Args:
+            cypher: Cypher query string. Must filter by organization_id, e.g.
+                    WHERE a.organization_id = $org_id
+            params: Optional query parameters (org_id is added automatically from context)
+            limit: Max rows to return (default 50)
+        
+        Returns:
+            JSON string of query results
+        """
+        user_id, org_id = get_tenant_context()
+        if not org_id:
+            return json.dumps({"error": "No organization context. Set organization for this session."})
+        
+        try:
+            from app.services.graph_service import get_graph_service
+            graph = get_graph_service()
+            if not graph.connect():
+                return json.dumps({"error": "Neo4j graph not available."})
+            
+            merged = dict(params or {})
+            merged["org_id"] = org_id
+            if "LIMIT" not in cypher.upper():
+                cypher = cypher.rstrip() + f" LIMIT {limit}"
+            results = graph.query(cypher, merged)
+            return json.dumps(results[:limit], default=str)
+        except Exception as e:
+            logger.exception("query_graph failed")
+            return json.dumps({"error": str(e)})
     
     async def analyze_attack_surface(self) -> str:
         """

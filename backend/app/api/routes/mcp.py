@@ -79,16 +79,11 @@ async def call_tool(
     """
     Call an MCP tool.
     
-    Available tools:
-    - execute_nuclei: Run Nuclei vulnerability scanner
-    - execute_naabu: Run Naabu port scanner
-    - execute_httpx: Run HTTPX HTTP prober
-    - execute_subfinder: Run Subfinder subdomain discovery
-    - execute_dnsx: Run DNSX DNS toolkit
-    - execute_katana: Run Katana web crawler
-    - execute_curl: Execute curl HTTP client
-    - nuclei_help: Get Nuclei help
-    - naabu_help: Get Naabu help
+    Available tools (dynamic CLI + help):
+    - execute_nuclei, execute_naabu, execute_httpx, execute_subfinder, execute_dnsx, execute_katana, execute_curl
+    - execute_tldfinder: TLD/domain discovery (ProjectDiscovery tldfinder)
+    - execute_waybackurls: Historical URL discovery (Wayback Machine)
+    - nuclei_help, naabu_help, httpx_help, subfinder_help, dnsx_help, katana_help, tldfinder_help, waybackurls_help
     """
     server = get_mcp_server()
     

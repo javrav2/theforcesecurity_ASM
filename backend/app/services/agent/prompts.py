@@ -64,7 +64,7 @@ Analyze the current state and decide on your next action. You MUST output a vali
 
 ### Guidelines
 
-1. **Query the database first** - Use query_assets, query_vulnerabilities, or query_graph to understand the current attack surface
+1. **Query the database and graph first** - Use query_assets, query_vulnerabilities, or query_ports for lists and counts. Use **query_graph** for relationship and context questions (e.g. how assets connect to IPs, ports, technologies, vulnerabilities, CVEs; attack paths; what is exposed where). Always filter Cypher by organization_id = $org_id.
 2. **Be thorough** - Analyze all available data before making recommendations
 3. **Provide actionable guidance** - Give specific remediation steps
 4. **Stay in scope** - Only analyze assets within the user's organization
@@ -205,6 +205,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **query_vulnerabilities**: Query vulnerabilities and findings
 - **query_ports**: Query open ports and services
 - **query_technologies**: Query detected technologies
+- **query_graph**: Run a Cypher query against the Neo4j attack surface graph. Use this to answer relationship and context questions: e.g. which assets have path to critical vulns, what technologies sit on the same IP as a CVE, how domains/subdomains/IPs/ports/services/technologies/vulns connect. Always filter by organization: include WHERE a.organization_id = $org_id (or similar) and pass org_id; the tool injects $org_id automatically.
 - **analyze_attack_surface**: Get attack surface summary
 - **get_asset_details**: Get detailed information about an asset
 - **search_cve**: Search for CVE information
@@ -213,6 +214,9 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_dnsx**: Run DNSX DNS toolkit (args: CLI arguments)
 - **execute_katana**: Run Katana web crawler (args: CLI arguments)
 - **execute_curl**: Execute curl HTTP client (args: CLI arguments)
+- **execute_tldfinder**: Run tldfinder for TLD/domain discovery (args: e.g. '-d example.com -dm domain -oJ')
+- **execute_waybackurls**: Fetch historical URLs from Wayback Machine (args: domain or CLI args)
+- **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**: Get CLI usage for each tool
 """
 
     exploitation_tools = """
@@ -256,6 +260,16 @@ TOOL_PHASE_MAP = {
     "execute_dnsx": ["informational", "exploitation", "post_exploitation"],
     "execute_katana": ["informational", "exploitation", "post_exploitation"],
     "execute_curl": ["informational", "exploitation", "post_exploitation"],
+    "execute_tldfinder": ["informational", "exploitation", "post_exploitation"],
+    "execute_waybackurls": ["informational", "exploitation", "post_exploitation"],
+    "nuclei_help": ["informational", "exploitation", "post_exploitation"],
+    "naabu_help": ["informational", "exploitation", "post_exploitation"],
+    "httpx_help": ["informational", "exploitation", "post_exploitation"],
+    "subfinder_help": ["informational", "exploitation", "post_exploitation"],
+    "dnsx_help": ["informational", "exploitation", "post_exploitation"],
+    "katana_help": ["informational", "exploitation", "post_exploitation"],
+    "tldfinder_help": ["informational", "exploitation", "post_exploitation"],
+    "waybackurls_help": ["informational", "exploitation", "post_exploitation"],
     
     # MCP exploitation tools
     "execute_nuclei": ["exploitation", "post_exploitation"],

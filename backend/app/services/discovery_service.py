@@ -104,7 +104,8 @@ class DiscoveryService:
         scan_id: Optional[int] = None,
         progress_callback: Optional[Callable[[DiscoveryProgress], None]] = None,
         include_technology_scan: bool = True,
-        subdomain_wordlist: Optional[list[str]] = None
+        subdomain_wordlist: Optional[list[str]] = None,
+        use_tldfinder: bool = False,
     ) -> DiscoveryResult:
         """
         Perform full discovery for a domain.
@@ -116,6 +117,7 @@ class DiscoveryService:
             progress_callback: Optional callback for progress updates
             include_technology_scan: Whether to run Wappalyzer detection
             subdomain_wordlist: Optional custom subdomain wordlist
+            use_tldfinder: If True, run ProjectDiscovery tldfinder for additional domain coverage
             
         Returns:
             DiscoveryResult with all findings
@@ -284,6 +286,38 @@ class DiscoveryService:
             progress.completed_steps += 1
             self._report_progress(progress, progress_callback, scan_id)
             
+            # Optional: TLD/domain discovery via tldfinder (better coverage for keywords/private TLDs)
+            if use_tldfinder:
+                try:
+                    from app.services.tldfinder_service import TLDFinderService, TLDFINDER_AVAILABLE
+                    if TLDFINDER_AVAILABLE:
+                        progress.current_step = "TLD/domain discovery (tldfinder)"
+                        self._report_progress(progress, progress_callback, scan_id)
+                        tldfinder = TLDFinderService(timeout=600)
+                        tld_result = await tldfinder.run(domains=[domain], discovery_mode="domain", max_time_minutes=10)
+                        if tld_result.domains:
+                            tld_added = 0
+                            for d in tld_result.domains:
+                                d = (d or "").strip().lower()
+                                if not d or d == domain or d in subdomain_assets:
+                                    continue
+                                sub_asset = self._create_or_update_asset(
+                                    organization_id=organization_id,
+                                    asset_type=AssetType.SUBDOMAIN,
+                                    name=d,
+                                    value=d,
+                                    parent_id=root_asset.id,
+                                    discovery_source="tldfinder",
+                                )
+                                subdomain_assets[d] = sub_asset
+                                result.assets.append(self._asset_to_dict(sub_asset))
+                                progress.assets_found += 1
+                                tld_added += 1
+                            if tld_added:
+                                logger.info(f"tldfinder added {tld_added} additional domains")
+                except Exception as e:
+                    logger.warning(f"tldfinder step skipped or failed: {e}")
+            
             # Step 3: IP Resolution (already done during subdomain discovery)
             progress.current_step = "IP resolution"
             progress.completed_steps += 1
@@ -446,6 +480,7 @@ class DiscoveryService:
         enable_http_probe: bool = True,
         enable_tech_detection: bool = True,
         scan_id: Optional[int] = None,
+        use_tldfinder: bool = False,
     ) -> dict:
         """
         Backwards-compatible entrypoint used by `workers/scanner_worker.py`.
@@ -459,6 +494,7 @@ class DiscoveryService:
             organization_id=organization_id,
             scan_id=scan_id,
             include_technology_scan=enable_tech_detection,
+            use_tldfinder=use_tldfinder,
         )
 
         # Summaries for worker consumers

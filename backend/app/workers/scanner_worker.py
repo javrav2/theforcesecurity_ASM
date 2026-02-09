@@ -276,6 +276,7 @@ class ScannerWorker:
                 ScanType.CLEANUP: 'CLEANUP',
                 ScanType.TECHNOLOGY: 'TECHNOLOGY_SCAN',
                 ScanType.GEO_ENRICH: 'GEO_ENRICH',
+                ScanType.TLDFINDER: 'TLDFINDER',
             }
             
             messages = []
@@ -609,6 +610,8 @@ class ScannerWorker:
                     await self.handle_technology_scan(body)
                 elif job_type == 'GEO_ENRICH':
                     await self.handle_geo_enrichment(body)
+                elif job_type == 'TLDFINDER':
+                    await self.handle_tldfinder_scan(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -880,6 +883,7 @@ class ScannerWorker:
                 f"Nuclei scan complete: {import_summary['findings_created']} findings, "
                 f"{len(import_summary.get('cves_found', []))} CVEs, {len(unique_hosts)} live hosts"
             )
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Nuclei scan failed: {e}", exc_info=True)
@@ -1432,6 +1436,7 @@ class ScannerWorker:
                 f"Port verification {scan_id} complete: {verified_count} ports verified "
                 f"(open={open_count}, filtered={filtered_count}, closed={closed_count})"
             )
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Port verification {scan_id} failed: {e}", exc_info=True)
@@ -1644,6 +1649,7 @@ class ScannerWorker:
                 f"Service detection {scan_id} complete: {detected_count} services identified "
                 f"from {len(ports_to_scan)} unknown ports"
             )
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Service detection {scan_id} failed: {e}", exc_info=True)
@@ -1727,6 +1733,8 @@ class ScannerWorker:
             total_subdomains = 0
             total_technologies = 0
             
+            config = job_data.get('config', {})
+            use_tldfinder = config.get('use_tldfinder', False)
             for domain_target in valid_domains:
                 try:
                     result = await discovery_service.full_discovery(
@@ -1735,7 +1743,8 @@ class ScannerWorker:
                         enable_subdomain_enum=True,
                         enable_dns_enum=True,
                         enable_http_probe=True,
-                        enable_tech_detection=True
+                        enable_tech_detection=True,
+                        use_tldfinder=use_tldfinder,
                     )
                     total_assets += result.get('assets_created', 0)
                     total_subdomains += result.get('subdomains_found', 0)
@@ -1889,6 +1898,8 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"Subdomain enum complete: {len(all_subdomains)} found, {assets_created} created")
+            if organization_id:
+                trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Subdomain enum failed: {e}", exc_info=True)
@@ -2024,6 +2035,7 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"DNS resolution complete: {result_summary}")
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"DNS resolution failed: {e}", exc_info=True)
@@ -2139,6 +2151,7 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"HTTP probe complete: {result_summary}")
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"HTTP probe failed: {e}", exc_info=True)
@@ -2294,6 +2307,7 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"Login portal scan complete: {total_portals} portals found, {assets_flagged} assets flagged")
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Login portal scan failed: {e}", exc_info=True)
@@ -2395,6 +2409,7 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"Screenshot scan complete: {screenshots_captured} captured, {screenshots_failed} failed")
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Screenshot scan failed: {e}", exc_info=True)
@@ -2540,6 +2555,7 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"ParamSpider scan complete: {total_params} params, {total_endpoints} endpoints from {len(targets)} domains")
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"ParamSpider scan failed: {e}", exc_info=True)
@@ -2662,6 +2678,7 @@ class ScannerWorker:
                 db.commit()
             
             logger.info(f"WaybackURLs scan complete: {total_urls} URLs, {total_interesting} interesting from {len(targets)} domains")
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"WaybackURLs scan failed: {e}", exc_info=True)
@@ -2854,6 +2871,7 @@ class ScannerWorker:
                 f"Katana scan complete: {total_endpoints} endpoints, "
                 f"{total_params} params, {total_js} JS files from {len(targets)} targets"
             )
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Katana scan failed: {e}", exc_info=True)
@@ -3010,6 +3028,17 @@ class ScannerWorker:
                 db.commit()
             
             from app.services.technology_scan_service import run_technology_scan_for_hosts
+            from app.models.project_settings import ProjectSettings, MODULE_WAPPALYZER
+            
+            wappalyzer_config = ProjectSettings.get_config(db, organization_id, MODULE_WAPPALYZER)
+            if not wappalyzer_config.get("enabled", True):
+                logger.info(f"Technology (Wappalyzer) scan disabled for org {organization_id}; skipping")
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    scan.completed_at = datetime.utcnow()
+                    scan.results = {"message": "Technology scan disabled in project settings"}
+                    db.commit()
+                return
             
             # If no specific targets, get domains/subdomains/IPs from the organization
             # Include IP addresses that have live_url (detected via HTTP probe)
@@ -3053,12 +3082,13 @@ class ScannerWorker:
             db.close()
             db = None
             
-            # Run technology scan
+            # Run technology scan (Wappalyzer options from project settings)
             result = run_technology_scan_for_hosts(
                 organization_id=organization_id,
                 hosts=targets,
                 max_hosts=max_hosts,
-                source=source
+                source=source,
+                wappalyzer_config=wappalyzer_config,
             )
             
             # Reopen db for final update
@@ -3195,6 +3225,7 @@ class ScannerWorker:
                 f"Geo enrichment complete: {result.get('from_netblocks', 0)} from netblocks, "
                 f"{result.get('from_ip_lookup', 0)} from IP lookup"
             )
+            trigger_graph_sync(organization_id)
             
         except Exception as e:
             logger.error(f"Geo enrichment failed: {e}", exc_info=True)
@@ -3217,6 +3248,164 @@ class ScannerWorker:
         finally:
             if db:
                 db.close()
+    
+    async def handle_tldfinder_scan(self, job_data: dict):
+        """
+        Handle TLD/domain discovery scan using ProjectDiscovery tldfinder.
+        
+        Runs tldfinder for better coverage of subdomains/domains (e.g. for
+        keywords like "Rockwell Automation" use org root domain or targets).
+        Creates/updates assets for discovered domains.
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+        
+        try:
+            from app.services.tldfinder_service import TLDFinderService, TLDFINDER_AVAILABLE
+            from app.models.organization import Organization
+            
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running tldfinder for TLD/domain discovery"
+                db.commit()
+            
+            if not TLDFINDER_AVAILABLE:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "tldfinder binary not found. Install: go install github.com/projectdiscovery/tldfinder/cmd/tldfinder@latest"
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+            
+            # Resolve targets: use job targets or org domain + root domains from assets
+            if not targets:
+                org = db.query(Organization).filter(Organization.id == organization_id).first()
+                if org and org.domain:
+                    targets = [org.domain.strip()]
+                if not targets:
+                    # Fallback: root domains from existing assets
+                    from sqlalchemy import func, distinct
+                    rows = db.query(distinct(Asset.root_domain)).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.root_domain.isnot(None),
+                        Asset.root_domain != '',
+                    ).limit(20).all()
+                    targets = [r[0] for r in rows if r[0]]
+                if not targets:
+                    if scan:
+                        scan.status = ScanStatus.COMPLETED
+                        scan.completed_at = datetime.utcnow()
+                        scan.results = {'message': 'No domains to run tldfinder against'}
+                        db.commit()
+                    return
+            
+            discovery_mode = config.get('discovery_mode', 'domain')
+            max_time = config.get('max_time_minutes', 10)
+            tldfinder = TLDFinderService(timeout=max(60, max_time * 60 + 30))
+            result = await tldfinder.run(
+                domains=targets[:10],
+                discovery_mode=discovery_mode,
+                max_time_minutes=max_time,
+            )
+            
+            if not result.success and result.error:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = (result.error or '')[:500]
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+            
+            # Create/update assets for discovered domains
+            created = 0
+            for domain in result.domains:
+                domain = (domain or '').strip().lower()
+                if not domain or not self._is_valid_domain(domain):
+                    continue
+                existing = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.value == domain,
+                ).first()
+                if not existing:
+                    root = self._extract_root_domain(domain)
+                    parent = None
+                    if root and root != domain:
+                        parent = db.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.value == root,
+                        ).first()
+                    asset_type = AssetType.SUBDOMAIN if (root and root != domain) else AssetType.DOMAIN
+                    new_asset = Asset(
+                        organization_id=organization_id,
+                        name=domain,
+                        value=domain,
+                        asset_type=asset_type,
+                        root_domain=root or domain,
+                        parent_id=parent.id if parent else None,
+                        discovery_source='tldfinder',
+                    )
+                    db.add(new_asset)
+                    created += 1
+            
+            db.commit()
+            
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.assets_discovered = created
+                scan.results = {
+                    'targets': targets,
+                    'domains_found': len(result.domains),
+                    'assets_created': created,
+                    'elapsed_seconds': result.elapsed_seconds,
+                }
+                db.commit()
+            
+            logger.info(f"TLDFinder scan complete: {len(result.domains)} domains, {created} new assets")
+            trigger_graph_sync(organization_id)
+            
+        except Exception as e:
+            logger.error(f"TLDFinder scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if db:
+                db.close()
+    
+    def _is_valid_domain(self, s: str) -> bool:
+        """Basic domain validity."""
+        if len(s) < 3 or len(s) > 253:
+            return False
+        if '..' in s or s.startswith('.') or s.endswith('.'):
+            return False
+        return True
+    
+    def _extract_root_domain(self, domain: str) -> str:
+        """Extract root (e.g. example.com from sub.example.com)."""
+        parts = domain.split('.')
+        if len(parts) >= 2:
+            return '.'.join(parts[-2:])
+        return domain
     
     async def _process_with_semaphore(self, message: dict):
         """Process a message with semaphore limiting."""

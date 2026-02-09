@@ -44,21 +44,21 @@ class Settings(BaseSettings):
     # ProjectDiscovery Cloud API Key (for Chaos subdomain dataset)
     PDCP_API_KEY: str = ""
     
-    # AI Agent Configuration
+    # AI Agent Configuration (default: Claude)
     # Supported providers: "openai", "anthropic"
-    AI_PROVIDER: str = "openai"
+    AI_PROVIDER: str = "anthropic"
     
     # OpenAI Configuration
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o"
     
-    # Anthropic/Claude Configuration
+    # Anthropic/Claude Configuration (default agent)
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
     
-    # Agent settings
-    AGENT_MAX_ITERATIONS: int = 15
-    AGENT_TOOL_OUTPUT_MAX_CHARS: int = 10000
+    # Agent settings (overridable per-org via project_settings.agent)
+    AGENT_MAX_ITERATIONS: int = 100
+    AGENT_TOOL_OUTPUT_MAX_CHARS: int = 8000
     
     # Neo4j Graph Database Configuration
     NEO4J_URI: str = "bolt://neo4j:7687"

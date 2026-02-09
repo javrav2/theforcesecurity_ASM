@@ -72,6 +72,7 @@
 - **CIDR/Netblock Discovery**: Find IP ranges by organization name
 - **Domain Validation**: Automatic detection of parked, suspicious, or privacy-protected domains
 - **Certificate Transparency**: Discover domains via SSL/TLS certificate logs
+- **TLDFinder (optional)**: [ProjectDiscovery tldfinder](https://github.com/projectdiscovery/tldfinder) for better TLD/domain coverage; enable `use_tldfinder` in full discovery or run a dedicated **tldfinder** scan. See [docs/MCP_AND_TLDFINDER.md](docs/MCP_AND_TLDFINDER.md).
 
 ### 🏢 Inventory Management
 Unified inventory page with three tabs:
@@ -239,6 +240,7 @@ db.close()
 | **Frontend Dashboard** | `http://localhost` |
 | **Backend API** | `http://localhost:8000` |
 | **API Documentation** | `http://localhost:8000/api/docs` |
+| **MCP (tools for agent)** | `GET/POST /api/v1/mcp/tools`, `/api/v1/mcp/call` — see [MCP & TLDFinder](docs/MCP_AND_TLDFINDER.md) |
 
 **Default Login:**
 - Username: `admin`
@@ -331,13 +333,43 @@ sudo docker compose up -d --build
 sudo docker compose ps
 ```
 
-### Updating Code on AWS
+### Updating Code on AWS (push your changes)
+
+**1. Push code to your Git remote** (so the EC2 or CI can pull it):
 
 ```bash
+git add -A
+git commit -m "Your message"
+git push origin main   # or your branch, e.g. origin master
+```
+
+If you use **AWS CodeCommit** instead of GitHub:
+
+```bash
+# One-time: add CodeCommit as remote (replace with your repo URL)
+git remote add aws https://git-codecommit.us-east-1.amazonaws.com/v1/repos/your-repo-name
+# Push
+git push aws main
+```
+
+**2. On the EC2 instance** (single-instance / Docker Compose):
+
+```bash
+ssh -i your-key.pem ubuntu@YOUR_EC2_IP
 cd /opt/asm
 git pull
 sudo docker compose up -d --build --force-recreate
 ```
+
+**Alternative: ECR + ECS**  
+If you deploy with ECS and the `aws/scripts/deploy.sh` script, from your **local machine** (after pushing code to Git):
+
+```bash
+cd /path/to/theforcesecurity_ASM/aws/scripts
+./deploy.sh all prod   # builds images, pushes to ECR, updates ECS services
+```
+
+Requires ECR repositories and ECS cluster (`asm-cluster`, etc.) already set up.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed AWS deployment instructions.
 

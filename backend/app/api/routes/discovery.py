@@ -78,7 +78,8 @@ async def start_full_discovery(
         targets=[request.domain],
         config={
             "include_subdomains": request.include_subdomains,
-            "include_technology_scan": request.include_technology_scan
+            "include_technology_scan": request.include_technology_scan,
+            "use_tldfinder": getattr(request, "use_tldfinder", False),
         },
         started_by=current_user.username,
         status=ScanStatus.PENDING
@@ -97,7 +98,8 @@ async def start_full_discovery(
             organization_id=request.organization_id,
             scan_id=scan.id,
             include_technology_scan=request.include_technology_scan,
-            subdomain_wordlist=request.custom_wordlist
+            subdomain_wordlist=request.custom_wordlist,
+            use_tldfinder=getattr(request, "use_tldfinder", False),
         )
         
         return DiscoveryResultResponse(

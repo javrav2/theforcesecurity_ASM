@@ -73,6 +73,16 @@ def _update_asset_with_url(
     return asset
 
 
+def _wappalyzer_options_from_config(config: Optional[dict]) -> dict:
+    """Extract Wappalyzer options from project settings config."""
+    if not config:
+        return {}
+    return {
+        "min_confidence": max(0, min(100, int(config.get("min_confidence_threshold", 0)))),
+        "require_html": bool(config.get("require_html", False)),
+    }
+
+
 async def _scan_single_host(
     wappalyzer: WappalyzerService,
     db: Session,
@@ -80,6 +90,7 @@ async def _scan_single_host(
     host: str,
     source: TechSource = "wappalyzer",
     whatruns: Optional[WhatRunsService] = None,
+    wappalyzer_options: Optional[dict] = None,
 ) -> dict:
     """Scan a single host for technologies. Returns stats dict."""
     host = (host or "").strip().lower()
@@ -135,7 +146,12 @@ async def _scan_single_host(
         # Wappalyzer detection (works with any URL including IPs)
         if source in ("wappalyzer", "both"):
             try:
-                wappalyzer_techs = await wappalyzer.analyze_url(url)
+                opts = wappalyzer_options or {}
+                wappalyzer_techs = await wappalyzer.analyze_url(
+                    url,
+                    min_confidence=opts.get("min_confidence", 0),
+                    require_html=opts.get("require_html", False),
+                )
                 if wappalyzer_techs:
                     live_url = url
                     all_detected_techs.extend(wappalyzer_techs)
@@ -197,10 +213,14 @@ async def _scan_hosts_batch(
     hosts: List[str],
     source: TechSource = "wappalyzer",
     whatruns: Optional[WhatRunsService] = None,
+    wappalyzer_options: Optional[dict] = None,
 ) -> List[dict]:
     """Scan a batch of hosts concurrently."""
     tasks = [
-        _scan_single_host(wappalyzer, db, organization_id, host, source, whatruns)
+        _scan_single_host(
+            wappalyzer, db, organization_id, host, source, whatruns,
+            wappalyzer_options=wappalyzer_options,
+        )
         for host in hosts
     ]
     return await asyncio.gather(*tasks, return_exceptions=True)
@@ -213,6 +233,7 @@ async def _scan_hosts_async(
     hosts: list[str],
     max_hosts: int = 500,
     source: TechSource = "wappalyzer",
+    wappalyzer_config: Optional[dict] = None,
 ) -> dict:
     """
     Scan hosts for technologies using batch processing.
@@ -250,7 +271,11 @@ async def _scan_hosts_async(
         
         logger.info(f"Scanning batch {batch_num}/{total_batches} ({len(batch)} hosts)")
         
-        results = await _scan_hosts_batch(wappalyzer, db, organization_id, batch, source, whatruns)
+        wappalyzer_options = _wappalyzer_options_from_config(wappalyzer_config)
+        results = await _scan_hosts_batch(
+            wappalyzer, db, organization_id, batch, source, whatruns,
+            wappalyzer_options=wappalyzer_options,
+        )
         
         # Process results with detailed logging
         skipped_no_asset = 0
@@ -297,6 +322,7 @@ def run_technology_scan_for_hosts(
     hosts: Iterable[str],
     max_hosts: int = 500,
     source: TechSource = "wappalyzer",
+    wappalyzer_config: Optional[dict] = None,
 ) -> dict:
     """
     Synchronous entrypoint (FastAPI BackgroundTasks-friendly).
@@ -307,6 +333,7 @@ def run_technology_scan_for_hosts(
         hosts: Iterable of hostnames to scan
         max_hosts: Maximum hosts to scan (default 500)
         source: Technology detection source ("wappalyzer", "whatruns", or "both")
+        wappalyzer_config: Optional project settings for Wappalyzer (min_confidence_threshold, require_html, etc.)
         
     Returns:
         Summary dict with scan statistics
@@ -321,6 +348,7 @@ def run_technology_scan_for_hosts(
                 hosts=list(hosts),
                 max_hosts=max_hosts,
                 source=source,
+                wappalyzer_config=wappalyzer_config,
             )
         )
         logger.info(f"Background technology scan complete: {result}")

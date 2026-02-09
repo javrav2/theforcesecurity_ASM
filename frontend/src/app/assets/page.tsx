@@ -207,19 +207,27 @@ export default function AssetsPage() {
   const handleEnrichGeo = async () => {
     try {
       setEnrichingGeo(true);
+      const params: { force: boolean; organization_id?: number } = { force: false };
+      if (orgFilter !== 'all') {
+        params.organization_id = parseInt(orgFilter);
+      }
       const response = await api.request('/assets/enrich-from-netblocks', {
         method: 'POST',
-        params: { force: false }
+        params,
       });
       toast({
         title: 'Geo Enrichment Complete',
-        description: `Enriched ${response.enriched_from_netblock_link + response.enriched_from_cidr_match} assets from netblock data.`,
+        description: `Enriched ${(response.enriched_from_netblock_link || 0) + (response.enriched_from_cidr_match || 0)} assets from netblock data.`,
       });
       fetchData();
     } catch (error: any) {
+      const detail = error?.response?.data?.detail;
+      const isOrgRequired = typeof detail === 'string' && detail.toLowerCase().includes('organization');
       toast({
         title: 'Error',
-        description: error?.response?.data?.detail || 'Failed to enrich assets',
+        description: isOrgRequired
+          ? 'Select an organization from the filter above (next to Search), then click Enrich Geo to run for that org\'s assets.'
+          : detail || 'Failed to enrich assets',
         variant: 'destructive',
       });
     } finally {
@@ -536,6 +544,11 @@ export default function AssetsPage() {
   };
 
   const filters: FilterOption[] = [
+    {
+      key: 'organization',
+      label: 'Organization',
+      options: organizations.map((org: { id: number; name: string }) => ({ label: org.name, value: String(org.id) })),
+    },
     {
       key: 'live',
       label: 'Live Status',
@@ -888,6 +901,7 @@ export default function AssetsPage() {
           onRefresh={fetchData}
           isLoading={loading}
           filters={filters}
+          filterValues={{ organization: orgFilter, live: liveFilter, type: typeFilter, status: statusFilter }}
           onFilterChange={handleFilterChange}
         >
           <Card className="overflow-hidden">

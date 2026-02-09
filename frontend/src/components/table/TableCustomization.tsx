@@ -40,6 +40,8 @@ interface TableCustomizationProps {
   onExport: () => void;
   onSort?: (column: string, direction: 'asc' | 'desc') => void;
   filters?: FilterOption[];
+  /** Current filter values by filter key (e.g. { organization: '2', live: 'live' }) so dropdowns show selection */
+  filterValues?: Record<string, string>;
   onFilterChange?: (filterKey: string, value: string) => void;
   onSearch?: (query: string) => void;
   onRefresh?: () => void;
@@ -53,6 +55,7 @@ export function TableCustomization({
   onExport,
   onSort,
   filters,
+  filterValues,
   onFilterChange,
   onSearch,
   onRefresh,
@@ -105,6 +108,7 @@ export function TableCustomization({
             filters.map((filter) => (
               <Select
                 key={filter.key}
+                value={filterValues?.[filter.key] ?? 'all'}
                 onValueChange={(value) => onFilterChange?.(filter.key, value)}
               >
                 <SelectTrigger className="w-[180px]">

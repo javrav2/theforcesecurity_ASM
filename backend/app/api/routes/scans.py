@@ -440,6 +440,7 @@ def create_adhoc_scan(
         "katana": ScanType.KATANA,
         "cleanup": ScanType.CLEANUP,
         "geo_enrich": ScanType.GEO_ENRICH,
+        "tldfinder": ScanType.TLDFINDER,
     }
     
     scan_type_enum = scan_type_map.get(request.scan_type, ScanType.VULNERABILITY)

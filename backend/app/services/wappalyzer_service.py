@@ -1483,12 +1483,19 @@ class WappalyzerService:
         self.timeout = timeout
         self.user_agent = user_agent
     
-    async def analyze_url(self, url: str) -> list[DetectedTechnology]:
+    async def analyze_url(
+        self,
+        url: str,
+        min_confidence: int = 0,
+        require_html: bool = False,
+    ) -> list[DetectedTechnology]:
         """
         Analyze a URL and detect technologies.
         
         Args:
             url: URL to analyze
+            min_confidence: Minimum confidence (0-100) to include a technology
+            require_html: If True, return [] when response has no HTML body
             
         Returns:
             List of detected technologies
@@ -1504,24 +1511,41 @@ class WappalyzerService:
                     headers={"User-Agent": self.user_agent}
                 )
                 
-                return self._analyze_response(response, url)
+                return self._analyze_response(
+                    response, url,
+                    min_confidence=min_confidence,
+                    require_html=require_html,
+                )
                 
         except Exception as e:
             logger.error(f"Error analyzing {url}: {e}")
             return []
     
-    def analyze_url_sync(self, url: str) -> list[DetectedTechnology]:
+    def analyze_url_sync(
+        self,
+        url: str,
+        min_confidence: int = 0,
+        require_html: bool = False,
+    ) -> list[DetectedTechnology]:
         """Synchronous wrapper for analyze_url."""
         import asyncio
-        return asyncio.run(self.analyze_url(url))
+        return asyncio.run(self.analyze_url(url, min_confidence=min_confidence, require_html=require_html))
     
-    def _analyze_response(self, response: httpx.Response, url: str) -> list[DetectedTechnology]:
+    def _analyze_response(
+        self,
+        response: httpx.Response,
+        url: str,
+        min_confidence: int = 0,
+        require_html: bool = False,
+    ) -> list[DetectedTechnology]:
         """
         Analyze HTTP response for technologies.
         
         Args:
             response: httpx Response object
             url: Original URL
+            min_confidence: Minimum confidence (0-100) to include
+            require_html: If True, return [] when no HTML body
             
         Returns:
             List of detected technologies
@@ -1530,6 +1554,10 @@ class WappalyzerService:
         
         # Parse HTML
         html = response.text
+        content_type = (response.headers.get("content-type") or "").lower()
+        has_html = "text/html" in content_type or bool(html.strip())
+        if require_html and not has_html:
+            return []
         headers = {k.lower(): v for k, v in response.headers.items()}
         cookies = {c.name: c.value for c in response.cookies.jar}
         
@@ -1619,9 +1647,11 @@ class WappalyzerService:
         # Process excludes relationships
         self._process_excludes(detected)
         
-        # Build final results
+        # Build final results (filter by min_confidence)
         results = []
         for tech_name, data in detected.items():
+            if data["confidence"] < min_confidence:
+                continue
             fingerprint = data["fingerprint"]
             results.append(DetectedTechnology(
                 name=tech_name,

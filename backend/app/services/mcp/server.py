@@ -224,6 +224,94 @@ class MCPServer:
             phase="informational",
             handler=self._execute_curl,
         ))
+        
+        # Help tools: agent can query usage for each tool
+        self.registry.register(MCPTool(
+            name="httpx_help",
+            description="Get HTTPX command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._httpx_help,
+        ))
+        self.registry.register(MCPTool(
+            name="subfinder_help",
+            description="Get Subfinder command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._subfinder_help,
+        ))
+        self.registry.register(MCPTool(
+            name="dnsx_help",
+            description="Get DNSX command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._dnsx_help,
+        ))
+        self.registry.register(MCPTool(
+            name="katana_help",
+            description="Get Katana crawler command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._katana_help,
+        ))
+        
+        # TLDFinder (ProjectDiscovery) - TLD/domain discovery
+        self.registry.register(MCPTool(
+            name="execute_tldfinder",
+            description="Run tldfinder to discover subdomains/domains from multiple sources. Use for better TLD coverage (e.g. -d example.com -dm domain -oJ).",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "tldfinder CLI arguments (e.g., '-d example.com -dm domain -oJ')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_tldfinder,
+        ))
+        self.registry.register(MCPTool(
+            name="tldfinder_help",
+            description="Get tldfinder command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._tldfinder_help,
+        ))
+        
+        # WaybackURLs - historical URL discovery
+        self.registry.register(MCPTool(
+            name="execute_waybackurls",
+            description="Run waybackurls to fetch historical URLs for a domain from the Wayback Machine.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "waybackurls CLI arguments (e.g., 'example.com' or pipe from stdin)"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_waybackurls,
+        ))
+        self.registry.register(MCPTool(
+            name="waybackurls_help",
+            description="Get waybackurls command usage (if available).",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._waybackurls_help,
+        ))
     
     async def _run_command(
         self,
@@ -314,6 +402,34 @@ class MCPServer:
         """Execute curl."""
         cmd = ["curl"] + args.split()
         return await self._run_command(cmd, timeout=60)
+    
+    async def _httpx_help(self) -> Dict[str, Any]:
+        return await self._run_command(["httpx", "-h"])
+    
+    async def _subfinder_help(self) -> Dict[str, Any]:
+        return await self._run_command(["subfinder", "-h"])
+    
+    async def _dnsx_help(self) -> Dict[str, Any]:
+        return await self._run_command(["dnsx", "-h"])
+    
+    async def _katana_help(self) -> Dict[str, Any]:
+        return await self._run_command(["katana", "-h"])
+    
+    async def _execute_tldfinder(self, args: str) -> Dict[str, Any]:
+        """Execute tldfinder (ProjectDiscovery)."""
+        cmd = ["tldfinder"] + args.split()
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _tldfinder_help(self) -> Dict[str, Any]:
+        return await self._run_command(["tldfinder", "-h"])
+    
+    async def _execute_waybackurls(self, args: str) -> Dict[str, Any]:
+        """Execute waybackurls (tomnomnom)."""
+        cmd = ["waybackurls"] + args.split()
+        return await self._run_command(cmd, timeout=120)
+    
+    async def _waybackurls_help(self) -> Dict[str, Any]:
+        return await self._run_command(["waybackurls", "-h"])
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """

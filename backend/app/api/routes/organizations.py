@@ -1,18 +1,20 @@
 """Organization routes."""
 
-from typing import List
+from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from pydantic import BaseModel
 
 from app.db.database import get_db
 from app.models.organization import Organization
 from app.models.asset import Asset
 from app.models.vulnerability import Vulnerability, Severity
 from app.models.user import User
+from app.models.project_settings import ProjectSettings, ALL_MODULES, get_default_config
 from app.schemas.organization import (
-    OrganizationCreate, 
-    OrganizationUpdate, 
+    OrganizationCreate,
+    OrganizationUpdate,
     OrganizationResponse,
     DiscoverySettingsUpdate,
     DiscoverySettingsResponse,
@@ -89,8 +91,8 @@ def create_organization(
     db.add(new_org)
     db.commit()
     db.refresh(new_org)
-    
-    return new_org
+    ProjectSettings.ensure_defaults(db, new_org.id)
+    return build_org_response(db, new_org)
 
 
 @router.get("/{org_id}", response_model=OrganizationResponse)
@@ -238,6 +240,75 @@ def update_discovery_settings(
     )
 
 
+def _check_org_access(db: Session, org_id: int, current_user: User) -> Organization:
+    """Return org if exists and user has access."""
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+    if not current_user.is_superuser and current_user.organization_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    return org
+
+
+@router.get("/{org_id}/settings", response_model=Dict[str, Any])
+def get_all_project_settings(
+    org_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get all project settings for an organization (per-org scan/agent config)."""
+    _check_org_access(db, org_id, current_user)
+    return {
+        module: ProjectSettings.get_config(db, org_id, module)
+        for module in ALL_MODULES
+    }
+
+
+@router.get("/{org_id}/settings/{module}", response_model=Dict[str, Any])
+def get_project_settings_module(
+    org_id: int,
+    module: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get one module's project settings."""
+    _check_org_access(db, org_id, current_user)
+    if module not in ALL_MODULES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown module: {module}")
+    return ProjectSettings.get_config(db, org_id, module)
+
+
+class ProjectSettingsUpdate(BaseModel):
+    config: Dict[str, Any]
+
+
+@router.put("/{org_id}/settings/{module}", response_model=Dict[str, Any])
+def update_project_settings_module(
+    org_id: int,
+    module: str,
+    body: ProjectSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Update one module's project settings (partial merge)."""
+    _check_org_access(db, org_id, current_user)
+    if module not in ALL_MODULES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown module: {module}")
+    ProjectSettings.set_config(db, org_id, module, body.config)
+    db.commit()
+    return ProjectSettings.get_config(db, org_id, module)
+
+
+@router.post("/{org_id}/settings/ensure-defaults")
+def ensure_project_settings_defaults(
+    org_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Ensure all module rows exist for this org with defaults."""
+    _check_org_access(db, org_id, current_user)
+    ProjectSettings.ensure_defaults(db, org_id)
+    return {"status": "ok", "message": "Defaults ensured for all modules"}
 
 
 

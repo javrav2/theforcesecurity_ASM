@@ -3,11 +3,16 @@ Neo4j Graph Database Service
 
 Manages the graph representation of assets and their relationships
 for attack path analysis and visualization.
+
+Node types: Asset, IP, Port, Service, Technology, Vulnerability,
+CVE, CWE, BaseURL, Endpoint, Parameter (web application layer).
 """
 
+import hashlib
 import logging
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
@@ -27,12 +32,13 @@ class GraphService:
     Service for managing the Neo4j graph database.
     
     Models the following relationships:
-    - Domain -> Subdomain (HAS_SUBDOMAIN)
+    - Domain -> Subdomain (HAS_CHILD / BELONGS_TO)
     - Asset -> IP (RESOLVES_TO)
-    - IP -> Port (HAS_PORT)
-    - Asset -> Vulnerability (HAS_VULNERABILITY)
+    - IP -> Port (EXPOSES_PORT), Asset -> Port (HAS_PORT)
+    - Port -> Service (RUNS_SERVICE), Service -> BaseURL (SERVES_URL)
+    - Asset -> BaseURL (SERVES_URL), Asset -> Endpoint (HAS_ENDPOINT), Asset -> Parameter (HAS_PARAMETER)
+    - Asset -> Vulnerability (HAS_VULNERABILITY), Vulnerability -> CVE (REFERENCES_CVE), -> CWE (HAS_WEAKNESS)
     - Asset -> Technology (USES_TECHNOLOGY)
-    - Asset -> Asset (DISCOVERED_FROM)
     """
     
     def __init__(self):
@@ -103,6 +109,10 @@ class GraphService:
                 "CREATE CONSTRAINT vulnerability_id IF NOT EXISTS FOR (v:Vulnerability) REQUIRE v.vuln_id IS UNIQUE",
                 "CREATE CONSTRAINT cve_id IF NOT EXISTS FOR (c:CVE) REQUIRE c.cve_id IS UNIQUE",
                 "CREATE CONSTRAINT cwe_id IF NOT EXISTS FOR (w:CWE) REQUIRE w.cwe_id IS UNIQUE",
+                # Web application layer
+                "CREATE CONSTRAINT baseurl_id IF NOT EXISTS FOR (b:BaseURL) REQUIRE b.baseurl_id IS UNIQUE",
+                "CREATE CONSTRAINT endpoint_id IF NOT EXISTS FOR (e:Endpoint) REQUIRE e.endpoint_id IS UNIQUE",
+                "CREATE CONSTRAINT parameter_id IF NOT EXISTS FOR (p:Parameter) REQUIRE p.parameter_id IS UNIQUE",
             ]
             
             for constraint in constraints:
@@ -131,6 +141,10 @@ class GraphService:
                 "CREATE INDEX vuln_org IF NOT EXISTS FOR (v:Vulnerability) ON (v.organization_id)",
                 # Technology indexes
                 "CREATE INDEX tech_categories IF NOT EXISTS FOR (t:Technology) ON (t.categories)",
+                # Web application layer
+                "CREATE INDEX baseurl_org IF NOT EXISTS FOR (b:BaseURL) ON (b.organization_id)",
+                "CREATE INDEX endpoint_org IF NOT EXISTS FOR (e:Endpoint) ON (e.organization_id)",
+                "CREATE INDEX parameter_org IF NOT EXISTS FOR (p:Parameter) ON (p.organization_id)",
             ]
             
             for index in indexes:
@@ -425,6 +439,108 @@ class GraphService:
                         "cve_id": vuln.cve_id,
                         "cwe_id": vuln.cwe_id,
                     })
+            
+            # ===== 7b. FOUND_AT: link vulnerability to Endpoint when url/path known (web layer) =====
+            path_for_endpoint = None
+            meta = getattr(vuln, 'metadata_', None) or {}
+            if isinstance(meta, dict):
+                if meta.get('path'):
+                    path_for_endpoint = (meta.get('path') or '').strip()
+                elif meta.get('url'):
+                    path_for_endpoint = urlparse(meta['url']).path or ''
+            if not path_for_endpoint and getattr(vuln, 'evidence', None):
+                try:
+                    path_for_endpoint = urlparse(str(vuln.evidence)).path or ''
+                except Exception:
+                    pass
+            if path_for_endpoint:
+                path_for_endpoint = path_for_endpoint.strip()[:2000]
+                endpoint_id = "ep_" + hashlib.sha256(f"{org_id}:{asset.id}:{path_for_endpoint}".encode()).hexdigest()[:20]
+                session.run("""
+                    MATCH (v:Vulnerability {vuln_id: $vuln_id})
+                    MATCH (a:Asset {asset_id: $asset_id})-[:HAS_ENDPOINT]->(e:Endpoint {endpoint_id: $endpoint_id})
+                    MERGE (v)-[:FOUND_AT]->(e)
+                """, {"vuln_id": vuln.id, "asset_id": asset.id, "endpoint_id": endpoint_id})
+        
+        # ===== 8. BASEURL (live HTTP endpoint) =====
+        live_url = getattr(asset, 'live_url', None) or (asset.value if getattr(asset, 'asset_type', None) and str(getattr(asset.asset_type, 'value', '')) == 'URL' else None)
+        if live_url:
+            baseurl_id = f"url_{org_id}_{asset.id}"
+            http_headers = getattr(asset, 'http_headers', None) or {}
+            server = http_headers.get('Server') or http_headers.get('server') if isinstance(http_headers, dict) else None
+            session.run("""
+                MATCH (a:Asset {asset_id: $asset_id})
+                MERGE (b:BaseURL {baseurl_id: $baseurl_id})
+                SET b.url = $url,
+                    b.status_code = $status_code,
+                    b.title = $title,
+                    b.server = $server,
+                    b.organization_id = $org_id
+                MERGE (a)-[:SERVES_URL]->(b)
+            """, {
+                "asset_id": asset.id,
+                "baseurl_id": baseurl_id,
+                "url": live_url,
+                "status_code": getattr(asset, 'http_status', None),
+                "title": getattr(asset, 'http_title', None),
+                "server": server,
+                "org_id": org_id,
+            })
+            # Link Service (80/443) to BaseURL when present
+            session.run("""
+                MATCH (a:Asset {asset_id: $asset_id})-[:HAS_PORT]->(p:Port)
+                WHERE p.port IN [80, 443]
+                WITH p LIMIT 1
+                MATCH (p)-[:RUNS_SERVICE]->(s:Service)
+                MATCH (b:BaseURL {baseurl_id: $baseurl_id})
+                MERGE (s)-[:SERVES_URL]->(b)
+            """, {"asset_id": asset.id, "baseurl_id": baseurl_id})
+        
+        # ===== 9. ENDPOINTS (discovered paths from Katana, ParamSpider, Wayback) =====
+        endpoints = getattr(asset, 'endpoints', None) or []
+        for path in endpoints[:500]:  # Cap for sync performance
+            if not path or not isinstance(path, str):
+                continue
+            path_strip = path.strip()
+            if not path_strip:
+                continue
+            endpoint_id = "ep_" + hashlib.sha256(f"{org_id}:{asset.id}:{path_strip}".encode()).hexdigest()[:20]
+            session.run("""
+                MATCH (a:Asset {asset_id: $asset_id})
+                MERGE (e:Endpoint {endpoint_id: $endpoint_id})
+                SET e.path = $path,
+                    e.source = $source,
+                    e.organization_id = $org_id
+                MERGE (a)-[:HAS_ENDPOINT]->(e)
+            """, {
+                "asset_id": asset.id,
+                "endpoint_id": endpoint_id,
+                "path": path_strip[:2000],
+                "source": "aggregated",
+                "org_id": org_id,
+            })
+        
+        # ===== 10. PARAMETERS (discovered params from Katana, ParamSpider) =====
+        parameters = getattr(asset, 'parameters', None) or []
+        for param_name in parameters[:300]:
+            if param_name is None:
+                continue
+            name_str = str(param_name).strip()
+            if not name_str:
+                continue
+            parameter_id = "pm_" + hashlib.sha256(f"{org_id}:{asset.id}:{name_str}".encode()).hexdigest()[:20]
+            session.run("""
+                MATCH (a:Asset {asset_id: $asset_id})
+                MERGE (p:Parameter {parameter_id: $parameter_id})
+                SET p.name = $name,
+                    p.organization_id = $org_id
+                MERGE (a)-[:HAS_PARAMETER]->(p)
+            """, {
+                "asset_id": asset.id,
+                "parameter_id": parameter_id,
+                "name": name_str[:500],
+                "org_id": org_id,
+            })
     
     def _get_label_for_type(self, asset_type: AssetType) -> str:
         """Get Neo4j node label for an asset type."""
