@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.db.database import get_db
 from app.models.organization import Organization
 from app.models.asset import Asset
+from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.vulnerability import Vulnerability, Severity
 from app.models.user import User
 from app.models.project_settings import ProjectSettings, ALL_MODULES, get_default_config
@@ -20,6 +21,7 @@ from app.schemas.organization import (
     DiscoverySettingsResponse,
 )
 from app.api.deps import get_current_active_user, require_admin
+from app.api.routes.scans import send_scan_to_sqs
 
 router = APIRouter(prefix="/organizations", tags=["Organizations"])
 
@@ -92,6 +94,29 @@ def create_organization(
     db.commit()
     db.refresh(new_org)
     ProjectSettings.ensure_defaults(db, new_org.id)
+
+    # Kick off TLD/domain discovery for the org so we find all domains owned by the organization.
+    # After this runs, subdomain enumeration and other processes can use the discovered domains.
+    if new_org.domain and new_org.domain.strip():
+        domain = new_org.domain.strip().lower()
+        tld_scan = Scan(
+            name=f"TLD discovery: {domain}",
+            scan_type=ScanType.TLDFINDER,
+            organization_id=new_org.id,
+            targets=[domain],
+            config={
+                "discovery_mode": "domain",
+                "max_time_minutes": 10,
+                "triggered_by": "organization_created",
+            },
+            started_by=current_user.username,
+            status=ScanStatus.PENDING,
+        )
+        db.add(tld_scan)
+        db.commit()
+        db.refresh(tld_scan)
+        send_scan_to_sqs(tld_scan)
+
     return build_org_response(db, new_org)
 
 

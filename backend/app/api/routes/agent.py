@@ -11,8 +11,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from sqlalchemy.orm import Session
+
 from app.api.deps import get_current_user
+from app.db.database import get_db
 from app.models.user import User
+from app.models.organization import Organization
 from app.services.agent.orchestrator import get_agent_orchestrator
 from app.core.config import settings
 
@@ -64,10 +68,23 @@ class AgentResponse(BaseModel):
 # REST ENDPOINTS
 # =============================================================================
 
+def _resolve_agent_organization_id(current_user: User, db: Session):
+    """Resolve organization_id for agent: user's org, or first org for superusers without org."""
+    org_id = getattr(current_user, "organization_id", None)
+    if org_id:
+        return org_id
+    if getattr(current_user, "is_superuser", False):
+        first_org = db.query(Organization).order_by(Organization.id).first()
+        if first_org:
+            return first_org.id
+    return None
+
+
 @router.post("/query", response_model=AgentResponse)
 async def query_agent(
     request: AgentQueryRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Send a query to the AI security agent.
@@ -95,12 +112,12 @@ async def query_agent(
     # Generate session ID if not provided
     session_id = request.session_id or str(uuid.uuid4())
     
-    # Get user's organization
-    org_id = current_user.organization_id if hasattr(current_user, 'organization_id') else None
+    # Get user's organization (or first org for superusers without an org)
+    org_id = _resolve_agent_organization_id(current_user, db)
     if not org_id:
         raise HTTPException(
             status_code=400,
-            detail="User must belong to an organization to use the agent"
+            detail="User must belong to an organization to use the agent. Ask an admin to assign you to an organization in Settings → Users, or create an organization first."
         )
     
     result = await orchestrator.invoke(
@@ -131,7 +148,8 @@ async def query_agent(
 @router.post("/approve", response_model=AgentResponse)
 async def approve_phase_transition(
     request: AgentApprovalRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Respond to a phase transition approval request.
@@ -155,9 +173,12 @@ async def approve_phase_transition(
     
     orchestrator = await get_agent_orchestrator()
     
-    org_id = current_user.organization_id if hasattr(current_user, 'organization_id') else None
+    org_id = _resolve_agent_organization_id(current_user, db)
     if not org_id:
-        raise HTTPException(status_code=400, detail="User must belong to an organization")
+        raise HTTPException(
+            status_code=400,
+            detail="User must belong to an organization to use the agent. Ask an admin to assign you in Settings → Users."
+        )
     
     result = await orchestrator.resume_after_approval(
         session_id=request.session_id,
@@ -188,7 +209,8 @@ async def approve_phase_transition(
 @router.post("/answer", response_model=AgentResponse)
 async def answer_agent_question(
     request: AgentAnswerRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Answer a question from the AI agent.
@@ -201,9 +223,12 @@ async def answer_agent_question(
     
     orchestrator = await get_agent_orchestrator()
     
-    org_id = current_user.organization_id if hasattr(current_user, 'organization_id') else None
+    org_id = _resolve_agent_organization_id(current_user, db)
     if not org_id:
-        raise HTTPException(status_code=400, detail="User must belong to an organization")
+        raise HTTPException(
+            status_code=400,
+            detail="User must belong to an organization to use the agent. Ask an admin to assign you in Settings → Users."
+        )
     
     result = await orchestrator.resume_after_answer(
         session_id=request.session_id,

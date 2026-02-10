@@ -527,6 +527,36 @@ async def get_app_structure_by_asset(
         if scan_has_data:
             scans_with_data += 1
     
+    # Merge paths/URLs stored on the asset itself (endpoints, login_portals, parameters, js_files).
+    # Same host, different paths — all belong in this asset's App Structure.
+    from urllib.parse import urlparse
+    if getattr(asset, 'endpoints', None):
+        for p in asset.endpoints:
+            if not p:
+                continue
+            s = (p if isinstance(p, str) else str(p)).strip()
+            if s.startswith('/'):
+                all_paths.add(s)
+            elif '://' in s and asset_value in s.lower():
+                all_paths.add(urlparse(s).path or '/')
+                all_urls.add(s)
+            else:
+                all_paths.add(s)
+    if getattr(asset, 'login_portals', None):
+        for entry in asset.login_portals:
+            url = entry.get('url') if isinstance(entry, dict) else entry
+            if url:
+                all_urls.add(url)
+                path = (urlparse(url).path or '/').strip() or '/'
+                all_paths.add(path)
+                all_interesting.add(url)
+    if getattr(asset, 'parameters', None):
+        all_params.update(asset.parameters)
+    if getattr(asset, 'js_files', None):
+        for j in asset.js_files:
+            if j and asset_value in j.lower():
+                all_js.add(j)
+    
     return AppStructureResponse(
         summary=AppStructureSummary(
             total_paths=len(all_paths),

@@ -75,6 +75,7 @@ def send_scan_to_sqs(scan: Scan) -> bool:
         ScanType.PARAMSPIDER: 'PARAMSPIDER',
         ScanType.WAYBACKURLS: 'WAYBACKURLS',
         ScanType.KATANA: 'KATANA',
+        ScanType.TLDFINDER: 'TLDFINDER',
         ScanType.CLEANUP: 'CLEANUP',
     }
     

@@ -155,6 +155,24 @@ const assetColors: Record<string, string> = {
 
 const PAGE_SIZE = 100; // Assets per page
 
+/** Extract host for grouping: from URL value (hostname) or asset value/name. */
+function getHost(asset: Asset): string {
+  const type = (asset.asset_type || asset.type || '').toLowerCase();
+  const value = (asset.value || asset.name || '').trim();
+  if (type === 'url' && value) {
+    try {
+      const u = value.startsWith('http') ? new URL(value) : new URL(`https://${value}`);
+      return u.hostname;
+    } catch {
+      return value;
+    }
+  }
+  return value || '';
+}
+
+/** Row can be a single asset or a group of assets by host (for consolidated view). */
+type AssetRow = Asset | { _group: true; host: string; assets: Asset[]; representative: Asset };
+
 export default function AssetsPage() {
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -164,6 +182,7 @@ export default function AssetsPage() {
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [liveFilter, setLiveFilter] = useState<string>('live'); // Default to live assets
+  const [viewMode, setViewMode] = useState<'all' | 'by_host'>('by_host'); // Consolidated by host by default
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [sortColumn, setSortColumn] = useState<string>('');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
@@ -351,8 +370,8 @@ export default function AssetsPage() {
     fetchData(1);
   }, []);
 
-  // Filter and sort assets
-  const displayedAssets = useMemo(() => {
+  // Filter and sort assets; optionally group by host for consolidated view
+  const displayedAssets = useMemo((): AssetRow[] => {
     let filtered = assets.filter(asset => {
       const matchesType = typeFilter === 'all' || asset.asset_type === typeFilter || asset.type === typeFilter;
       const matchesStatus = statusFilter === 'all' || asset.status === statusFilter;
@@ -375,8 +394,42 @@ export default function AssetsPage() {
       });
     }
 
-    return filtered;
-  }, [assets, typeFilter, statusFilter, search, sortColumn, sortDirection]);
+    if (viewMode !== 'by_host') return filtered;
+
+    // Group by host for consolidated view: one row per host; URL assets grouped under host
+    const byHost = new Map<string, Asset[]>();
+    for (const asset of filtered) {
+      const host = getHost(asset);
+      if (!host) continue;
+      const key = host.toLowerCase();
+      if (!byHost.has(key)) byHost.set(key, []);
+      byHost.get(key)!.push(asset);
+    }
+
+    const rows: AssetRow[] = [];
+    byHost.forEach((groupAssets, hostKey) => {
+      const first = groupAssets[0];
+      if (groupAssets.length === 1) {
+        rows.push(first);
+      } else {
+        // Multiple assets for same host: show one consolidated row per host
+        const representative = groupAssets[0];
+        const hostDisplay = first.value?.startsWith('http') ? (() => { try { return new URL(first.value).hostname; } catch { return first.value || hostKey; } })() : (first.value || first.name || hostKey);
+        rows.push({ _group: true, host: hostDisplay, assets: groupAssets, representative });
+      }
+    });
+
+    // Sort rows by host when in by_host view
+    rows.sort((a, b) => {
+      const aHost = '_group' in a ? a.host : getHost(a);
+      const bHost = '_group' in b ? b.host : getHost(b);
+      if (sortColumn === 'hostname' || sortColumn === '') {
+        return sortDirection === 'asc' ? aHost.localeCompare(bHost) : bHost.localeCompare(aHost);
+      }
+      return 0;
+    });
+    return rows;
+  }, [assets, typeFilter, statusFilter, search, sortColumn, sortDirection, viewMode]);
 
   const handleSort = (column: string) => {
     if (sortColumn === column) {
@@ -418,25 +471,38 @@ export default function AssetsPage() {
   const toggleAssetSelection = (assetId: number) => {
     setSelectedAssets(prev => {
       const next = new Set(prev);
-      if (next.has(assetId)) {
-        next.delete(assetId);
-      } else {
-        next.add(assetId);
-      }
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+  };
+
+  const toggleGroupSelection = (groupRow: { assets: Asset[] }) => {
+    const ids = groupRow.assets.map((a) => a.id);
+    const allSelected = ids.every((id) => selectedAssets.has(id));
+    setSelectedAssets(prev => {
+      const next = new Set(prev);
+      if (allSelected) ids.forEach((id) => next.delete(id));
+      else ids.forEach((id) => next.add(id));
       return next;
     });
   };
 
   const selectAll = () => {
-    setSelectedAssets(new Set(displayedAssets.map(a => a.id)));
+    const ids = displayedAssets.flatMap((row) => '_group' in row ? row.assets.map((a) => a.id) : [row.id]);
+    setSelectedAssets(new Set(ids));
   };
 
   const deselectAll = () => {
     setSelectedAssets(new Set());
   };
 
-  const isAllSelected = displayedAssets.length > 0 && selectedAssets.size === displayedAssets.length;
-  const isSomeSelected = selectedAssets.size > 0 && selectedAssets.size < displayedAssets.length;
+  const displayedAssetIds = useMemo(
+    () => displayedAssets.flatMap((row) => ('_group' in row ? row.assets.map((a) => a.id) : [row.id])),
+    [displayedAssets]
+  );
+  const isAllSelected = displayedAssetIds.length > 0 && displayedAssetIds.every((id) => selectedAssets.has(id));
+  const isSomeSelected = selectedAssets.size > 0 && !isAllSelected;
 
   const handleBulkDelete = async () => {
     if (selectedAssets.size === 0) return;
@@ -509,6 +575,7 @@ export default function AssetsPage() {
   };
 
   const handleFilterChange = (key: string, value: string) => {
+    if (key === 'view') setViewMode(value as 'all' | 'by_host');
     if (key === 'type') setTypeFilter(value);
     if (key === 'status') setStatusFilter(value);
     if (key === 'organization') setOrgFilter(value);
@@ -544,6 +611,14 @@ export default function AssetsPage() {
   };
 
   const filters: FilterOption[] = [
+    {
+      key: 'view',
+      label: 'View',
+      options: [
+        { label: 'By host (consolidated)', value: 'by_host' },
+        { label: 'All assets', value: 'all' },
+      ],
+    },
     {
       key: 'organization',
       label: 'Organization',
@@ -901,7 +976,7 @@ export default function AssetsPage() {
           onRefresh={fetchData}
           isLoading={loading}
           filters={filters}
-          filterValues={{ organization: orgFilter, live: liveFilter, type: typeFilter, status: statusFilter }}
+          filterValues={{ view: viewMode, organization: orgFilter, live: liveFilter, type: typeFilter, status: statusFilter }}
           onFilterChange={handleFilterChange}
         >
           <Card className="overflow-hidden">
@@ -954,23 +1029,26 @@ export default function AssetsPage() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  displayedAssets.map((asset) => {
+                  displayedAssets.map((row) => {
+                    const isGroup = '_group' in row;
+                    const asset: Asset = isGroup ? row.representative : row;
                     const assetType = asset.type || asset.asset_type || 'domain';
                     const Icon = assetIcons[assetType] || Globe;
                     const isSelected = selectedAssets.has(asset.id);
+                    const groupCount = isGroup ? row.assets.length : 0;
 
                     return (
                       <TableRow 
-                        key={asset.id} 
+                        key={isGroup ? `host-${row.host}` : asset.id} 
                         className={`border-border cursor-pointer transition-colors hover:bg-secondary/50 ${isSelected ? 'bg-primary/5' : ''}`}
                         onClick={() => router.push(`/assets/${asset.id}`)}
                       >
                         {/* Checkbox */}
                         <TableCell onClick={(e) => e.stopPropagation()}>
                           <Checkbox
-                            checked={isSelected}
-                            onCheckedChange={() => toggleAssetSelection(asset.id)}
-                            aria-label={`Select ${asset.value}`}
+                            checked={isGroup ? row.assets.every((a) => selectedAssets.has(a.id)) : isSelected}
+                            onCheckedChange={() => (isGroup ? toggleGroupSelection(row) : toggleAssetSelection(asset.id))}
+                            aria-label={isGroup ? `Select ${row.host}` : `Select ${asset.value}`}
                           />
                         </TableCell>
                         {/* Screenshot */}
@@ -1013,13 +1091,29 @@ export default function AssetsPage() {
                           </TableCell>
                         )}
 
-                        {/* Value/Name */}
+                        {/* Value/Name (host; for groups show host + N URLs) */}
                         {columns.find(c => c.key === 'hostname')?.visible && (
                           <TableCell>
                             <div className="flex items-center gap-2">
                               {(() => {
+                                if (isGroup) {
+                                  const host = row.host;
+                                  const href = `https://${host}`;
+                                  return (
+                                    <a
+                                      href={href}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="font-mono text-sm text-foreground hover:text-primary flex items-center gap-2"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {host}
+                                      <span className="text-xs text-muted-foreground font-normal">({groupCount} URL{groupCount !== 1 ? 's' : ''})</span>
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  );
+                                }
                                 const value = asset.value || asset.name;
-                                // Build proper URL - don't double-add protocol
                                 let href = value;
                                 if (value && !value.startsWith('http://') && !value.startsWith('https://')) {
                                   href = `https://${value}`;
