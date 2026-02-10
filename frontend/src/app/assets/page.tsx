@@ -441,18 +441,23 @@ export default function AssetsPage() {
   };
 
   const handleExport = () => {
+    const rowToAsset = (row: AssetRow): Asset =>
+      '_group' in row ? row.representative : row;
     const csv = [
       ['Type', 'Host', 'IP Address', 'Labels', 'Status', 'Findings', 'Last Seen'],
-      ...displayedAssets.map(a => [
-        a.type || a.asset_type,
-        a.name || a.value,
-        a.ip_address || '',
-        a.tags?.join('; ') || '',
-        a.status,
-        (a.findingsCount || 0).toString(),
-        a.created_at,
-      ]),
-    ].map(row => row.join(',')).join('\n');
+      ...displayedAssets.map((row: AssetRow) => {
+        const a = rowToAsset(row);
+        return [
+          a.type ?? a.asset_type ?? '',
+          a.name || a.value,
+          a.ip_address || '',
+          a.tags?.join('; ') || '',
+          a.status,
+          (a.findingsCount || 0).toString(),
+          a.created_at,
+        ];
+      }),
+    ].map(r => r.join(',')).join('\n');
     
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
