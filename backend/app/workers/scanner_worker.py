@@ -2191,6 +2191,8 @@ class ScannerWorker:
         
         include_subdomains = config.get('include_subdomains', True)
         use_wayback = config.get('use_wayback', True)
+        # Per-domain timeout (seconds). Prevents scan from running >60min and being marked stale.
+        timeout_seconds = config.get('timeout_seconds', 600)  # 10 min per domain default
         
         db = self.get_db_session()
         if not db:
@@ -2220,12 +2222,19 @@ class ScannerWorker:
                     continue  # Skip IPs/CIDRs
                 
                 logger.info(f"Scanning {target} for login portals")
-                
-                result = await portal_service.detect_login_portals(
-                    domain=target,
-                    include_subdomains=include_subdomains,
-                    use_wayback=use_wayback
-                )
+                try:
+                    result = await asyncio.wait_for(
+                        portal_service.detect_login_portals(
+                            domain=target,
+                            include_subdomains=include_subdomains,
+                            use_wayback=use_wayback,
+                            timeout=timeout_seconds,
+                        ),
+                        timeout=timeout_seconds + 30,  # Slightly over so service can return timeout error
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Login portal scan timed out for {target} after {timeout_seconds}s")
+                    result = {"portals": [], "error": f"Timed out after {timeout_seconds} seconds"}
                 
                 portals = result.get("portals", [])
                 total_portals += len(portals)
@@ -2740,23 +2749,67 @@ class ScannerWorker:
             if not katana.is_available():
                 raise Exception("Katana not installed. Install: go install github.com/projectdiscovery/katana/cmd/katana@latest")
             
-            # If no specific targets, get live domains from the organization
-            # Use live_url when available (from HTTP probe), otherwise fall back to domain
+            # If no specific targets, get crawlable domains from the organization.
+            # Prefer live/probed assets; if none, use any domain/subdomain so JS scan can run.
             if not targets:
+                limit = config.get('max_targets', 50)
+                # 1) Prefer assets that are known live (HTTP-probed) or have a live_url
                 live_assets = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
                     Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
                     Asset.is_live == True
-                ).limit(config.get('max_targets', 50)).all()
-                # Prefer live_url (the actual responding URL) over just the domain name
-                targets = [a.live_url or f"https://{a.value}" for a in live_assets]
-            
+                ).limit(limit).all()
+                if live_assets:
+                    targets = [getattr(a, 'live_url', None) or f"https://{a.value}" for a in live_assets]
+                else:
+                    # 2) No live assets: use any domain/subdomain so Katana has something to crawl
+                    any_assets = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                        Asset.value.isnot(None),
+                        Asset.value != ""
+                    ).limit(limit).all()
+                    targets = [getattr(a, 'live_url', None) or f"https://{a.value}" for a in any_assets]
+                if not targets:
+                    logger.warning(
+                        "Katana: no targets and no domain/subdomain assets for org %s. "
+                        "Run discovery or add domains to an organization.",
+                        organization_id,
+                    )
+                    if scan:
+                        scan.status = ScanStatus.COMPLETED
+                        scan.completed_at = datetime.utcnow()
+                        scan.current_step = None
+                        scan.assets_discovered = 0
+                        scan.results = {
+                            "error": "No crawlable targets. Add domain/subdomain assets (run Discovery) or set explicit targets on the schedule.",
+                            "targets_crawled": 0,
+                        }
+                        db.commit()
+                    return
+
+            # Normalize to URLs (Katana expects http(s) URLs)
+            normalized = []
+            for t in targets:
+                t = (t or "").strip()
+                if not t:
+                    continue
+                if not t.startswith(("http://", "https://")):
+                    t = f"https://{t}"
+                normalized.append(t)
+            targets = normalized
+
             # Limit targets to prevent excessively long scans
             max_targets = config.get('max_targets', 20)  # Reduced from 50
             if len(targets) > max_targets:
                 logger.info(f"Limiting Katana scan from {len(targets)} to {max_targets} targets")
                 targets = targets[:max_targets]
-            
+
+            # Persist resolved targets to scan record so UI shows what was crawled
+            if scan and targets:
+                scan.targets = targets
+                db.commit()
+
             logger.info(f"Running Katana on {len(targets)} targets with depth={config.get('depth', 3)}")
             
             total_urls = 0

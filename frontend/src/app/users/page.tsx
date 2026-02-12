@@ -45,11 +45,13 @@ interface User {
   full_name: string;
   role: string;
   is_active: boolean;
+  organization_id: number | null;
   created_at: string;
 }
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
+  const [organizations, setOrganizations] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -59,6 +61,7 @@ export default function UsersPage() {
     password: '',
     full_name: '',
     role: 'analyst',
+    organization_id: '' as string,
   });
   const { toast } = useToast();
   const { user: currentUser } = useAuth();
@@ -70,7 +73,17 @@ export default function UsersPage() {
       return;
     }
     fetchUsers();
+    fetchOrganizations();
   }, [currentUser, router]);
+
+  const fetchOrganizations = async () => {
+    try {
+      const data = await api.getOrganizations();
+      setOrganizations(Array.isArray(data) ? data : []);
+    } catch {
+      setOrganizations([]);
+    }
+  };
 
   const fetchUsers = async () => {
     try {
@@ -99,13 +112,25 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      await api.createUser(formData);
+      const payload: Parameters<typeof api.createUser>[0] = {
+        email: formData.email,
+        username: formData.username,
+        password: formData.password,
+        full_name: formData.full_name,
+        role: formData.role,
+      };
+      if (formData.organization_id) {
+        payload.organization_id = parseInt(formData.organization_id, 10);
+      } else {
+        payload.organization_id = null;
+      }
+      await api.createUser(payload);
       toast({
         title: 'Success',
         description: 'User created successfully',
       });
       setCreateDialogOpen(false);
-      setFormData({ email: '', username: '', password: '', full_name: '', role: 'analyst' });
+      setFormData({ email: '', username: '', password: '', full_name: '', role: 'analyst', organization_id: '' });
       fetchUsers();
     } catch (error: any) {
       toast({
@@ -216,6 +241,29 @@ export default function UsersPage() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                <div className="space-y-2">
+                  <Label>Organization</Label>
+                  <Select
+                    value={formData.organization_id || 'none'}
+                    onValueChange={(value) => setFormData({ ...formData, organization_id: value === 'none' ? '' : value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="No organization (no data access)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No organization</SelectItem>
+                      {organizations.map((org) => (
+                        <SelectItem key={org.id} value={String(org.id)}>
+                          {org.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    User will only see assets and scans for this organization. Leave unset for no access.
+                  </p>
+                </div>
               </div>
 
               <DialogFooter>
@@ -244,6 +292,7 @@ export default function UsersPage() {
                 <TableHead>Name</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Role</TableHead>
+                <TableHead>Organization</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
               </TableRow>
@@ -251,13 +300,13 @@ export default function UsersPage() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8">
+                  <TableCell colSpan={6} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : users.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                     No users found.
                   </TableCell>
                 </TableRow>
@@ -268,6 +317,11 @@ export default function UsersPage() {
                     <TableCell>{user.email}</TableCell>
                     <TableCell>
                       <Badge className={getRoleColor(user.role)}>{user.role}</Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {user.organization_id
+                        ? organizations.find((o) => o.id === user.organization_id)?.name ?? `Org #${user.organization_id}`
+                        : '—'}
                     </TableCell>
                     <TableCell>
                       <Badge variant={user.is_active ? 'default' : 'secondary'}>

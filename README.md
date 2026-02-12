@@ -343,14 +343,16 @@ git commit -m "Your message"
 git push origin main   # or your branch, e.g. origin master
 ```
 
-If you use **AWS CodeCommit** instead of GitHub:
+If you use **AWS CodeCommit** (in addition to or instead of GitHub):
 
 ```bash
-# One-time: add CodeCommit as remote (replace with your repo URL)
-git remote add aws https://git-codecommit.us-east-1.amazonaws.com/v1/repos/your-repo-name
-# Push
+# One-time: add CodeCommit as remote (replace region and repo name)
+git remote add aws https://git-codecommit.us-east-1.amazonaws.com/v1/repos/theforcesecurity_ASM
+# Push to AWS
 git push aws main
 ```
+
+**Push from your machine:** Run `git push origin main` (or `git push aws main`) in your own terminal or Cursor terminal so your GitHub/CodeCommit credentials or SSH keys are used. If push fails with "could not read Username", use SSH: `git remote set-url origin git@github.com:javrav2/theforcesecurity_ASM.git` then push again (requires [SSH key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh) added to GitHub).
 
 **2. On the EC2 instance** (single-instance / Docker Compose):
 

@@ -15,23 +15,27 @@ from app.models.asset import Asset, AssetType
 from app.models.vulnerability import Vulnerability, Severity
 from app.models.port_service import PortService
 from app.models.technology import Technology
+from app.models.agent_note import AgentNote
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Context variables for tenant isolation
+# Context variables for tenant isolation and session
 current_user_id: ContextVar[Optional[int]] = ContextVar('current_user_id', default=None)
 current_organization_id: ContextVar[Optional[int]] = ContextVar('current_organization_id', default=None)
+current_session_id: ContextVar[Optional[str]] = ContextVar('current_session_id', default=None)
 
 
-def set_tenant_context(user_id: int, organization_id: int) -> None:
+def set_tenant_context(user_id: int, organization_id: int, session_id: Optional[str] = None) -> None:
     """Set the current tenant context for tool execution."""
     current_user_id.set(user_id)
     current_organization_id.set(organization_id)
+    if session_id is not None:
+        current_session_id.set(session_id)
 
 
 def get_tenant_context() -> tuple:
-    """Get the current tenant context."""
+    """Get the current tenant context (user_id, organization_id)."""
     return current_user_id.get(), current_organization_id.get()
 
 
@@ -61,6 +65,9 @@ class ASMToolsManager:
             "analyze_attack_surface": self.analyze_attack_surface,
             "get_asset_details": self.get_asset_details,
             "search_cve": self.search_cve,
+            # Session notes
+            "save_note": self.save_note,
+            "get_notes": self.get_notes,
             # MCP Security Tools (delegated)
             "execute_nuclei": self.execute_mcp_tool,
             "execute_naabu": self.execute_mcp_tool,
@@ -598,6 +605,75 @@ class ASMToolsManager:
             return result
         finally:
             db.close()
+
+    async def save_note(
+        self,
+        category: str,
+        content: str,
+        target: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Save a session note (credential, vulnerability, finding, artifact). Uses current org/session from context."""
+        user_id, org_id = get_tenant_context()
+        session_id = current_session_id.get()
+        if not org_id:
+            return "Error: No organization context. save_note requires an active session."
+        db = SessionLocal()
+        try:
+            note = AgentNote(
+                organization_id=org_id,
+                user_id=user_id,
+                session_id=session_id,
+                category=category.strip().lower() if category else "finding",
+                content=content[:10000] if content else "",
+                target=target[:512] if target else None,
+            )
+            db.add(note)
+            db.commit()
+            return f"Saved note: category={note.category}, target={note.target or 'N/A'}"
+        except Exception as e:
+            db.rollback()
+            logger.exception("save_note failed")
+            return f"Error saving note: {e}"
+        finally:
+            db.close()
+
+    def get_session_notes(
+        self,
+        session_id: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> str:
+        """Return formatted session notes for prompt injection. Used by orchestrator or get_notes tool."""
+        _, org_id = get_tenant_context()
+        if not org_id:
+            return "No session notes (no organization context)."
+        db = SessionLocal()
+        try:
+            q = db.query(AgentNote).filter(AgentNote.organization_id == org_id)
+            if session_id:
+                q = q.filter(AgentNote.session_id == session_id)
+            if category:
+                q = q.filter(AgentNote.category == category.strip().lower())
+            notes = q.order_by(AgentNote.created_at.desc()).limit(50).all()
+            if not notes:
+                return "No session notes yet."
+            lines = []
+            for n in notes:
+                target_str = f" target={n.target}" if n.target else ""
+                lines.append(f"- [{n.category}]{target_str}: {n.content[:500]}{'...' if len(n.content) > 500 else ''}")
+            return "\n".join(lines)
+        finally:
+            db.close()
+
+    async def get_notes(
+        self,
+        session_id: Optional[str] = None,
+        category: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Get session notes (optionally filtered by category). Uses current session from context if session_id not provided."""
+        sid = session_id or current_session_id.get()
+        return self.get_session_notes(session_id=sid, category=category)
     
     async def execute_mcp_tool(self, tool_name: str = None, args: str = "", **kwargs) -> str:
         """

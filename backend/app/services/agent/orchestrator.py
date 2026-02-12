@@ -291,6 +291,8 @@ class AgentOrchestrator:
         if not objectives and latest_message:
             objectives = [ConversationObjective(content=latest_message).model_dump()]
         
+        todo_list = state.get("initial_todos") if state.get("initial_todos") else []
+        
         return {
             "current_iteration": 0,
             "max_iterations": settings.AGENT_MAX_ITERATIONS,
@@ -298,7 +300,7 @@ class AgentOrchestrator:
             "current_phase": "informational",
             "phase_history": [PhaseHistoryEntry(phase="informational").model_dump()],
             "execution_trace": [],
-            "todo_list": [],
+            "todo_list": todo_list,
             "conversation_objectives": objectives,
             "current_objective_index": 0,
             "objective_history": [],
@@ -319,14 +321,25 @@ class AgentOrchestrator:
         
         logger.info(f"[{user_id}] Think node - iteration {iteration}, phase: {phase}")
         
-        # Set tenant context for tools
+        # Set tenant context for tools (including session_id for save_note/get_notes)
+        session_id = state.get("session_id")
         if org_id:
-            set_tenant_context(int(user_id) if user_id.isdigit() else 0, org_id)
+            set_tenant_context(
+                int(user_id) if user_id.isdigit() else 0,
+                org_id,
+                session_id=session_id,
+            )
         
         # Get current objective
         objectives = state.get("conversation_objectives", [])
         current_idx = state.get("current_objective_index", 0)
         current_objective = objectives[current_idx].get("content", "") if current_idx < len(objectives) else state.get("original_objective", "")
+        
+        # Session notes for prompt
+        session_notes = (
+            self.tool_manager.get_session_notes(session_id=session_id)
+            if self.tool_manager else "No session notes."
+        )
         
         # Build prompt
         execution_trace_formatted = format_execution_trace(state.get("execution_trace", []))
@@ -346,6 +359,7 @@ class AgentOrchestrator:
             execution_trace=execution_trace_formatted,
             todo_list=todo_list_formatted,
             target_info=target_info_formatted,
+            session_notes=session_notes,
             qa_history=qa_history_formatted,
         )
         
@@ -437,9 +451,13 @@ class AgentOrchestrator:
             step_data["success"] = False
             return {"_current_step": step_data}
         
-        # Set tenant context
+        # Set tenant context (including session_id for save_note)
         if org_id:
-            set_tenant_context(int(user_id) if user_id.isdigit() else 0, org_id)
+            set_tenant_context(
+                int(user_id) if user_id.isdigit() else 0,
+                org_id,
+                session_id=state.get("session_id"),
+            )
         
         # Check phase restriction
         if not is_tool_allowed_in_phase(tool_name, phase):
@@ -747,7 +765,8 @@ class AgentOrchestrator:
         question: str,
         user_id: str,
         organization_id: int,
-        session_id: str
+        session_id: str,
+        initial_todos: Optional[List[Dict[str, Any]]] = None,
     ) -> InvokeResponse:
         """Main entry point for agent invocation."""
         if not self._initialized:
@@ -766,6 +785,8 @@ class AgentOrchestrator:
                 "organization_id": organization_id,
                 "session_id": session_id,
             }
+            if initial_todos is not None:
+                input_data["initial_todos"] = initial_todos
             
             final_state = await self.graph.ainvoke(input_data, config)
             return self._build_response(final_state)

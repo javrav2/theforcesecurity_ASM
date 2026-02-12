@@ -7,9 +7,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
 import { MessageSquare, Send, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { api, getApiErrorMessage } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 
 type MessageRole = 'user' | 'agent';
 

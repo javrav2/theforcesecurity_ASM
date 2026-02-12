@@ -229,6 +229,9 @@ class AgentState(TypedDict, total=False):
     session_id: str
     organization_id: Optional[int]
     
+    # Initial input (playbook)
+    initial_todos: Optional[List[Dict[str, Any]]]
+    
     # Internal state
     _current_step: Optional[Dict[str, Any]]
     _decision: Optional[Dict[str, Any]]

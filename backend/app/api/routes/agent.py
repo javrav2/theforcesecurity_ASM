@@ -18,6 +18,7 @@ from app.db.database import get_db
 from app.models.user import User
 from app.models.organization import Organization
 from app.services.agent.orchestrator import get_agent_orchestrator
+from app.services.agent.playbooks import build_initial_objective, list_playbooks
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ class AgentQueryRequest(BaseModel):
     """Request to query the AI agent."""
     question: str
     session_id: Optional[str] = None
+    playbook_id: Optional[str] = None
+    target: Optional[str] = None
 
 
 class AgentApprovalRequest(BaseModel):
@@ -120,11 +123,19 @@ async def query_agent(
             detail="User must belong to an organization to use the agent. Ask an admin to assign you to an organization in Settings → Users, or create an organization first."
         )
     
+    question = request.question
+    initial_todos = None
+    if request.playbook_id:
+        objective, initial_todos = build_initial_objective(request.playbook_id, request.target)
+        if objective:
+            question = objective
+    
     result = await orchestrator.invoke(
-        question=request.question,
+        question=question,
         user_id=str(current_user.id),
         organization_id=org_id,
-        session_id=session_id
+        session_id=session_id,
+        initial_todos=initial_todos,
     )
     
     if result.error:
@@ -253,6 +264,12 @@ async def answer_agent_question(
         awaiting_question=result.awaiting_question,
         question_request=result.question_request,
     )
+
+
+@router.get("/playbooks")
+async def get_agent_playbooks():
+    """List preset playbook objectives for the agent (id, name, description)."""
+    return list_playbooks()
 
 
 @router.get("/status")

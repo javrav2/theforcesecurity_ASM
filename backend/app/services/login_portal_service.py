@@ -90,24 +90,28 @@ class LoginPortalService:
         start_time = datetime.utcnow()
         all_urls: Set[str] = set()
         login_urls: Set[str] = set()
-        
-        try:
+        # Cap per-domain time so the scan doesn't run for hours (and get marked stale)
+        effective_timeout = min(timeout, 600)  # max 10 min per domain by default
+
+        async def _run() -> Dict[str, Any]:
+            nonlocal all_urls, login_urls
             # Step 1: Get target URLs (subdomains + wayback)
             targets = [domain]
-            
+
             if include_subdomains:
-                subdomains = await self._enumerate_subdomains(domain, timeout=60)
+                subdomains = await self._enumerate_subdomains(domain, timeout=min(60, effective_timeout // 4))
                 targets.extend(subdomains)
                 logger.info(f"Found {len(subdomains)} subdomains for {domain}")
-            
+
             # Step 2: Probe for live hosts
-            live_hosts = await self._probe_hosts(targets, timeout=60)
+            live_hosts = await self._probe_hosts(targets, timeout=min(60, effective_timeout // 4))
             logger.info(f"Found {len(live_hosts)} live hosts")
-            
-            # Step 3: Get historical URLs from wayback
-            if use_wayback:
-                for host in live_hosts[:50]:  # Limit to avoid timeout
-                    wayback_urls = await self._get_wayback_urls(host, timeout=30)
+
+            # Step 3: Get historical URLs from wayback (limit hosts so we finish within timeout)
+            max_wayback_hosts = 15  # 15 * 20s ≈ 5 min max for wayback
+            if use_wayback and live_hosts:
+                for host in live_hosts[:max_wayback_hosts]:
+                    wayback_urls = await self._get_wayback_urls(host, timeout=20)
                     all_urls.update(wayback_urls)
                 logger.info(f"Found {len(all_urls)} URLs from wayback")
             
@@ -148,7 +152,17 @@ class LoginPortalService:
                 "elapsed_seconds": elapsed,
                 "patterns_used": len(LOGIN_PATTERNS)
             }
-            
+
+        try:
+            return await asyncio.wait_for(_run(), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"Login portal detection timed out for {domain} after {effective_timeout}s")
+            return {
+                "domain": domain,
+                "error": f"Timed out after {effective_timeout} seconds",
+                "portals": [],
+                "elapsed_seconds": effective_timeout
+            }
         except Exception as e:
             logger.error(f"Error detecting login portals for {domain}: {e}")
             return {

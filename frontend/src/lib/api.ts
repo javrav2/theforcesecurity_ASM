@@ -825,7 +825,7 @@ class ApiClient {
     return response.data;
   }
 
-  async createUser(data: { email: string; username: string; password: string; full_name: string; role?: string }) {
+  async createUser(data: { email: string; username: string; password: string; full_name: string; role?: string; organization_id?: number | null }) {
     const response = await this.client.post('/users', data);
     return response.data;
   }
@@ -1309,10 +1309,21 @@ class ApiClient {
     return response.data;
   }
 
-  async queryAgent(question: string, sessionId?: string) {
+  async getAgentPlaybooks(): Promise<{ id: string; name: string; description: string }[]> {
+    const response = await this.client.get('/agent/playbooks');
+    return response.data;
+  }
+
+  async queryAgent(
+    question: string,
+    sessionId?: string,
+    options?: { playbookId?: string; target?: string }
+  ) {
     const response = await this.client.post('/agent/query', {
       question,
       session_id: sessionId ?? undefined,
+      playbook_id: options?.playbookId ?? undefined,
+      target: options?.target ?? undefined,
     });
     return response.data;
   }

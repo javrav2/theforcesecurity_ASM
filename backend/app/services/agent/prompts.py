@@ -27,6 +27,9 @@ You help users understand their attack surface, analyze vulnerabilities, and pro
 ## Discovered Target Information
 {target_info}
 
+## Session Notes (findings saved this session; use save_note for important discoveries)
+{session_notes}
+
 ## Q&A History
 {qa_history}
 
@@ -70,6 +73,7 @@ Analyze the current state and decide on your next action. You MUST output a vali
 4. **Stay in scope** - Only analyze assets within the user's organization
 5. **Phase restrictions** - Some tools are only available in specific phases
 6. **Complete when done** - Set action to "complete" when the objective is achieved
+7. **Session notes** - Use **save_note** to persist important findings (credentials, vulnerabilities, artifacts) so they are remembered for the rest of the session. Categories: credential, vulnerability, finding, artifact.
 
 Output ONLY the JSON object, no other text.
 """
@@ -217,6 +221,8 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_tldfinder**: Run tldfinder for TLD/domain discovery (args: e.g. '-d example.com -dm domain -oJ')
 - **execute_waybackurls**: Fetch historical URLs from Wayback Machine (args: domain or CLI args)
 - **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**: Get CLI usage for each tool
+- **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
+- **get_notes**: Get session notes (optional category filter)
 """
 
     exploitation_tools = """
@@ -253,6 +259,8 @@ TOOL_PHASE_MAP = {
     "get_asset_details": ["informational", "exploitation", "post_exploitation"],
     "search_cve": ["informational", "exploitation", "post_exploitation"],
     "query_graph": ["informational", "exploitation", "post_exploitation"],
+    "save_note": ["informational", "exploitation", "post_exploitation"],
+    "get_notes": ["informational", "exploitation", "post_exploitation"],
     
     # MCP informational tools
     "execute_httpx": ["informational", "exploitation", "post_exploitation"],

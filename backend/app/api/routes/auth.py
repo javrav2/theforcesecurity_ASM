@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.user import UserCreate, UserResponse, UserLogin
 from app.schemas.token import Token
 from app.core.security import (
@@ -35,14 +35,14 @@ def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
             detail="User with this email or username already exists"
         )
     
-    # Create new user
+    # Create new user. Public registration cannot set role or organization — only admins via POST /users/ can.
     new_user = User(
         email=user_data.email,
         username=user_data.username,
         hashed_password=get_password_hash(user_data.password),
         full_name=user_data.full_name,
-        role=user_data.role,
-        organization_id=user_data.organization_id
+        role=UserRole.VIEWER,
+        organization_id=None,
     )
     
     db.add(new_user)
