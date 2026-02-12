@@ -2828,21 +2828,38 @@ class ScannerWorker:
                 scan.current_step = f"Deep crawling {len(targets)} targets (parallel)"
                 db.commit()
             
-            # Use crawl_multiple for parallel processing
-            results = await katana.crawl_multiple(
-                targets=targets,
-                max_concurrent=max_concurrent,
-                depth=config.get('depth', 3),  # Reduced default depth from 5 to 3
-                js_crawl=config.get('js_crawl', True),
-                form_extraction=config.get('form_extraction', True),
-                timeout=per_target_timeout,
-                rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
-                concurrency=config.get('concurrency', 10),
-            )
+            # Optional: one-liner style (URLs on stdin, one process) for JS collection / AI review
+            use_batch_stdin = config.get('batch_stdin', False)
+            depth = config.get('depth', 5)
+            if use_batch_stdin:
+                batch_result = await katana.crawl_batch_stdin(
+                    targets=targets,
+                    depth=depth,
+                    js_crawl=config.get('js_crawl', True),
+                    form_extraction=config.get('form_extraction', True),
+                    timeout=per_target_timeout,
+                    rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
+                    concurrency=config.get('concurrency', 10),
+                )
+                results = [batch_result] if batch_result.target == "stdin_batch" else []
+                # For batch we'll handle the single result below and set js_files_for_review
+            else:
+                results = await katana.crawl_multiple(
+                    targets=targets,
+                    max_concurrent=max_concurrent,
+                    depth=depth,
+                    js_crawl=config.get('js_crawl', True),
+                    form_extraction=config.get('form_extraction', True),
+                    timeout=per_target_timeout,
+                    rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
+                    concurrency=config.get('concurrency', 10),
+                )
             
             # Collect first error for scan results if all fail
             first_error = None
+            all_js_for_review = []  # Collect all JS URLs for AI/sensitive-data assessment
             # Process results and update assets
+            from urllib.parse import urlparse
             for result in results:
                 try:
                     if result.success:
@@ -2850,9 +2867,35 @@ class ScannerWorker:
                         total_endpoints += len(result.endpoints)
                         total_params += len(result.parameters)
                         total_js += len(result.js_files)
-                        
-                        # Extract target hostname (no port) for asset lookup
-                        from urllib.parse import urlparse
+                        all_js_for_review.extend(result.js_files)
+                        # Batch stdin: one result; attribute URLs to assets by hostname
+                        if result.target == "stdin_batch":
+                            seen_hosts = set()
+                            for js_url in result.js_files:
+                                try:
+                                    host = urlparse(js_url).netloc.split(":")[0]
+                                    if not host or host in seen_hosts:
+                                        continue
+                                    seen_hosts.add(host)
+                                    asset = db.query(Asset).filter(
+                                        Asset.organization_id == organization_id,
+                                        Asset.value == host
+                                    ).first()
+                                    if asset:
+                                        existing_js = set(asset.js_files or [])
+                                        for u in result.js_files:
+                                            if urlparse(u).netloc.split(":")[0] == host:
+                                                existing_js.add(u)
+                                        asset.js_files = sorted(existing_js)[:500]
+                                        if not asset.metadata_:
+                                            asset.metadata_ = {}
+                                        asset.metadata_["katana_last_scan"] = datetime.utcnow().isoformat()
+                                        asset.last_seen = datetime.utcnow()
+                                        assets_updated += 1
+                                except Exception:
+                                    pass
+                            continue
+                        # Per-target result: attribute to single asset
                         target = result.target
                         if target.startswith(('http://', 'https://')):
                             netloc = urlparse(target).netloc
@@ -2860,29 +2903,25 @@ class ScannerWorker:
                         else:
                             target = target.split(':')[0]
                         
-                        # Update the asset with discovered data (target is hostname without port)
                         asset = db.query(Asset).filter(
                             Asset.organization_id == organization_id,
                             Asset.value == target
                         ).first()
                         
-                        if asset:
-                            # Merge with existing data (deduplicate)
+                        if asset and (result.endpoints or result.urls or result.parameters or result.js_files):
+                            # Only update when we actually discovered something
                             existing_endpoints = set(asset.endpoints or [])
                             existing_params = set(asset.parameters or [])
                             existing_js = set(asset.js_files or [])
                             
-                            # Add new discoveries
                             existing_endpoints.update(result.endpoints)
                             existing_params.update(result.parameters)
                             existing_js.update(result.js_files)
                             
-                            # Update asset (limit to prevent huge JSON)
                             asset.endpoints = sorted(list(existing_endpoints))[:1000]
                             asset.parameters = sorted(list(existing_params))[:500]
                             asset.js_files = sorted(list(existing_js))[:500]
                             
-                            # Store additional metadata
                             if not asset.metadata_:
                                 asset.metadata_ = {}
                             asset.metadata_['katana_last_scan'] = datetime.utcnow().isoformat()
@@ -2925,9 +2964,15 @@ class ScannerWorker:
                     'total_js_files': total_js,
                     'assets_updated': assets_updated,
                 }
-                if first_error and total_endpoints == 0 and total_urls == 0:
-                    scan.results['error'] = first_error
-                    scan.results['hint'] = 'Katana could not crawl targets (timeout, connection, or block). Try HTTP probe first, or check scanner logs.'
+                if all_js_for_review:
+                    scan.results['js_files_for_review'] = sorted(set(all_js_for_review))
+                if total_endpoints == 0 and total_urls == 0 and len(targets) > 0:
+                    scan.results['error'] = first_error or 'No URLs or endpoints discovered on any target.'
+                    scan.results['hint'] = (
+                        'Sites may block automated crawlers (e.g. Cloudflare, bot detection), require login, '
+                        'or return no crawlable links. Try running an HTTP probe first; for JS-heavy sites, '
+                        'ensure the scanner can reach the targets.'
+                    )
                 db.commit()
             
             logger.info(

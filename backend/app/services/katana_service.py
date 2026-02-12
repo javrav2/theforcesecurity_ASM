@@ -1,20 +1,21 @@
 """
 Katana Service for deep web crawling and JS discovery.
 
-Katana (https://github.com/projectdiscovery/katana) is a fast crawler 
+Katana (https://github.com/projectdiscovery/katana) is a fast crawler
 for discovering endpoints, JS files, and parameters from web applications.
 
-Features:
-- Deep recursive crawling
-- JavaScript parsing and endpoint extraction
-- Form and link discovery
-- Automatic deduplication
+Use case: crawl with -d 5 -jc -fx -ef to strip noise (fonts, images, css),
+collect all JS file URLs, then assess them with AI to identify sensitive data.
+
+Example one-liner style:
+  katana -silent -d 5 -jc -fx -ef woff,css,png,svg,jpg,woff2,jpeg,gif -u <urls.txt>
 """
 
 import asyncio
 import logging
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Set, Dict, Any
@@ -22,6 +23,15 @@ from urllib.parse import urlparse, parse_qs
 
 logger = logging.getLogger(__name__)
 
+
+# One-liner style: exclude fonts, images, css so output is focused on HTML/JS/endpoints
+EXCLUDED_EXTENSIONS_JS_PRESET = [
+    "woff", "woff2", "ttf", "eot", "otf",
+    "css", "scss", "less",
+    "png", "jpg", "jpeg", "gif", "svg", "ico", "webp", "bmp",
+    "mp4", "mp3", "avi", "mov", "wmv", "flv", "webm",
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+]
 
 @dataclass
 class KatanaResult:
@@ -138,7 +148,7 @@ class KatanaService:
                 '-rl', str(rate_limit),
                 '-c', str(concurrency),
                 '-timeout', str(per_request_timeout),
-                '-ef', ','.join(EXCLUDED_EXTENSIONS),  # Exclude extensions (fonts, images, etc.)
+                '-ef', ','.join(EXCLUDED_EXTENSIONS_JS_PRESET),  # Strip noise: fonts, images, css
             ]
             
             # JavaScript crawling
@@ -232,7 +242,9 @@ class KatanaService:
             result.js_files = sorted(list(all_js))
             result.forms = sorted(list(all_forms))
             result.api_endpoints = sorted(list(all_api))
-            result.success = True
+            result.success = len(all_urls) > 0
+            if not result.success and not result.error:
+                result.error = "No URLs discovered (site may block automated crawlers, require auth, or return no links)"
             
             logger.info(
                 f"Katana crawl of {target}: {len(result.urls)} URLs, "
@@ -292,6 +304,114 @@ class KatanaService:
             targets = [line.strip() for line in f if line.strip()]
         
         return await self.crawl_multiple(targets, **kwargs)
+
+    async def crawl_batch_stdin(
+        self,
+        targets: List[str],
+        depth: int = 5,
+        js_crawl: bool = True,
+        form_extraction: bool = True,
+        timeout: int = 600,
+        rate_limit: int = 150,
+        concurrency: int = 10,
+    ) -> KatanaResult:
+        """
+        Run Katana once with all URLs on stdin (one-liner style).
+        Single process, one output stream. Good for collecting all JS URLs
+        across many targets for later AI/sensitive-data assessment.
+        
+        Example equivalent: cat urls.txt | katana -silent -d 5 -jc -fx -ef woff,css,png,...
+        """
+        result = KatanaResult(target="stdin_batch", success=False)
+        if not self.is_available():
+            result.error = "Katana not installed"
+            return result
+        if not targets:
+            result.error = "No targets provided"
+            return result
+        start_time = datetime.utcnow()
+        # Normalize to URLs
+        urls = []
+        for t in targets:
+            t = (t or "").strip()
+            if not t:
+                continue
+            if not t.startswith(("http://", "https://")):
+                t = f"https://{t}"
+            urls.append(t)
+        if not urls:
+            result.error = "No valid URLs"
+            return result
+        per_request_timeout = min(max(30, timeout // 6), 120)
+        cmd = [
+            self.katana_path,
+            "-silent",
+            "-nc",
+            "-d", str(depth),
+            "-rl", str(rate_limit),
+            "-c", str(concurrency),
+            "-timeout", str(per_request_timeout),
+            "-ef", ",".join(EXCLUDED_EXTENSIONS_JS_PRESET),
+        ]
+        if js_crawl:
+            cmd.extend(["-jc", "-kf"])
+        if form_extraction:
+            cmd.append("-fx")
+        input_data = "\n".join(urls).encode()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(input=input_data),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            result.error = f"Katana batch timed out after {timeout}s"
+            result.elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+            return result
+        all_urls = set()
+        all_endpoints = set()
+        all_params = set()
+        all_js = set()
+        all_api = set()
+        for line in stdout.decode().strip().split("\n"):
+            url = line.strip()
+            if not url or not url.startswith("http"):
+                continue
+            all_urls.add(url)
+            try:
+                parsed = urlparse(url)
+                path = parsed.path.rstrip("/")
+                if path and path != "/":
+                    all_endpoints.add(path)
+                if path.endswith(".js") or "/js/" in path:
+                    all_js.add(url)
+                if parsed.query:
+                    for name in parse_qs(parsed.query).keys():
+                        all_params.add(name)
+                url_lower = url.lower()
+                for pattern in API_PATTERNS:
+                    if re.search(pattern, url_lower):
+                        all_api.add(url)
+                        break
+            except Exception:
+                continue
+        result.urls = sorted(all_urls)
+        result.endpoints = sorted(all_endpoints)
+        result.parameters = sorted(all_params)
+        result.js_files = sorted(all_js)
+        result.api_endpoints = sorted(all_api)
+        result.success = len(all_urls) > 0
+        result.elapsed_time = (datetime.utcnow() - start_time).total_seconds()
+        logger.info(
+            f"Katana batch: {len(urls)} targets -> {len(result.urls)} URLs, "
+            f"{len(result.js_files)} JS files (for AI/sensitive-data assessment)"
+        )
+        return result
     
     def extract_secrets_from_js(self, js_content: str) -> Dict[str, List[str]]:
         """

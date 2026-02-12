@@ -116,6 +116,7 @@ export default function ScansPage() {
     scanner: 'naabu',  // Port scanner: naabu, masscan, nmap
     ports: '',         // Port specification for port scans
     severity: ['critical', 'high'] as string[],  // Default to critical & high for faster scans
+    katana_batch_stdin: false,  // One process, all JS URLs for AI/sensitive-data assessment
   });
   const { toast } = useToast();
 
@@ -184,6 +185,9 @@ export default function ScansPage() {
         }
       } else if (formData.scan_type === 'vulnerability') {
         config.severity = formData.severity;
+      } else if (formData.scan_type === 'katana') {
+        config.depth = 5;
+        config.batch_stdin = formData.katana_batch_stdin;
       }
 
       await api.createScan({
@@ -200,7 +204,7 @@ export default function ScansPage() {
       });
 
       setCreateDialogOpen(false);
-      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '', scanner: 'naabu', ports: '', severity: ['critical', 'high'] });
+      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '', scanner: 'naabu', ports: '', severity: ['critical', 'high'], katana_batch_stdin: false });
       fetchData();
     } catch (error: any) {
       toast({
@@ -451,6 +455,27 @@ export default function ScansPage() {
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Fewer severities = faster scan. Critical & High recommended for quick scans.
+                    </p>
+                  </div>
+                )}
+
+                {/* Katana: batch mode for JS collection / AI review */}
+                {formData.scan_type === 'katana' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        id="katana_batch_stdin"
+                        checked={formData.katana_batch_stdin}
+                        onCheckedChange={(checked) =>
+                          setFormData({ ...formData, katana_batch_stdin: !!checked })
+                        }
+                      />
+                      <label htmlFor="katana_batch_stdin" className="text-sm font-medium cursor-pointer">
+                        Collect all JS in one run (for AI / sensitive-data assessment)
+                      </label>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      One Katana process with URLs on stdin; outputs a single list of JS URLs for review.
                     </p>
                   </div>
                 )}

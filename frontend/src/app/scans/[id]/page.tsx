@@ -562,6 +562,47 @@ export default function ScanDetailPage() {
           </CardContent>
         </Card>
 
+        {/* JS files for AI review (Katana) */}
+        {(scan.results as any)?.js_files_for_review && (scan.results as any).js_files_for_review.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                JS files for AI review
+                <Badge variant="default" className="ml-2">
+                  {(scan.results as any).js_files_for_review.length} URLs
+                </Badge>
+              </CardTitle>
+              <CardDescription>
+                Collected JS URLs for sensitive-data or AI assessment. Copy and paste into your workflow.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const list = (scan.results as any).js_files_for_review as string[];
+                  navigator.clipboard.writeText(list.join('\n'));
+                  toast({ title: 'Copied', description: `${list.length} JS URLs copied to clipboard.` });
+                }}
+              >
+                Copy all URLs
+              </Button>
+              <div className="max-h-48 overflow-auto rounded border bg-muted/30 p-2 font-mono text-xs">
+                {((scan.results as any).js_files_for_review as string[]).slice(0, 50).map((url, i) => (
+                  <div key={i} className="truncate" title={url}>{url}</div>
+                ))}
+                {(scan.results as any).js_files_for_review.length > 50 && (
+                  <p className="text-muted-foreground mt-1">
+                    … and {(scan.results as any).js_files_for_review.length - 50} more (use Copy all).
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Live Assets Found */}
         {scan.results?.host_results && scan.results.host_results.length > 0 && (
           <Card>
