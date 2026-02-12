@@ -16,6 +16,7 @@ from app.models.scan_schedule import ScanSchedule, ScheduleFrequency, CONTINUOUS
 from app.models.scan_config import ScanConfig, DEFAULT_PORT_LISTS, seed_default_port_lists
 from app.models.acquisition import Acquisition, AcquisitionStatus, AcquisitionType
 from app.models.agent_note import AgentNote
+from app.models.agent_knowledge import AgentKnowledge
 from app.models.project_settings import (
     ProjectSettings,
     ALL_MODULES,
@@ -72,6 +73,7 @@ __all__ = [
     "AcquisitionStatus",
     "AcquisitionType",
     "AgentNote",
+    "AgentKnowledge",
     "ProjectSettings",
     "ALL_MODULES",
     "get_default_config",

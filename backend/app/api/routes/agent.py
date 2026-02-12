@@ -7,7 +7,7 @@ REST and WebSocket endpoints for the AI security agent.
 import json
 import logging
 import uuid
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
@@ -36,6 +36,7 @@ class AgentQueryRequest(BaseModel):
     session_id: Optional[str] = None
     playbook_id: Optional[str] = None
     target: Optional[str] = None
+    mode: Optional[Literal["assist", "agent"]] = "assist"
 
 
 class AgentApprovalRequest(BaseModel):
@@ -136,6 +137,7 @@ async def query_agent(
         organization_id=org_id,
         session_id=session_id,
         initial_todos=initial_todos,
+        mode=request.mode or "assist",
     )
     
     if result.error:

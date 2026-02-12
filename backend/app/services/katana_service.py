@@ -127,6 +127,8 @@ class KatanaService:
         
         try:
             # Build Katana command
+            # Per-request timeout in seconds (Katana expects seconds; 30–120s is reasonable)
+            per_request_timeout = min(max(30, timeout // 6), 120)
             cmd = [
                 self.katana_path,
                 '-u', target,
@@ -135,8 +137,8 @@ class KatanaService:
                 '-nc',  # No color
                 '-rl', str(rate_limit),
                 '-c', str(concurrency),
-                '-timeout', str(min(timeout // 60, 10)),  # Per-request timeout in minutes
-                '-ef', ','.join(EXCLUDED_EXTENSIONS),  # Exclude extensions
+                '-timeout', str(per_request_timeout),
+                '-ef', ','.join(EXCLUDED_EXTENSIONS),  # Exclude extensions (fonts, images, etc.)
             ]
             
             # JavaScript crawling

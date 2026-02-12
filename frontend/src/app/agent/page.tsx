@@ -42,6 +42,10 @@ export default function AgentPage() {
   const [loading, setLoading] = useState(false);
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null);
   const [pendingAnswer, setPendingAnswer] = useState(false); // true when agent asked a question and we should send next input as answer
+  const [playbooks, setPlaybooks] = useState<{ id: string; name: string; description: string }[]>([]);
+  const [selectedPlaybookId, setSelectedPlaybookId] = useState<string>('custom');
+  const [target, setTarget] = useState('');
+  const [mode, setMode] = useState<'assist' | 'agent'>('assist');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -56,6 +60,12 @@ export default function AgentPage() {
       setAgentAvailable(data?.available ?? false);
     }).catch(() => setAgentAvailable(false));
   }, []);
+
+  useEffect(() => {
+    if (agentAvailable) {
+      api.getAgentPlaybooks().then(setPlaybooks).catch(() => setPlaybooks([]));
+    }
+  }, [agentAvailable]);
 
   const appendAgentMessage = (payload: {
     answer: string;
@@ -86,19 +96,25 @@ export default function AgentPage() {
 
   const handleSend = async () => {
     const q = question.trim();
-    if (!q || loading) return;
+    const usePreset = selectedPlaybookId !== 'custom';
+    if (!usePreset && !q) return;
+    if (loading) return;
+
+    const displayContent = usePreset
+      ? `${playbooks.find((p) => p.id === selectedPlaybookId)?.name ?? selectedPlaybookId}${target.trim() ? ` — ${target.trim()}` : ''}`
+      : q;
 
     setMessages((prev) => [
       ...prev,
-      { id: `user-${Date.now()}`, role: 'user', content: q },
+      { id: `user-${Date.now()}`, role: 'user', content: displayContent },
     ]);
-    setQuestion('');
+    if (!usePreset) setQuestion('');
     setLoading(true);
 
     try {
       if (pendingAnswer && sessionId) {
         setPendingAnswer(false);
-        const data = await api.answerAgentQuestion(sessionId, q);
+        const data = await api.answerAgentQuestion(sessionId, q || displayContent);
         appendAgentMessage({
           answer: data.answer,
           current_phase: data.current_phase,
@@ -111,7 +127,14 @@ export default function AgentPage() {
         });
         if (data.awaiting_question) setPendingAnswer(true);
       } else {
-        const data = await api.queryAgent(q, sessionId ?? undefined);
+        const data = await api.queryAgent(
+          usePreset ? displayContent : q,
+          sessionId ?? undefined,
+          {
+            ...(usePreset ? { playbookId: selectedPlaybookId, target: target.trim() || undefined } : {}),
+            mode,
+          }
+        );
         if (data.session_id) setSessionId(data.session_id);
         appendAgentMessage({
           answer: data.answer,
@@ -240,9 +263,60 @@ export default function AgentPage() {
               <div ref={messagesEndRef} />
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="mode-select">Mode</Label>
+                <Select value={mode} onValueChange={(v) => setMode(v as 'assist' | 'agent')}>
+                  <SelectTrigger id="mode-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="assist">Assist (approval required between phases)</SelectItem>
+                    <SelectItem value="agent">Agent (autonomous; no approval)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Agent mode runs without asking for approval between phases. Use when you have defined the task (e.g. via a preset).
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="playbook-select">Preset</Label>
+                <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
+                  <SelectTrigger id="playbook-select">
+                    <SelectValue placeholder="Custom" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="custom">Custom (free-form question)</SelectItem>
+                    {playbooks.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {selectedPlaybookId !== 'custom' && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="target-input">Target (optional)</Label>
+                  <Input
+                    id="target-input"
+                    placeholder="e.g. example.com or https://app.example.com"
+                    value={target}
+                    onChange={(e) => setTarget(e.target.value)}
+                    disabled={loading || agentAvailable === false}
+                  />
+                </div>
+              )}
+            </div>
             <div className="flex gap-2">
               <Textarea
-                placeholder={pendingAnswer ? 'Type your answer to the agent…' : 'Ask a question (e.g. run a port scan on example.com)'}
+                placeholder={
+                  pendingAnswer
+                    ? 'Type your answer to the agent…'
+                    : selectedPlaybookId === 'custom'
+                      ? 'Ask a question (e.g. run a port scan on example.com)'
+                      : 'Add a note or leave blank to run the preset'
+                }
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => {
@@ -257,7 +331,11 @@ export default function AgentPage() {
               />
               <Button
                 onClick={handleSend}
-                disabled={loading || !question.trim() || agentAvailable === false}
+                disabled={
+                  loading ||
+                  agentAvailable === false ||
+                  (selectedPlaybookId === 'custom' ? !question.trim() : false)
+                }
                 size="icon"
                 className="shrink-0 h-auto py-3"
               >

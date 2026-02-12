@@ -59,6 +59,7 @@ from app.services.agent.prompts import (
     is_tool_allowed_in_phase,
 )
 from app.services.agent.tools import ASMToolsManager, set_tenant_context
+from app.services.agent.knowledge import retrieve_knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,7 @@ class AgentOrchestrator:
             objectives = [ConversationObjective(content=latest_message).model_dump()]
         
         todo_list = state.get("initial_todos") if state.get("initial_todos") else []
+        mode = state.get("mode") or "assist"
         
         return {
             "current_iteration": 0,
@@ -309,6 +311,7 @@ class AgentOrchestrator:
             "awaiting_user_approval": False,
             "phase_transition_pending": None,
             "qa_history": [],
+            "mode": mode,
         }
     
     async def _think_node(self, state: AgentState, config=None) -> dict:
@@ -341,6 +344,18 @@ class AgentOrchestrator:
             if self.tool_manager else "No session notes."
         )
         
+        # RAG: org knowledge (scope, ROE, methodology)
+        knowledge_context = ""
+        if org_id:
+            knowledge_context = retrieve_knowledge(
+                org_id,
+                current_objective[:200] if current_objective else "",
+                limit=5,
+                max_chars=1500,
+            )
+        if not knowledge_context:
+            knowledge_context = "None."
+        
         # Build prompt
         execution_trace_formatted = format_execution_trace(state.get("execution_trace", []))
         todo_list_formatted = format_todo_list(state.get("todo_list", []))
@@ -360,6 +375,7 @@ class AgentOrchestrator:
             todo_list=todo_list_formatted,
             target_info=target_info_formatted,
             session_notes=session_notes,
+            knowledge_context=knowledge_context,
             qa_history=qa_history_formatted,
         )
         
@@ -410,8 +426,18 @@ class AgentOrchestrator:
             if to_phase == phase:
                 # Already in this phase, continue
                 pass
+            elif state.get("mode") == "agent":
+                # Autonomous mode: apply phase transition immediately
+                updates["current_phase"] = to_phase
+                phase_history = state.get("phase_history", []) + [
+                    PhaseHistoryEntry(phase=to_phase).model_dump()
+                ]
+                updates["phase_history"] = phase_history
+                updates["phase_transition_pending"] = None
+                updates["awaiting_user_approval"] = False
+                logger.info(f"[{user_id}] Agent mode: auto-approved transition to {to_phase}")
             else:
-                # Request approval for phase transition
+                # Assist mode: request approval for phase transition
                 updates["phase_transition_pending"] = PhaseTransitionRequest(
                     from_phase=phase,
                     to_phase=to_phase,
@@ -767,6 +793,7 @@ class AgentOrchestrator:
         organization_id: int,
         session_id: str,
         initial_todos: Optional[List[Dict[str, Any]]] = None,
+        mode: str = "assist",
     ) -> InvokeResponse:
         """Main entry point for agent invocation."""
         if not self._initialized:
@@ -775,7 +802,7 @@ class AgentOrchestrator:
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized - check OPENAI_API_KEY")
         
-        logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}...")
+        logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}... (mode={mode})")
         
         try:
             config = {"configurable": {"thread_id": session_id}}
@@ -784,6 +811,7 @@ class AgentOrchestrator:
                 "user_id": user_id,
                 "organization_id": organization_id,
                 "session_id": session_id,
+                "mode": mode,
             }
             if initial_todos is not None:
                 input_data["initial_todos"] = initial_todos

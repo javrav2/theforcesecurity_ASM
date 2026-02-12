@@ -345,6 +345,14 @@ export default function ScanDetailPage() {
                   {scan.error_message && (
                     <p className="text-sm text-red-400 mt-1">{scan.error_message}</p>
                   )}
+                  {(scan.results as any)?.error && (
+                    <div className="mt-2 p-2 rounded bg-destructive/10 border border-destructive/30">
+                      <p className="text-sm text-red-400 font-medium">{(scan.results as any).error}</p>
+                      {(scan.results as any)?.hint && (
+                        <p className="text-xs text-muted-foreground mt-1">{(scan.results as any).hint}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
               {scan.progress > 0 && scan.progress < 100 && (

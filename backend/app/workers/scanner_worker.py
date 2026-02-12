@@ -2840,6 +2840,8 @@ class ScannerWorker:
                 concurrency=config.get('concurrency', 10),
             )
             
+            # Collect first error for scan results if all fail
+            first_error = None
             # Process results and update assets
             for result in results:
                 try:
@@ -2849,13 +2851,16 @@ class ScannerWorker:
                         total_params += len(result.parameters)
                         total_js += len(result.js_files)
                         
-                        # Extract target domain from result
+                        # Extract target hostname (no port) for asset lookup
+                        from urllib.parse import urlparse
                         target = result.target
                         if target.startswith(('http://', 'https://')):
-                            from urllib.parse import urlparse
-                            target = urlparse(target).netloc
+                            netloc = urlparse(target).netloc
+                            target = netloc.split(':')[0] if netloc else target
+                        else:
+                            target = target.split(':')[0]
                         
-                        # Update the asset with discovered data
+                        # Update the asset with discovered data (target is hostname without port)
                         asset = db.query(Asset).filter(
                             Asset.organization_id == organization_id,
                             Asset.value == target
@@ -2892,6 +2897,8 @@ class ScannerWorker:
                             f"{len(result.parameters)} params, {len(result.js_files)} JS files"
                         )
                     else:
+                        if not first_error and result.error:
+                            first_error = result.error
                         logger.warning(f"Katana failed for {result.target}: {result.error}")
                         
                 except Exception as e:
@@ -2918,6 +2925,9 @@ class ScannerWorker:
                     'total_js_files': total_js,
                     'assets_updated': assets_updated,
                 }
+                if first_error and total_endpoints == 0 and total_urls == 0:
+                    scan.results['error'] = first_error
+                    scan.results['hint'] = 'Katana could not crawl targets (timeout, connection, or block). Try HTTP probe first, or check scanner logs.'
                 db.commit()
             
             logger.info(

@@ -12,6 +12,9 @@ You help users understand their attack surface, analyze vulnerabilities, and pro
 - **Iteration**: {iteration}/{max_iterations}
 - **Objective**: {objective}
 
+## Organization Knowledge (scope, ROE, methodology)
+{knowledge_context}
+
 ## Available Tools
 {available_tools}
 

@@ -1317,13 +1317,14 @@ class ApiClient {
   async queryAgent(
     question: string,
     sessionId?: string,
-    options?: { playbookId?: string; target?: string }
+    options?: { playbookId?: string; target?: string; mode?: 'assist' | 'agent' }
   ) {
     const response = await this.client.post('/agent/query', {
       question,
       session_id: sessionId ?? undefined,
       playbook_id: options?.playbookId ?? undefined,
       target: options?.target ?? undefined,
+      mode: options?.mode ?? 'assist',
     });
     return response.data;
   }
