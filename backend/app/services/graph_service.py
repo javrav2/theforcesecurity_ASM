@@ -1,11 +1,11 @@
 """
 Neo4j Graph Database Service
 
-Manages the graph representation of assets and their relationships
-for attack path analysis and visualization.
+Stores the canonical chain:
+  Domain → Subdomain → IP → Port → Service → Technology → Vulnerability → CVE
+                                                              Vulnerability → MITRE (CWE)
 
-Node types: Asset, IP, Port, Service, Technology, Vulnerability,
-CVE, CWE, BaseURL, Endpoint, Parameter (web application layer).
+Also keeps Asset nodes for API compatibility (get_asset_relationships, get_attack_paths).
 """
 
 import hashlib
@@ -30,15 +30,13 @@ logger = logging.getLogger(__name__)
 class GraphService:
     """
     Service for managing the Neo4j graph database.
-    
-    Models the following relationships:
-    - Domain -> Subdomain (HAS_CHILD / BELONGS_TO)
-    - Asset -> IP (RESOLVES_TO)
-    - IP -> Port (EXPOSES_PORT), Asset -> Port (HAS_PORT)
-    - Port -> Service (RUNS_SERVICE), Service -> BaseURL (SERVES_URL)
-    - Asset -> BaseURL (SERVES_URL), Asset -> Endpoint (HAS_ENDPOINT), Asset -> Parameter (HAS_PARAMETER)
-    - Asset -> Vulnerability (HAS_VULNERABILITY), Vulnerability -> CVE (REFERENCES_CVE), -> CWE (HAS_WEAKNESS)
-    - Asset -> Technology (USES_TECHNOLOGY)
+
+    Canonical chain (see docs/GRAPH_SCHEMA.md):
+    - Domain -[:HAS_SUBDOMAIN]-> Subdomain -[:RESOLVES_TO]-> IP -[:HAS_PORT]-> Port
+      -[:RUNS_SERVICE]-> Service -[:USES_TECHNOLOGY]-> Technology -[:HAS_VULNERABILITY]-> Vulnerability
+      -[:REFERENCES]-> CVE, Vulnerability -[:MAPS_TO]-> MITRE (CWE)
+
+    Asset nodes and Asset-based edges are kept for API compatibility.
     """
     
     def __init__(self):
@@ -99,6 +97,9 @@ class GraphService:
         with self.session() as session:
             # Create uniqueness constraints for all node types
             constraints = [
+                # Canonical chain: Domain, Subdomain (composite for multi-tenant)
+                "CREATE CONSTRAINT domain_org_name IF NOT EXISTS FOR (d:Domain) REQUIRE (d.organization_id, d.name) IS UNIQUE",
+                "CREATE CONSTRAINT subdomain_org_name IF NOT EXISTS FOR (s:Subdomain) REQUIRE (s.organization_id, s.name) IS UNIQUE",
                 # Core asset nodes
                 "CREATE CONSTRAINT asset_id IF NOT EXISTS FOR (a:Asset) REQUIRE a.asset_id IS UNIQUE",
                 "CREATE CONSTRAINT ip_address IF NOT EXISTS FOR (i:IP) REQUIRE i.address IS UNIQUE",
@@ -123,6 +124,11 @@ class GraphService:
             
             # Create indexes for common queries
             indexes = [
+                # Domain / Subdomain (canonical chain)
+                "CREATE INDEX domain_org IF NOT EXISTS FOR (d:Domain) ON (d.organization_id)",
+                "CREATE INDEX domain_name IF NOT EXISTS FOR (d:Domain) ON (d.name)",
+                "CREATE INDEX subdomain_org IF NOT EXISTS FOR (s:Subdomain) ON (s.organization_id)",
+                "CREATE INDEX subdomain_name IF NOT EXISTS FOR (s:Subdomain) ON (s.name)",
                 # Asset indexes
                 "CREATE INDEX asset_org IF NOT EXISTS FOR (a:Asset) ON (a.organization_id)",
                 "CREATE INDEX asset_type IF NOT EXISTS FOR (a:Asset) ON (a.asset_type)",
@@ -264,7 +270,32 @@ class GraphService:
             "has_login_portal": getattr(asset, 'has_login_portal', False),
         })
         
-        # ===== 1. PARENT RELATIONSHIP (Domain → Subdomain) =====
+        # ===== 1. CANONICAL CHAIN: Domain → Subdomain =====
+        root_domain = getattr(asset, 'root_domain', None) or (
+            asset.value if asset.asset_type == AssetType.DOMAIN else None
+        )
+        if asset.asset_type == AssetType.SUBDOMAIN and not root_domain:
+            root_domain = asset.value  # use self as root if not set
+        subdomain_name = (
+            asset.value if asset.asset_type in (AssetType.DOMAIN, AssetType.SUBDOMAIN)
+            else (getattr(asset, 'root_domain', None) or asset.value)
+        )
+        if root_domain and subdomain_name:
+            session.run("""
+                MERGE (d:Domain {organization_id: $org_id, name: $root_domain})
+                SET d.discovered_at = coalesce(d.discovered_at, datetime($first_seen))
+                MERGE (s:Subdomain {organization_id: $org_id, name: $subdomain_name})
+                SET s.status = $status
+                MERGE (d)-[:HAS_SUBDOMAIN]->(s)
+            """, {
+                "org_id": org_id,
+                "root_domain": root_domain,
+                "subdomain_name": subdomain_name,
+                "first_seen": asset.first_seen.isoformat() if asset.first_seen else None,
+                "status": (asset.status.value if asset.status else "discovered"),
+            })
+
+        # ===== 1b. PARENT RELATIONSHIP (Asset hierarchy, for compatibility) =====
         if asset.parent_id:
             session.run("""
                 MATCH (child:Asset {asset_id: $child_id})
@@ -275,35 +306,49 @@ class GraphService:
                 "child_id": asset.id,
                 "parent_id": asset.parent_id,
             })
-        
-        # ===== 2. IP RESOLUTION (Asset → IP addresses) =====
-        # Use the actual ip_addresses array from the asset
+
+        # ===== 2. IP RESOLUTION: Subdomain RESOLVES_TO IP, Asset RESOLVES_TO IP =====
         ip_addresses = getattr(asset, 'ip_addresses', None) or []
         if not ip_addresses and getattr(asset, 'ip_address', None):
             ip_addresses = [asset.ip_address]
-        
         for ip in ip_addresses:
             if ip:
+                ip_type = "ipv6" if ":" in ip else "ipv4"
+                is_cdn = bool(getattr(asset, 'hosting_type', None) in ("cdn", "cloud") or getattr(asset, 'hosting_provider', None))
                 session.run("""
                     MATCH (a:Asset {asset_id: $asset_id})
                     MERGE (ip:IP {address: $ip_address})
-                    SET ip.organization_id = $org_id
+                    SET ip.organization_id = $org_id,
+                        ip.type = $ip_type,
+                        ip.is_cdn = $is_cdn
                     MERGE (a)-[:RESOLVES_TO]->(ip)
                 """, {
                     "asset_id": asset.id,
                     "ip_address": ip,
                     "org_id": org_id,
+                    "ip_type": ip_type,
+                    "is_cdn": is_cdn,
                 })
+                if root_domain and subdomain_name:
+                    session.run("""
+                        MERGE (s:Subdomain {organization_id: $org_id, name: $subdomain_name})
+                        MERGE (ip:IP {address: $ip_address})
+                        MERGE (s)-[:RESOLVES_TO]->(ip)
+                    """, {
+                        "org_id": org_id,
+                        "subdomain_name": subdomain_name,
+                        "ip_address": ip,
+                    })
         
-        # ===== 3. PORT/SERVICE RELATIONSHIPS =====
-        # Use port_services relationship from the model
+        # ===== 3. PORT/SERVICE: IP HAS_PORT Port, Port RUNS_SERVICE Service =====
         port_services = getattr(asset, 'port_services', None) or []
         for ps in port_services:
             port_num = ps.port
             protocol = ps.protocol.value if ps.protocol else 'tcp'
+            state = ps.state.value if ps.state else 'open'
             service_name = ps.service_name or 'unknown'
-            
-            # Create Port node
+            ip_for_port = ps.scanned_ip or (ip_addresses[0] if ip_addresses else None)
+
             session.run("""
                 MATCH (a:Asset {asset_id: $asset_id})
                 MERGE (p:Port {port_id: $port_id})
@@ -319,51 +364,47 @@ class GraphService:
                 "port_id": ps.id,
                 "port": port_num,
                 "protocol": protocol,
-                "state": ps.state.value if ps.state else 'open',
+                "state": state,
                 "is_risky": ps.is_risky,
                 "scanned_ip": ps.scanned_ip,
                 "org_id": org_id,
             })
-            
-            # Create Service node connected to Port
-            if ps.service_name:
-                session.run("""
-                    MATCH (p:Port {port_id: $port_id})
-                    MERGE (s:Service {name: $service_name})
-                    SET s.product = $product,
-                        s.version = $version,
-                        s.cpe = $cpe
-                    MERGE (p)-[:RUNS_SERVICE]->(s)
-                """, {
-                    "port_id": ps.id,
-                    "service_name": ps.service_name,
-                    "product": ps.service_product,
-                    "version": ps.service_version,
-                    "cpe": ps.cpe,
-                })
-            
-            # Connect IP to Port if we have scanned_ip
-            if ps.scanned_ip:
+
+            if ip_for_port:
                 session.run("""
                     MATCH (ip:IP {address: $ip_address})
                     MATCH (p:Port {port_id: $port_id})
-                    MERGE (ip)-[:EXPOSES_PORT]->(p)
-                """, {
-                    "ip_address": ps.scanned_ip,
-                    "port_id": ps.id,
-                })
+                    MERGE (ip)-[:HAS_PORT]->(p)
+                """, {"ip_address": ip_for_port, "port_id": ps.id})
+
+            session.run("""
+                MATCH (p:Port {port_id: $port_id})
+                MERGE (s:Service {name: $service_name})
+                SET s.version = $version,
+                    s.banner = $banner,
+                    s.product = $product,
+                    s.cpe = $cpe
+                MERGE (p)-[:RUNS_SERVICE]->(s)
+            """, {
+                "port_id": ps.id,
+                "service_name": service_name,
+                "version": ps.service_version,
+                "banner": ps.banner,
+                "product": ps.service_product,
+                "cpe": ps.cpe,
+            })
         
-        # ===== 4. TECHNOLOGY RELATIONSHIPS =====
+        # ===== 4. TECHNOLOGY: Asset USES_TECHNOLOGY, Service USES_TECHNOLOGY =====
         technologies = getattr(asset, 'technologies', None) or []
         for tech in technologies:
-            # Get categories as a string
             categories = tech.categories if tech.categories else []
             category_str = ', '.join(categories) if categories else None
-            
             session.run("""
                 MATCH (a:Asset {asset_id: $asset_id})
                 MERGE (t:Technology {name: $name})
                 SET t.slug = $slug,
+                    t.version = $version,
+                    t.category = $category,
                     t.categories = $categories,
                     t.cpe = $cpe,
                     t.website = $website
@@ -372,19 +413,29 @@ class GraphService:
                 "asset_id": asset.id,
                 "name": tech.name,
                 "slug": tech.slug,
+                "version": getattr(tech, 'version', None),
+                "category": categories[0] if categories else None,
                 "categories": category_str,
                 "cpe": tech.cpe,
                 "website": tech.website,
             })
+            session.run("""
+                MATCH (a:Asset {asset_id: $asset_id})-[:HAS_PORT]->(p:Port)-[:RUNS_SERVICE]->(s:Service)
+                MATCH (t:Technology {name: $name})
+                MERGE (s)-[:USES_TECHNOLOGY]->(t)
+            """, {"asset_id": asset.id, "name": tech.name})
         
-        # ===== 5. VULNERABILITY RELATIONSHIPS =====
+        # ===== 5. VULNERABILITY: Technology HAS_VULNERABILITY, REFERENCES CVE, MAPS_TO MITRE =====
         vulnerabilities = getattr(asset, 'vulnerabilities', None) or []
         for vuln in vulnerabilities:
+            desc = (vuln.description or getattr(vuln, 'evidence', None) or vuln.title or "")[:2000]
             session.run("""
                 MATCH (a:Asset {asset_id: $asset_id})
                 MERGE (v:Vulnerability {vuln_id: $vuln_id})
-                SET v.title = $title,
+                SET v.id = $vuln_id,
+                    v.title = $title,
                     v.severity = $severity,
+                    v.description = $description,
                     v.cvss_score = $cvss,
                     v.status = $status,
                     v.template_id = $template_id,
@@ -396,49 +447,44 @@ class GraphService:
                 "vuln_id": vuln.id,
                 "title": vuln.title,
                 "severity": vuln.severity.value if vuln.severity else None,
+                "description": desc,
                 "cvss": vuln.cvss_score,
                 "status": vuln.status.value if vuln.status else None,
                 "template_id": vuln.template_id,
                 "detected_by": vuln.detected_by,
                 "org_id": org_id,
             })
-            
-            # ===== 6. CVE NODE (from vulnerability) =====
+            if technologies:
+                session.run("""
+                    MATCH (a:Asset {asset_id: $asset_id})-[:USES_TECHNOLOGY]->(t:Technology)
+                    MATCH (v:Vulnerability {vuln_id: $vuln_id})
+                    MERGE (t)-[:HAS_VULNERABILITY]->(v)
+                """, {"asset_id": asset.id, "vuln_id": vuln.id})
             if vuln.cve_id:
                 session.run("""
                     MATCH (v:Vulnerability {vuln_id: $vuln_id})
                     MERGE (cve:CVE {cve_id: $cve_id})
                     SET cve.cvss_score = $cvss,
                         cve.cwe_id = $cwe_id
-                    MERGE (v)-[:REFERENCES_CVE]->(cve)
+                    MERGE (v)-[:REFERENCES]->(cve)
                 """, {
                     "vuln_id": vuln.id,
                     "cve_id": vuln.cve_id,
                     "cvss": vuln.cvss_score,
                     "cwe_id": vuln.cwe_id,
                 })
-            
-            # ===== 7. CWE NODE (from vulnerability) =====
             if vuln.cwe_id:
                 session.run("""
                     MATCH (v:Vulnerability {vuln_id: $vuln_id})
                     MERGE (cwe:CWE {cwe_id: $cwe_id})
-                    MERGE (v)-[:HAS_WEAKNESS]->(cwe)
-                """, {
-                    "vuln_id": vuln.id,
-                    "cwe_id": vuln.cwe_id,
-                })
-                
-                # Connect CVE to CWE if both exist
+                    MERGE (v)-[:MAPS_TO]->(cwe)
+                """, {"vuln_id": vuln.id, "cwe_id": vuln.cwe_id})
                 if vuln.cve_id:
                     session.run("""
                         MATCH (cve:CVE {cve_id: $cve_id})
                         MATCH (cwe:CWE {cwe_id: $cwe_id})
                         MERGE (cve)-[:EXPLOITS_WEAKNESS]->(cwe)
-                    """, {
-                        "cve_id": vuln.cve_id,
-                        "cwe_id": vuln.cwe_id,
-                    })
+                    """, {"cve_id": vuln.cve_id, "cwe_id": vuln.cwe_id})
             
             # ===== 7b. FOUND_AT: link vulnerability to Endpoint when url/path known (web layer) =====
             path_for_endpoint = None

@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.netblock import Netblock
+from app.models.project_settings import ProjectSettings, MODULE_SCAN_TOGGLES
 from app.models.port_service import PortService, PortState, Protocol
 from app.services.nuclei_service import NucleiService
 from app.services.nuclei_findings_service import NucleiFindingsService
@@ -263,7 +264,7 @@ class ScannerWorker:
                 ScanType.PORT_VERIFY: 'PORT_VERIFY',
                 ScanType.SERVICE_DETECT: 'SERVICE_DETECT',
                 ScanType.DISCOVERY: 'DISCOVERY',
-                ScanType.FULL: 'DISCOVERY',  # FULL uses the same discovery handler
+                ScanType.FULL: 'RECON_PIPELINE',  # FULL = recon workflow (discovery → port → http → resource_enum → vuln)
                 ScanType.SUBDOMAIN_ENUM: 'SUBDOMAIN_ENUM',
                 ScanType.DNS_RESOLUTION: 'DNS_RESOLUTION',
                 ScanType.HTTP_PROBE: 'HTTP_PROBE',
@@ -612,6 +613,8 @@ class ScannerWorker:
                     await self.handle_geo_enrichment(body)
                 elif job_type == 'TLDFINDER':
                     await self.handle_tldfinder_scan(body)
+                elif job_type == 'RECON_PIPELINE':
+                    await self.handle_recon_pipeline(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -1780,7 +1783,6 @@ class ScannerWorker:
             logger.error(f"Discovery failed: {e}", exc_info=True)
             if db and scan_id:
                 try:
-                    # Rollback any failed transaction first
                     db.rollback()
                     scan = db.query(Scan).filter(Scan.id == scan_id).first()
                     if scan:
@@ -1798,6 +1800,172 @@ class ScannerWorker:
         finally:
             if db:
                 db.close()
+    
+    async def handle_recon_pipeline(self, job_data: dict):
+        """
+        Run the recon workflow in order: domain_discovery → port_scan → http_probe
+        → resource_enum (Katana, Wayback, ParamSpider) → vuln_scan.
+        Uses project_settings scan_toggles to enable/disable each phase.
+        See docs/RECON_WORKFLOW.md.
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', []) or []
+        domain = job_data.get('domain') or (targets[0] if targets else None)
+        config = job_data.get('config', {})
+        
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for recon pipeline")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+        
+        try:
+            toggles = ProjectSettings.get_config(db, organization_id, MODULE_SCAN_TOGGLES)
+            domain_discovery = toggles.get('domain_discovery', True)
+            port_scan = toggles.get('port_scan', True)
+            http_probe = toggles.get('http_probe', True)
+            resource_enum = toggles.get('resource_enum', True)
+            vuln_scan = toggles.get('vuln_scan', True)
+        except Exception as e:
+            logger.warning(f"Could not load scan_toggles, using defaults: {e}")
+            domain_discovery = port_scan = http_probe = resource_enum = vuln_scan = True
+        finally:
+            db.close()
+        
+        def _set_pipeline_step(step_name: str):
+            d = self.get_db_session()
+            if not d:
+                return
+            try:
+                scan = d.query(Scan).filter(Scan.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.RUNNING
+                    scan.current_step = step_name
+                    d.commit()
+            except Exception as e:
+                logger.debug(f"Could not set pipeline step: {e}")
+            finally:
+                if d:
+                    d.close()
+        
+        try:
+            if domain_discovery and (domain or targets):
+                _set_pipeline_step("Domain discovery")
+                await self.handle_discovery({
+                    'scan_id': scan_id,
+                    'organization_id': organization_id,
+                    'domain': domain,
+                    'targets': targets,
+                    'config': config,
+                })
+            else:
+                logger.info(f"Recon pipeline: domain_discovery skipped (toggle or no targets)")
+            
+            if port_scan:
+                _set_pipeline_step("Port scan")
+                port_targets = []
+                d = self.get_db_session()
+                try:
+                    if d:
+                        port_targets = [a.value for a in d.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS]),
+                            Asset.value.isnot(None),
+                            Asset.value != "",
+                        ).limit(500).all()]
+                except Exception as e:
+                    logger.warning(f"Could not get targets for port scan: {e}")
+                    port_targets = list(targets) if targets else ([domain] if domain else [])
+                finally:
+                    if d:
+                        d.close()
+                if port_targets:
+                    await self.handle_port_scan({
+                        'scan_id': scan_id,
+                        'organization_id': organization_id,
+                        'targets': port_targets,
+                        'config': config,
+                    })
+                else:
+                    logger.info("Recon pipeline: no assets for port scan, skipping")
+            
+            if http_probe:
+                _set_pipeline_step("HTTP probe")
+                await self.handle_http_probe({
+                    'scan_id': scan_id,
+                    'organization_id': organization_id,
+                    'targets': [],  # probe all org assets
+                    'config': config,
+                })
+            
+            if resource_enum:
+                _set_pipeline_step("Resource enumeration (Katana)")
+                await self.handle_katana_scan({
+                    'scan_id': scan_id,
+                    'organization_id': organization_id,
+                    'targets': [],
+                    'config': config,
+                })
+                _set_pipeline_step("Resource enumeration (Wayback)")
+                await self.handle_waybackurls_scan({
+                    'scan_id': scan_id,
+                    'organization_id': organization_id,
+                    'targets': [],
+                    'config': config,
+                })
+                _set_pipeline_step("Resource enumeration (ParamSpider)")
+                await self.handle_paramspider_scan({
+                    'scan_id': scan_id,
+                    'organization_id': organization_id,
+                    'targets': [],
+                    'config': config,
+                })
+            
+            if vuln_scan:
+                _set_pipeline_step("Vulnerability scan")
+                vuln_targets = []
+                d = self.get_db_session()
+                try:
+                    if d:
+                        assets = d.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.URL]),
+                            Asset.value.isnot(None),
+                            Asset.value != "",
+                        ).limit(200).all()
+                        for a in assets:
+                            url = getattr(a, 'live_url', None) or None
+                            if not url and a.value:
+                                url = f"https://{a.value}" if not a.value.startswith(('http://', 'https://')) else a.value
+                            if url:
+                                vuln_targets.append(url)
+                except Exception as e:
+                    logger.warning(f"Could not get targets for vuln scan: {e}")
+                    vuln_targets = [f"https://{t}" for t in (targets or [domain] or []) if t and not t.startswith(('http://', 'https://'))]
+                finally:
+                    if d:
+                        d.close()
+                if vuln_targets:
+                    await self.handle_nuclei_scan({
+                        'scan_id': scan_id,
+                        'organization_id': organization_id,
+                        'targets': vuln_targets,
+                        'config': config,
+                        'severity': config.get('severity'),
+                        'tags': config.get('tags'),
+                        'exclude_tags': config.get('exclude_tags'),
+                    })
+            
+            if organization_id:
+                trigger_graph_sync(organization_id)
+            
+            logger.info(f"Recon pipeline {scan_id} completed")
+        
+        except Exception as e:
+            logger.error(f"Recon pipeline failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+            raise
     
     def _is_ip_or_cidr(self, value: str) -> bool:
         """Check if a value is an IP address or CIDR block."""

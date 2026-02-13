@@ -744,6 +744,71 @@ _register_playbook(RemediationPlaybook(
     tags=["web", "https", "tls", "encryption"],
 ))
 
+# TLS/SSL version and configuration (Nuclei tls-version, ssl-*, tls-* templates)
+_register_playbook(RemediationPlaybook(
+    id="tls-ssl-config",
+    title="TLS/SSL Version and Configuration",
+    summary="Ensure only secure TLS versions (1.2 and 1.3) are enabled and disable legacy SSL/TLS. Aligns with PCI-DSS and modern browser requirements.",
+    priority=RemediationPriority.MEDIUM,
+    effort=RemediationEffort.LOW,
+    estimated_time="30 minutes - 1 hour",
+    required_access=[RequiredAccess.ADMIN],
+    steps=[
+        RemediationStep(
+            order=1,
+            title="Identify current TLS version in use",
+            description="Use the finding's extracted data (e.g. tls12, tls13) or run a scan. If TLS 1.0 or 1.1 is detected, plan to disable it.",
+            command="# Check supported protocols with OpenSSL:\nopenssl s_client -connect host:443 -tls1_2 </dev/null 2>/dev/null | head -5\n# Or use: nmap --script ssl-enum-ciphers -p 443 <host>"
+        ),
+        RemediationStep(
+            order=2,
+            title="Disable SSLv3, TLS 1.0, and TLS 1.1",
+            description="Configure the server to allow only TLS 1.2 and TLS 1.3. Never use SSLv3 or TLS 1.0/1.1 in production.",
+            code_snippet="# Nginx:\nssl_protocols TLSv1.2 TLSv1.3;\nssl_prefer_server_ciphers off;\n\n# Apache (mod_ssl):\nSSLProtocol -all +TLSv1.2 +TLSv1.3\n\n# Windows / IIS: Disable TLS 1.0 and 1.1 in Registry or via Group Policy."
+        ),
+        RemediationStep(
+            order=3,
+            title="Use a secure TLS configuration generator",
+            description="Mozilla SSL Configuration Generator provides ready-to-use configs for Nginx, Apache, and others.",
+            command="# Generate config: https://ssl-config.mozilla.org/\n# Choose 'Modern' for TLS 1.2+ only, or 'Intermediate' for broader compatibility."
+        ),
+        RemediationStep(
+            order=4,
+            title="Restart the web server and verify",
+            description="Apply the configuration and restart the service. Re-scan to confirm only TLS 1.2/1.3 are offered.",
+            command="# Nginx: sudo systemctl reload nginx\n# Apache: sudo systemctl reload apache2"
+        ),
+    ],
+    verification=[
+        VerificationStep(
+            order=1,
+            description="Run SSL/TLS scan to confirm protocol versions",
+            expected_result="Only TLS 1.2 and/or 1.3 listed; no TLS 1.0, 1.1, or SSLv3",
+            command="nmap --script ssl-enum-ciphers -p 443 <host>",
+            automated=True
+        ),
+        VerificationStep(
+            order=2,
+            description="Check grade with SSL Labs",
+            expected_result="A or A+; no support for TLS 1.0/1.1",
+            command="# Browser: https://www.ssllabs.com/ssltest/analyze.html?d=<your-domain>"
+        ),
+    ],
+    impact_if_not_fixed="Legacy TLS (1.0/1.1) is deprecated and has known weaknesses. Browsers and compliance frameworks (PCI-DSS, etc.) require TLS 1.2 minimum. Outdated protocols may fail compliance audits.",
+    common_mistakes=[
+        "Disabling TLS 1.0/1.1 without testing; some old clients may break",
+        "Forgetting to reload the web server after config change",
+        "Using weak cipher suites even with TLS 1.2"
+    ],
+    references=[
+        "https://ssl-config.mozilla.org/",
+        "https://www.ssllabs.com/ssltest/",
+        "https://wiki.mozilla.org/Security/Server_Side_TLS",
+    ],
+    related_cwe="CWE-326",
+    tags=["ssl", "tls", "encryption", "nuclei", "tls-version", "discovery"],
+))
+
 _register_playbook(RemediationPlaybook(
     id="exposed-admin-panel",
     title="Secure Exposed Admin Panel",
@@ -2296,6 +2361,10 @@ class RemediationPlaybookService:
         "smb/cifs service exposed": "exposed-smb",
         "ftp service exposed": "exposed-ftp",
         "http service (unencrypted)": "missing-https",
+        # TLS/SSL version and configuration
+        "tls version": "tls-ssl-config",
+        "tls version detection": "tls-ssl-config",
+        "tls version - detect": "tls-ssl-config",
         
         # OT/ICS findings
         "modbus protocol exposed": "exposed-modbus",
@@ -2414,6 +2483,10 @@ class RemediationPlaybookService:
     # More specific patterns should come FIRST to avoid false matches
     # Order matters - check specific patterns before generic ones
     TEMPLATE_PATTERN_MAP = {
+        # TLS/SSL version and configuration (Nuclei tls-version, ssl-*, tls-*)
+        "tls-version": "tls-ssl-config",
+        "ssl-": "tls-ssl-config",
+        "tls-": "tls-ssl-config",
         # Security headers - MUST be checked before generic "exposure"
         "http-missing-security-headers": "vuln-security-headers",
         "missing-security-headers": "vuln-security-headers",
@@ -2562,6 +2635,9 @@ class RemediationPlaybookService:
                 # Security headers
                 if "security-header" in tag_lower or "missing-header" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("vuln-security-headers")
+                # TLS/SSL version and configuration
+                if "ssl" in tag_lower or "tls" in tag_lower:
+                    return REMEDIATION_PLAYBOOKS.get("tls-ssl-config")
                 # OT/ICS
                 if "modbus" in tag_lower:
                     return REMEDIATION_PLAYBOOKS.get("exposed-modbus")
