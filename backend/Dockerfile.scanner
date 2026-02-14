@@ -82,6 +82,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Chrome/Chromium dependencies for EyeWitness and headless screenshots
     chromium \
     chromium-driver \
+    xvfb \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -112,7 +113,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install ParamSpider for URL parameter discovery (from GitHub since not on PyPI)
 RUN pip install --no-cache-dir git+https://github.com/devanshbatham/ParamSpider.git || echo "ParamSpider installation skipped"
 
-# Install EyeWitness for screenshots (handle different repo structures)
+# Playwright for reliable screenshots in Docker (primary method; no display needed)
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers
+RUN playwright install chromium && playwright install-deps chromium || true
+
+# Install EyeWitness for screenshots (optional fallback)
 RUN git clone --depth 1 https://github.com/RedSiege/EyeWitness.git /opt/EyeWitness && \
     cd /opt/EyeWitness && \
     if [ -f "Python/requirements.txt" ]; then \
@@ -124,8 +129,10 @@ RUN git clone --depth 1 https://github.com/RedSiege/EyeWitness.git /opt/EyeWitne
         pip install --no-cache-dir selenium netaddr Pillow; \
     fi || echo "EyeWitness installation completed with warnings"
 
-# Set up EyeWitness environment variables
+# Set up EyeWitness environment variables (scanner uses system Python, no venv)
 ENV EYEWITNESS_PATH=/opt/EyeWitness/Python/EyeWitness.py
+ENV EYEWITNESS_VENV=/usr/bin/python3
+ENV EYEWITNESS_USE_XVFB=true
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 

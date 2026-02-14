@@ -50,6 +50,9 @@ pytest-asyncio==0.21.1
 # Image processing (for screenshots)
 Pillow==10.1.0
 
+# Screenshot capture in Docker/headless (Playwright Chromium)
+playwright>=1.40.0
+
 # AWS SDK (for SQS in production)
 boto3==1.34.0
 

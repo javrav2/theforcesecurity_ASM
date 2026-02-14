@@ -167,6 +167,10 @@ COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 
+# Playwright for screenshot capture (Docker/headless)
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers
+RUN playwright install chromium && playwright install-deps chromium || true
+
 # Install ParamSpider
 RUN pip install paramspider || echo "ParamSpider installation skipped"
 

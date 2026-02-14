@@ -552,10 +552,16 @@ async def get_app_structure_by_asset(
                 all_interesting.add(url)
     if getattr(asset, 'parameters', None):
         all_params.update(asset.parameters)
+    # Include JS files for this asset: same host or same root domain (e.g. CDN subdomains)
     if getattr(asset, 'js_files', None):
+        root_domain = (getattr(asset, 'root_domain', None) or '').strip().lower()
         for j in asset.js_files:
-            if j and asset_value in j.lower():
-                all_js.add(j)
+            if not j:
+                continue
+            j_str = j if isinstance(j, str) else str(j)
+            j_lower = j_str.lower()
+            if asset_value in j_lower or (root_domain and root_domain in j_lower):
+                all_js.add(j_str)
     
     return AppStructureResponse(
         summary=AppStructureSummary(

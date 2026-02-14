@@ -1287,7 +1287,7 @@ export default function AssetDetailPage() {
           </Card>
         )}
 
-        {/* App Structure Summary - Links to App Structure Tab */}
+        {/* Site map & App Structure - endpoints, parameters, JS files on this asset */}
         {((asset.endpoints && asset.endpoints.length > 0) || 
           (asset.parameters && asset.parameters.length > 0) || 
           (asset.js_files && asset.js_files.length > 0) ||
@@ -1300,17 +1300,17 @@ export default function AssetDetailPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <FolderSearch className="h-5 w-5" />
-                  <CardTitle>Application Structure</CardTitle>
+                  <CardTitle>Site map &amp; App Structure</CardTitle>
                 </div>
                 <Badge variant="outline" className="text-xs">
                   Click to view details →
                 </Badge>
               </div>
               <CardDescription>
-                Discovered technologies, endpoints, parameters, and JS files
+                Discovered technologies, endpoints, parameters, and JavaScript files for this asset
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="text-center p-3 bg-muted/30 rounded-lg">
                   <p className="text-2xl font-bold text-purple-500">{asset.technologies?.length || 0}</p>
@@ -1326,9 +1326,29 @@ export default function AssetDetailPage() {
                 </div>
                 <div className="text-center p-3 bg-muted/30 rounded-lg">
                   <p className="text-2xl font-bold text-yellow-500">{asset.js_files?.length || 0}</p>
-                  <p className="text-xs text-muted-foreground">JS Files</p>
+                  <p className="text-xs text-muted-foreground">JS files</p>
                 </div>
               </div>
+              {/* Show first few JS files on the asset site map */}
+              {asset.js_files && asset.js_files.length > 0 && (
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <p className="text-sm font-medium text-muted-foreground mb-2">JS files on this site (first 10)</p>
+                  <ul className="text-sm space-y-1 break-all">
+                    {(typeof asset.js_files[0] === 'string' ? asset.js_files : asset.js_files.map(String))
+                      .slice(0, 10)
+                      .map((url: string, i: number) => (
+                        <li key={i}>
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
+                            {url}
+                          </a>
+                        </li>
+                      ))}
+                  </ul>
+                  {asset.js_files.length > 10 && (
+                    <p className="text-xs text-muted-foreground mt-2">+{asset.js_files.length - 10} more in App Structure tab</p>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

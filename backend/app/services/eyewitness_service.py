@@ -74,10 +74,13 @@ class EyeWitnessService:
     SCREENSHOTS_DIR = os.environ.get("SCREENSHOTS_DIR", "/app/data/screenshots")
     EYEWITNESS_PATH = os.environ.get("EYEWITNESS_PATH", "/opt/EyeWitness/Python/EyeWitness.py")
     EYEWITNESS_VENV = os.environ.get("EYEWITNESS_VENV", "/opt/EyeWitness/eyewitness-venv/bin/python")
+    # Use xvfb-run when available (e.g. in Docker) so Chromium has a virtual display
+    USE_XVFB = os.environ.get("EYEWITNESS_USE_XVFB", "true").lower() in ("1", "true", "yes")
     
     def __init__(self):
         """Initialize the EyeWitness service."""
         self._ensure_directories()
+        self._python_path = self._resolve_python_path()
     
     def _ensure_directories(self):
         """Ensure required directories exist."""
@@ -103,15 +106,15 @@ class EyeWitnessService:
             result["error"] = f"EyeWitness not found at {self.EYEWITNESS_PATH}"
             return result
         
-        # Check if venv Python exists
-        if not os.path.exists(self.EYEWITNESS_VENV):
-            result["error"] = f"EyeWitness venv not found at {self.EYEWITNESS_VENV}"
+        # Resolve Python: use venv if present, else system python (e.g. scanner image uses system pip)
+        if not self._python_path:
+            result["error"] = f"EyeWitness Python not found (venv: {self.EYEWITNESS_VENV})"
             return result
         
         # Try to get version
         try:
             proc = subprocess.run(
-                [self.EYEWITNESS_VENV, self.EYEWITNESS_PATH, "--help"],
+                [self._python_path, self.EYEWITNESS_PATH, "--help"],
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -126,6 +129,22 @@ class EyeWitnessService:
             result["error"] = str(e)
         
         return result
+    
+    def _resolve_python_path(self) -> Optional[str]:
+        """Resolve Python for EyeWitness: venv if present, else system python."""
+        if os.path.exists(self.EYEWITNESS_VENV):
+            return self.EYEWITNESS_VENV
+        # Scanner image may install EyeWitness deps with system pip (no venv)
+        for candidate in ("/usr/bin/python3", "python3", "python"):
+            try:
+                if candidate.startswith("/") and os.path.exists(candidate):
+                    return candidate
+                found = shutil.which(candidate)
+                if found:
+                    return found
+            except Exception:
+                pass
+        return None
     
     async def capture_screenshots(
         self,
@@ -166,9 +185,9 @@ class EyeWitnessService:
             
             output_dir = os.path.join(temp_dir, "output")
             
-            # Build EyeWitness command
+            # Build EyeWitness command (use resolved Python path)
             cmd = [
-                self.EYEWITNESS_VENV,
+                self._python_path,
                 self.EYEWITNESS_PATH,
                 "-f", urls_file,
                 "-d", output_dir,
@@ -176,6 +195,9 @@ class EyeWitnessService:
                 "--threads", str(config.threads),
                 "--no-prompt"
             ]
+            # In Docker/headless, Chromium needs a virtual display
+            if self.USE_XVFB and shutil.which("xvfb-run"):
+                cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24"] + cmd
             
             if config.delay > 0:
                 cmd.extend(["--delay", str(config.delay)])

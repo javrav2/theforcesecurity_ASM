@@ -394,9 +394,13 @@ export default function ScanDetailPage() {
                 <Server className="h-8 w-8 text-green-400" />
                 <div>
                   <p className="text-2xl font-bold">
-                    {scan.results?.live_hosts || scan.results?.host_results?.filter((h: any) => h.is_live).length || scan.assets_discovered || 0}
+                    {scan.scan_type === 'screenshot'
+                      ? (scan.results?.screenshots_captured ?? scan.assets_discovered ?? 0)
+                      : scan.results?.live_hosts || scan.results?.host_results?.filter((h: any) => h.is_live).length || scan.assets_discovered || 0}
                   </p>
-                  <p className="text-sm text-muted-foreground">Live Assets</p>
+                  <p className="text-sm text-muted-foreground">
+                    {scan.scan_type === 'screenshot' ? 'Screenshots captured' : 'Live Assets'}
+                  </p>
                 </div>
               </div>
             </CardContent>
@@ -405,7 +409,15 @@ export default function ScanDetailPage() {
           <Card>
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
-                {scan.scan_type === 'port_scan' ? (
+                {scan.scan_type === 'screenshot' ? (
+                  <>
+                    <AlertTriangle className="h-8 w-8 text-amber-400" />
+                    <div>
+                      <p className="text-2xl font-bold">{scan.results?.screenshots_failed ?? 0}</p>
+                      <p className="text-sm text-muted-foreground">Screenshots failed</p>
+                    </div>
+                  </>
+                ) : scan.scan_type === 'port_scan' ? (
                   <>
                     <Shield className="h-8 w-8 text-purple-400" />
                     <div>

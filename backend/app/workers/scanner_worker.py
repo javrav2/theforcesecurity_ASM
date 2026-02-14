@@ -2536,25 +2536,29 @@ class ScannerWorker:
             
             from app.services.screenshot_service import _capture_screenshots_async
             
-            # If no specific targets, get live assets from the organization
+            # If no specific targets, get live assets from the organization (include non-live if no live assets)
             # Use live_url when available for better screenshot accuracy
             # Include domains, subdomains, AND IP addresses
             if not targets:
+                # Prefer live assets; if none, include all web assets so we still have targets
                 live_assets = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
                     Asset.is_live == True,
                     Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS])
                 ).limit(config.get('max_hosts', 200)).all()
+                if not live_assets:
+                    live_assets = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN, AssetType.IP_ADDRESS])
+                    ).limit(config.get('max_hosts', 200)).all()
                 
                 # Prefer live_url (the actual responding URL) over just the domain/IP
                 # This ensures we screenshot the actual endpoint (e.g., /global-protect/login.esp)
                 targets = []
                 for a in live_assets:
-                    if a.live_url:
-                        # Use the actual live URL from HTTP probe
+                    if getattr(a, 'live_url', None):
                         targets.append(a.live_url)
                     else:
-                        # Fallback to https://value
                         targets.append(f"https://{a.value}")
             
             logger.info(f"Starting screenshot capture for {len(targets)} targets")
@@ -2570,10 +2574,11 @@ class ScannerWorker:
             
             screenshots_captured = result.get('screenshots_captured', 0)
             screenshots_failed = result.get('screenshots_failed', 0)
+            capture_error = result.get('error')
             
-            # Update scan record
+            # Update scan record (include error/hint so UI can show why capture failed)
             if scan:
-                scan.status = ScanStatus.COMPLETED
+                scan.status = ScanStatus.COMPLETED if not capture_error else ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
                 scan.current_step = None
                 scan.assets_discovered = screenshots_captured
@@ -2583,6 +2588,13 @@ class ScannerWorker:
                     'targets_processed': len(targets),
                     'assets_updated': result.get('assets_updated', 0),
                 }
+                if capture_error:
+                    scan.results['error'] = capture_error
+                    scan.results['hint'] = (
+                        'Install EyeWitness and Chromium in the scanner container, or enable xvfb for headless screenshots.'
+                        if 'not installed' in capture_error.lower() or 'not found' in capture_error.lower()
+                        else 'Check scanner logs for details.'
+                    )
                 db.commit()
             
             logger.info(f"Screenshot scan complete: {screenshots_captured} captured, {screenshots_failed} failed")
