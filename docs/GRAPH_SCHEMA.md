@@ -19,6 +19,32 @@ Domain → Subdomain → IP → Port → Service → Technology → Vulnerabilit
 | Technology| HAS_VULNERABILITY | Vulnerability |
 | Vulnerability | REFERENCES | CVE        |
 | Vulnerability | MAPS_TO    | MITRE       |
+| Subdomain     | SAME_IP_AS | Subdomain   |
+
+**SAME_IP_AS** is created between Subdomains that resolve to the same IP (per organization). Use it to answer “what else is on this IP?” and to reason about shared infrastructure (RedAmon-style graph robustness).
+
+## Logical connections (RedAmon-style)
+
+These patterns support attack-surface reasoning and technology/domain relationships:
+
+- **Same IP** – Subdomains that share an IP (co-hosted):  
+  `(s1:Subdomain)-[:SAME_IP_AS]-(s2:Subdomain)`  
+  Example: “Subdomains on same IP as this asset”  
+  `MATCH (a:Asset)-[:RESOLVES_TO]->(ip:IP)<-[:RESOLVES_TO]-(s:Subdomain) WHERE a.organization_id = $org_id RETURN s`
+
+- **Same technology** – Assets using the same technology:  
+  `(t:Technology)<-[:USES_TECHNOLOGY]-(a:Asset)`  
+  Example: “All assets running WordPress”  
+  `MATCH (t:Technology {name: 'WordPress'})<-[:USES_TECHNOLOGY]-(a:Asset) WHERE a.organization_id = $org_id RETURN a`
+
+- **Technology → CVE** – Vulnerabilities linked to a technology (via Asset or Service):  
+  `(t:Technology)-[:HAS_VULNERABILITY]->(v:Vulnerability)-[:REFERENCES]->(c:CVE)`  
+  Example: “Technologies with critical CVEs”  
+  `MATCH (t:Technology)-[:HAS_VULNERABILITY]->(v:Vulnerability)-[:REFERENCES]->(c:CVE) WHERE v.severity = 'critical' AND v.organization_id = $org_id RETURN t, c`
+
+- **Domain → Subdomain → IP** – Full chain for a root domain:  
+  `(d:Domain)-[:HAS_SUBDOMAIN]->(s:Subdomain)-[:RESOLVES_TO]->(ip:IP)`  
+  Always filter by `organization_id` (e.g. `d.organization_id = $org_id`).
 
 ## Node types and properties
 

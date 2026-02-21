@@ -7,7 +7,9 @@ Provides a server for exposing security tools via the Model Context Protocol.
 import asyncio
 import json
 import logging
+import shlex
 import subprocess
+import time
 from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
@@ -16,6 +18,9 @@ from enum import Enum
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Help commands should return quickly; use short timeout so missing binaries fail fast
+MCP_HELP_TIMEOUT = 15
 
 
 class ToolType(str, Enum):
@@ -312,38 +317,186 @@ class MCPServer:
             phase="informational",
             handler=self._waybackurls_help,
         ))
+        
+        # Nmap - network exploration and service detection (Guardian-style)
+        self.registry.register(MCPTool(
+            name="execute_nmap",
+            description="Run Nmap for port scanning, service/version detection, or script scanning. Example: '-sV -sC -p 80,443 target.com' or '-Pn -sT 192.168.1.0/24'.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Nmap CLI arguments (e.g., '-sV -sC -p 80,443,8080 example.com')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_nmap,
+        ))
+        self.registry.register(MCPTool(
+            name="nmap_help",
+            description="Get Nmap command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._nmap_help,
+        ))
+        
+        # Masscan - ultra-fast port scanner (Guardian-style)
+        self.registry.register(MCPTool(
+            name="execute_masscan",
+            description="Run Masscan for very fast port scanning (often requires root). Example: '192.168.1.0/24 -p80,443 --rate=1000'.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Masscan CLI arguments (e.g., '10.0.0.0/8 -p80,443,8080 --rate=1000')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_masscan,
+        ))
+        self.registry.register(MCPTool(
+            name="masscan_help",
+            description="Get Masscan command usage.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._masscan_help,
+        ))
+        
+        # FFuf - web fuzzer for directory/parameter discovery (Guardian-style)
+        self.registry.register(MCPTool(
+            name="execute_ffuf",
+            description="Run FFuf for web fuzzing (directory brute-forcing, vhost discovery, parameter fuzzing). Example: '-u https://target.com/FUZZ -w wordlist.txt -mc 200'.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "FFuf CLI arguments (e.g., '-u https://example.com/FUZZ -w /path/to/wordlist -mc 200,301')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_ffuf,
+        ))
+        self.registry.register(MCPTool(
+            name="ffuf_help",
+            description="Get FFuf command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._ffuf_help,
+        ))
+        
+        # Amass - subdomain/network mapping (Guardian-style)
+        self.registry.register(MCPTool(
+            name="execute_amass",
+            description="Run Amass for subdomain enumeration and network mapping (passive/active). Example: 'enum -d example.com -json -' or 'intel -org Example'.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Amass CLI arguments (e.g., 'enum -d example.com -o out.txt')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_amass,
+        ))
+        self.registry.register(MCPTool(
+            name="amass_help",
+            description="Get Amass command usage.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._amass_help,
+        ))
+        
+        # WhatWeb - tech fingerprinting (Guardian-style; requires: gem install whatweb or apt install whatweb)
+        self.registry.register(MCPTool(
+            name="execute_whatweb",
+            description="Run WhatWeb to identify web technologies (CMS, frameworks, servers, versions). Example: 'https://example.com' or '-a 1 --no-errors https://target.com'. Requires WhatWeb CLI installed.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "WhatWeb CLI arguments (URL and optional flags like -a 1, --log-json)"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_whatweb,
+        ))
+        self.registry.register(MCPTool(
+            name="whatweb_help",
+            description="Get WhatWeb command usage.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._whatweb_help,
+        ))
+    
+    @staticmethod
+    def _parse_args(args: str) -> List[str]:
+        """Parse CLI args string safely (handles quoted values). Returns empty list if args empty."""
+        if not args or not args.strip():
+            return []
+        try:
+            return shlex.split(args.strip())
+        except ValueError:
+            return args.split()  # fallback for malformed quotes
     
     async def _run_command(
         self,
         command: List[str],
-        timeout: int = 300
+        timeout: int = 300,
+        max_output_chars: int = 2_000_000,
     ) -> Dict[str, Any]:
-        """Run a shell command and return the result."""
+        """Run a shell command and return the result. Kills process on timeout; caps output size."""
+        process = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
-            
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout
-            )
-            
+            start = time.monotonic()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                logger.warning(f"MCP command timed out after {timeout}s: {command[:3]}...")
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": f"Command timed out after {timeout} seconds (process killed)",
+                    "exit_code": -1,
+                }
+            elapsed = time.monotonic() - start
+            out_str = stdout.decode("utf-8", errors="ignore")
+            err_str = stderr.decode("utf-8", errors="ignore")
+            if len(out_str) > max_output_chars:
+                out_str = out_str[:max_output_chars] + f"\n\n... (truncated, {len(stdout)} bytes total)"
+            if len(err_str) > max_output_chars:
+                err_str = err_str[:max_output_chars] + "\n\n... (stderr truncated)"
+            if process.returncode != 0 and err_str:
+                logger.debug(f"MCP command finished in {elapsed:.1f}s exit={process.returncode}: {command[0]}")
             return {
                 "success": process.returncode == 0,
-                "output": stdout.decode("utf-8", errors="ignore"),
-                "error": stderr.decode("utf-8", errors="ignore") if process.returncode != 0 else None,
+                "output": out_str,
+                "error": err_str if process.returncode != 0 else None,
                 "exit_code": process.returncode,
-            }
-        
-        except asyncio.TimeoutError:
-            return {
-                "success": False,
-                "output": "",
-                "error": f"Command timed out after {timeout} seconds",
-                "exit_code": -1,
             }
         except FileNotFoundError as e:
             return {
@@ -353,6 +506,12 @@ class MCPServer:
                 "exit_code": -1,
             }
         except Exception as e:
+            if process and process.returncode is None:
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
             return {
                 "success": False,
                 "output": "",
@@ -362,74 +521,99 @@ class MCPServer:
     
     async def _execute_nuclei(self, args: str) -> Dict[str, Any]:
         """Execute Nuclei scanner."""
-        cmd = ["nuclei"] + args.split()
+        cmd = ["nuclei"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=600)
     
     async def _nuclei_help(self) -> Dict[str, Any]:
-        """Get Nuclei help."""
-        return await self._run_command(["nuclei", "-h"])
+        return await self._run_command(["nuclei", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_naabu(self, args: str) -> Dict[str, Any]:
-        """Execute Naabu port scanner."""
-        cmd = ["naabu"] + args.split()
+        cmd = ["naabu"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=300)
     
     async def _naabu_help(self) -> Dict[str, Any]:
-        """Get Naabu help."""
-        return await self._run_command(["naabu", "-h"])
+        return await self._run_command(["naabu", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_httpx(self, args: str) -> Dict[str, Any]:
-        """Execute HTTPX prober."""
-        cmd = ["httpx"] + args.split()
+        cmd = ["httpx"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=300)
     
     async def _execute_subfinder(self, args: str) -> Dict[str, Any]:
-        """Execute Subfinder."""
-        cmd = ["subfinder"] + args.split()
+        cmd = ["subfinder"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=300)
     
     async def _execute_dnsx(self, args: str) -> Dict[str, Any]:
-        """Execute DNSX."""
-        cmd = ["dnsx"] + args.split()
+        cmd = ["dnsx"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=120)
     
     async def _execute_katana(self, args: str) -> Dict[str, Any]:
-        """Execute Katana crawler."""
-        cmd = ["katana"] + args.split()
+        cmd = ["katana"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=600)
     
     async def _execute_curl(self, args: str) -> Dict[str, Any]:
-        """Execute curl."""
-        cmd = ["curl"] + args.split()
+        cmd = ["curl"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=60)
     
     async def _httpx_help(self) -> Dict[str, Any]:
-        return await self._run_command(["httpx", "-h"])
+        return await self._run_command(["httpx", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def _subfinder_help(self) -> Dict[str, Any]:
-        return await self._run_command(["subfinder", "-h"])
+        return await self._run_command(["subfinder", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def _dnsx_help(self) -> Dict[str, Any]:
-        return await self._run_command(["dnsx", "-h"])
+        return await self._run_command(["dnsx", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def _katana_help(self) -> Dict[str, Any]:
-        return await self._run_command(["katana", "-h"])
+        return await self._run_command(["katana", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_tldfinder(self, args: str) -> Dict[str, Any]:
-        """Execute tldfinder (ProjectDiscovery)."""
-        cmd = ["tldfinder"] + args.split()
+        cmd = ["tldfinder"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=600)
     
     async def _tldfinder_help(self) -> Dict[str, Any]:
-        return await self._run_command(["tldfinder", "-h"])
+        return await self._run_command(["tldfinder", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_waybackurls(self, args: str) -> Dict[str, Any]:
-        """Execute waybackurls (tomnomnom)."""
-        cmd = ["waybackurls"] + args.split()
+        cmd = ["waybackurls"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=120)
     
     async def _waybackurls_help(self) -> Dict[str, Any]:
-        return await self._run_command(["waybackurls", "-h"])
+        return await self._run_command(["waybackurls", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_nmap(self, args: str) -> Dict[str, Any]:
+        cmd = ["nmap"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _nmap_help(self) -> Dict[str, Any]:
+        return await self._run_command(["nmap", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_masscan(self, args: str) -> Dict[str, Any]:
+        cmd = ["masscan"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _masscan_help(self) -> Dict[str, Any]:
+        return await self._run_command(["masscan", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_ffuf(self, args: str) -> Dict[str, Any]:
+        cmd = ["ffuf"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _ffuf_help(self) -> Dict[str, Any]:
+        return await self._run_command(["ffuf", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_amass(self, args: str) -> Dict[str, Any]:
+        cmd = ["amass"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _amass_help(self) -> Dict[str, Any]:
+        return await self._run_command(["amass", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_whatweb(self, args: str) -> Dict[str, Any]:
+        cmd = ["whatweb"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=120)
+    
+    async def _whatweb_help(self) -> Dict[str, Any]:
+        return await self._run_command(["whatweb", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """

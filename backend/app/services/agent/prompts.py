@@ -216,6 +216,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **analyze_attack_surface**: Get attack surface summary
 - **get_asset_details**: Get detailed information about an asset
 - **search_cve**: Search for CVE information
+- **web_search** (if configured): Search the web for CVE/exploit research. Args: query (required), max_results (optional, default 5). Requires TAVILY_API_KEY in .env.
 - **execute_httpx**: Run HTTPX HTTP prober (args: CLI arguments)
 - **execute_subfinder**: Run Subfinder subdomain discovery (args: CLI arguments)
 - **execute_dnsx**: Run DNSX DNS toolkit (args: CLI arguments)
@@ -223,7 +224,9 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_curl**: Execute curl HTTP client (args: CLI arguments)
 - **execute_tldfinder**: Run tldfinder for TLD/domain discovery (args: e.g. '-d example.com -dm domain -oJ')
 - **execute_waybackurls**: Fetch historical URLs from Wayback Machine (args: domain or CLI args)
-- **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**: Get CLI usage for each tool
+- **execute_amass**: Run Amass subdomain/network mapping (args: e.g. 'enum -d example.com -json -')
+- **execute_whatweb**: Run WhatWeb tech fingerprinting (args: URL or 'https://target.com -a 1'). Requires WhatWeb CLI.
+- **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**: Get CLI usage for each tool
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
 - **get_notes**: Get session notes (optional category filter)
 """
@@ -233,6 +236,9 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - All Informational tools
 - **execute_nuclei**: Execute Nuclei vulnerability scanner (args: CLI arguments like '-u http://target.com -severity critical,high')
 - **execute_naabu**: Execute Naabu port scanner (args: CLI arguments like '-host 192.168.1.1 -p 1-1000')
+- **execute_nmap**: Run Nmap port/service/script scanning (args: e.g. '-sV -sC -p 80,443 target.com')
+- **execute_masscan**: Run Masscan ultra-fast port scan (args: e.g. '192.168.1.0/24 -p80,443 --rate=1000')
+- **execute_ffuf**: Run FFuf web fuzzer for directories/params (args: e.g. '-u https://target.com/FUZZ -w wordlist.txt -mc 200')
 """
 
     post_exploitation_tools = """
@@ -261,6 +267,7 @@ TOOL_PHASE_MAP = {
     "analyze_attack_surface": ["informational", "exploitation", "post_exploitation"],
     "get_asset_details": ["informational", "exploitation", "post_exploitation"],
     "search_cve": ["informational", "exploitation", "post_exploitation"],
+    "web_search": ["informational", "exploitation", "post_exploitation"],
     "query_graph": ["informational", "exploitation", "post_exploitation"],
     "save_note": ["informational", "exploitation", "post_exploitation"],
     "get_notes": ["informational", "exploitation", "post_exploitation"],
@@ -281,10 +288,20 @@ TOOL_PHASE_MAP = {
     "katana_help": ["informational", "exploitation", "post_exploitation"],
     "tldfinder_help": ["informational", "exploitation", "post_exploitation"],
     "waybackurls_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_amass": ["informational", "exploitation", "post_exploitation"],
+    "amass_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_whatweb": ["informational", "exploitation", "post_exploitation"],
+    "whatweb_help": ["informational", "exploitation", "post_exploitation"],
+    "nmap_help": ["informational", "exploitation", "post_exploitation"],
+    "masscan_help": ["informational", "exploitation", "post_exploitation"],
+    "ffuf_help": ["informational", "exploitation", "post_exploitation"],
     
     # MCP exploitation tools
     "execute_nuclei": ["exploitation", "post_exploitation"],
     "execute_naabu": ["exploitation", "post_exploitation"],
+    "execute_nmap": ["exploitation", "post_exploitation"],
+    "execute_masscan": ["exploitation", "post_exploitation"],
+    "execute_ffuf": ["exploitation", "post_exploitation"],
     
     # Legacy exploitation tools
     "run_nuclei_scan": ["exploitation", "post_exploitation"],

@@ -276,6 +276,7 @@ class ScannerWorker:
                 ScanType.KATANA: 'KATANA',
                 ScanType.CLEANUP: 'CLEANUP',
                 ScanType.TECHNOLOGY: 'TECHNOLOGY_SCAN',
+                ScanType.WHATWEB: 'WHATWEB_SCAN',
                 ScanType.GEO_ENRICH: 'GEO_ENRICH',
                 ScanType.TLDFINDER: 'TLDFINDER',
             }
@@ -609,6 +610,10 @@ class ScannerWorker:
                     await self.handle_cleanup(body)
                 elif job_type == 'TECHNOLOGY_SCAN':
                     await self.handle_technology_scan(body)
+                elif job_type == 'WHATWEB_SCAN':
+                    # WhatWeb enrichment: same as technology scan with source=whatweb
+                    whatweb_body = {**body, "config": {**(body.get("config") or {}), "source": "whatweb"}}
+                    await self.handle_technology_scan(whatweb_body)
                 elif job_type == 'GEO_ENRICH':
                     await self.handle_geo_enrichment(body)
                 elif job_type == 'TLDFINDER':

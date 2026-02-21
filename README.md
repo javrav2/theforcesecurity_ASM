@@ -373,7 +373,7 @@ cd /path/to/theforcesecurity_ASM/aws/scripts
 
 Requires ECR repositories and ECS cluster (`asm-cluster`, etc.) already set up.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed AWS deployment instructions.
+For optional env vars (e.g. `TAVILY_API_KEY`, `AGENT_TOOL_OUTPUT_MAX_CHARS`) and the full **Push updates to your AWS instance** checklist, see [DEPLOYMENT.md#push-updates-to-your-aws-instance](DEPLOYMENT.md#-push-updates-to-your-aws-instance). See [DEPLOYMENT.md](DEPLOYMENT.md) for full AWS deployment instructions.
 
 ## 📁 Project Structure
 

@@ -20,6 +20,7 @@ class ScanType(str, enum.Enum):
     WEB_SCAN = "web_scan"             # Web application scanning
     HTTP_PROBE = "http_probe"         # HTTP probing for live web assets
     TECHNOLOGY = "technology"          # Wappalyzer technology fingerprinting
+    WHATWEB = "whatweb"                # WhatWeb CLI (1800+ plugins) technology enrichment
     CERTIFICATE = "certificate"        # SSL/TLS certificate analysis
     VULNERABILITY = "vulnerability"    # Vulnerability scanning
     LOGIN_PORTAL = "login_portal"      # Login portal & admin panel detection

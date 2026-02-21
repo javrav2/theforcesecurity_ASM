@@ -72,6 +72,7 @@ def send_scan_to_sqs(scan: Scan) -> bool:
         ScanType.LOGIN_PORTAL: 'LOGIN_PORTAL',
         ScanType.SCREENSHOT: 'SCREENSHOT',
         ScanType.TECHNOLOGY: 'TECHNOLOGY_SCAN',
+        ScanType.WHATWEB: 'WHATWEB_SCAN',
         ScanType.PARAMSPIDER: 'PARAMSPIDER',
         ScanType.WAYBACKURLS: 'WAYBACKURLS',
         ScanType.KATANA: 'KATANA',
@@ -432,6 +433,7 @@ def create_adhoc_scan(
         "web_scan": ScanType.VULNERABILITY,  # Web scan uses Nuclei vulnerability scanner
         "screenshot": ScanType.SCREENSHOT,
         "technology": ScanType.TECHNOLOGY,
+        "whatweb": ScanType.WHATWEB,
         "http_probe": ScanType.HTTP_PROBE,
         "dns_resolution": ScanType.DNS_RESOLUTION,
         "subdomain_enum": ScanType.SUBDOMAIN_ENUM,

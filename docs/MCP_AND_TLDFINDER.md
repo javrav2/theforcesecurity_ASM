@@ -100,6 +100,16 @@ The app runs a **single MCP server** (in-process) that exposes security tools to
 | **tldfinder_help** | tldfinder usage |
 | **execute_waybackurls** | Run waybackurls (domain or CLI args) |
 | **waybackurls_help** | waybackurls usage (if supported) |
+| **execute_nmap** | Run Nmap (e.g. `-sV -sC -p 80,443 target.com`) |
+| **nmap_help** | Nmap usage |
+| **execute_masscan** | Run Masscan (e.g. `192.168.1.0/24 -p80,443 --rate=1000`) |
+| **masscan_help** | Masscan usage |
+| **execute_ffuf** | Run FFuf web fuzzer (e.g. `-u https://target.com/FUZZ -w wordlist.txt -mc 200`) |
+| **ffuf_help** | FFuf usage |
+| **execute_amass** | Run Amass (e.g. `enum -d example.com -json -`) |
+| **amass_help** | Amass usage |
+| **execute_whatweb** | Run WhatWeb tech fingerprinting (e.g. `https://example.com` or `-a 1 https://target.com`) |
+| **whatweb_help** | WhatWeb usage |
 
 Tools are implemented in `backend/app/services/mcp/server.py`. The agent calls them via `execute_mcp_tool`; `execute()` routes any `execute_*` or `*_help` tool to the MCP server.
 
@@ -123,4 +133,4 @@ Some setups run one MCP server per tool over SSE (e.g. naabu :8000, nuclei :8002
 ## 5. Summary
 
 - **TLDFinder:** Install the binary, then use **full discovery with `use_tldfinder: true`** or a **tldfinder** scan (with targets or org/asset-derived domains) for better TLD/domain coverage (e.g. for keywords like “Rockwell Automation”).
-- **MCP:** All listed tools (nuclei, naabu, httpx, subfinder, dnsx, katana, curl, tldfinder, waybackurls + help) are registered and callable by the AI agent and via the HTTP API; add binaries to the environment where the backend runs.
+- **MCP:** All listed tools (nuclei, naabu, httpx, subfinder, dnsx, katana, curl, tldfinder, waybackurls, nmap, masscan, ffuf, amass + help) are registered and callable by the AI agent and via the HTTP API; add binaries to the environment where the backend runs. See **docs/GUARDIAN_TOOL_PARITY.md** for Guardian-CLI tool parity and **docs/REDAMON_COMPARISON.md** for RedAmon-inspired updates (e.g. web_search, tool output limits).

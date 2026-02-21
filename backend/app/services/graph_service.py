@@ -198,6 +198,8 @@ class GraphService:
                 for asset in assets:
                     self._sync_asset(session, asset, organization_id)
                     synced += 1
+                # RedAmon-style: logical links between subdomains on same IP
+                self._create_same_ip_links(session, organization_id)
             
             logger.info(f"Synced {synced} assets for organization {organization_id}")
             return {"synced": synced, "error": None}
@@ -588,6 +590,22 @@ class GraphService:
                 "org_id": org_id,
             })
     
+    def _create_same_ip_links(self, session, org_id: int):
+        """
+        Create SAME_IP_AS relationships between Subdomains that resolve to the same IP.
+        Enables queries like "what other subdomains share this IP?" (RedAmon-style graph robustness).
+        """
+        try:
+            session.run("""
+                MATCH (s1:Subdomain {organization_id: $org_id})-[:RESOLVES_TO]->(ip:IP)
+                MATCH (s2:Subdomain {organization_id: $org_id})-[:RESOLVES_TO]->(ip)
+                WHERE s1.name < s2.name
+                MERGE (s1)-[:SAME_IP_AS]->(s2)
+                MERGE (s2)-[:SAME_IP_AS]->(s1)
+            """, {"org_id": org_id})
+        except Exception as e:
+            logger.debug(f"SAME_IP_AS links: {e}")
+
     def _get_label_for_type(self, asset_type: AssetType) -> str:
         """Get Neo4j node label for an asset type."""
         if not asset_type:

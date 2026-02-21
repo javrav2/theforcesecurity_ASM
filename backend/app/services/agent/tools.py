@@ -10,6 +10,8 @@ from typing import List, Optional, Dict, Any
 from contextvars import ContextVar
 from sqlalchemy.orm import Session
 
+import httpx
+
 from app.db.database import SessionLocal
 from app.models.asset import Asset, AssetType
 from app.models.vulnerability import Vulnerability, Severity
@@ -17,6 +19,10 @@ from app.models.port_service import PortService
 from app.models.technology import Technology
 from app.models.agent_note import AgentNote
 from app.core.config import settings
+
+# Max chars for tool output (used for truncation; align with AGENT_TOOL_OUTPUT_MAX_CHARS)
+def _tool_output_max_chars() -> int:
+    return getattr(settings, "AGENT_TOOL_OUTPUT_MAX_CHARS", 20000)
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +61,7 @@ class ASMToolsManager:
     
     def _register_tools(self) -> Dict[str, callable]:
         """Register all available tools."""
-        return {
+        tools = {
             # ASM Query Tools
             "query_assets": self.query_assets,
             "query_vulnerabilities": self.query_vulnerabilities,
@@ -78,6 +84,11 @@ class ASMToolsManager:
             "execute_curl": self.execute_mcp_tool,
             "execute_tldfinder": self.execute_mcp_tool,
             "execute_waybackurls": self.execute_mcp_tool,
+            "execute_nmap": self.execute_mcp_tool,
+            "execute_masscan": self.execute_mcp_tool,
+            "execute_ffuf": self.execute_mcp_tool,
+            "execute_amass": self.execute_mcp_tool,
+            "execute_whatweb": self.execute_mcp_tool,
             "nuclei_help": self.execute_mcp_tool,
             "naabu_help": self.execute_mcp_tool,
             "httpx_help": self.execute_mcp_tool,
@@ -86,8 +97,17 @@ class ASMToolsManager:
             "katana_help": self.execute_mcp_tool,
             "tldfinder_help": self.execute_mcp_tool,
             "waybackurls_help": self.execute_mcp_tool,
+            "nmap_help": self.execute_mcp_tool,
+            "masscan_help": self.execute_mcp_tool,
+            "ffuf_help": self.execute_mcp_tool,
+            "amass_help": self.execute_mcp_tool,
+            "whatweb_help": self.execute_mcp_tool,
         }
-    
+        # Optional: web search (RedAmon-style) when Tavily API key is set
+        if getattr(settings, "TAVILY_API_KEY", None):
+            tools["web_search"] = self.web_search
+        return tools
+
     def get_tool(self, name: str) -> Optional[callable]:
         """Get a tool by name."""
         return self.tools.get(name)
@@ -105,20 +125,27 @@ class ASMToolsManager:
                 # MCP expects args for execute_* tools; help tools use {}
                 result = await mcp.call_tool(tool_name, tool_args)
                 
+                max_chars = _tool_output_max_chars()
                 if result.get("success"):
                     output = result.get("output", "")
-                    if len(output) > 10000:
-                        output = output[:10000] + f"\n\n... (truncated)"
+                    if len(output) > max_chars:
+                        output = output[:max_chars] + f"\n\n... (truncated, total {len(result.get('output', ''))} chars)"
                     return {
                         "success": True,
                         "output": output or "Command completed.",
                         "error": None
                     }
                 else:
+                    err = result.get("error", "Unknown error")
+                    out = result.get("output", "")
+                    err_max = min(8000, max_chars)
+                    combined = f"Error: {err}"
+                    if out and out.strip():
+                        combined += f"\nStdout:\n{out[:err_max]}" + ("\n... (truncated)" if len(out) > err_max else "")
                     return {
                         "success": False,
-                        "output": result.get("output", ""),
-                        "error": result.get("error", "Unknown error")
+                        "output": combined,
+                        "error": err
                     }
             except Exception as e:
                 logger.error(f"MCP tool execution failed: {tool_name} - {e}")
@@ -606,6 +633,52 @@ class ASMToolsManager:
         finally:
             db.close()
 
+    async def web_search(self, query: str, max_results: int = 5) -> str:
+        """
+        Search the web for CVE details, exploit info, or general security research (RedAmon-style).
+        Uses Tavily API when TAVILY_API_KEY is set.
+        
+        Args:
+            query: Search query (e.g. "CVE-2021-44228 exploit", "Log4j remediation")
+            max_results: Max results to return (1-10, default 5)
+        
+        Returns:
+            Summarized search results or an error message.
+        """
+        api_key = getattr(settings, "TAVILY_API_KEY", None)
+        if not api_key:
+            return "Web search is not configured. Set TAVILY_API_KEY in .env to enable (get a key at tavily.com)."
+        max_results = max(1, min(10, max_results))
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": query,
+                        "search_depth": "basic",
+                        "max_results": max_results,
+                    },
+                )
+                r.raise_for_status()
+                data = r.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Tavily API error: {e.response.status_code} - {e.response.text[:200]}")
+            return f"Web search failed: HTTP {e.response.status_code}. Check TAVILY_API_KEY and quota."
+        except Exception as e:
+            logger.exception("Tavily web_search failed")
+            return f"Web search failed: {e!s}"
+        results = data.get("results") or []
+        if not results:
+            return f"No results for: {query}"
+        out = [f"# Web search: {query}\n"]
+        for i, hit in enumerate(results, 1):
+            title = hit.get("title", "")
+            url = hit.get("url", "")
+            content = (hit.get("content") or "")[:_tool_output_max_chars() // max_results]
+            out.append(f"## {i}. {title}\nURL: {url}\n{content}\n")
+        return "\n".join(out)
+
     async def save_note(
         self,
         category: str,
@@ -702,10 +775,16 @@ class ASMToolsManager:
         # Call MCP tool
         result = await mcp.call_tool(actual_tool, arguments)
         
+        max_chars = _tool_output_max_chars()
         if result.get("success"):
             output = result.get("output", "")
-            if len(output) > 10000:
-                output = output[:10000] + f"\n\n... (truncated, {len(result['output'])} total chars)"
+            if len(output) > max_chars:
+                output = output[:max_chars] + f"\n\n... (truncated, {len(result['output'])} total chars)"
             return output or "Command completed with no output."
         else:
-            return f"Error: {result.get('error', 'Unknown error')}"
+            err = result.get("error", "Unknown error")
+            out = result.get("output", "")
+            err_max = min(8000, max_chars)
+            if out and out.strip():
+                return f"Error: {err}\nStdout:\n{out[:err_max]}" + ("\n... (truncated)" if len(out) > err_max else "")
+            return f"Error: {err}"

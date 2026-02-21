@@ -25,6 +25,7 @@ from app.models.technology import Technology
 from app.services.asset_labeling_service import add_tech_to_asset
 from app.services.wappalyzer_service import WappalyzerService, DetectedTechnology
 from app.services.whatruns_service import WhatRunsService, get_whatruns_service
+from app.services.whatweb_service import WhatWebService
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,8 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 10  # How many hosts to scan in parallel
 BATCH_DELAY = 1.0  # Seconds to wait between batches
 
-# Technology detection sources
-TechSource = Literal["wappalyzer", "whatruns", "both"]
+# Technology detection sources (whatweb = WhatWeb CLI, 1800+ plugins)
+TechSource = Literal["wappalyzer", "whatruns", "whatweb", "both"]
 
 
 def _get_or_create_technology(db: Session, detected) -> Technology:
@@ -90,6 +91,7 @@ async def _scan_single_host(
     host: str,
     source: TechSource = "wappalyzer",
     whatruns: Optional[WhatRunsService] = None,
+    whatweb: Optional[WhatWebService] = None,
     wappalyzer_options: Optional[dict] = None,
 ) -> dict:
     """Scan a single host for technologies. Returns stats dict."""
@@ -171,6 +173,16 @@ async def _scan_single_host(
             except Exception as e:
                 logger.debug(f"WhatRuns scan failed for {url}: {e}")
         
+        # WhatWeb (1800+ plugins) - run when source is whatweb or both
+        if source in ("whatweb", "both") and whatweb and whatweb.is_available():
+            try:
+                ww_result = await whatweb.scan_url(url, aggression=1)
+                if ww_result.technologies:
+                    live_url = url
+                    all_detected_techs.extend(ww_result.technologies)
+            except Exception as e:
+                logger.debug(f"WhatWeb scan failed for {url}: {e}")
+        
         # If we got any detections on this URL, break
         if all_detected_techs:
             break
@@ -213,12 +225,14 @@ async def _scan_hosts_batch(
     hosts: List[str],
     source: TechSource = "wappalyzer",
     whatruns: Optional[WhatRunsService] = None,
+    whatweb: Optional[WhatWebService] = None,
     wappalyzer_options: Optional[dict] = None,
 ) -> List[dict]:
     """Scan a batch of hosts concurrently."""
     tasks = [
         _scan_single_host(
             wappalyzer, db, organization_id, host, source, whatruns,
+            whatweb=whatweb,
             wappalyzer_options=wappalyzer_options,
         )
         for host in hosts
@@ -250,6 +264,7 @@ async def _scan_hosts_async(
     """
     wappalyzer = WappalyzerService()
     whatruns = get_whatruns_service() if source in ("whatruns", "both") else None
+    whatweb = WhatWebService() if source in ("whatweb", "both") else None
     
     hosts_to_scan = [h.strip().lower() for h in hosts[:max_hosts] if h and h.strip()]
     total_hosts = len(hosts_to_scan)
@@ -274,6 +289,7 @@ async def _scan_hosts_async(
         wappalyzer_options = _wappalyzer_options_from_config(wappalyzer_config)
         results = await _scan_hosts_batch(
             wappalyzer, db, organization_id, batch, source, whatruns,
+            whatweb=whatweb,
             wappalyzer_options=wappalyzer_options,
         )
         

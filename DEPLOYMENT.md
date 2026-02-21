@@ -556,6 +556,73 @@ sudo docker compose down && sudo docker compose up -d
 
 ---
 
+## 📤 Push updates to your AWS instance
+
+After you change code and push to your repo, update the running app on AWS.
+
+### On EC2 (single instance with Docker Compose)
+
+From your **local machine**, push to git; then on the **EC2 instance**:
+
+```bash
+# SSH into the instance
+ssh -i your-key.pem ubuntu@YOUR_EC2_PUBLIC_IP
+
+# Go to app directory
+cd /opt/asm
+
+# Pull latest code (use your repo URL if different)
+git pull origin main
+
+# Rebuild and restart all services (picks up code + dependency changes)
+sudo docker compose up -d --build
+
+# Optional: restart only backend + scanner if you only changed Python
+# sudo docker compose up -d --build backend scanner
+```
+
+To **pull from a different branch** (e.g. `develop`):
+
+```bash
+git fetch origin
+git checkout develop
+git pull origin develop
+sudo docker compose up -d --build
+```
+
+### Using ECS (deploy script)
+
+If you deploy with ECS and the deploy script:
+
+```bash
+# From your local machine, in the repo root
+cd aws/scripts
+chmod +x deploy.sh
+
+# Build images, push to ECR, and update ECS services
+./deploy.sh all prod
+
+# Or only API or only scanner
+./deploy.sh api prod
+./deploy.sh scanner prod
+```
+
+Requires: AWS CLI configured, ECR repo and ECS cluster already set up (see deploy script and ECS docs).
+
+### Optional environment variables (new in recent updates)
+
+You can add these to `.env` on the instance if you use the features; the app runs without them.
+
+| Variable | Purpose |
+|----------|---------|
+| `TAVILY_API_KEY` | Agent web search (CVE/exploit research). Get key at [tavily.com](https://tavily.com). |
+| `AGENT_TOOL_OUTPUT_MAX_CHARS` | Max characters of tool output sent to the agent (default 20000). |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` | Neo4j graph (attack surface relationships). |
+
+WhatWeb (technology enrichment) runs if the **whatweb** CLI is installed in the backend/scanner image; otherwise technology scans use Wappalyzer only. No env var required.
+
+---
+
 ## 🛠️ Management Commands
 
 ### Viewing Logs

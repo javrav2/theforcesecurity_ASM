@@ -58,7 +58,10 @@ class Settings(BaseSettings):
     
     # Agent settings (overridable per-org via project_settings.agent)
     AGENT_MAX_ITERATIONS: int = 100
-    AGENT_TOOL_OUTPUT_MAX_CHARS: int = 8000
+    AGENT_TOOL_OUTPUT_MAX_CHARS: int = 20000  # RedAmon-style default; truncation for LLM context
+
+    # Optional: Tavily API for agent web search (CVE/exploit research). Get key at tavily.com
+    TAVILY_API_KEY: Optional[str] = None
     
     # Neo4j Graph Database Configuration
     NEO4J_URI: str = "bolt://neo4j:7687"

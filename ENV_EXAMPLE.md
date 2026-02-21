@@ -55,6 +55,13 @@ OPENAI_MODEL=gpt-4o
 ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
+# Optional: Tavily API for agent web search (CVE/exploit research, RedAmon-style)
+# Get key at: https://tavily.com (free tier available)
+# TAVILY_API_KEY=
+
+# Agent tool output truncation (chars passed to LLM; default 20000)
+# AGENT_TOOL_OUTPUT_MAX_CHARS=20000
+
 # =============================================================================
 # Neo4j Graph Database (optional - for asset relationship modeling)
 # =============================================================================

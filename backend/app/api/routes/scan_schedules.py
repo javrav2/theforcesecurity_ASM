@@ -534,6 +534,7 @@ def trigger_scheduled_scan(
         "full_discovery": ScanType.DISCOVERY,
         "screenshot": ScanType.SCREENSHOT,
         "technology": ScanType.TECHNOLOGY,
+        "whatweb": ScanType.WHATWEB,
         "http_probe": ScanType.HTTP_PROBE,
         "dns_resolution": ScanType.DNS_RESOLUTION,
         "subdomain_enum": ScanType.SUBDOMAIN_ENUM,

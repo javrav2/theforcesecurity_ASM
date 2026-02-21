@@ -350,6 +350,12 @@ CONTINUOUS_SCAN_TYPES = {
         "description": "Detect web technologies and frameworks using Wappalyzer fingerprinting",
         "default_config": {}
     },
+    "whatweb": {
+        "name": "WhatWeb Technology Enrichment",
+        "description": "Enrich technology detection using WhatWeb CLI (1800+ plugins: CMS, frameworks, servers, versions). Install: gem install whatweb or apt install whatweb. Complements Wappalyzer.",
+        "default_config": {"source": "whatweb", "max_hosts": 200},
+        "recommended_frequency": "weekly",
+    },
     "http_probe": {
         "name": "HTTP Probe",
         "description": "Check which assets are live and responding to HTTP requests. Updates is_live status and discovers web services.",
