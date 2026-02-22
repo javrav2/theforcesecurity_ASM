@@ -1,8 +1,19 @@
 """Application configuration settings."""
 
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from functools import lru_cache
 from typing import Optional
+
+
+def _strip_api_key(v: Optional[str]) -> Optional[str]:
+    """Strip whitespace and optional surrounding quotes from API keys (avoids 401s)."""
+    if v is None or not isinstance(v, str):
+        return v
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+        v = v[1:-1].strip()
+    return v if v else None
 
 
 class Settings(BaseSettings):
@@ -53,8 +64,14 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o"
     
     # Anthropic/Claude Configuration (default agent)
+    # Use key from https://console.anthropic.com (API keys) — NOT Claude Code / Cursor keys
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+
+    @field_validator("ANTHROPIC_API_KEY", "OPENAI_API_KEY", mode="before")
+    @classmethod
+    def strip_api_keys(cls, v: Optional[str]) -> Optional[str]:
+        return _strip_api_key(v)
     
     # Agent settings (overridable per-org via project_settings.agent)
     AGENT_MAX_ITERATIONS: int = 100

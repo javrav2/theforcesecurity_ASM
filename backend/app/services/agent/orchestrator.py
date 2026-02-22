@@ -155,16 +155,28 @@ class AgentOrchestrator:
         self._provider = "openai"
     
     def _setup_anthropic(self) -> None:
-        """Initialize Anthropic/Claude LLM."""
+        """Initialize Anthropic/Claude LLM. Uses ANTHROPIC_API_KEY from env so the SDK sends it unchanged."""
+        import os
         if not ANTHROPIC_AVAILABLE:
             raise ImportError("langchain-anthropic is not installed. Run: pip install langchain-anthropic")
         
+        key = settings.ANTHROPIC_API_KEY or ""
+        key = (key.strip() if isinstance(key, str) else "").strip()
+        if not key:
+            raise ValueError("ANTHROPIC_API_KEY is empty. Set it in .env with a key from https://console.anthropic.com (API Keys), not a Cursor/Claude Code key.")
+        if not key.startswith("sk-ant-"):
+            logger.warning(
+                "ANTHROPIC_API_KEY does not start with 'sk-ant-'. "
+                "Use an API key from https://console.anthropic.com (API Keys); "
+                "keys from Cursor/Claude Code are not valid for this API."
+            )
+        # Let the SDK read the key from env (avoids any encoding/quoting issues from passing it in code)
+        os.environ["ANTHROPIC_API_KEY"] = key
         logger.info(f"Setting up Anthropic LLM: {settings.ANTHROPIC_MODEL}")
         self.llm = ChatAnthropic(
             model=settings.ANTHROPIC_MODEL,
-            api_key=settings.ANTHROPIC_API_KEY,
             temperature=0,
-            max_tokens=4096
+            max_tokens=4096,
         )
         self._provider = "anthropic"
     
