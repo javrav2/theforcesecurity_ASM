@@ -22,8 +22,6 @@ DEBUG=false
 # For AWS: Set to your public IP, e.g., http://1.2.3.4:8000
 NEXT_PUBLIC_API_URL=http://YOUR_PUBLIC_IP:8000
 FRONTEND_PORT=80
-# Optional: Embed DetectFlow real-time dashboard (https://github.com/socprime/detectflow-ui). Set to DetectFlow UI origin, e.g. http://localhost:5173 or https://detectflow-ui.example.com
-# NEXT_PUBLIC_DETECTFLOW_UI_URL=
 
 # CORS Origins - IMPORTANT: Include your public IP!
 CORS_ORIGINS=["http://localhost","http://YOUR_PUBLIC_IP","http://YOUR_PUBLIC_IP:8000"]

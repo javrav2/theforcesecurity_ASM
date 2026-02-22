@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -36,6 +37,7 @@ interface Message {
 }
 
 export default function AgentPage() {
+  const searchParams = useSearchParams();
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -46,8 +48,22 @@ export default function AgentPage() {
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string>('custom');
   const [target, setTarget] = useState('');
   const [mode, setMode] = useState<'assist' | 'agent'>('assist');
+  const [urlPrefilled, setUrlPrefilled] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+
+  // Pre-fill from URL (e.g. /agent?target=example.com&playbook=vuln_scan&question=...)
+  useEffect(() => {
+    const t = searchParams.get('target');
+    const p = searchParams.get('playbook');
+    const q = searchParams.get('question');
+    if (t != null && t !== '') setTarget(decodeURIComponent(t));
+    if (p != null && p !== '') setSelectedPlaybookId(decodeURIComponent(p));
+    if (q != null && q !== '') {
+      setQuestion(decodeURIComponent(q));
+      setUrlPrefilled(true);
+    }
+  }, [searchParams]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 
@@ -109,6 +125,7 @@ export default function AgentPage() {
       { id: `user-${Date.now()}`, role: 'user', content: displayContent },
     ]);
     if (!usePreset) setQuestion('');
+    setUrlPrefilled(false);
     setLoading(true);
 
     try {
@@ -308,6 +325,11 @@ export default function AgentPage() {
                 </div>
               )}
             </div>
+            {urlPrefilled && (
+              <p className="text-sm text-muted-foreground">
+                Pre-filled from link. Click Send to start the assessment.
+              </p>
+            )}
             <div className="flex gap-2">
               <Textarea
                 placeholder={

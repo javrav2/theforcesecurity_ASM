@@ -107,8 +107,6 @@ services:
         # For AWS: set NEXT_PUBLIC_API_URL in .env to http://YOUR_PUBLIC_IP:8000
         # For local: leave empty to use relative API calls
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
-        # Optional: DetectFlow UI URL for /detectflow embedded dashboard (e.g. http://detectflow-ui:5173)
-        - NEXT_PUBLIC_DETECTFLOW_UI_URL=${NEXT_PUBLIC_DETECTFLOW_UI_URL:-}
     container_name: asm_frontend
     restart: unless-stopped
     ports:

@@ -184,6 +184,10 @@ class GraphService:
         if not self._connected:
             logger.warning("Cannot sync - Neo4j not connected")
             return {"synced": 0, "error": "Neo4j not connected"}
+
+        if organization_id is None:
+            logger.warning("Cannot sync - no organization specified")
+            return {"synced": 0, "error": "Select an organization to sync. Sync runs for one organization at a time."}
         
         db = SessionLocal()
         try:

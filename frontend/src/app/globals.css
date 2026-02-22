@@ -107,3 +107,18 @@
   animation: gradient-rotate 3s ease infinite;
 }
 
+/* Threat exposure card – rotating ring animation */
+@keyframes threat-exposure-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.threat-exposure-rotate {
+  transform-origin: 260px 200px;
+  animation: threat-exposure-rotate 20s linear infinite;
+}
+

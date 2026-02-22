@@ -21,6 +21,8 @@ import {
   GraphNode,
   GraphData,
 } from '@/components/graph/GraphVisualization';
+import { ThreatExposureCard } from '@/components/graph/ThreatExposureCard';
+import { VulnerabilityExposureView } from '@/components/graph/VulnerabilityExposureView';
 import {
   RefreshCw,
   GitBranch,
@@ -126,18 +128,29 @@ export default function GraphPage() {
 
   // Sync graph data
   const handleSync = async () => {
+    const orgId = selectedOrg !== 'all' ? parseInt(selectedOrg) : undefined;
+    if (!orgId) return;
     setSyncing(true);
     try {
-      const orgId = selectedOrg !== 'all' ? parseInt(selectedOrg) : undefined;
       const result = await api.syncGraph(orgId);
       toast({
         title: 'Graph Synced',
         description: `Synced ${result.assets_synced || 0} assets to Neo4j`,
       });
       await fetchStatus();
-      // Refresh graph visualization if we have an asset selected
+      const assetsRes = await api.getAssets({ organization_id: orgId, limit: 500 }).catch(() => ({ items: [] }));
+      const assetsList = assetsRes?.items ?? assetsRes ?? [];
+      setAssets(Array.isArray(assetsList) ? assetsList : []);
       if (selectedAssetId) {
         await loadAssetRelationships(parseInt(selectedAssetId));
+        setActiveTab('explorer');
+      } else {
+        const first = Array.isArray(assetsList) ? assetsList[0] : undefined;
+        if (first?.id != null) {
+          setSelectedAssetId(String(first.id));
+          await loadAssetRelationships(first.id);
+          setActiveTab('explorer');
+        }
       }
     } catch (error: any) {
       toast({
@@ -359,7 +372,11 @@ export default function GraphPage() {
                   <><XCircle className="h-3 w-3 mr-1" /> Disconnected</>
                 )}
               </Badge>
-              <Button onClick={handleSync} disabled={syncing || !status?.connected}>
+              <Button
+                onClick={handleSync}
+                disabled={syncing || !status?.connected || selectedOrg === 'all'}
+                title={selectedOrg === 'all' ? 'Select an organization to sync (sync runs for one org at a time)' : undefined}
+              >
                 {syncing ? (
                   <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Syncing...</>
                 ) : (
@@ -398,7 +415,7 @@ export default function GraphPage() {
                   <ol className="list-decimal list-inside text-sm text-muted-foreground mt-2 space-y-1">
                     <li>Set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD environment variables</li>
                     <li>Start Neo4j with: <code className="bg-muted px-1 rounded">docker compose --profile graph up -d</code></li>
-                    <li>Refresh this page and click "Sync Data"</li>
+                    <li>Refresh this page, select an organization (not “All”), then click “Sync Data”</li>
                   </ol>
                 </div>
               </div>
@@ -432,6 +449,9 @@ export default function GraphPage() {
 
             {/* Attack Surface Tab */}
             <TabsContent value="attack-surface" className="space-y-6">
+              {/* Data-driven vulnerability exposure: sources → total (like threat exposure dashboards) */}
+              <VulnerabilityExposureView />
+
               {attackSurfaceLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="h-8 w-8 animate-spin" />
@@ -439,47 +459,57 @@ export default function GraphPage() {
                 </div>
               ) : (
                 <>
-                  {/* Risk Distribution Summary */}
+                  {/* Threat exposure–style metric cards (glow circles + central value) */}
                   {attackSurface?.risk_distribution && (
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                      <Card>
-                        <CardContent className="p-4 text-center">
-                          <div className="text-3xl font-bold text-red-500">
-                            {attackSurface.risk_distribution.critical_risk || 0}
-                          </div>
-                          <div className="text-xs text-muted-foreground">Critical Risk</div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
+                      <Card className="overflow-hidden">
+                        <CardContent className="p-0">
+                          <ThreatExposureCard
+                            value={attackSurface.risk_distribution.total_assets ?? 0}
+                            label="Total assets"
+                            variant="info"
+                            animate={true}
+                          />
                         </CardContent>
                       </Card>
-                      <Card>
-                        <CardContent className="p-4 text-center">
-                          <div className="text-3xl font-bold text-orange-500">
-                            {attackSurface.risk_distribution.high_risk || 0}
-                          </div>
-                          <div className="text-xs text-muted-foreground">High Risk</div>
+                      <Card className="overflow-hidden">
+                        <CardContent className="p-0">
+                          <ThreatExposureCard
+                            value={attackSurface.risk_distribution.critical_risk ?? 0}
+                            label="Critical risk"
+                            variant="danger"
+                            animate={false}
+                          />
                         </CardContent>
                       </Card>
-                      <Card>
-                        <CardContent className="p-4 text-center">
-                          <div className="text-3xl font-bold text-yellow-500">
-                            {attackSurface.risk_distribution.medium_risk || 0}
-                          </div>
-                          <div className="text-xs text-muted-foreground">Medium Risk</div>
+                      <Card className="overflow-hidden">
+                        <CardContent className="p-0">
+                          <ThreatExposureCard
+                            value={attackSurface.risk_distribution.high_risk ?? 0}
+                            label="High risk"
+                            variant="warning"
+                            animate={false}
+                          />
                         </CardContent>
                       </Card>
-                      <Card>
-                        <CardContent className="p-4 text-center">
-                          <div className="text-3xl font-bold text-green-500">
-                            {attackSurface.risk_distribution.low_risk || 0}
-                          </div>
-                          <div className="text-xs text-muted-foreground">Low Risk</div>
+                      <Card className="overflow-hidden">
+                        <CardContent className="p-0">
+                          <ThreatExposureCard
+                            value={attackSurface.risk_distribution.medium_risk ?? 0}
+                            label="Medium risk"
+                            variant="neutral"
+                            animate={false}
+                          />
                         </CardContent>
                       </Card>
-                      <Card>
-                        <CardContent className="p-4 text-center">
-                          <div className="text-3xl font-bold">
-                            {attackSurface.risk_distribution.total_assets || 0}
-                          </div>
-                          <div className="text-xs text-muted-foreground">Total Assets</div>
+                      <Card className="overflow-hidden">
+                        <CardContent className="p-0">
+                          <ThreatExposureCard
+                            value={attackSurface.risk_distribution.low_risk ?? 0}
+                            label="Low risk"
+                            variant="success"
+                            animate={false}
+                          />
                         </CardContent>
                       </Card>
                     </div>

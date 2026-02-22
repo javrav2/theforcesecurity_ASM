@@ -227,6 +227,11 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_waybackurls**: Fetch historical URLs from Wayback Machine (args: domain or CLI args)
 - **execute_amass**: Run Amass subdomain/network mapping (args: e.g. 'enum -d example.com -json -')
 - **execute_whatweb**: Run WhatWeb tech fingerprinting (args: URL or 'https://target.com -a 1'). Requires WhatWeb CLI.
+- **execute_nuclei**: Run Nuclei vulnerability scanner (args: e.g. '-u http://target.com -severity critical,high'). Use for vuln assessments.
+- **execute_naabu**: Run Naabu port scanner (args: e.g. '-host target.com -p 80,443' or '-list hosts.txt -p -').
+- **execute_nmap**: Run Nmap port/service scanning (args: e.g. '-sV -sC -p 80,443 target.com').
+- **execute_masscan**: Run Masscan port scan (args: e.g. '192.168.1.0/24 -p80,443 --rate=1000').
+- **execute_ffuf**: Run FFuf web fuzzer (args: e.g. '-u https://target.com/FUZZ -w wordlist.txt -mc 200').
 - **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**: Get CLI usage for each tool
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
 - **get_notes**: Get session notes (optional category filter)
@@ -234,13 +239,9 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 """
 
     exploitation_tools = """
-### Exploitation Phase Tools (requires approval)
-- All Informational tools
-- **execute_nuclei**: Execute Nuclei vulnerability scanner (args: CLI arguments like '-u http://target.com -severity critical,high')
-- **execute_naabu**: Execute Naabu port scanner (args: CLI arguments like '-host 192.168.1.1 -p 1-1000')
-- **execute_nmap**: Run Nmap port/service/script scanning (args: e.g. '-sV -sC -p 80,443 target.com')
-- **execute_masscan**: Run Masscan ultra-fast port scan (args: e.g. '192.168.1.0/24 -p80,443 --rate=1000')
-- **execute_ffuf**: Run FFuf web fuzzer for directories/params (args: e.g. '-u https://target.com/FUZZ -w wordlist.txt -mc 200')
+### Exploitation Phase Tools (if enabled)
+- All Informational tools (including Nuclei, Naabu, Nmap, Masscan, FFuf) are available in informational phase for normal assessments.
+- No additional tools in exploitation; use informational phase for vulnerability and port scanning.
 """
 
     post_exploitation_tools = """
@@ -299,17 +300,17 @@ TOOL_PHASE_MAP = {
     "masscan_help": ["informational", "exploitation", "post_exploitation"],
     "ffuf_help": ["informational", "exploitation", "post_exploitation"],
     
-    # MCP exploitation tools
-    "execute_nuclei": ["exploitation", "post_exploitation"],
-    "execute_naabu": ["exploitation", "post_exploitation"],
-    "execute_nmap": ["exploitation", "post_exploitation"],
-    "execute_masscan": ["exploitation", "post_exploitation"],
-    "execute_ffuf": ["exploitation", "post_exploitation"],
+    # MCP scanning tools - allowed in informational so agent can run vuln/port scans without phase transition
+    "execute_nuclei": ["informational", "exploitation", "post_exploitation"],
+    "execute_naabu": ["informational", "exploitation", "post_exploitation"],
+    "execute_nmap": ["informational", "exploitation", "post_exploitation"],
+    "execute_masscan": ["informational", "exploitation", "post_exploitation"],
+    "execute_ffuf": ["informational", "exploitation", "post_exploitation"],
     
-    # Legacy exploitation tools
-    "run_nuclei_scan": ["exploitation", "post_exploitation"],
-    "run_port_scan": ["exploitation", "post_exploitation"],
-    "check_http_status": ["exploitation", "post_exploitation"],
+    # Legacy scanning tools
+    "run_nuclei_scan": ["informational", "exploitation", "post_exploitation"],
+    "run_port_scan": ["informational", "exploitation", "post_exploitation"],
+    "check_http_status": ["informational", "exploitation", "post_exploitation"],
 }
 
 

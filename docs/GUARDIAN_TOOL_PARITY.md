@@ -81,6 +81,27 @@ After that, the agent will see the tool in its phase and can call it (with appro
 
 ---
 
+## Which tools are actually running?
+
+| Tool | In agent (MCP + tools.py) | Binary in backend image | Notes |
+|------|---------------------------|-------------------------|--------|
+| **Nuclei** | Yes execute_nuclei | Yes Dockerfile | Runs when agent calls it. |
+| **FFuf** | Yes execute_ffuf | Yes Dockerfile | Runs when agent calls it. |
+| **Naabu, Nmap, Masscan, httpx, subfinder, dnsx, katana, curl, tldfinder, waybackurls, amass, whatweb** | Yes | Yes (see Dockerfile) | Same: agent can run them. |
+| **SQLMap** | No | No | Not implemented. Add per "How to Add a New Tool" below. |
+| **Nikto, wafw00f, WPScan, etc.** | No | No | Not implemented. |
+
+Tool output (e.g. Nuclei/FFuf stdout) is returned to the agent only; it is **not** auto-saved to the database. To get data into the platform, the agent must call **create_finding** (for the Findings/Vulnerabilities UI) or **save_note** (for session notes).
+
+## Where assessment data goes
+
+1. **Conversation / execution trace** – Raw tool output (nuclei, ffuf, etc.) is returned to the LLM and shown in the Agent UI as part of the run. It is not persisted to DB unless the agent takes a follow-up action.
+2. **Findings (Vulnerabilities) table** – Only when the agent calls **create_finding**. That writes to the `vulnerabilities` table (`detected_by="agent"`). Data shows in the UI under Findings/Vulnerabilities and on asset detail pages.
+3. **Session notes** – When the agent calls **save_note**, data is stored in the `agent_notes` table (by org, user, session). Used for session context; not shown in the main Findings UI.
+4. **Scheduled/scanner runs** – Separate from the agent. Scans created via Scans (e.g. Nuclei, port scan) are run by the scanner worker; that pipeline imports results into assets and findings automatically. Agent-run tools do **not** auto-import; the agent must call **create_finding** per finding.
+
+---
+
 ## Outputting agent findings to the findings table
 
 Agent discoveries can appear in the platform’s **Findings** (Vulnerabilities) table in two ways:
@@ -97,8 +118,23 @@ Agent discoveries can appear in the platform’s **Findings** (Vulnerabilities) 
 3. **Scheduled / scanner-created findings**  
    Findings from scheduled Nuclei scans, port scans, etc. are imported by the scanner worker (e.g. `NucleiFindingsService`, `PortFindingsService`) and already appear in the findings table. The agent’s **execute_nuclei** runs Nuclei ad hoc and returns stdout only; it does **not** auto-import. To get those into the table, the agent should call **create_finding** for each important result (with title, description, severity, target, evidence from the Nuclei output).
 
+## Which scans populate the asset page
+
+Asset detail data (login portals, technologies, ports, etc.) is filled by **running the right scan type** for that asset. From the **Asset** detail page you can:
+
+- **Run agent assessment** — Opens the Agent page with target and “Vuln scan” preset so the agent assesses this asset and can call **create_finding** for any vulnerabilities.
+- **Run scan** (dropdown) — Starts an ad hoc scan for this asset only:
+  - **Login portal** — Populates `has_login_portal`, `login_portals`, and related risk drivers.
+  - **Technology** — Populates technologies and tech-based risk drivers.
+  - **Port scan** — Populates open ports and port-based data.
+
+After the scan completes (see **Scans**), refresh the asset page to see updated login page, technologies, and ports.
+
+---
+
 ## Summary
 
 - **Agent-available (Guardian-style):** Nmap, Masscan, HTTPX, Subfinder, Amass, Nuclei, FFuf, WhatWeb, plus Naabu, DNSX, Katana, curl, TLDFinder, WaybackURLs.
 - **Not yet in agent:** Wafw00f, DNSRecon, Nikto, SQLMap, WPScan, TestSSL, SSLyze, Gobuster, Arjun, XSStrike, GitLeaks, CMSeeK — add by following the steps above once the binary is installed in the backend image.
 - **Findings table:** Use **create_finding** so agent discoveries appear in the UI; **save_note** is for session notes only.
+- **Asset page:** Use “Run scan” (Login portal / Technology / Port scan) so the asset populates with login pages, technologies, and ports; use “Run agent assessment” to drive the agent from that asset.

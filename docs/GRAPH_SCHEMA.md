@@ -113,3 +113,18 @@ All queries must filter by `organization_id` (or equivalent tenant id) so that i
 - **Service**: Linked from Port; USES_TECHNOLOGY links to Technology.
 - **Technology**: Linked from Service; HAS_VULNERABILITY links to Vulnerability.
 - **Vulnerability**: REFERENCES CVE and MAPS_TO MITRE (CWE) when applicable.
+
+## Troubleshooting: graphs not working on /graph
+
+If https://asm.theforcesecurity.io/graph (or your deployment) shows no data or “Disconnected”:
+
+1. **Neo4j not configured**  
+   Without Neo4j you still get the **Attack Surface** tab (risk distribution, technologies, ports, entry points) using PostgreSQL fallback. The **Relationships**, **Attack Paths**, and **Vulnerability Impact** tabs only appear when Neo4j is connected.  
+   - To use full graph features: set `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` and start Neo4j (e.g. `docker compose --profile graph up -d`), then open the Graph page and click **Sync Data**.
+
+2. **API not reachable**  
+   The frontend calls `/api/v1/graph/status`, `/api/v1/graph/fallback/attack-surface-overview`, etc.  
+   - If the app is at `https://asm.theforcesecurity.io`, the browser uses that origin for API calls. Ensure your reverse proxy (e.g. nginx) forwards `/api` to the backend, or set `NEXT_PUBLIC_API_URL` to the backend URL and rebuild the frontend so the graph (and rest of the app) can reach the API.
+
+3. **Attack Surface tab empty**  
+   The PostgreSQL fallback returns `risk_distribution`, `discovery_sources`, technologies, and ports. If you see empty cards, check backend logs for 401/500 on `/graph/fallback/*`. Ensure the user is in an organization and has assets/ports/technologies in the DB.

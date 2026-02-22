@@ -465,10 +465,12 @@ def get_vulnerability_exposure(
         if not current_user.organization_id:
             return {
                 "total_exposure_score": 0,
+                "total_findings": 0,
                 "assets_with_vulnerabilities": 0,
                 "total_assets": 0,
                 "exposure_percentage": 0,
                 "severity_distribution": {},
+                "by_source": [],
                 "top_vulnerable_assets": [],
                 "exposure_trend": "stable"
             }
@@ -553,13 +555,30 @@ def get_vulnerability_exposure(
         trend = "decreasing"
     else:
         trend = "stable"
-    
+
+    # By source (detected_by) for attack-surface visualization: source -> count
+    by_source_query = db.query(
+        func.coalesce(Vulnerability.detected_by, "unknown").label("source"),
+        func.count(Vulnerability.id).label("count")
+    ).join(Asset)
+    if not current_user.is_superuser and current_user.organization_id:
+        by_source_query = by_source_query.filter(Asset.organization_id == current_user.organization_id)
+    by_source_query = by_source_query.filter(
+        Vulnerability.status == VulnerabilityStatus.OPEN,
+        Vulnerability.severity != Severity.INFO
+    ).group_by(func.coalesce(Vulnerability.detected_by, "unknown")).order_by(
+        func.count(Vulnerability.id).desc()
+    )
+    by_source = [{"source": r.source, "count": r.count} for r in by_source_query.all()]
+
     return {
         "total_exposure_score": total_exposure_score,
+        "total_findings": len(open_vulns),
         "assets_with_vulnerabilities": assets_with_vulns,
         "total_assets": total_assets,
         "exposure_percentage": round(exposure_percentage, 1),
         "severity_distribution": severity_distribution,
+        "by_source": by_source,
         "top_vulnerable_assets": top_assets,
         "exposure_trend": trend
     }

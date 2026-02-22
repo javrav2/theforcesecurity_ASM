@@ -7,7 +7,7 @@ using the Neo4j graph database.
 
 import logging
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user
@@ -119,10 +119,15 @@ async def sync_organization_graph(
     Sync organization's assets to the graph database.
     
     This creates nodes and relationships for all assets, vulnerabilities,
-    ports, and technologies in the organization.
+    ports, and technologies in the organization. Requires an organization
+    to be specified (query param or your default org).
     """
     org_id = organization_id or (current_user.organization_id if hasattr(current_user, 'organization_id') else None)
-    
+    if org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Select an organization to sync. Sync only runs for one organization at a time."
+        )
     try:
         graph = get_graph_service()
         result = graph.sync_organization(org_id)
@@ -1015,6 +1020,39 @@ async def get_attack_surface_overview_fallback(
             Asset.is_live == True
         ).scalar() if org_id else 0
         
+        # Risk distribution (so frontend risk cards work without Neo4j)
+        risk_distribution = {
+            "critical_risk": 0,
+            "high_risk": 0,
+            "medium_risk": 0,
+            "low_risk": 0,
+            "total_assets": total_assets or 0,
+        }
+        if org_id:
+            base_filter = Asset.organization_id == org_id
+            risk_distribution["critical_risk"] = db.query(Asset).filter(base_filter, Asset.risk_score >= 80).count()
+            risk_distribution["high_risk"] = db.query(Asset).filter(
+                base_filter, Asset.risk_score >= 60, Asset.risk_score < 80
+            ).count()
+            risk_distribution["medium_risk"] = db.query(Asset).filter(
+                base_filter, Asset.risk_score >= 40, Asset.risk_score < 60
+            ).count()
+            risk_distribution["low_risk"] = db.query(Asset).filter(
+                base_filter, Asset.risk_score < 40
+            ).count()
+        
+        # Discovery sources (so frontend discovery section works without Neo4j)
+        discovery_sources = []
+        if org_id:
+            from sqlalchemy import distinct
+            source_query = db.query(
+                func.coalesce(Asset.discovery_source, "manual").label("source"),
+                func.count(Asset.id).label("count")
+            ).filter(Asset.organization_id == org_id).group_by(
+                func.coalesce(Asset.discovery_source, "manual")
+            ).order_by(func.count(Asset.id).desc()).all()
+            discovery_sources = [{"source": r.source, "count": r.count} for r in source_query]
+        
         return {
             "entry_points": entry_points_data,
             "high_value_targets": high_value_data,
@@ -1025,6 +1063,8 @@ async def get_attack_surface_overview_fallback(
                 "live_assets": live_assets,
                 "login_portals": len(high_value_data)
             },
+            "risk_distribution": risk_distribution,
+            "discovery_sources": discovery_sources,
             "source": "postgresql"
         }
     finally:

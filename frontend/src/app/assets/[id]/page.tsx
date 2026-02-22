@@ -58,8 +58,16 @@ import {
   FolderSearch,
   ScanLine,
   CheckCircle2,
+  MessageSquare,
+  ChevronDown,
 } from 'lucide-react';
-import { api } from '@/lib/api';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { api, getApiErrorMessage } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
 import { ApplicationMap } from '@/components/assets/ApplicationMap';
@@ -619,6 +627,80 @@ export default function AssetDetailPage() {
                 <Database className="h-3 w-3" />
                 Data Sources
               </Badge>
+              <Button
+                variant="default"
+                onClick={() => {
+                  const targetEnc = encodeURIComponent(asset.value);
+                  const questionEnc = encodeURIComponent(
+                    `Perform a security assessment on ${asset.value}. Use create_finding for any vulnerabilities you find so they appear in Findings.`
+                  );
+                  router.push(`/agent?target=${targetEnc}&playbook=vuln_scan&question=${questionEnc}`);
+                }}
+              >
+                <MessageSquare className="h-4 w-4 mr-2" />
+                Run agent assessment
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline">
+                    Run scan
+                    <ChevronDown className="h-4 w-4 ml-2" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={async () => {
+                      try {
+                        await api.createScan({
+                          name: `Login portal - ${asset.value}`,
+                          organization_id: asset.organization_id,
+                          scan_type: 'login_portal',
+                          targets: [asset.value],
+                        });
+                        toast({ title: 'Scan started', description: 'Login portal scan queued. Results will populate this asset when complete.' });
+                      } catch (e: unknown) {
+                        toast({ variant: 'destructive', title: 'Failed to start scan', description: getApiErrorMessage(e) });
+                      }
+                    }}
+                  >
+                    Login portal
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={async () => {
+                      try {
+                        await api.createScan({
+                          name: `Technology - ${asset.value}`,
+                          organization_id: asset.organization_id,
+                          scan_type: 'technology',
+                          targets: [asset.value],
+                        });
+                        toast({ title: 'Scan started', description: 'Technology scan queued. Results will populate this asset when complete.' });
+                      } catch (e: unknown) {
+                        toast({ variant: 'destructive', title: 'Failed to start scan', description: getApiErrorMessage(e) });
+                      }
+                    }}
+                  >
+                    Technology
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={async () => {
+                      try {
+                        await api.createScan({
+                          name: `Port scan - ${asset.value}`,
+                          organization_id: asset.organization_id,
+                          scan_type: 'port_scan',
+                          targets: [asset.value],
+                        });
+                        toast({ title: 'Scan started', description: 'Port scan queued. Results will populate this asset when complete.' });
+                      } catch (e: unknown) {
+                        toast({ variant: 'destructive', title: 'Failed to start scan', description: getApiErrorMessage(e) });
+                      }
+                    }}
+                  >
+                    Port scan
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
               <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
               Refresh
