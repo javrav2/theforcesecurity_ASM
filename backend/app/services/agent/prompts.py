@@ -77,6 +77,7 @@ Analyze the current state and decide on your next action. You MUST output a vali
 5. **Phase restrictions** - Some tools are only available in specific phases
 6. **Complete when done** - Set action to "complete" when the objective is achieved
 7. **Session notes** - Use **save_note** to persist important findings (credentials, vulnerabilities, artifacts) so they are remembered for the rest of the session. Categories: credential, vulnerability, finding, artifact.
+8. **Findings table** - Use **create_finding** to add vulnerabilities/findings to the platform's findings table so they appear in the UI (Vulnerabilities list). Required: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL that must match an existing asset). Optional: evidence, cve_id, remediation. Target must match an in-scope asset (use query_assets first).
 
 Output ONLY the JSON object, no other text.
 """
@@ -229,6 +230,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**: Get CLI usage for each tool
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
 - **get_notes**: Get session notes (optional category filter)
+- **create_finding**: Add a finding to the platform findings table (title, description, severity: critical|high|medium|low|info, target: host/domain matching an asset, optional: evidence, cve_id, remediation). Use for vulnerabilities so they appear in the UI.
 """
 
     exploitation_tools = """
@@ -271,6 +273,7 @@ TOOL_PHASE_MAP = {
     "query_graph": ["informational", "exploitation", "post_exploitation"],
     "save_note": ["informational", "exploitation", "post_exploitation"],
     "get_notes": ["informational", "exploitation", "post_exploitation"],
+    "create_finding": ["informational", "exploitation", "post_exploitation"],
     
     # MCP informational tools
     "execute_httpx": ["informational", "exploitation", "post_exploitation"],

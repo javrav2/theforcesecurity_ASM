@@ -71,9 +71,10 @@ class ASMToolsManager:
             "analyze_attack_surface": self.analyze_attack_surface,
             "get_asset_details": self.get_asset_details,
             "search_cve": self.search_cve,
-            # Session notes
+            # Session notes and findings
             "save_note": self.save_note,
             "get_notes": self.get_notes,
+            "create_finding": self.create_finding,
             # MCP Security Tools (delegated)
             "execute_nuclei": self.execute_mcp_tool,
             "execute_naabu": self.execute_mcp_tool,
@@ -678,6 +679,74 @@ class ASMToolsManager:
             content = (hit.get("content") or "")[:_tool_output_max_chars() // max_results]
             out.append(f"## {i}. {title}\nURL: {url}\n{content}\n")
         return "\n".join(out)
+
+    async def create_finding(
+        self,
+        title: str,
+        description: str,
+        severity: str,
+        target: str,
+        evidence: Optional[str] = None,
+        cve_id: Optional[str] = None,
+        remediation: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Create a vulnerability/finding in the findings table for the current organization. Use this so discoveries appear in the UI findings list. target = hostname, domain, or URL that must match an existing asset's value (use query_assets to find). severity = critical|high|medium|low|info."""
+        _, org_id = get_tenant_context()
+        if not org_id:
+            return "Error: No organization context. create_finding requires an active session."
+        # Normalize target for asset lookup: strip scheme and path
+        target_clean = (target or "").strip()
+        if target_clean.startswith(("http://", "https://")):
+            try:
+                from urllib.parse import urlparse
+                p = urlparse(target_clean)
+                target_clean = p.netloc or p.path.split("/")[0] or target_clean
+            except Exception:
+                pass
+        target_clean = target_clean.rstrip("/").split("/")[0].split(":")[0] or target
+        sev_map = {"critical": Severity.CRITICAL, "high": Severity.HIGH, "medium": Severity.MEDIUM, "low": Severity.LOW, "info": Severity.INFO}
+        severity_enum = sev_map.get((severity or "info").strip().lower(), Severity.INFO)
+        db = SessionLocal()
+        try:
+            asset = (
+                db.query(Asset)
+                .filter(Asset.organization_id == org_id, Asset.value == target_clean)
+                .first()
+            )
+            if not asset:
+                # Try ilike in case of case mismatch
+                asset = (
+                    db.query(Asset)
+                    .filter(Asset.organization_id == org_id, Asset.value.ilike(target_clean))
+                    .first()
+                )
+            if not asset:
+                return (
+                    f"No asset found with value '{target_clean}' in this organization. "
+                    "Use query_assets to list in-scope assets; target must match an asset's value (hostname/domain/IP). "
+                    "Add the asset to inventory first if needed."
+                )
+            vuln = Vulnerability(
+                title=(title or "Agent finding")[:500],
+                description=(description or "")[:10000] if description else None,
+                severity=severity_enum,
+                asset_id=asset.id,
+                detected_by="agent",
+                evidence=(evidence or "")[:5000] if evidence else None,
+                cve_id=(cve_id or "").strip() or None,
+                remediation=(remediation or "")[:5000] if remediation else None,
+            )
+            db.add(vuln)
+            db.commit()
+            db.refresh(vuln)
+            return f"Finding created: id={vuln.id}, title={vuln.title[:60]}..., severity={vuln.severity.value}, asset={asset.value}"
+        except Exception as e:
+            db.rollback()
+            logger.exception("create_finding failed")
+            return f"Error creating finding: {e}"
+        finally:
+            db.close()
 
     async def save_note(
         self,

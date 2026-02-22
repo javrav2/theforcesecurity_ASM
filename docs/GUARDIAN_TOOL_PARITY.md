@@ -1,6 +1,6 @@
 # Guardian-CLI Tool Parity
 
-This document maps [Guardian-CLI](https://github.com/zakirkun/guardian-cli) tools to The Force Security ASM and explains how to add more tools so the agent can use them.
+This document maps [Guardian-CLI](https://github.com/zakirkun/guardian-cli) tools to The Force Security ASM and explains how to add more tools so the agent can use them. It also describes how agent scan findings get into the platform’s findings table.
 
 ---
 
@@ -81,7 +81,24 @@ After that, the agent will see the tool in its phase and can call it (with appro
 
 ---
 
+## Outputting agent findings to the findings table
+
+Agent discoveries can appear in the platform’s **Findings** (Vulnerabilities) table in two ways:
+
+1. **create_finding** (recommended for vulnerabilities)  
+   The agent has a **create_finding** tool. When the agent identifies a real vulnerability or finding, it should call:
+   - **create_finding**(title, description, severity, target, [evidence], [cve_id], [remediation])  
+   - `target` must be a hostname, domain, or URL that matches an **existing asset** in the organization (use **query_assets** first).  
+   - Findings created this way show up in the UI under Vulnerabilities and are stored in the `vulnerabilities` table with `detected_by="agent"`.
+
+2. **save_note** (session-only)  
+   **save_note** stores notes (e.g. credential, vulnerability, finding, artifact) in the `agent_notes` table. These are used for session context and do **not** appear in the Findings/Vulnerabilities list. Use **create_finding** when you want a finding to appear in the findings table.
+
+3. **Scheduled / scanner-created findings**  
+   Findings from scheduled Nuclei scans, port scans, etc. are imported by the scanner worker (e.g. `NucleiFindingsService`, `PortFindingsService`) and already appear in the findings table. The agent’s **execute_nuclei** runs Nuclei ad hoc and returns stdout only; it does **not** auto-import. To get those into the table, the agent should call **create_finding** for each important result (with title, description, severity, target, evidence from the Nuclei output).
+
 ## Summary
 
-- **Agent-available (Guardian-style):** Nmap, Masscan, HTTPX, Subfinder, Amass, Nuclei, FFuf, plus Naabu, DNSX, Katana, curl, TLDFinder, WaybackURLs.
-- **Not yet in agent:** WhatWeb, Wafw00f, DNSRecon, Nikto, SQLMap, WPScan, TestSSL, SSLyze, Gobuster, Arjun, XSStrike, GitLeaks, CMSeeK — add by following the steps above once the binary is installed in the backend image.
+- **Agent-available (Guardian-style):** Nmap, Masscan, HTTPX, Subfinder, Amass, Nuclei, FFuf, WhatWeb, plus Naabu, DNSX, Katana, curl, TLDFinder, WaybackURLs.
+- **Not yet in agent:** Wafw00f, DNSRecon, Nikto, SQLMap, WPScan, TestSSL, SSLyze, Gobuster, Arjun, XSStrike, GitLeaks, CMSeeK — add by following the steps above once the binary is installed in the backend image.
+- **Findings table:** Use **create_finding** so agent discoveries appear in the UI; **save_note** is for session notes only.
