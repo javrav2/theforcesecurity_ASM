@@ -23,6 +23,7 @@ import {
   FileText,
   GitBranch,
   MessageSquare,
+  Activity,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/store/auth';
@@ -43,6 +44,7 @@ const navigation = [
   { name: 'Ports', href: '/ports', icon: Network },
   { name: 'Discovery', href: '/discovery', icon: Search },
   { name: 'Agent', href: '/agent', icon: MessageSquare },
+  { name: 'DetectFlow', href: '/detectflow', icon: Activity },
 ];
 
 const adminNavigation = [
