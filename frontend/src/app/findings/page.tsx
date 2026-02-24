@@ -1021,6 +1021,8 @@ export default function FindingsPage() {
                   <RemediationPanel 
                     playbook={remediationData?.has_playbook ? remediationData.playbook : undefined}
                     fallbackRemediation={selectedFinding?.remediation || remediationData?.remediation}
+                    cwe={remediationData?.cwe}
+                    cweId={remediationData?.cwe_id || selectedFinding?.cwe_id}
                   />
                 )}
               </div>

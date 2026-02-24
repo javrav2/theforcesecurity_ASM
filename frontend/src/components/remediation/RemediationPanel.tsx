@@ -63,9 +63,27 @@ interface RemediationPlaybook {
   tags: string[];
 }
 
+/** CWE (MITRE) info for remediation guidance */
+export interface CweInfo {
+  id: string;
+  name: string;
+  description?: string;
+  mitigations?: Array<{
+    description: string;
+    phase?: string;
+    strategy?: string;
+    effectiveness?: string;
+  }>;
+  url?: string;
+}
+
 interface RemediationPanelProps {
   playbook?: RemediationPlaybook;
   fallbackRemediation?: string;
+  /** CWE details from MITRE (from /remediation/for-finding or /remediation/cwe/{id}) */
+  cwe?: CweInfo | null;
+  /** CWE ID when cwe object not loaded (e.g. for lazy load) */
+  cweId?: string | null;
   className?: string;
 }
 
@@ -113,7 +131,7 @@ const accessConfig: Record<string, string> = {
   security_team: 'Security Team',
 };
 
-export function RemediationPanel({ playbook, fallbackRemediation, className }: RemediationPanelProps) {
+export function RemediationPanel({ playbook, fallbackRemediation, cwe, cweId, className }: RemediationPanelProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set([1]));
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [showVerification, setShowVerification] = useState(false);
@@ -149,9 +167,9 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
     }
   };
 
-  // If no playbook, show fallback remediation
+  // If no playbook, show fallback remediation and optional CWE guidance
   if (!playbook) {
-    if (!fallbackRemediation) {
+    if (!fallbackRemediation && !cwe && !cweId) {
       return (
         <Card className={cn("border-muted", className)}>
           <CardContent className="py-8 text-center text-muted-foreground">
@@ -164,17 +182,22 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
     }
 
     return (
-      <Card className={cn("border-muted", className)}>
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Shield className="h-5 w-5 text-green-400" />
-            Remediation Guidance
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground whitespace-pre-wrap">{fallbackRemediation}</p>
-        </CardContent>
-      </Card>
+      <div className={cn("space-y-4", className)}>
+        {fallbackRemediation && (
+          <Card className="border-muted">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Shield className="h-5 w-5 text-green-400" />
+                Remediation Guidance
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{fallbackRemediation}</p>
+            </CardContent>
+          </Card>
+        )}
+        {(cwe || cweId) && <CweGuidanceCard cwe={cwe} cweId={cweId} />}
+      </div>
     );
   }
 
@@ -583,6 +606,11 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
         )}
       </div>
 
+      {/* CWE guidance from MITRE (Averlon-style recommendations) */}
+      {(cwe || cweId) && (
+        <CweGuidanceCard cwe={cwe} cweId={cweId} />
+      )}
+
       {/* Tags and CWE/CVE */}
       <div className="flex flex-wrap gap-2">
         {playbook.related_cwe && (
@@ -602,5 +630,65 @@ export function RemediationPanel({ playbook, fallbackRemediation, className }: R
         ))}
       </div>
     </div>
+  );
+}
+
+/** Card showing CWE description and potential mitigations from MITRE (remediation recommendations). */
+function CweGuidanceCard({ cwe, cweId }: { cwe?: CweInfo | null; cweId?: string | null }) {
+  const id = cwe?.id || cweId;
+  const url = cwe?.url || (id ? `https://cwe.mitre.org/data/definitions/${id.replace('CWE-', '')}.html` : undefined);
+
+  if (!id && !cwe) return null;
+
+  return (
+    <Card className="border-muted border-cyan-600/20 bg-cyan-600/5">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <BookOpen className="h-4 w-4 text-cyan-400" />
+          CWE guidance (MITRE)
+          {id && (
+            <Badge variant="outline" className="text-xs font-mono">
+              {id}
+            </Badge>
+          )}
+        </CardTitle>
+        {cwe?.name && (
+          <p className="text-sm text-muted-foreground font-medium">{cwe.name}</p>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {cwe?.description && (
+          <p className="text-sm text-muted-foreground">{cwe.description}</p>
+        )}
+        {cwe?.mitigations && cwe.mitigations.length > 0 && (
+          <div>
+            <p className="text-xs font-medium text-cyan-400 mb-2">Potential mitigations</p>
+            <ul className="space-y-2">
+              {cwe.mitigations.map((m, i) => (
+                <li key={i} className="text-sm text-muted-foreground flex flex-col gap-0.5 pl-2 border-l-2 border-cyan-600/30">
+                  <span>{m.description}</span>
+                  {(m.phase || m.effectiveness) && (
+                    <span className="text-xs text-muted-foreground/80">
+                      {[m.phase, m.effectiveness].filter(Boolean).join(' · ')}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {url && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+          >
+            <ExternalLink className="h-3 w-3" />
+            View on CWE.mitre.org
+          </a>
+        )}
+      </CardContent>
+    </Card>
   );
 }

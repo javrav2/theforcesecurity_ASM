@@ -369,6 +369,34 @@ class ScannerWorker:
             db.rollback()
         finally:
             db.close()
+
+    def _recover_stuck_scan_if_needed(self, scan_id: int):
+        """
+        If scan is RUNNING and has been for a while (e.g. worker crashed), reset to PENDING
+        so the next poll can retry it. Uses a 10-minute threshold to avoid resetting active scans.
+        """
+        from datetime import timedelta
+        STUCK_THRESHOLD_MINUTES = 10
+        db = self.get_db_session()
+        if not db:
+            return
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if not scan or scan.status != ScanStatus.RUNNING:
+                return
+            threshold = datetime.utcnow() - timedelta(minutes=STUCK_THRESHOLD_MINUTES)
+            if scan.started_at and scan.started_at < threshold:
+                old_started = scan.started_at
+                scan.status = ScanStatus.PENDING
+                scan.started_at = None
+                scan.error_message = ((scan.error_message or "")[:200] + " [Reset: was RUNNING >10m]")[:500]
+                db.commit()
+                logger.info(f"Scan {scan_id} reset to PENDING (was RUNNING since {old_started})")
+        except Exception as e:
+            logger.debug(f"Could not recover stuck scan {scan_id}: {e}")
+            db.rollback()
+        finally:
+            db.close()
     
     async def recover_stale_scans(self) -> int:
         """
@@ -574,6 +602,8 @@ class ScannerWorker:
             # CRITICAL: Mark scan as RUNNING immediately to prevent re-polling
             if scan_id and not self._mark_scan_running(scan_id):
                 logger.warning(f"Scan {scan_id} could not be marked RUNNING, skipping")
+                # If scan is stuck RUNNING (e.g. worker crashed), reset to PENDING so it can be retried
+                self._recover_stuck_scan_if_needed(scan_id)
                 # IMPORTANT: Delete the SQS message even when skipping to prevent infinite reprocessing
                 self._delete_sqs_message_safe(message_id, receipt_handle, is_db_message, scan_id)
                 return
@@ -1965,6 +1995,22 @@ class ScannerWorker:
             if organization_id:
                 trigger_graph_sync(organization_id)
             
+            # Explicitly mark scan COMPLETED (don't rely on last sub-handler)
+            d = self.get_db_session()
+            if d:
+                try:
+                    scan = d.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan and scan.status != ScanStatus.COMPLETED:
+                        scan.status = ScanStatus.COMPLETED
+                        scan.completed_at = datetime.utcnow()
+                        scan.current_step = "Pipeline completed"
+                        d.commit()
+                        logger.info(f"Scan {scan_id} marked COMPLETED (recon pipeline)")
+                except Exception as e:
+                    logger.warning(f"Could not mark scan {scan_id} COMPLETED: {e}")
+                    d.rollback()
+                finally:
+                    d.close()
             logger.info(f"Recon pipeline {scan_id} completed")
         
         except Exception as e:

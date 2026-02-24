@@ -1082,6 +1082,12 @@ class ApiClient {
     return response.data;
   }
 
+  /** Get CWE (Common Weakness Enumeration) details from MITRE for remediation guidance. */
+  async getCweInfo(cweId: string) {
+    const response = await this.client.get(`/remediation/cwe/${encodeURIComponent(cweId)}`);
+    return response.data;
+  }
+
   // ==================== EXCEPTIONS ====================
 
   async getExceptions(params?: {

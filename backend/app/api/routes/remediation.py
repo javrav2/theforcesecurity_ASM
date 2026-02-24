@@ -13,6 +13,7 @@ from app.services.remediation_playbook_service import (
     RemediationPlaybook,
     REMEDIATION_PLAYBOOKS,
 )
+from app.services.cwe_service import get_cwe_service
 
 router = APIRouter(prefix="/remediation", tags=["Remediation"])
 
@@ -95,6 +96,30 @@ def search_playbooks(
     }
 
 
+@router.get("/cwe/{cwe_id}")
+def get_cwe_info(cwe_id: str, current_user: User = Depends(get_current_active_user)):
+    """
+    Get CWE (Common Weakness Enumeration) details from MITRE for remediation guidance.
+
+    Returns name, description, and potential mitigations. Data is loaded from
+    https://cwe.mitre.org/data/downloads.html when available.
+    """
+    data = get_cwe_service().get_dict(cwe_id)
+    if not data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"CWE '{cwe_id}' not found or invalid (use format CWE-NNN)",
+        )
+    return data
+
+
+@router.post("/cwe/refresh")
+def refresh_cwe_cache(current_user: User = Depends(get_current_active_user)):
+    """Force refresh of CWE data from MITRE (e.g. after CWE list updates)."""
+    ok = get_cwe_service().refresh()
+    return {"success": ok, "message": "CWE cache refreshed" if ok else "Refresh failed, using fallback"}
+
+
 @router.get("/for-finding/{finding_id}")
 def get_remediation_for_finding(
     finding_id: int,
@@ -135,6 +160,11 @@ def get_remediation_for_finding(
         cve_id=cve_id,
     )
     
+    # Attach CWE-based remediation guidance when finding has cwe_id
+    cwe_info = None
+    if cwe_id:
+        cwe_info = get_cwe_service().get_dict(cwe_id)
+
     if not playbook:
         # Return the finding's built-in remediation if no playbook matches
         return {
@@ -143,14 +173,18 @@ def get_remediation_for_finding(
             "has_playbook": False,
             "remediation": finding.remediation,
             "references": finding.references or [],
+            "cwe_id": cwe_id,
+            "cwe": cwe_info,
             "message": "No specific playbook found. Showing finding's built-in remediation."
         }
-    
+
     return {
         "finding_id": finding_id,
         "finding_title": finding.title,
         "has_playbook": True,
         "playbook": playbook.to_dict(),
+        "cwe_id": cwe_id,
+        "cwe": cwe_info,
     }
 
 

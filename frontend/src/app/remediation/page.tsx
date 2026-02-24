@@ -183,6 +183,32 @@ export default function RemediationPage() {
           </Button>
         </div>
 
+        {/* Exposure at a glance (Averlon-style metrics) */}
+        <Card className="border-2 border-cyan-600/20 bg-gradient-to-b from-cyan-600/5 to-transparent">
+          <CardContent className="p-6">
+            <p className="text-sm font-medium text-cyan-400 mb-4">Exposure at a glance</p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div>
+                <div className="text-3xl font-bold text-foreground">{summary?.total_findings ?? 0}</div>
+                <p className="text-sm text-muted-foreground mt-1">Open findings to remediate</p>
+              </div>
+              <div>
+                <div className="text-3xl font-bold text-amber-400">
+                  {summary?.total_work_weeks != null ? `${summary.total_work_weeks.toFixed(1)}` : '0'}
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">Work weeks to close (vs 40h/week)</p>
+              </div>
+              <div>
+                <div className="text-3xl font-bold text-green-500">{workload?.quick_wins?.length ?? 0}</div>
+                <p className="text-sm text-muted-foreground mt-1">Quick wins (low effort, high impact)</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-4">
+              Finding-specific CWE (MITRE) remediation guidance is available on each finding — open a finding to see recommendations from <a href="https://cwe.mitre.org/data/downloads.html" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">CWE</a>.
+            </p>
+          </CardContent>
+        </Card>
+
         {/* Workload Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {/* Total Workload */}
@@ -344,7 +370,16 @@ export default function RemediationPage() {
           </Card>
         </div>
 
-        {/* Quick Wins & High Priority */}
+        {/* Prioritize fixes that matter (Averlon-style) */}
+        <div>
+          <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
+            <Target className="h-5 w-5 text-cyan-400" />
+            Prioritize fixes that matter
+          </h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Focus on exploitable exposure. Open any finding to see step-by-step playbooks and CWE (MITRE) remediation recommendations.
+          </p>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Quick Wins */}
           <Card>
