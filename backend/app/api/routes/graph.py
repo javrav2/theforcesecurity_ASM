@@ -217,9 +217,9 @@ async def get_attack_paths(
         
         # Build query based on parameters
         if source_id and target_id:
-            # Find paths between specific assets
+            # Find paths between specific assets (graph stores asset_id, not id)
             query = """
-            MATCH path = shortestPath((source:Asset {id: $source_id})-[*1..6]-(target:Asset {id: $target_id}))
+            MATCH path = shortestPath((source:Asset {asset_id: $source_id})-[*1..6]-(target:Asset {asset_id: $target_id}))
             RETURN path
             LIMIT $max_paths
             """

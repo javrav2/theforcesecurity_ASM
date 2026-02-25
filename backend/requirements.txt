@@ -80,3 +80,7 @@ PyGithub==2.1.1
 # MITRE ATT&CK data
 mitreattack-python==3.0.0
 
+# PDF Report Generation
+weasyprint>=60.0
+jinja2>=3.1.0
+

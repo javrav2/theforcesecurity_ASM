@@ -107,6 +107,7 @@ class KatanaService:
         rate_limit: int = 150,
         concurrency: int = 10,
         headless: bool = False,
+        user_agent: Optional[str] = None,
     ) -> KatanaResult:
         """
         Crawl a target URL/domain with Katana.
@@ -159,11 +160,17 @@ class KatanaService:
             if form_extraction:
                 cmd.append('-fx')  # Form extraction
             
-            # Headless mode for JS-heavy sites
+            # Headless mode for JS-heavy or bot-protected sites (Cloudflare, etc.)
             if headless:
                 cmd.append('-hl')
+            # Custom User-Agent to reduce bot blocking
+            if user_agent:
+                cmd.extend(['-H', f'User-Agent: {user_agent}'])
             
-            logger.info(f"Running Katana on {target} with depth={depth}")
+            # Log exact command for debugging (same as manual: katana -u <url> -d 5 -jc -fx ...)
+            logger.info(
+                f"Katana command: {' '.join(cmd)} (timeout={timeout}s)"
+            )
             
             # Run Katana
             process = await asyncio.create_subprocess_exec(
@@ -244,7 +251,10 @@ class KatanaService:
             result.api_endpoints = sorted(list(all_api))
             result.success = len(all_urls) > 0
             if not result.success and not result.error:
-                result.error = "No URLs discovered (site may block automated crawlers, require auth, or return no links)"
+                result.error = (
+                    "No URLs discovered (site may block automated crawlers, require auth, or return no links). "
+                    "Try re-running the scan with headless crawl enabled (scan config: headless=true) or a browser-like User-Agent for bot-protected sites."
+                )
             
             logger.info(
                 f"Katana crawl of {target}: {len(result.urls)} URLs, "
@@ -314,6 +324,8 @@ class KatanaService:
         timeout: int = 600,
         rate_limit: int = 150,
         concurrency: int = 10,
+        headless: bool = False,
+        user_agent: Optional[str] = None,
     ) -> KatanaResult:
         """
         Run Katana once with all URLs on stdin (one-liner style).
@@ -357,6 +369,14 @@ class KatanaService:
             cmd.extend(["-jc", "-kf"])
         if form_extraction:
             cmd.append("-fx")
+        if headless:
+            cmd.append("-hl")
+        if user_agent:
+            cmd.extend(["-H", f"User-Agent: {user_agent}"])
+        # Log equivalent of: cat urls.txt | katana -silent -d 5 -jc -fx ...
+        logger.info(
+            f"Katana batch command: {' '.join(cmd)} (stdin with {len(urls)} URLs, timeout={timeout}s)"
+        )
         input_data = "\n".join(urls).encode()
         try:
             process = await asyncio.create_subprocess_exec(

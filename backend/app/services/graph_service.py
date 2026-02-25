@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 
+from sqlalchemy.orm import selectinload
+
 from app.core.config import settings
 from app.db.database import SessionLocal
 from app.models.asset import Asset, AssetType
@@ -191,8 +193,12 @@ class GraphService:
         
         db = SessionLocal()
         try:
-            # Get all assets for the organization
-            assets = db.query(Asset).filter(
+            # Get all assets with related data so sync has ports, tech, vulns, endpoints
+            assets = db.query(Asset).options(
+                selectinload(Asset.port_services),
+                selectinload(Asset.technologies),
+                selectinload(Asset.vulnerabilities),
+            ).filter(
                 Asset.organization_id == organization_id
             ).all()
             
@@ -750,17 +756,43 @@ class GraphService:
                 return results[0]
             return {"nodes": [], "edges": []}
         except Exception as e:
-            # APOC might not be installed - fallback to simpler query
+            # APOC might not be installed - fallback: get paths and build nodes/edges in Python
             logger.warning(f"APOC query failed, using fallback: {e}")
-            
             fallback_cypher = """
-                MATCH (center:Asset {asset_id: $asset_id})-[r*1..""" + str(depth) + """]-(connected)
-                WITH center, collect(DISTINCT connected) AS connected_nodes, collect(DISTINCT r) AS rels
-                RETURN center, connected_nodes
+                MATCH path = (center:Asset {asset_id: $asset_id})-[*1..""" + str(depth) + """]-(connected)
+                RETURN path
+                LIMIT 50
             """
-            
-            results = self.query(fallback_cypher, {"asset_id": asset_id})
-            return {"nodes": results, "edges": []}
+            seen_node_ids = set()
+            seen_edges = set()
+            nodes_out = []
+            edges_out = []
+            with self.session() as session:
+                result = session.run(fallback_cypher, {"asset_id": asset_id})
+                for record in result:
+                    path = record.get("path")
+                    if path is None:
+                        continue
+                    for node in (path.nodes if hasattr(path, "nodes") else getattr(path, "__iter__", lambda: [])()):
+                        nid = getattr(node, "element_id", None) or str(id(node))
+                        if nid not in seen_node_ids:
+                            seen_node_ids.add(nid)
+                            nodes_out.append({
+                                "id": nid,
+                                "labels": list(getattr(node, "labels", [])),
+                                "properties": dict(node) if node else {},
+                            })
+                    for rel in (path.relationships if hasattr(path, "relationships") else []):
+                        sn = getattr(rel, "start_node", None)
+                        en = getattr(rel, "end_node", None)
+                        sid = getattr(sn, "element_id", None) or (str(id(sn)) if sn else "")
+                        tid = getattr(en, "element_id", None) or (str(id(en)) if en else "")
+                        rtype = getattr(rel, "type", None) or ""
+                        key = (sid, tid, rtype)
+                        if key not in seen_edges:
+                            seen_edges.add(key)
+                            edges_out.append({"source": sid, "target": tid, "type": rtype})
+            return {"nodes": nodes_out, "edges": edges_out}
     
     def get_vulnerability_impact(
         self,

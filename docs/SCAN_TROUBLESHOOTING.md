@@ -94,9 +94,65 @@ Common causes:
 
 ---
 
-## 7. Code references
+## 7. "No URLs discovered" (Katana / resource enumeration)
+
+When the **resource enumeration** step (Katana crawler) finds no URLs on your targets, the scan can complete but with a message like:
+
+- *"No URLs discovered (site may block automated crawlers, require auth, or return no links)"*
+
+**Common causes:**
+
+- **Bot protection** – Sites behind Cloudflare, Akamai, or similar may block default crawler requests.
+- **Auth required** – Target returns a login page and no public links.
+- **JS-heavy SPAs** – Content is rendered by JavaScript; default crawl may not execute it.
+- **No links** – Page really has no crawlable links.
+
+**What to do:**
+
+1. **Re-run with headless crawl**  
+   Create a new Full/Recon scan and pass **config** that enables headless mode so Katana uses a headless browser (better for JS and some bot protection):
+   - In the API when creating the scan, set `config: { "headless": true }`.
+   - If your UI supports scan config, enable "Headless crawl" or "Use headless browser for resource enumeration".
+
+2. **Optional: browser-like User-Agent**  
+   You can pass a custom User-Agent in config to reduce simple bot blocking:
+   - `config: { "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }`
+
+3. **Run HTTP probe first**  
+   The recon pipeline runs HTTP probe before Katana; ensure those targets are reachable and marked live. If you run only a "Resource enumeration" scan, run an HTTP probe scan first so targets are known to be live.
+
+4. **Check the scan result hint**  
+   For completed scans with no URLs, the scan `results.hint` field contains a short reminder about headless and User-Agent (see API response or scan detail page).
+
+---
+
+## 8. Parameter discovery (ParamSpider) returns 0 parameters / 0 URLs
+
+When an ad hoc **Parameter Discovery (ParamSpider)** scan completes with **domains_scanned: 30** but **total_parameters: 0**, **total_urls: 0**, **total_endpoints: 0**, the scan *is* working—ParamSpider just found nothing in the archives.
+
+**Why:**
+
+- **ParamSpider** gets data from **web archives** (Wayback Machine, Common Crawl), not from live sites.
+- If the 30 domains have little or no archived history, or the archives have no parameterized URLs for those domains, the result is zero.
+
+**What to do:**
+
+1. **Use Katana for live discovery**  
+   Run a **Deep Web Crawling (Katana)** ad hoc scan on the same targets. Katana crawls live sites and discovers endpoints, parameters, and JS from the current pages. If you still get 0 URLs, see [§7 "No URLs discovered"](#7-no-urls-discovered-katana--resource-enumeration) (headless, User-Agent, HTTP probe).
+
+2. **Run WaybackURLs first (optional)**  
+   WaybackURLs pulls historical URLs from archives. Running it before ParamSpider doesn’t change ParamSpider’s archive backend, but it can help confirm whether archives have any data for your domains.
+
+3. **Check the scan detail page**  
+   For ParamSpider runs that return zero, the scan stores `results.error` and `results.hint`; the scan detail page shows these so you get an explanation and the suggestion to use Katana or WaybackURLs.
+
+---
+
+## 9. Code references
 
 - Scan creation and SQS: `backend/app/api/routes/scans.py` (`send_scan_to_sqs`, scan create endpoints).
 - Worker loop and DB poll: `backend/app/workers/scanner_worker.py` (`poll_for_jobs`, `poll_database_for_jobs`).
 - Marking completed/failed: `scanner_worker.py` (`_mark_scan_running`, `_mark_scan_failed`, and each `handle_*`).
 - Stale recovery: `scanner_worker.py` (`recover_stale_scans`, `_recover_stuck_scan_if_needed`).
+- Katana (resource enumeration): `katana_service.py` (headless, user_agent); `scanner_worker.py` (`handle_katana_scan`, config `headless`, `user_agent`).
+- ParamSpider (parameter discovery): `paramspider_service.py`; `scanner_worker.py` (`handle_paramspider_scan`); zero-result hint in `scan.results.error` / `scan.results.hint`.

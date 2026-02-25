@@ -375,13 +375,13 @@ export default function ScanDetailPage() {
                 <Target className="h-8 w-8 text-blue-400" />
                 <div>
                   <p className="text-2xl font-bold">
-                    {scan.results?.targets_expanded || scan.results?.targets_scanned || scan.targets?.length || 0}
+                    {scan.results?.targets_expanded ?? scan.results?.targets_scanned ?? scan.results?.domains_scanned ?? scan.results?.targets_crawled ?? scan.targets?.length ?? 0}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     {scan.results?.targets_expanded && scan.results?.targets_original && 
                      scan.results.targets_expanded !== scan.results.targets_original
                       ? `IPs (from ${scan.results.targets_original} ${scan.results.targets_original === 1 ? 'range' : 'ranges'})`
-                      : 'Targets'}
+                      : (scan.results?.domains_scanned != null || scan.results?.targets_crawled != null) ? 'Domains scanned' : 'Targets'}
                   </p>
                 </div>
               </div>

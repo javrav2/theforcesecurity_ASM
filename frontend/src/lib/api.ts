@@ -7,11 +7,24 @@ import axios, { AxiosError, AxiosInstance } from 'axios';
  */
 export function getApiErrorMessage(error: any, fallback: string = 'An error occurred'): string {
   const detail = error?.response?.data?.detail;
-  
+  const status = error?.response?.status;
+  const data = error?.response?.data;
+
+  // AI provider (e.g. Anthropic) overloaded - 529 or 503 with overloaded message
+  if (status === 529 || status === 503) {
+    if (typeof detail === 'string' && (detail.toLowerCase().includes('overloaded') || detail.includes('try again')))
+      return detail;
+    if (data?.error?.type === 'overloaded_error' || (typeof detail === 'string' && detail.includes('529')))
+      return 'The AI provider is temporarily overloaded. Please try again in a few minutes.';
+  }
+  const rawStr = typeof data === 'string' ? data : JSON.stringify(data || {});
+  if (rawStr.includes('overloaded_error') || (rawStr.includes('529') && rawStr.includes('Overloaded')))
+    return 'The AI provider is temporarily overloaded. Please try again in a few minutes.';
+
   if (typeof detail === 'string') {
     return detail;
   }
-  
+
   if (Array.isArray(detail) && detail.length > 0) {
     // FastAPI validation error format: [{type, loc, msg, input, url}, ...]
     return detail.map((e: any) => {
@@ -282,6 +295,36 @@ class ApiClient {
     remediation_deadline?: string;
   }) {
     const response = await this.client.put(`/vulnerabilities/${vulnId}`, data);
+    return response.data;
+  }
+
+  async createVulnerability(data: {
+    title: string;
+    severity: string;
+    asset_id: number;
+    description?: string;
+    cvss_score?: number;
+    cvss_vector?: string;
+    cve_id?: string;
+    cwe_id?: string;
+    references?: string[];
+    detected_by?: string;
+    evidence?: string;
+    proof_of_concept?: string;
+    remediation?: string;
+    tags?: string[];
+    metadata?: Record<string, any>;
+    is_manual?: boolean;
+    impact?: string;
+    affected_component?: string;
+    steps_to_reproduce?: string;
+  }) {
+    const response = await this.client.post('/vulnerabilities/', data);
+    return response.data;
+  }
+
+  async deleteVulnerability(vulnId: number) {
+    const response = await this.client.delete(`/vulnerabilities/${vulnId}`);
     return response.data;
   }
 
@@ -1349,6 +1392,49 @@ class ApiClient {
       session_id: sessionId,
       answer,
     });
+    return response.data;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reports (PDF/HTML report generation)
+  // ---------------------------------------------------------------------------
+
+  async generateAssetReport(
+    assetId: number,
+    options?: { format?: 'pdf' | 'html'; include_info?: boolean }
+  ): Promise<ArrayBuffer> {
+    const params: any = {};
+    if (options?.format) params.format = options.format;
+    if (options?.include_info !== undefined) params.include_info = options.include_info;
+    
+    const response = await this.client.get(`/reports/assets/${assetId}/report`, {
+      params,
+      responseType: 'arraybuffer',
+    });
+    return response.data;
+  }
+
+  async generateFindingsReport(
+    findingIds: number[],
+    options?: { format?: 'pdf' | 'html'; report_title?: string; organization_name?: string }
+  ): Promise<ArrayBuffer> {
+    const response = await this.client.post(
+      '/reports/findings/report',
+      {
+        finding_ids: findingIds,
+        report_title: options?.report_title,
+        organization_name: options?.organization_name,
+      },
+      {
+        params: { format: options?.format || 'pdf' },
+        responseType: 'arraybuffer',
+      }
+    );
+    return response.data;
+  }
+
+  async getAssetFindingsCount(assetId: number) {
+    const response = await this.client.get(`/reports/assets/${assetId}/findings/count`);
     return response.data;
   }
 }

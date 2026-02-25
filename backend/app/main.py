@@ -13,7 +13,7 @@ from app.db.database import engine, Base, SessionLocal
 from app.core.security import get_password_hash
 from app.models.user import User, UserRole
 from app.models.netblock import Netblock  # Import to ensure table creation
-from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, remediation, exceptions, agent, agent_knowledge, graph, github_secrets, mitre, mcp, app_structure
+from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, remediation, exceptions, agent, agent_knowledge, graph, github_secrets, mitre, mcp, app_structure, reports
 
 # Configure logging
 logging.basicConfig(
@@ -125,6 +125,7 @@ app.include_router(github_secrets.router, prefix=settings.API_PREFIX)
 app.include_router(mitre.router, prefix=settings.API_PREFIX)
 app.include_router(mcp.router, prefix=settings.API_PREFIX)
 app.include_router(app_structure.router, prefix=settings.API_PREFIX)
+app.include_router(reports.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")

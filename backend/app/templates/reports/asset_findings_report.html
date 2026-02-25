@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Findings Report - {{ asset.value }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+            @top-center {
+                content: "Security Findings Report";
+                font-size: 10px;
+                color: #666;
+            }
+            @bottom-center {
+                content: "Page " counter(page) " of " counter(pages);
+                font-size: 10px;
+                color: #666;
+            }
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 11px;
+            line-height: 1.5;
+            color: #333;
+            background: #fff;
+        }
+        
+        .cover-page {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            page-break-after: always;
+        }
+        
+        .cover-title {
+            font-size: 28px;
+            font-weight: bold;
+            color: #1a1a2e;
+            margin-bottom: 20px;
+        }
+        
+        .cover-subtitle {
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 40px;
+        }
+        
+        .cover-asset {
+            font-size: 20px;
+            font-weight: 600;
+            color: #0066cc;
+            padding: 15px 30px;
+            border: 2px solid #0066cc;
+            border-radius: 8px;
+            margin-bottom: 40px;
+        }
+        
+        .cover-meta {
+            font-size: 12px;
+            color: #888;
+        }
+        
+        .cover-meta p {
+            margin: 5px 0;
+        }
+        
+        h1 {
+            font-size: 20px;
+            color: #1a1a2e;
+            border-bottom: 2px solid #0066cc;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        
+        h2 {
+            font-size: 16px;
+            color: #333;
+            margin: 25px 0 15px 0;
+        }
+        
+        h3 {
+            font-size: 14px;
+            color: #444;
+            margin: 15px 0 10px 0;
+        }
+        
+        .executive-summary {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        
+        .summary-grid {
+            display: flex;
+            justify-content: space-between;
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .summary-card {
+            flex: 1;
+            text-align: center;
+            padding: 15px;
+            border-radius: 6px;
+            color: white;
+        }
+        
+        .summary-card.critical { background: #dc3545; }
+        .summary-card.high { background: #fd7e14; }
+        .summary-card.medium { background: #ffc107; color: #333; }
+        .summary-card.low { background: #0d6efd; }
+        .summary-card.info { background: #6c757d; }
+        
+        .summary-number {
+            font-size: 28px;
+            font-weight: bold;
+        }
+        
+        .summary-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .finding {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            page-break-inside: avoid;
+            overflow: hidden;
+        }
+        
+        .finding-header {
+            padding: 12px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .finding-header.critical { background: #dc3545; color: white; }
+        .finding-header.high { background: #fd7e14; color: white; }
+        .finding-header.medium { background: #ffc107; color: #333; }
+        .finding-header.low { background: #0d6efd; color: white; }
+        .finding-header.info { background: #6c757d; color: white; }
+        
+        .finding-title {
+            font-weight: 600;
+            font-size: 13px;
+        }
+        
+        .finding-badges {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .badge {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .finding-body {
+            padding: 15px;
+        }
+        
+        .finding-section {
+            margin-bottom: 15px;
+        }
+        
+        .finding-section:last-child {
+            margin-bottom: 0;
+        }
+        
+        .section-title {
+            font-weight: 600;
+            color: #555;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+        
+        .section-content {
+            color: #333;
+            white-space: pre-wrap;
+        }
+        
+        .code-block {
+            background: #f4f4f4;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 10px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+        
+        .info-item {
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        
+        .info-label {
+            font-size: 10px;
+            color: #666;
+            text-transform: uppercase;
+        }
+        
+        .info-value {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .remediation-box {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            border-radius: 6px;
+            padding: 12px;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        
+        .status-open { background: #f8d7da; color: #721c24; }
+        .status-in_progress { background: #fff3cd; color: #856404; }
+        .status-resolved { background: #d4edda; color: #155724; }
+        .status-mitigated { background: #cce5ff; color: #004085; }
+        .status-accepted { background: #e2e3e5; color: #383d41; }
+        .status-false_positive { background: #d6d8d9; color: #1b1e21; }
+        
+        .manual-badge {
+            background: #6f42c1;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 600;
+        }
+        
+        .asset-details {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .asset-details h2 {
+            margin-top: 0;
+        }
+        
+        .references-list {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .references-list li {
+            padding: 3px 0;
+            word-break: break-all;
+        }
+        
+        .references-list a {
+            color: #0066cc;
+            text-decoration: none;
+        }
+        
+        .footer-note {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #dee2e6;
+            font-size: 10px;
+            color: #888;
+            text-align: center;
+        }
+        
+        .toc {
+            margin-bottom: 30px;
+        }
+        
+        .toc-item {
+            padding: 5px 0;
+            border-bottom: 1px dotted #ccc;
+        }
+        
+        .severity-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            margin-right: 8px;
+        }
+        
+        .severity-indicator.critical { background: #dc3545; }
+        .severity-indicator.high { background: #fd7e14; }
+        .severity-indicator.medium { background: #ffc107; }
+        .severity-indicator.low { background: #0d6efd; }
+        .severity-indicator.info { background: #6c757d; }
+    </style>
+</head>
+<body>
+    <!-- Cover Page -->
+    <div class="cover-page">
+        <div class="cover-title">Security Findings Report</div>
+        <div class="cover-subtitle">Vulnerability Assessment</div>
+        <div class="cover-asset">{{ asset.value }}</div>
+        <div class="cover-meta">
+            <p><strong>Asset Type:</strong> {{ asset.asset_type }}</p>
+            <p><strong>Generated:</strong> {{ generated_at }}</p>
+            <p><strong>Total Findings:</strong> {{ findings|length }}</p>
+            {% if organization_name %}
+            <p><strong>Organization:</strong> {{ organization_name }}</p>
+            {% endif %}
+        </div>
+    </div>
+    
+    <!-- Executive Summary -->
+    <h1>Executive Summary</h1>
+    <div class="executive-summary">
+        <p>This report contains <strong>{{ findings|length }}</strong> security findings identified for the asset <strong>{{ asset.value }}</strong>.</p>
+        
+        <div class="summary-grid">
+            <div class="summary-card critical">
+                <div class="summary-number">{{ severity_counts.critical }}</div>
+                <div class="summary-label">Critical</div>
+            </div>
+            <div class="summary-card high">
+                <div class="summary-number">{{ severity_counts.high }}</div>
+                <div class="summary-label">High</div>
+            </div>
+            <div class="summary-card medium">
+                <div class="summary-number">{{ severity_counts.medium }}</div>
+                <div class="summary-label">Medium</div>
+            </div>
+            <div class="summary-card low">
+                <div class="summary-number">{{ severity_counts.low }}</div>
+                <div class="summary-label">Low</div>
+            </div>
+            <div class="summary-card info">
+                <div class="summary-number">{{ severity_counts.info }}</div>
+                <div class="summary-label">Info</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Asset Details -->
+    <div class="asset-details">
+        <h2>Asset Information</h2>
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Value</div>
+                <div class="info-value">{{ asset.value }}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Type</div>
+                <div class="info-value">{{ asset.asset_type }}</div>
+            </div>
+            {% if asset.ip_address %}
+            <div class="info-item">
+                <div class="info-label">IP Address</div>
+                <div class="info-value">{{ asset.ip_address }}</div>
+            </div>
+            {% endif %}
+            {% if asset.country %}
+            <div class="info-item">
+                <div class="info-label">Location</div>
+                <div class="info-value">{{ asset.city }}{% if asset.city and asset.country %}, {% endif %}{{ asset.country }}</div>
+            </div>
+            {% endif %}
+            <div class="info-item">
+                <div class="info-label">Risk Score</div>
+                <div class="info-value">{{ asset.risk_score }}/100</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">First Seen</div>
+                <div class="info-value">{{ asset.first_seen }}</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Table of Contents -->
+    <h2>Findings Overview</h2>
+    <div class="toc">
+        {% for finding in findings %}
+        <div class="toc-item">
+            <span class="severity-indicator {{ finding.severity }}"></span>
+            <strong>{{ loop.index }}.</strong> {{ finding.title }}
+            {% if finding.is_manual %}<span class="manual-badge">Manual</span>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    
+    <!-- Detailed Findings -->
+    <h1>Detailed Findings</h1>
+    
+    {% for finding in findings %}
+    <div class="finding">
+        <div class="finding-header {{ finding.severity }}">
+            <span class="finding-title">{{ loop.index }}. {{ finding.title }}</span>
+            <div class="finding-badges">
+                <span class="badge">{{ finding.severity|upper }}</span>
+                {% if finding.cvss_score %}<span class="badge">CVSS: {{ finding.cvss_score }}</span>{% endif %}
+                {% if finding.cve_id %}<span class="badge">{{ finding.cve_id }}</span>{% endif %}
+                {% if finding.is_manual %}<span class="badge">MANUAL</span>{% endif %}
+            </div>
+        </div>
+        <div class="finding-body">
+            <!-- Status and Meta Info -->
+            <div class="finding-section">
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Status</div>
+                        <div class="info-value">
+                            <span class="status-badge status-{{ finding.status }}">{{ finding.status|replace('_', ' ')|title }}</span>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">First Detected</div>
+                        <div class="info-value">{{ finding.first_detected }}</div>
+                    </div>
+                    {% if finding.cwe_id %}
+                    <div class="info-item">
+                        <div class="info-label">CWE</div>
+                        <div class="info-value">{{ finding.cwe_id }}</div>
+                    </div>
+                    {% endif %}
+                    {% if finding.detected_by %}
+                    <div class="info-item">
+                        <div class="info-label">Detected By</div>
+                        <div class="info-value">{{ finding.detected_by }}</div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Description -->
+            {% if finding.description %}
+            <div class="finding-section">
+                <div class="section-title">Description</div>
+                <div class="section-content">{{ finding.description }}</div>
+            </div>
+            {% endif %}
+            
+            <!-- Affected Component (Manual findings) -->
+            {% if finding.affected_component %}
+            <div class="finding-section">
+                <div class="section-title">Affected Component</div>
+                <div class="section-content">{{ finding.affected_component }}</div>
+            </div>
+            {% endif %}
+            
+            <!-- Impact (Manual findings) -->
+            {% if finding.impact %}
+            <div class="finding-section">
+                <div class="section-title">Impact</div>
+                <div class="section-content">{{ finding.impact }}</div>
+            </div>
+            {% endif %}
+            
+            <!-- Steps to Reproduce (Manual findings) -->
+            {% if finding.steps_to_reproduce %}
+            <div class="finding-section">
+                <div class="section-title">Steps to Reproduce</div>
+                <div class="code-block">{{ finding.steps_to_reproduce }}</div>
+            </div>
+            {% endif %}
+            
+            <!-- Evidence -->
+            {% if finding.evidence %}
+            <div class="finding-section">
+                <div class="section-title">Evidence</div>
+                <div class="code-block">{{ finding.evidence }}</div>
+            </div>
+            {% endif %}
+            
+            <!-- Proof of Concept -->
+            {% if finding.proof_of_concept %}
+            <div class="finding-section">
+                <div class="section-title">Proof of Concept</div>
+                <div class="code-block">{{ finding.proof_of_concept }}</div>
+            </div>
+            {% endif %}
+            
+            <!-- Remediation -->
+            {% if finding.remediation %}
+            <div class="finding-section">
+                <div class="section-title">Remediation</div>
+                <div class="remediation-box">{{ finding.remediation }}</div>
+            </div>
+            {% endif %}
+            
+            <!-- References -->
+            {% if finding.references and finding.references|length > 0 %}
+            <div class="finding-section">
+                <div class="section-title">References</div>
+                <ul class="references-list">
+                    {% for ref in finding.references %}
+                    <li><a href="{{ ref }}">{{ ref }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    
+    <div class="footer-note">
+        <p>This report was automatically generated by The Force Security ASM Platform.</p>
+        <p>Generated on {{ generated_at }}</p>
+    </div>
+</body>
+</html>

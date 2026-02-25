@@ -60,6 +60,8 @@ import {
   CheckCircle2,
   MessageSquare,
   ChevronDown,
+  Plus,
+  FileDown,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -72,6 +74,7 @@ import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
 import { ApplicationMap } from '@/components/assets/ApplicationMap';
 import { DiscoveryPath } from '@/components/assets/DiscoveryPath';
+import { AddFindingDialog } from '@/components/findings/AddFindingDialog';
 
 interface Technology {
   name: string;
@@ -278,6 +281,8 @@ export default function AssetDetailPage() {
     interesting_urls: string[];
     source_breakdown: Record<string, Record<string, number>>;
   } | null>(null);
+  const [addFindingDialogOpen, setAddFindingDialogOpen] = useState(false);
+  const [exportingReport, setExportingReport] = useState(false);
   const [appStructureLoading, setAppStructureLoading] = useState(false);
   const [verifyingPorts, setVerifyingPorts] = useState<Set<number>>(new Set());
   const { toast } = useToast();
@@ -514,6 +519,42 @@ export default function AssetDetailPage() {
 
   const handleRefresh = () => {
     setRefreshing(true);
+    fetchAsset();
+  };
+
+  const handleExportReport = async () => {
+    if (!asset) return;
+    
+    setExportingReport(true);
+    try {
+      const response = await api.generateAssetReport(parseInt(assetId), { format: 'pdf', include_info: false });
+      
+      const blob = new Blob([response], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `findings_report_${asset.value.replace(/[^a-zA-Z0-9.-]/g, '_')}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      toast({
+        title: 'Report Downloaded',
+        description: 'PDF report has been downloaded successfully.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Export Failed',
+        description: getApiErrorMessage(error, 'Failed to generate PDF report'),
+        variant: 'destructive',
+      });
+    } finally {
+      setExportingReport(false);
+    }
+  };
+
+  const handleFindingAdded = () => {
     fetchAsset();
   };
 
@@ -1499,10 +1540,35 @@ export default function AssetDetailPage() {
         {activeTab === 'findings' && (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Shield className="h-5 w-5" />
-                Security Findings ({vulnerabilities.length})
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Shield className="h-5 w-5" />
+                  Security Findings ({vulnerabilities.length})
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAddFindingDialogOpen(true)}
+                  >
+                    <Plus className="h-4 w-4 mr-1" />
+                    Add Finding
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleExportReport}
+                    disabled={exportingReport || vulnerabilities.length === 0}
+                  >
+                    {exportingReport ? (
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
+                      <FileDown className="h-4 w-4 mr-1" />
+                    )}
+                    Export PDF
+                  </Button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               {vulnerabilities.length > 0 ? (
@@ -2238,6 +2304,17 @@ export default function AssetDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Add Finding Dialog */}
+      {asset && (
+        <AddFindingDialog
+          assetId={parseInt(assetId)}
+          assetValue={asset.value}
+          open={addFindingDialogOpen}
+          onOpenChange={setAddFindingDialogOpen}
+          onFindingAdded={handleFindingAdded}
+        />
+      )}
     </MainLayout>
   );
 }

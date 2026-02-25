@@ -128,3 +128,6 @@ If https://asm.theforcesecurity.io/graph (or your deployment) shows no data or â
 
 3. **Attack Surface tab empty**  
    The PostgreSQL fallback returns `risk_distribution`, `discovery_sources`, technologies, and ports. If you see empty cards, check backend logs for 401/500 on `/graph/fallback/*`. Ensure the user is in an organization and has assets/ports/technologies in the DB.
+
+4. **Relationships / Explorer tab missing data**  
+   The graph is populated only after **Sync Data** is run for the selected organization. Sync pushes assets and their related ports, technologies, vulnerabilities, endpoints, and IPs from PostgreSQL into Neo4j. If youâ€™ve just run scans, click **Sync Data** again so new ports, tech, and vulns appear. Attack path search uses `asset_id` in Neo4j; the Explorer loads relationships for the **selected asset** only, so pick an asset from the dropdown to see its neighbors (ports, IPs, technologies, vulns).

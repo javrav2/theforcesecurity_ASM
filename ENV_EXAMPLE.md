@@ -167,3 +167,13 @@ If the AI agent returns **Error code: 401 - invalid x-api-key**:
 
 5. **Create a new key**  
    In [Anthropic Console](https://console.anthropic.com) → API Keys, create a new key and replace the value in `.env` in case the previous one was revoked or incorrect.
+
+---
+
+## Troubleshooting: 529 / Overloaded (Agent)
+
+If the agent shows **Error code: 529** or **overloaded_error / "Overloaded"**:
+
+- **Cause:** Anthropic’s API is temporarily overloaded and is rejecting requests.
+- **What to do:** Wait a few minutes and try again. The app now shows a friendly message: *"The AI provider (Anthropic/Claude) is temporarily overloaded. Please try again in a few minutes."*
+- **Optional:** You can switch to OpenAI by setting `AI_PROVIDER=openai` and `OPENAI_API_KEY` in `.env` so the agent uses GPT instead when Claude is overloaded.

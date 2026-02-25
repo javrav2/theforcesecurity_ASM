@@ -2792,6 +2792,12 @@ class ScannerWorker:
                     'total_js_files': total_js_files,
                     'assets_updated': assets_updated,
                 }
+                if total_params == 0 and total_endpoints == 0 and len(targets) > 0:
+                    scan.results['error'] = 'No parameters or endpoints discovered from web archives for any domain.'
+                    scan.results['hint'] = (
+                        'ParamSpider uses Wayback Machine and Common Crawl. Domains with little or no archive history will return nothing. '
+                        'Try running a Katana (live crawl) scan instead for active discovery, or run WaybackURLs first to populate historical URLs.'
+                    )
                 db.commit()
             
             logger.info(f"ParamSpider scan complete: {total_params} params, {total_endpoints} endpoints from {len(targets)} domains")
@@ -3041,7 +3047,10 @@ class ScannerWorker:
                 scan.targets = targets
                 db.commit()
 
-            logger.info(f"Running Katana on {len(targets)} targets with depth={config.get('depth', 3)}")
+            logger.info(
+                f"Running Katana on {num_targets} targets with depth={config.get('depth', 5)} "
+                f"({'batch stdin (one process)' if use_batch_stdin else 'parallel'}, timeout={batch_total_timeout if use_batch_stdin else per_target_timeout}s)"
+            )
             
             total_urls = 0
             total_endpoints = 0
@@ -3049,28 +3058,37 @@ class ScannerWorker:
             total_js = 0
             assets_updated = 0
             
-            # Use parallel processing for faster completion
-            # Default: 3 concurrent crawls, 3 minutes timeout per target
-            per_target_timeout = config.get('timeout', 180)  # Reduced from 600 to 180 seconds
+            # Use one Katana process with all URLs on stdin when multiple targets (matches CLI: katana -u urls.txt).
+            # Single-process batch mode is more reliable and often faster than one process per URL (avoids early timeouts).
+            per_target_timeout = config.get('timeout', 300)  # Per-target when not using batch
             max_concurrent = config.get('max_concurrent', 3)
+            num_targets = len(targets)
+            use_batch_stdin = config.get('batch_stdin', num_targets > 1)  # Default True for multi-target
+            # Batch mode: one process, all URLs on stdin; need a total timeout that scales with targets
+            batch_total_timeout = min(3600, max(600, 90 * num_targets)) if use_batch_stdin else per_target_timeout
             
             # Update progress tracking
             if scan:
-                scan.current_step = f"Deep crawling {len(targets)} targets (parallel)"
+                scan.current_step = (
+                    f"Deep crawling {num_targets} targets (batch)" if use_batch_stdin
+                    else f"Deep crawling {num_targets} targets (parallel)"
+                )
                 db.commit()
             
-            # Optional: one-liner style (URLs on stdin, one process) for JS collection / AI review
-            use_batch_stdin = config.get('batch_stdin', False)
             depth = config.get('depth', 5)
+            headless = config.get('headless', False)
+            user_agent = config.get('user_agent')
             if use_batch_stdin:
                 batch_result = await katana.crawl_batch_stdin(
                     targets=targets,
                     depth=depth,
                     js_crawl=config.get('js_crawl', True),
                     form_extraction=config.get('form_extraction', True),
-                    timeout=per_target_timeout,
+                    timeout=batch_total_timeout,
                     rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
                     concurrency=config.get('concurrency', 10),
+                    headless=headless,
+                    user_agent=user_agent,
                 )
                 results = [batch_result] if batch_result.target == "stdin_batch" else []
                 # For batch we'll handle the single result below and set js_files_for_review
@@ -3084,6 +3102,8 @@ class ScannerWorker:
                     timeout=per_target_timeout,
                     rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
                     concurrency=config.get('concurrency', 10),
+                    headless=headless,
+                    user_agent=user_agent,
                 )
             
             # Collect first error for scan results if all fail
@@ -3099,32 +3119,55 @@ class ScannerWorker:
                         total_params += len(result.parameters)
                         total_js += len(result.js_files)
                         all_js_for_review.extend(result.js_files)
-                        # Batch stdin: one result; attribute URLs to assets by hostname
+                        # Batch stdin: one result; attribute all URLs/endpoints/params/js to assets by hostname
                         if result.target == "stdin_batch":
-                            seen_hosts = set()
-                            for js_url in result.js_files:
+                            from collections import defaultdict
+                            from urllib.parse import parse_qs
+                            by_host = defaultdict(lambda: {"urls": set(), "endpoints": set(), "params": set(), "js": set(), "api": set()})
+                            for u in result.urls:
                                 try:
-                                    host = urlparse(js_url).netloc.split(":")[0]
-                                    if not host or host in seen_hosts:
+                                    parsed = urlparse(u)
+                                    host = parsed.netloc.split(":")[0]
+                                    if not host:
                                         continue
-                                    seen_hosts.add(host)
+                                    by_host[host]["urls"].add(u)
+                                    path = parsed.path.rstrip("/")
+                                    if path and path != "/":
+                                        by_host[host]["endpoints"].add(path)
+                                    if parsed.query:
+                                        by_host[host]["params"].update(parse_qs(parsed.query).keys())
+                                    if path.endswith(".js") or "/js/" in path:
+                                        by_host[host]["js"].add(u)
+                                    if any(re.search(p, u.lower()) for p in ["/api/", r"/v\d+/", "/graphql", "/rest/"]):
+                                        by_host[host]["api"].add(u)
+                                except Exception:
+                                    pass
+                            for host, data in by_host.items():
+                                try:
                                     asset = db.query(Asset).filter(
                                         Asset.organization_id == organization_id,
                                         Asset.value == host
                                     ).first()
-                                    if asset:
-                                        existing_js = set(asset.js_files or [])
-                                        for u in result.js_files:
-                                            if urlparse(u).netloc.split(":")[0] == host:
-                                                existing_js.add(u)
-                                        asset.js_files = sorted(existing_js)[:500]
-                                        if not asset.metadata_:
-                                            asset.metadata_ = {}
-                                        asset.metadata_["katana_last_scan"] = datetime.utcnow().isoformat()
-                                        asset.last_seen = datetime.utcnow()
-                                        assets_updated += 1
-                                except Exception:
-                                    pass
+                                    if not asset:
+                                        continue
+                                    existing_endpoints = set(asset.endpoints or [])
+                                    existing_params = set(asset.parameters or [])
+                                    existing_js = set(asset.js_files or [])
+                                    existing_endpoints.update(data["endpoints"])
+                                    existing_params.update(data["params"])
+                                    existing_js.update(data["js"])
+                                    asset.endpoints = sorted(existing_endpoints)[:1000]
+                                    asset.parameters = sorted(existing_params)[:500]
+                                    asset.js_files = sorted(existing_js)[:500]
+                                    if not asset.metadata_:
+                                        asset.metadata_ = {}
+                                    asset.metadata_["katana_last_scan"] = datetime.utcnow().isoformat()
+                                    asset.metadata_["katana_urls_found"] = len(data["urls"])
+                                    asset.metadata_["katana_api_endpoints"] = sorted(data["api"])[:50]
+                                    asset.last_seen = datetime.utcnow()
+                                    assets_updated += 1
+                                except Exception as e:
+                                    logger.warning(f"Batch attribution for {host}: {e}")
                             continue
                         # Per-target result: attribute to single asset
                         target = result.target
@@ -3201,8 +3244,9 @@ class ScannerWorker:
                     scan.results['error'] = first_error or 'No URLs or endpoints discovered on any target.'
                     scan.results['hint'] = (
                         'Sites may block automated crawlers (e.g. Cloudflare, bot detection), require login, '
-                        'or return no crawlable links. Try running an HTTP probe first; for JS-heavy sites, '
-                        'ensure the scanner can reach the targets.'
+                        'or return no crawlable links. Re-run this scan with headless crawl enabled (scan config: headless=true) '
+                        'for bot-protected or JS-heavy sites; or set a browser-like user_agent in config. '
+                        'Ensure an HTTP probe has run first so targets are known live.'
                     )
                 db.commit()
             

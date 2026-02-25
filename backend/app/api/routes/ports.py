@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
+from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,12 @@ def list_port_services(
             display_name=p.display_name,
             created_at=p.created_at or datetime.utcnow(),
             updated_at=p.updated_at or datetime.utcnow(),
+            # Nmap verification
+            verified=p.verified or False,
+            verified_at=p.verified_at,
+            verified_state=p.verified_state,
+            verification_scanner=p.verification_scanner,
+            scanned_ip=p.scanned_ip,
             # Add asset info
             hostname=p.asset.name if p.asset else None,
             ip_address=p.asset.value if p.asset else None,
@@ -1622,60 +1629,73 @@ async def verify_port(
             service = SERVICE_NAMES[port]
             logger.info(f"Using SERVICE_NAMES fallback for port {port}: {service}")
         
-        # Update the port record in database if it exists
-        port_record = db.query(PortService).join(Asset).filter(
-            Asset.value == ip,
-            PortService.port == port,
-            PortService.protocol == Protocol(protocol)
-        ).first()
-        
-        if not port_record:
-            # Try by IP in different asset
-            asset = db.query(Asset).filter(
-                Asset.ip_addresses.contains([ip])
+        # Update the port record in database if it exists (wrap in try/except to avoid 500 on JSON/DB quirks)
+        port_record = None
+        try:
+            port_record = db.query(PortService).join(Asset).filter(
+                Asset.value == ip,
+                PortService.port == port,
+                PortService.protocol == Protocol(protocol)
             ).first()
-            if asset:
-                port_record = db.query(PortService).filter(
-                    PortService.asset_id == asset.id,
-                    PortService.port == port,
-                    PortService.protocol == Protocol(protocol)
-                ).first()
-        
-        if port_record:
-            # Update verification info
-            port_record.verified = True
-            port_record.verified_at = datetime.utcnow()
-            port_record.verified_state = state
-            port_record.verification_scanner = "nmap"
             
-            # Update service name if detected (use correct field name)
-            if service and service not in ('unknown', '-'):
-                port_record.service_name = service
-                logger.info(f"Port {port}/{protocol} on {ip}: detected service '{service}'")
+            if not port_record:
+                # Try by IP in asset's ip_addresses (JSON array) - can fail on some DB/dialects
+                try:
+                    asset = db.query(Asset).filter(
+                        Asset.ip_addresses.contains([ip])
+                    ).first()
+                    if asset:
+                        port_record = db.query(PortService).filter(
+                            PortService.asset_id == asset.id,
+                            PortService.port == port,
+                            PortService.protocol == Protocol(protocol)
+                        ).first()
+                except SQLAlchemyError as e:
+                    logger.debug("Lookup by ip_addresses.contains skipped: %s", e)
+                    db.rollback()
             
-            # Update service version if detected (use correct field name)
-            if version and version.strip():
-                port_record.service_version = version.strip()
-                # Try to extract product from version string if it contains product info
-                # e.g., "OpenSSH 8.4p1" -> product="OpenSSH", version="8.4p1"
-                version_parts = version.strip().split(' ', 1)
-                if len(version_parts) >= 1:
-                    port_record.service_product = version_parts[0]
-                if len(version_parts) >= 2:
-                    port_record.service_version = version_parts[1]
-                logger.info(f"Port {port}/{protocol} on {ip}: detected version '{version}'")
-            
-            # Map nmap state to our PortState enum
-            if state == "open":
-                port_record.state = PortState.OPEN
-            elif state == "filtered":
-                port_record.state = PortState.FILTERED
-            elif state == "closed":
-                port_record.state = PortState.CLOSED
-            
-            port_record.last_seen = datetime.utcnow()
-            db.commit()
-            logger.info(f"Updated port {port}/{protocol} on {ip}: state={state}, service={service}")
+            if port_record:
+                # Update verification info
+                port_record.verified = True
+                port_record.verified_at = datetime.utcnow()
+                port_record.verified_state = state
+                port_record.verification_scanner = "nmap"
+                
+                # Update service name if detected (use correct field name)
+                if service and service not in ('unknown', '-'):
+                    port_record.service_name = service
+                    logger.info(f"Port {port}/{protocol} on {ip}: detected service '{service}'")
+                
+                # Update service version if detected (use correct field name)
+                if version and version.strip():
+                    port_record.service_version = version.strip()
+                    # Try to extract product from version string if it contains product info
+                    # e.g., "OpenSSH 8.4p1" -> product="OpenSSH", version="8.4p1"
+                    version_parts = version.strip().split(' ', 1)
+                    if len(version_parts) >= 1:
+                        port_record.service_product = version_parts[0]
+                    if len(version_parts) >= 2:
+                        port_record.service_version = version_parts[1]
+                    logger.info(f"Port {port}/{protocol} on {ip}: detected version '{version}'")
+                
+                # Map nmap state to our PortState enum
+                if state == "open":
+                    port_record.state = PortState.OPEN
+                elif state == "filtered":
+                    port_record.state = PortState.FILTERED
+                elif state == "closed":
+                    port_record.state = PortState.CLOSED
+                
+                port_record.last_seen = datetime.utcnow()
+                db.commit()
+                logger.info(f"Updated port {port}/{protocol} on {ip}: state={state}, service={service}")
+        except SQLAlchemyError as e:
+            logger.warning("Database error during port verification update: %s", e)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            # Still return nmap result; we just didn't persist the update
         
         return PortVerifyResponse(
             ip=ip,
@@ -1768,17 +1788,26 @@ async def verify_ports_bulk(
     if len(port_ids) > 100:
         raise HTTPException(status_code=400, detail="Maximum 100 ports per bulk verification")
     
-    # Get all port records
-    ports = db.query(PortService).filter(PortService.id.in_(port_ids)).all()
+    # Get all port records with asset joined so we have organization_id
+    ports = db.query(PortService).join(Asset).filter(PortService.id.in_(port_ids)).all()
     
     if not ports:
         raise HTTPException(status_code=404, detail="No port records found")
+    
+    org_id = ports[0].asset.organization_id if ports[0].asset else None
+    if org_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not determine organization for these ports. Ensure each port is linked to an asset."
+        )
+    if not current_user.is_superuser and current_user.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
     
     # Create a scan record for tracking
     scan = Scan(
         name=f"Bulk Port Verification ({len(ports)} ports)",
         scan_type=ScanType.PORT_SCAN,
-        organization_id=ports[0].asset.organization_id if ports[0].asset else None,
+        organization_id=org_id,
         targets=[],
         config={
             "verification_mode": True,

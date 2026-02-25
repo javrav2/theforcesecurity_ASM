@@ -141,8 +141,14 @@ async def query_agent(
     )
     
     if result.error:
+        err = result.error.lower()
+        if "529" in result.error or "overloaded" in err or "overloaded_error" in err:
+            raise HTTPException(
+                status_code=503,
+                detail="The AI provider (Anthropic/Claude) is temporarily overloaded. Please try again in a few minutes."
+            )
         raise HTTPException(status_code=500, detail=result.error)
-    
+
     return AgentResponse(
         answer=result.answer,
         session_id=session_id,
@@ -202,8 +208,14 @@ async def approve_phase_transition(
     )
     
     if result.error:
+        err = result.error.lower()
+        if "529" in result.error or "overloaded" in err or "overloaded_error" in err:
+            raise HTTPException(
+                status_code=503,
+                detail="The AI provider (Anthropic/Claude) is temporarily overloaded. Please try again in a few minutes."
+            )
         raise HTTPException(status_code=500, detail=result.error)
-    
+
     return AgentResponse(
         answer=result.answer,
         session_id=request.session_id,
@@ -249,10 +261,16 @@ async def answer_agent_question(
         organization_id=org_id,
         answer=request.answer
     )
-    
+
     if result.error:
+        err = result.error.lower()
+        if "529" in result.error or "overloaded" in err or "overloaded_error" in err:
+            raise HTTPException(
+                status_code=503,
+                detail="The AI provider (Anthropic/Claude) is temporarily overloaded. Please try again in a few minutes."
+            )
         raise HTTPException(status_code=500, detail=result.error)
-    
+
     return AgentResponse(
         answer=result.answer,
         session_id=request.session_id,
