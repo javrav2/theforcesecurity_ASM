@@ -125,7 +125,36 @@ So even though Katana runs once for all targets, the app **splits the combined o
 
 ---
 
-## 5. Summary
+## 5. AI-powered sensitive data scan (Katana JS files)
+
+When you run a **Katana** scan with **`ai_secrets_scan: true`** in the scan config, the worker will:
+
+1. Run Katana as usual and collect discovered JS (and other) file URLs into `js_files_for_review`.
+2. After the crawl, if **OPENAI_API_KEY** or **ANTHROPIC_API_KEY** is set, fetch up to **30** of those URLs (configurable via `js_secrets_scan_service.MAX_URLS_PER_SCAN`).
+3. Send each file’s content to the same LLM used by the Agent (OpenAI or Anthropic) with a prompt that asks to identify:
+   - API keys, tokens, secrets  
+   - Passwords, credentials  
+   - PII, internal endpoints  
+   - Other sensitive patterns  
+4. The LLM returns structured findings (type, snippet with secrets redacted, severity). These are stored in **`scan.results.ai_secrets_findings`** and shown on the scan detail page under **“AI sensitive data findings”**.
+
+**How to enable**
+
+- **Ad hoc Katana scan:** When creating the scan (API or UI), pass config: `{ "ai_secrets_scan": true }`. Same keys as the Agent: `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (see [ENV_EXAMPLE.md](../ENV_EXAMPLE.md)).
+- **Scheduled Katana:** In the schedule’s `config` JSON, set `"ai_secrets_scan": true`.
+- Default is **false** so existing scans do not call the LLM unless you opt in.
+
+**Code**
+
+| Step | File | What it does |
+|------|------|---------------|
+| Check config and run AI scan after crawl | `scanner_worker.py` → `handle_katana_scan` | If `config.get('ai_secrets_scan')` and JS URLs exist, call `scan_urls_for_sensitive_data()` |
+| Fetch URL content, call LLM, parse findings | `backend/app/services/js_secrets_scan_service.py` | `_get_llm()`, `_fetch_url()`, `analyze_url_for_sensitive_data()`, `_parse_findings_from_llm()` |
+| Store and show | `scanner_worker.py`, scan detail UI | `scan.results['ai_secrets_findings']`, `ai_secrets_urls_with_findings`; frontend shows “AI sensitive data findings” card |
+
+---
+
+## 6. Summary
 
 - **See what’s run:** Scanner worker logs (`docker compose logs -f scanner`) and `scan.current_step` / `scan.results` in the UI or API.
 - **How it’s implemented:** Katana is run with the same flags as your manual run (e.g. `-d 5 -jc -fx -ef ...`), but input is stdin (or one `-u` URL) and output is stdout, which the app parses.

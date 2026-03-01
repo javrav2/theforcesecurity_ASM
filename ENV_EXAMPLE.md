@@ -42,7 +42,8 @@ PDCP_API_KEY=
 # =============================================================================
 
 # AI Provider: "openai" or "anthropic" (default: openai)
-# The agent will auto-detect based on which API key is set
+# The agent will auto-detect based on which API key is set.
+# These keys also enable Katana AI secrets scan (set ai_secrets_scan: true in Katana scan config).
 AI_PROVIDER=openai
 
 # OpenAI Configuration

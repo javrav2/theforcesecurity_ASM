@@ -27,16 +27,17 @@ def check_org_access(db: Session, user: User, asset_id: int) -> bool:
 
 
 def build_vuln_response(vuln: Vulnerability) -> dict:
-    """Build vulnerability response with computed fields."""
-    response = {
-        **vuln.__dict__,
-        "name": vuln.title,  # Alias for frontend compatibility
-        "host": vuln.asset.value if vuln.asset else None,
-        "matched_at": vuln.evidence[:200] if vuln.evidence else None,
-    }
-    # Remove SQLAlchemy internal state
-    response.pop("_sa_instance_state", None)
-    return response
+    """Build vulnerability response with computed fields. Ensures required fields are never None."""
+    d = {k: v for k, v in vuln.__dict__.items() if k != "_sa_instance_state" and k != "metadata_"}
+    d["name"] = vuln.title
+    d["host"] = vuln.asset.value if vuln.asset else None
+    d["matched_at"] = (vuln.evidence[:200] if vuln.evidence else None)
+    # Ensure datetimes required by schema are set (legacy rows may have None)
+    if d.get("first_detected") is None:
+        d["first_detected"] = vuln.created_at
+    if d.get("last_detected") is None:
+        d["last_detected"] = vuln.updated_at or vuln.created_at
+    return d
 
 
 @router.get("/", response_model=List[VulnerabilityResponse])

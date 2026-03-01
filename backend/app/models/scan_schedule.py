@@ -444,6 +444,7 @@ CONTINUOUS_SCAN_TYPES = {
             "rate_limit": 150,
             "concurrency": 10,
             "timeout": 600,
+            "ai_secrets_scan": False,
         },
         "recommended_frequency": "weekly",
     },

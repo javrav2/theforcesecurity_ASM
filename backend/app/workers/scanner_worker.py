@@ -3214,15 +3214,43 @@ class ScannerWorker:
                             first_error = result.error
                         logger.warning(f"Katana failed for {result.target}: {result.error}")
                         
-                except Exception as e:
-                    logger.warning(f"Katana result processing error: {e}")
-                    # Rollback failed transaction to allow subsequent queries
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Katana result processing error: {e}")
+                        # Rollback failed transaction to allow subsequent queries
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
             
             db.commit()
+            
+            # Optional: AI-powered sensitive data scan on discovered JS files
+            ai_secrets_findings = []
+            if config.get('ai_secrets_scan') and all_js_for_review:
+                try:
+                    from app.services.js_secrets_scan_service import (
+                        is_ai_secrets_scan_available,
+                        scan_urls_for_sensitive_data,
+                        MAX_URLS_PER_SCAN,
+                    )
+                    if is_ai_secrets_scan_available():
+                        if scan:
+                            scan.current_step = "Analyzing JS files for sensitive data (AI)"
+                            db.commit()
+                        urls_to_scan = sorted(set(all_js_for_review))[:MAX_URLS_PER_SCAN]
+                        results_ai = await scan_urls_for_sensitive_data(urls_to_scan)
+                        for r in results_ai:
+                            if r.findings:
+                                ai_secrets_findings.append({
+                                    "url": r.url,
+                                    "findings": [
+                                        {"type": f.type, "snippet": f.snippet, "severity": f.severity, "line_hint": f.line_hint}
+                                        for f in r.findings
+                                    ],
+                                })
+                        logger.info(f"AI secrets scan: {len(ai_secrets_findings)} URLs with findings from {len(results_ai)} analyzed")
+                except Exception as e:
+                    logger.warning("AI secrets scan failed: %s", e)
             
             # Update scan record
             if scan:
@@ -3240,6 +3268,9 @@ class ScannerWorker:
                 }
                 if all_js_for_review:
                     scan.results['js_files_for_review'] = sorted(set(all_js_for_review))
+                if ai_secrets_findings:
+                    scan.results['ai_secrets_findings'] = ai_secrets_findings
+                    scan.results['ai_secrets_urls_with_findings'] = len(ai_secrets_findings)
                 if total_endpoints == 0 and total_urls == 0 and len(targets) > 0:
                     scan.results['error'] = first_error or 'No URLs or endpoints discovered on any target.'
                     scan.results['hint'] = (

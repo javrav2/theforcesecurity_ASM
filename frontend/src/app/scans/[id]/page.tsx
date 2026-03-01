@@ -574,6 +574,41 @@ export default function ScanDetailPage() {
           </CardContent>
         </Card>
 
+        {/* AI sensitive data findings (Katana + ai_secrets_scan) */}
+        {(scan.results as any)?.ai_secrets_findings && (scan.results as any).ai_secrets_findings.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Shield className="h-5 w-5 text-amber-500" />
+                AI sensitive data findings
+                <Badge variant="default" className="ml-2">
+                  {(scan.results as any).ai_secrets_urls_with_findings ?? (scan.results as any).ai_secrets_findings.length} URLs with findings
+                </Badge>
+              </CardTitle>
+              <CardDescription>
+                Passwords, API keys, tokens, or other sensitive data detected in JS/files by AI. Review and remediate.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {((scan.results as any).ai_secrets_findings as any[]).map((entry: any, i: number) => (
+                <div key={i} className="rounded border bg-muted/20 p-3 space-y-2">
+                  <p className="font-mono text-xs text-muted-foreground break-all">{entry.url}</p>
+                  {(entry.findings || []).map((f: any, j: number) => (
+                    <div key={j} className="flex flex-wrap gap-2 items-start">
+                      <Badge variant={f.severity === 'critical' || f.severity === 'high' ? 'destructive' : 'secondary'}>
+                        {f.type}
+                      </Badge>
+                      <Badge variant="outline">{f.severity}</Badge>
+                      <span className="text-sm">{f.snippet}</span>
+                      {f.line_hint && <span className="text-xs text-muted-foreground">({f.line_hint})</span>}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
         {/* JS files for AI review (Katana) */}
         {(scan.results as any)?.js_files_for_review && (scan.results as any).js_files_for_review.length > 0 && (
           <Card>
