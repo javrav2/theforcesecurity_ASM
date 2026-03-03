@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
-import { MessageSquare, Send, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
+import { MessageSquare, Send, Loader2, AlertCircle, CheckCircle, Wifi, WifiOff } from 'lucide-react';
 import { api, getApiErrorMessage } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -36,23 +36,39 @@ interface Message {
   questionRequest?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// WebSocket helpers
+// ---------------------------------------------------------------------------
+
+function buildWsUrl(sessionId: string): string {
+  const { protocol, host } = window.location;
+  const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${wsProtocol}//${host}/api/v1/agent/ws/${sessionId}`;
+}
+
 export default function AgentPage() {
   const searchParams = useSearchParams();
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState('');
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null);
-  const [pendingAnswer, setPendingAnswer] = useState(false); // true when agent asked a question and we should send next input as answer
+  const [pendingAnswer, setPendingAnswer] = useState(false);
   const [playbooks, setPlaybooks] = useState<{ id: string; name: string; description: string }[]>([]);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string>('custom');
   const [target, setTarget] = useState('');
   const [mode, setMode] = useState<'assist' | 'agent'>('assist');
   const [urlPrefilled, setUrlPrefilled] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [useWebSocket, setUseWebSocket] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsInitializedRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { toast } = useToast();
 
-  // Pre-fill from URL (e.g. /agent?target=example.com&playbook=vuln_scan&question=...)
+  // Pre-fill from URL
   useEffect(() => {
     const t = searchParams.get('target');
     const p = searchParams.get('playbook');
@@ -66,10 +82,7 @@ export default function AgentPage() {
   }, [searchParams]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  useEffect(() => { scrollToBottom(); }, [messages]);
 
   useEffect(() => {
     api.getAgentStatus().then((data: { available: boolean }) => {
@@ -83,7 +96,11 @@ export default function AgentPage() {
     }
   }, [agentAvailable]);
 
-  const appendAgentMessage = (payload: {
+  // ---------------------------------------------------------------------------
+  // Message helpers
+  // ---------------------------------------------------------------------------
+
+  const appendAgentMessage = useCallback((payload: {
     answer: string;
     current_phase?: string;
     task_complete?: boolean;
@@ -108,7 +125,160 @@ export default function AgentPage() {
         questionRequest: payload.question_request,
       },
     ]);
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // WebSocket connection management
+  // ---------------------------------------------------------------------------
+
+  const connectWebSocket = useCallback((sid: string) => {
+    // Clean up any existing connection
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+    }
+
+    const url = buildWsUrl(sid);
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      // Send JWT init
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      if (token) {
+        ws.send(JSON.stringify({ type: 'init', token }));
+      } else {
+        // No token — can't authenticate WS, fall back to REST
+        setUseWebSocket(false);
+        ws.close();
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        switch (data.type) {
+          case 'initialized':
+            setWsConnected(true);
+            wsInitializedRef.current = true;
+            break;
+
+          case 'thinking':
+            setStatusText(`Thinking (iteration ${data.iteration ?? '?'}, phase: ${data.phase ?? '?'})...`);
+            break;
+
+          case 'tool_start':
+            setStatusText(`Running tool: ${data.tool_name ?? 'unknown'}...`);
+            break;
+
+          case 'tool_complete':
+            setStatusText(`Tool ${data.tool_name ?? ''} ${data.success ? 'completed' : 'failed'}`);
+            break;
+
+          case 'approval_request':
+            appendAgentMessage({
+              answer: `Phase transition requested: ${data.from_phase ?? '?'} → ${data.to_phase ?? '?'}. Reason: ${data.reason ?? 'N/A'}`,
+              current_phase: data.from_phase,
+              awaiting_approval: true,
+              approval_request: data,
+            });
+            setLoading(false);
+            setStatusText('');
+            break;
+
+          case 'question_request':
+            appendAgentMessage({
+              answer: data.question ?? 'The agent has a question for you.',
+              awaiting_question: true,
+              question_request: data,
+            });
+            setPendingAnswer(true);
+            setLoading(false);
+            setStatusText('');
+            break;
+
+          case 'response':
+            appendAgentMessage({
+              answer: data.answer,
+              current_phase: data.current_phase,
+              task_complete: data.task_complete,
+              execution_trace_summary: data.execution_trace_summary,
+              awaiting_approval: data.awaiting_approval,
+              approval_request: data.approval_request,
+              awaiting_question: data.awaiting_question,
+              question_request: data.question_request,
+            });
+            if (data.awaiting_question) setPendingAnswer(true);
+            setLoading(false);
+            setStatusText('');
+            break;
+
+          case 'error':
+            toast({ variant: 'destructive', title: 'Agent error', description: data.message });
+            appendAgentMessage({ answer: `Error: ${data.message}` });
+            setLoading(false);
+            setStatusText('');
+            break;
+
+          case 'pong':
+            break;
+
+          default:
+            break;
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    ws.onclose = () => {
+      setWsConnected(false);
+      wsInitializedRef.current = false;
+      wsRef.current = null;
+
+      // Auto-reconnect after 3 seconds if we still have a session
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        if (sid) {
+          connectWebSocket(sid);
+        }
+      }, 3000);
+    };
+
+    ws.onerror = () => {
+      // WebSocket failed — fall back to REST for this session
+      setUseWebSocket(false);
+      setWsConnected(false);
+      wsInitializedRef.current = false;
+    };
+  }, [appendAgentMessage, toast]);
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // WebSocket send helpers
+  // ---------------------------------------------------------------------------
+
+  const wsSend = (msg: Record<string, unknown>): boolean => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && wsInitializedRef.current) {
+      wsRef.current.send(JSON.stringify(msg));
+      return true;
+    }
+    return false;
   };
+
+  // ---------------------------------------------------------------------------
+  // Send handler (WebSocket primary, REST fallback)
+  // ---------------------------------------------------------------------------
 
   const handleSend = async () => {
     const q = question.trim();
@@ -127,11 +297,51 @@ export default function AgentPage() {
     if (!usePreset) setQuestion('');
     setUrlPrefilled(false);
     setLoading(true);
+    setStatusText('Agent is thinking...');
 
+    // Determine or create session ID
+    let sid = sessionId;
+    if (!sid) {
+      sid = crypto.randomUUID();
+      setSessionId(sid);
+    }
+
+    // Try WebSocket first
+    if (useWebSocket) {
+      // Connect if not already connected
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        connectWebSocket(sid);
+        // Wait briefly for connection + init
+        await new Promise<void>((resolve) => {
+          let attempts = 0;
+          const check = () => {
+            attempts++;
+            if (wsInitializedRef.current || attempts > 20) {
+              resolve();
+            } else {
+              setTimeout(check, 150);
+            }
+          };
+          check();
+        });
+      }
+
+      if (wsInitializedRef.current) {
+        if (pendingAnswer) {
+          setPendingAnswer(false);
+          if (wsSend({ type: 'answer', answer: q || displayContent })) return;
+        } else {
+          if (wsSend({ type: 'query', question: usePreset ? displayContent : q })) return;
+        }
+      }
+    }
+
+    // Fallback: use REST API
+    setStatusText('Agent is thinking (via REST)...');
     try {
-      if (pendingAnswer && sessionId) {
+      if (pendingAnswer && sid) {
         setPendingAnswer(false);
-        const data = await api.answerAgentQuestion(sessionId, q || displayContent);
+        const data = await api.answerAgentQuestion(sid, q || displayContent);
         appendAgentMessage({
           answer: data.answer,
           current_phase: data.current_phase,
@@ -146,7 +356,7 @@ export default function AgentPage() {
       } else {
         const data = await api.queryAgent(
           usePreset ? displayContent : q,
-          sessionId ?? undefined,
+          sid ?? undefined,
           {
             ...(usePreset ? { playbookId: selectedPlaybookId, target: target.trim() || undefined } : {}),
             mode,
@@ -172,12 +382,25 @@ export default function AgentPage() {
       appendAgentMessage({ answer: `Error: ${msg}` });
     } finally {
       setLoading(false);
+      setStatusText('');
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // Approval handler (WebSocket primary, REST fallback)
+  // ---------------------------------------------------------------------------
 
   const handleApprove = async (decision: 'approve' | 'modify' | 'abort', modification?: string) => {
     if (!sessionId || loading) return;
     setLoading(true);
+    setStatusText('Processing approval...');
+
+    // Try WebSocket
+    if (useWebSocket && wsInitializedRef.current) {
+      if (wsSend({ type: 'approval', decision, modification: modification ?? undefined })) return;
+    }
+
+    // REST fallback
     try {
       const data = await api.approveAgent(sessionId, decision, modification);
       appendAgentMessage({
@@ -195,6 +418,7 @@ export default function AgentPage() {
       toast({ variant: 'destructive', title: 'Error', description: getApiErrorMessage(err as Error) });
     } finally {
       setLoading(false);
+      setStatusText('');
     }
   };
 
@@ -274,7 +498,7 @@ export default function AgentPage() {
               {loading && (
                 <div className="flex items-center gap-2 text-muted-foreground text-sm">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Agent is thinking and may run tools…
+                  {statusText || 'Agent is thinking and may run tools\u2026'}
                 </div>
               )}
               <div ref={messagesEndRef} />
@@ -334,7 +558,7 @@ export default function AgentPage() {
               <Textarea
                 placeholder={
                   pendingAnswer
-                    ? 'Type your answer to the agent…'
+                    ? 'Type your answer to the agent\u2026'
                     : selectedPlaybookId === 'custom'
                       ? 'Ask a question (e.g. run a port scan on example.com)'
                       : 'Add a note or leave blank to run the preset'
@@ -364,9 +588,20 @@ export default function AgentPage() {
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </div>
-            {sessionId && (
-              <p className="text-xs text-muted-foreground">Session: {sessionId.slice(0, 8)}…</p>
-            )}
+            <div className="flex items-center gap-2">
+              {sessionId && (
+                <p className="text-xs text-muted-foreground">Session: {sessionId.slice(0, 8)}\u2026</p>
+              )}
+              {sessionId && (
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  {wsConnected ? (
+                    <><Wifi className="h-3 w-3 text-green-500" /> Live</>
+                  ) : (
+                    <><WifiOff className="h-3 w-3 text-muted-foreground" /> REST</>
+                  )}
+                </span>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>

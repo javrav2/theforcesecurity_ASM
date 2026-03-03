@@ -5,6 +5,7 @@ ReAct-style agent orchestrator for security analysis and autonomous assessment.
 Uses LangGraph for state management and LangChain for LLM interactions.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -150,7 +151,9 @@ class AgentOrchestrator:
         self.llm = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             api_key=settings.OPENAI_API_KEY,
-            temperature=0
+            temperature=0,
+            timeout=120,       # 120s per LLM call – prevents infinite hangs
+            max_retries=2,     # retry transient failures
         )
         self._provider = "openai"
     
@@ -177,6 +180,8 @@ class AgentOrchestrator:
             model=settings.ANTHROPIC_MODEL,
             temperature=0,
             max_tokens=4096,
+            timeout=120,       # 120s per LLM call – prevents infinite hangs
+            max_retries=2,     # retry transient failures (429 / 529 / network)
         )
         self._provider = "anthropic"
     
@@ -307,9 +312,12 @@ class AgentOrchestrator:
         todo_list = state.get("initial_todos") if state.get("initial_todos") else []
         mode = state.get("mode") or "assist"
         
+        # Use per-request override if provided (REST calls pass a lower cap)
+        max_iters = state.get("max_iterations_override") or settings.AGENT_MAX_ITERATIONS
+
         return {
             "current_iteration": 0,
-            "max_iterations": settings.AGENT_MAX_ITERATIONS,
+            "max_iterations": max_iters,
             "task_complete": False,
             "current_phase": "informational",
             "phase_history": [PhaseHistoryEntry(phase="informational").model_dump()],
@@ -806,16 +814,27 @@ class AgentOrchestrator:
         session_id: str,
         initial_todos: Optional[List[Dict[str, Any]]] = None,
         mode: str = "assist",
+        max_iterations: Optional[int] = None,
+        request_timeout: Optional[int] = None,
     ) -> InvokeResponse:
-        """Main entry point for agent invocation."""
+        """Main entry point for agent invocation.
+
+        Args:
+            max_iterations: Override the global AGENT_MAX_ITERATIONS for this
+                request (used by REST endpoints to avoid gateway timeouts).
+            request_timeout: Hard wall-clock timeout in seconds.  Defaults to
+                ``settings.AGENT_REQUEST_TIMEOUT_SECONDS``.
+        """
         if not self._initialized:
             await self.initialize()
-        
+
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized - check OPENAI_API_KEY")
-        
+
         logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}... (mode={mode})")
-        
+
+        timeout = request_timeout or settings.AGENT_REQUEST_TIMEOUT_SECONDS
+
         try:
             config = {"configurable": {"thread_id": session_id}}
             input_data = {
@@ -827,10 +846,27 @@ class AgentOrchestrator:
             }
             if initial_todos is not None:
                 input_data["initial_todos"] = initial_todos
-            
-            final_state = await self.graph.ainvoke(input_data, config)
+            if max_iterations is not None:
+                input_data["max_iterations_override"] = max_iterations
+
+            final_state = await asyncio.wait_for(
+                self.graph.ainvoke(input_data, config),
+                timeout=timeout,
+            )
             return self._build_response(final_state)
-        
+
+        except asyncio.TimeoutError:
+            logger.warning(f"[{user_id}/{session_id}] Request timed out after {timeout}s")
+            return InvokeResponse(
+                answer=(
+                    "The agent is still working on your request but the response "
+                    "time exceeded the limit. Your session has been saved — send "
+                    "your next message to continue where the agent left off."
+                ),
+                task_complete=False,
+                current_phase="informational",
+                iteration_count=0,
+            )
         except Exception as e:
             logger.error(f"[{user_id}/{session_id}] Error: {e}")
             return InvokeResponse(error=str(e))
@@ -841,25 +877,45 @@ class AgentOrchestrator:
         user_id: str,
         organization_id: int,
         decision: str,
-        modification: Optional[str] = None
+        modification: Optional[str] = None,
+        max_iterations: Optional[int] = None,
+        request_timeout: Optional[int] = None,
     ) -> InvokeResponse:
         """Resume after user approval."""
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized")
-        
+
+        timeout = request_timeout or settings.AGENT_REQUEST_TIMEOUT_SECONDS
+
         try:
             config = {"configurable": {"thread_id": session_id}}
-            
-            update_data = {
+
+            update_data: Dict[str, Any] = {
                 "user_approval_response": decision,
                 "user_modification": modification,
                 "user_id": user_id,
                 "organization_id": organization_id,
             }
-            
-            final_state = await self.graph.ainvoke(update_data, config)
+            if max_iterations is not None:
+                update_data["max_iterations_override"] = max_iterations
+
+            final_state = await asyncio.wait_for(
+                self.graph.ainvoke(update_data, config),
+                timeout=timeout,
+            )
             return self._build_response(final_state)
-        
+
+        except asyncio.TimeoutError:
+            logger.warning(f"[{user_id}/{session_id}] Resume (approval) timed out after {timeout}s")
+            return InvokeResponse(
+                answer=(
+                    "The agent is still working but the response time exceeded "
+                    "the limit. Send your next message to continue."
+                ),
+                task_complete=False,
+                current_phase="informational",
+                iteration_count=0,
+            )
         except Exception as e:
             logger.error(f"[{user_id}/{session_id}] Resume error: {e}")
             return InvokeResponse(error=str(e))
@@ -869,24 +925,44 @@ class AgentOrchestrator:
         session_id: str,
         user_id: str,
         organization_id: int,
-        answer: str
+        answer: str,
+        max_iterations: Optional[int] = None,
+        request_timeout: Optional[int] = None,
     ) -> InvokeResponse:
         """Resume after user answers a question."""
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized")
-        
+
+        timeout = request_timeout or settings.AGENT_REQUEST_TIMEOUT_SECONDS
+
         try:
             config = {"configurable": {"thread_id": session_id}}
-            
-            update_data = {
+
+            update_data: Dict[str, Any] = {
                 "user_question_answer": answer,
                 "user_id": user_id,
                 "organization_id": organization_id,
             }
-            
-            final_state = await self.graph.ainvoke(update_data, config)
+            if max_iterations is not None:
+                update_data["max_iterations_override"] = max_iterations
+
+            final_state = await asyncio.wait_for(
+                self.graph.ainvoke(update_data, config),
+                timeout=timeout,
+            )
             return self._build_response(final_state)
-        
+
+        except asyncio.TimeoutError:
+            logger.warning(f"[{user_id}/{session_id}] Resume (answer) timed out after {timeout}s")
+            return InvokeResponse(
+                answer=(
+                    "The agent is still working but the response time exceeded "
+                    "the limit. Send your next message to continue."
+                ),
+                task_complete=False,
+                current_phase="informational",
+                iteration_count=0,
+            )
         except Exception as e:
             logger.error(f"[{user_id}/{session_id}] Resume error: {e}")
             return InvokeResponse(error=str(e))

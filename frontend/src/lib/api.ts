@@ -10,6 +10,16 @@ export function getApiErrorMessage(error: any, fallback: string = 'An error occu
   const status = error?.response?.status;
   const data = error?.response?.data;
 
+  // Gateway timeout (proxy killed the request before the backend finished)
+  if (status === 504) {
+    return 'The request timed out. The agent may still be processing — try sending your message again to continue the session.';
+  }
+
+  // Client-side timeout (axios aborted the request)
+  if (error?.code === 'ECONNABORTED' || error?.message?.includes('timeout')) {
+    return 'The request timed out. The agent may still be processing — try again in a moment.';
+  }
+
   // AI provider (e.g. Anthropic) overloaded - 529 or 503 with overloaded message
   if (status === 529 || status === 503) {
     if (typeof detail === 'string' && (detail.toLowerCase().includes('overloaded') || detail.includes('try again')))
@@ -1368,13 +1378,14 @@ class ApiClient {
     sessionId?: string,
     options?: { playbookId?: string; target?: string; mode?: 'assist' | 'agent' }
   ) {
+    // Agent queries are long-running (LLM calls + tool execution); use a generous timeout
     const response = await this.client.post('/agent/query', {
       question,
       session_id: sessionId ?? undefined,
       playbook_id: options?.playbookId ?? undefined,
       target: options?.target ?? undefined,
       mode: options?.mode ?? 'assist',
-    });
+    }, { timeout: 330000 }); // 5.5 min – slightly above backend's 5 min hard timeout
     return response.data;
   }
 
@@ -1383,7 +1394,7 @@ class ApiClient {
       session_id: sessionId,
       decision,
       modification: modification ?? undefined,
-    });
+    }, { timeout: 330000 });
     return response.data;
   }
 
@@ -1391,7 +1402,7 @@ class ApiClient {
     const response = await this.client.post('/agent/answer', {
       session_id: sessionId,
       answer,
-    });
+    }, { timeout: 330000 });
     return response.data;
   }
 

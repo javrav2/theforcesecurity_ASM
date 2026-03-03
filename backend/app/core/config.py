@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     AGENT_MAX_ITERATIONS: int = 100
     AGENT_TOOL_OUTPUT_MAX_CHARS: int = 20000  # RedAmon-style default; truncation for LLM context
 
+    # Max iterations per single REST request (prevents 504 gateway timeouts).
+    # The WebSocket endpoint uses the full AGENT_MAX_ITERATIONS instead.
+    AGENT_REST_MAX_ITERATIONS: int = 5
+
+    # Hard wall-clock timeout (seconds) for a single REST agent request.
+    AGENT_REQUEST_TIMEOUT_SECONDS: int = 300
+
     # Optional: Tavily API for agent web search (CVE/exploit research). Get key at tavily.com
     TAVILY_API_KEY: Optional[str] = None
     

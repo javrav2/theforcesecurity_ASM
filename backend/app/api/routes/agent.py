@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.db.database import get_db
+from app.core.security import decode_token
+from app.db.database import get_db, SessionLocal
 from app.models.user import User
 from app.models.organization import Organization
 from app.services.agent.orchestrator import get_agent_orchestrator
@@ -138,14 +139,20 @@ async def query_agent(
         session_id=session_id,
         initial_todos=initial_todos,
         mode=request.mode or "assist",
+        max_iterations=settings.AGENT_REST_MAX_ITERATIONS,
     )
-    
+
     if result.error:
         err = result.error.lower()
         if "529" in result.error or "overloaded" in err or "overloaded_error" in err:
             raise HTTPException(
                 status_code=503,
                 detail="The AI provider (Anthropic/Claude) is temporarily overloaded. Please try again in a few minutes."
+            )
+        if "timed out" in err or "timeout" in err:
+            raise HTTPException(
+                status_code=504,
+                detail="The agent request timed out. Your session has been saved. Send a follow-up message to continue."
             )
         raise HTTPException(status_code=500, detail=result.error)
 
@@ -204,15 +211,21 @@ async def approve_phase_transition(
         user_id=str(current_user.id),
         organization_id=org_id,
         decision=request.decision,
-        modification=request.modification
+        modification=request.modification,
+        max_iterations=settings.AGENT_REST_MAX_ITERATIONS,
     )
-    
+
     if result.error:
         err = result.error.lower()
         if "529" in result.error or "overloaded" in err or "overloaded_error" in err:
             raise HTTPException(
                 status_code=503,
                 detail="The AI provider (Anthropic/Claude) is temporarily overloaded. Please try again in a few minutes."
+            )
+        if "timed out" in err or "timeout" in err:
+            raise HTTPException(
+                status_code=504,
+                detail="The agent request timed out. Your session has been saved. Send a follow-up message to continue."
             )
         raise HTTPException(status_code=500, detail=result.error)
 
@@ -259,7 +272,8 @@ async def answer_agent_question(
         session_id=request.session_id,
         user_id=str(current_user.id),
         organization_id=org_id,
-        answer=request.answer
+        answer=request.answer,
+        max_iterations=settings.AGENT_REST_MAX_ITERATIONS,
     )
 
     if result.error:
@@ -268,6 +282,11 @@ async def answer_agent_question(
             raise HTTPException(
                 status_code=503,
                 detail="The AI provider (Anthropic/Claude) is temporarily overloaded. Please try again in a few minutes."
+            )
+        if "timed out" in err or "timeout" in err:
+            raise HTTPException(
+                status_code=504,
+                detail="The agent request timed out. Your session has been saved. Send a follow-up message to continue."
             )
         raise HTTPException(status_code=500, detail=result.error)
 
@@ -407,10 +426,38 @@ async def agent_websocket(
             msg_type = data.get("type")
             
             if msg_type == "init":
-                # TODO: Validate JWT token and extract user info
-                # For now, use placeholder
-                user_id = data.get("user_id", "1")
-                org_id = data.get("organization_id", 1)
+                token = data.get("token")
+                if not token:
+                    await websocket.send_json({"type": "error", "message": "Token required"})
+                    continue
+
+                payload = decode_token(token)
+                if payload is None or payload.get("type") != "access":
+                    await websocket.send_json({"type": "error", "message": "Invalid or expired token"})
+                    continue
+
+                subject = payload.get("sub")
+                if not subject:
+                    await websocket.send_json({"type": "error", "message": "Invalid token payload"})
+                    continue
+
+                db = SessionLocal()
+                try:
+                    user = db.query(User).filter(
+                        (User.username == subject) | (User.email == subject)
+                    ).first()
+                    if not user:
+                        await websocket.send_json({"type": "error", "message": "User not found"})
+                        continue
+                    user_id = str(user.id)
+                    org_id = _resolve_agent_organization_id(user, db)
+                finally:
+                    db.close()
+
+                if not org_id:
+                    await websocket.send_json({"type": "error", "message": "User must belong to an organization"})
+                    continue
+
                 await websocket.send_json({"type": "initialized", "user_id": user_id})
             
             elif msg_type == "query":
