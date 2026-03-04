@@ -1435,7 +1435,16 @@ export default function AssetsPage() {
                                 <Camera className="h-4 w-4 mr-2" />
                                 Capture Screenshot
                               </DropdownMenuItem>
-                              <DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const targetEnc = encodeURIComponent(asset.value);
+                                  const questionEnc = encodeURIComponent(
+                                    `Perform a security assessment on ${asset.value}. 1) Run execute_httpx to probe the target. 2) Run execute_nuclei for vulnerability scanning. 3) Use create_finding for any vulnerabilities you discover so they appear in Findings.`
+                                  );
+                                  router.push(`/agent?target=${targetEnc}&playbook=vuln_scan&question=${questionEnc}`);
+                                }}
+                              >
                                 <Shield className="h-4 w-4 mr-2" />
                                 Run Vulnerability Scan
                               </DropdownMenuItem>

@@ -70,14 +70,20 @@ Analyze the current state and decide on your next action. You MUST output a vali
 
 ### Guidelines
 
-1. **Query the database and graph first** - Use query_assets, query_vulnerabilities, or query_ports for lists and counts. Use **query_graph** for relationship and context questions (e.g. how assets connect to IPs, ports, technologies, vulnerabilities, CVEs; attack paths; what is exposed where). Always filter Cypher by organization_id = $org_id.
-2. **Be thorough** - Analyze all available data before making recommendations
-3. **Provide actionable guidance** - Give specific remediation steps
-4. **Stay in scope** - Only analyze assets within the user's organization
-5. **Phase restrictions** - Some tools are only available in specific phases
-6. **Complete when done** - Set action to "complete" when the objective is achieved
-7. **Session notes** - Use **save_note** to persist important findings (credentials, vulnerabilities, artifacts) so they are remembered for the rest of the session. Categories: credential, vulnerability, finding, artifact.
-8. **Findings table** - Use **create_finding** to add vulnerabilities/findings to the platform's findings table so they appear in the UI (Vulnerabilities list). Required: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL that must match an existing asset). Optional: evidence, cve_id, remediation. Target must match an in-scope asset (use query_assets first).
+**CRITICAL — Iteration budget**: You have {max_iterations} iterations total. Do NOT spend them all on discovery/enumeration. Follow this priority order:
+
+1. **Add missing targets first** — If the user provides a URL/domain/IP not in the database, immediately use **add_asset** to register it. Don't waste iterations querying assets that won't be found.
+2. **Scan early, scan deep** — After 1-2 discovery steps (query_assets, analyze_attack_surface), move to SCANNING (execute_httpx, execute_nuclei, execute_naabu). Prioritize scanning the specific target the user asked about. Do NOT exhaustively enumerate subdomains before scanning — scan first, enumerate later if iterations remain.
+3. **Record findings as you go** — Use **create_finding** immediately when you discover a vulnerability. Don't wait until the end. The target will be auto-added to inventory if needed.
+4. **Use save_note for important discoveries** — Categories: credential, vulnerability, finding, artifact. These persist across the session.
+5. **Stay in scope** — Only analyze assets within the user's organization. Filter Cypher queries by organization_id = $org_id.
+6. **Phase restrictions** — Some tools require phase transitions. Request a transition if needed.
+7. **Complete when done** — Set action to "complete" when the objective is achieved or you're running low on iterations.
+
+**Workflow for scanning a target:**
+1. add_asset (if not in DB) → 2. execute_httpx (probe it) → 3. execute_nuclei (scan for vulns) → 4. create_finding (save results) → 5. complete
+
+**DO NOT** spend more than 2-3 iterations on query_assets/query_vulnerabilities/analyze_attack_surface before moving to scanning tools. Discovery without scanning produces no value.
 
 Output ONLY the JSON object, no other text.
 """
@@ -172,7 +178,7 @@ USER_QUESTION_MESSAGE = """## Question for User
 Please provide your response.
 """
 
-FINAL_REPORT_PROMPT = """Generate a final report summarizing the security assessment session.
+FINAL_REPORT_PROMPT = """Generate a concise final report summarizing ONLY what was actually done and found.
 
 ## Objective
 {objective}
@@ -193,14 +199,19 @@ FINAL_REPORT_PROMPT = """Generate a final report summarizing the security assess
 
 ## Your Task
 
-Create a comprehensive security report that includes:
-1. **Executive Summary** - Brief overview of findings
-2. **Assets Analyzed** - What was discovered and assessed
-3. **Vulnerabilities Found** - Security issues identified with severity
-4. **Recommendations** - Prioritized remediation steps
-5. **Next Steps** - Suggested follow-up actions
+Create a CONCISE report (not a template). Rules:
+1. **Only report what was actually done** — Do not describe planned or hypothetical assessments.
+2. **Only list actual findings** — If no vulnerabilities were found, say so in one sentence. Do NOT fill the report with generic "we recommend scanning" boilerplate.
+3. **Be specific** — Reference actual tool outputs, actual hosts scanned, actual CVEs found.
+4. **Skip empty sections** — If nothing was discovered in a category, omit it entirely.
 
-Format the report in a clear, professional manner suitable for security stakeholders.
+Structure:
+1. **Summary** — 2-3 sentences: what was scanned, what was found
+2. **Findings** — Specific vulnerabilities/issues with severity, affected asset, and evidence. Omit if none.
+3. **Recommendations** — Specific remediation for actual findings. Omit if no findings.
+4. **Scan Coverage** — What tools ran, what was scanned, what was NOT scanned (so the user knows gaps)
+
+Do NOT write generic security advice, compliance recommendations, or template content. Only report concrete results from this session.
 """
 
 
@@ -209,7 +220,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
     
     informational_tools = """
 ### Informational Phase Tools
-- **query_assets**: Query assets from the ASM database
+- **query_assets**: Query assets. Args: asset_type (optional: "domain","subdomain","ip_address","url"), search (optional text filter), limit (default 50)
 - **query_vulnerabilities**: Query vulnerabilities. Args: severity (string or list, e.g. "critical" or ["critical","high"]), status, cve_id, limit
 - **query_ports**: Query open ports and services
 - **query_technologies**: Query detected technologies
@@ -218,24 +229,27 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **get_asset_details**: Get detailed info about an asset. Args: **asset_id** (integer, required — get from query_assets first). Example: get_asset_details(asset_id=42)
 - **search_cve**: Search for CVE information
 - **web_search** (if configured): Search the web for CVE/exploit research. Args: query (required), max_results (optional, default 5). Requires TAVILY_API_KEY in .env.
-- **execute_httpx**: Run HTTPX HTTP prober (args: CLI arguments)
-- **execute_subfinder**: Run Subfinder subdomain discovery (args: CLI arguments)
-- **execute_dnsx**: Run DNSX DNS toolkit (args: CLI arguments)
-- **execute_katana**: Run Katana web crawler (args: CLI arguments)
-- **execute_curl**: Execute curl HTTP client (args: CLI arguments)
-- **execute_tldfinder**: Run tldfinder for TLD/domain discovery (args: e.g. '-d example.com -dm domain -oJ')
-- **execute_waybackurls**: Fetch historical URLs from Wayback Machine (args: domain or CLI args)
-- **execute_amass**: Run Amass subdomain/network mapping (args: e.g. 'enum -d example.com -json -')
-- **execute_whatweb**: Run WhatWeb tech fingerprinting (args: URL or 'https://target.com -a 1'). Requires WhatWeb CLI.
-- **execute_nuclei**: Run Nuclei vulnerability scanner (args: e.g. '-u http://target.com -severity critical,high'). Use for vuln assessments.
-- **execute_naabu**: Run Naabu port scanner (args: e.g. '-host target.com -p 80,443' or '-list hosts.txt -p -').
-- **execute_nmap**: Run Nmap port/service scanning (args: e.g. '-sV -sC -p 80,443 target.com').
-- **execute_masscan**: Run Masscan port scan (args: e.g. '192.168.1.0/24 -p80,443 --rate=1000').
-- **execute_ffuf**: Run FFuf web fuzzer (args: e.g. '-u https://target.com/FUZZ -w wordlist.txt -mc 200').
+**IMPORTANT**: All execute_* tools take ONE parameter: **args** (a string of CLI arguments). Example: execute_httpx(args="-u https://target.com -json -tech-detect"). Do NOT pass url/target/host as separate parameters.
+
+- **execute_httpx**: HTTP prober. Example: execute_httpx(args="-u https://target.com -json -tech-detect -status-code -title")
+- **execute_subfinder**: Subdomain discovery. Example: execute_subfinder(args="-d example.com -json -silent")
+- **execute_dnsx**: DNS toolkit. Example: execute_dnsx(args="-d example.com -a -aaaa -mx -ns -json")
+- **execute_katana**: Web crawler. Example: execute_katana(args="-u https://target.com -d 3 -json")
+- **execute_curl**: HTTP client. Example: execute_curl(args="-s -i https://target.com/")
+- **execute_tldfinder**: TLD/domain discovery. Example: execute_tldfinder(args="-d example.com -dm domain -oJ")
+- **execute_waybackurls**: Historical URLs. Example: execute_waybackurls(args="example.com")
+- **execute_amass**: Network mapping. Example: execute_amass(args="enum -d example.com -json -")
+- **execute_whatweb**: Tech fingerprinting. Example: execute_whatweb(args="https://target.com -a 1")
+- **execute_nuclei**: Vulnerability scanner. Example: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
+- **execute_naabu**: Port scanner. Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
+- **execute_nmap**: Port/service scan. Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
+- **execute_masscan**: Fast port scan. Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
+- **execute_ffuf**: Web fuzzer. Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
 - **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**: Get CLI usage for each tool
+- **add_asset**: Add a target to the asset inventory. Use when the target is NOT already in the database. Args: **value** (required — hostname, domain, IP, or URL), asset_type (optional, auto-detected), description (optional). Example: add_asset(value="test-git.glensserver.com"). Once added, you can scan it and use create_finding.
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
 - **get_notes**: Get session notes (optional category filter)
-- **create_finding**: Add a finding to the platform findings table (title, description, severity: critical|high|medium|low|info, target: host/domain matching an asset, optional: evidence, cve_id, remediation). Use for vulnerabilities so they appear in the UI.
+- **create_finding**: Add a finding to the platform findings table. Args: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL — will be auto-added to inventory if not found), optional: evidence, cve_id, remediation. Findings appear in the UI.
 """
 
     exploitation_tools = """
@@ -263,6 +277,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 # Tool phase mapping
 TOOL_PHASE_MAP = {
     # Informational tools - available in all phases
+    "add_asset": ["informational", "exploitation", "post_exploitation"],
     "query_assets": ["informational", "exploitation", "post_exploitation"],
     "query_vulnerabilities": ["informational", "exploitation", "post_exploitation"],
     "query_ports": ["informational", "exploitation", "post_exploitation"],

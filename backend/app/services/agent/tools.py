@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import httpx
 
 from app.db.database import SessionLocal
-from app.models.asset import Asset, AssetType
+from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.vulnerability import Vulnerability, Severity
 from app.models.port_service import PortService
 from app.models.technology import Technology
@@ -71,6 +71,8 @@ class ASMToolsManager:
             "analyze_attack_surface": self.analyze_attack_surface,
             "get_asset_details": self.get_asset_details,
             "search_cve": self.search_cve,
+            # Asset management
+            "add_asset": self.add_asset,
             # Session notes and findings
             "save_note": self.save_note,
             "get_notes": self.get_notes,
@@ -123,7 +125,25 @@ class ASMToolsManager:
         if tool_name.startswith("execute_") or tool_name.endswith("_help"):
             try:
                 mcp = self._get_mcp_server()
-                # MCP expects args for execute_* tools; help tools use {}
+                # Normalize: MCP execute_* tools expect {"args": "<cli string>"}.
+                # LLMs often pass {"url": "...", "target": "..."} instead.
+                if tool_name.startswith("execute_") and "args" not in tool_args and tool_args:
+                    parts = []
+                    for k, v in tool_args.items():
+                        sv = str(v).strip()
+                        if not sv:
+                            continue
+                        if k in ("url", "target", "host", "domain"):
+                            if not sv.startswith("-"):
+                                parts.insert(0, f"-u {sv}" if "http" in tool_name else sv)
+                            else:
+                                parts.insert(0, sv)
+                        elif k in ("flags", "options", "arguments", "command"):
+                            parts.append(sv)
+                        else:
+                            parts.append(sv)
+                    tool_args = {"args": " ".join(parts)} if parts else {"args": ""}
+                    logger.info(f"Normalized MCP args for {tool_name}: {tool_args}")
                 result = await mcp.call_tool(tool_name, tool_args)
                 
                 max_chars = _tool_output_max_chars()
@@ -140,7 +160,11 @@ class ASMToolsManager:
                     err = result.get("error", "Unknown error")
                     out = result.get("output", "")
                     err_max = min(8000, max_chars)
-                    combined = f"Error: {err}"
+                    hint = (
+                        f"\n\nHINT: {tool_name} expects a single 'args' parameter with CLI arguments as a string. "
+                        f"Example: {tool_name}(args=\"-u https://target.com -json\")"
+                    ) if "Missing required parameter" in err or "unexpected keyword" in err else ""
+                    combined = f"Error: {err}{hint}"
                     if out and out.strip():
                         combined += f"\nStdout:\n{out[:err_max]}" + ("\n... (truncated)" if len(out) > err_max else "")
                     return {
@@ -152,7 +176,8 @@ class ASMToolsManager:
                 logger.error(f"MCP tool execution failed: {tool_name} - {e}")
                 return {
                     "success": False,
-                    "output": None,
+                    "output": f"Error: {e}\n\nHINT: All execute_* tools accept a single 'args' parameter with CLI arguments. "
+                              f"Example: {tool_name}(args=\"-u https://target.com\")",
                     "error": str(e)
                 }
         
@@ -732,6 +757,154 @@ class ASMToolsManager:
             out.append(f"## {i}. {title}\nURL: {url}\n{content}\n")
         return "\n".join(out)
 
+    def _resolve_asset_type(self, value: str) -> AssetType:
+        """Infer AssetType from a raw value string."""
+        import re
+        v = value.strip().lower()
+        if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", v):
+            return AssetType.IP_ADDRESS
+        if re.match(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$", v):
+            return AssetType.IP_RANGE
+        if v.startswith(("http://", "https://")):
+            return AssetType.URL
+        if "." in v and v.count(".") >= 2:
+            return AssetType.SUBDOMAIN
+        if "." in v:
+            return AssetType.DOMAIN
+        return AssetType.OTHER
+
+    def _extract_hostname(self, value: str) -> str:
+        """Extract clean hostname/domain from a URL or value."""
+        v = value.strip()
+        if v.startswith(("http://", "https://")):
+            try:
+                from urllib.parse import urlparse
+                p = urlparse(v)
+                return (p.netloc or p.path.split("/")[0] or v).split(":")[0]
+            except Exception:
+                pass
+        return v.rstrip("/").split("/")[0].split(":")[0]
+
+    def _get_or_create_asset(self, db, org_id: int, target: str) -> "Asset":
+        """Find existing asset or create a new one for the given target.
+
+        Tries exact match, then case-insensitive, then creates a new asset.
+        Returns the Asset ORM object (already flushed so it has an id).
+        """
+        target_clean = self._extract_hostname(target)
+        asset = (
+            db.query(Asset)
+            .filter(Asset.organization_id == org_id, Asset.value == target_clean)
+            .first()
+        )
+        if asset:
+            return asset
+        asset = (
+            db.query(Asset)
+            .filter(Asset.organization_id == org_id, Asset.value.ilike(target_clean))
+            .first()
+        )
+        if asset:
+            return asset
+
+        asset_type = self._resolve_asset_type(target)
+        root = target_clean
+        parts = target_clean.split(".")
+        if len(parts) > 2:
+            root = ".".join(parts[-2:])
+
+        new_asset = Asset(
+            organization_id=org_id,
+            name=target_clean,
+            value=target_clean,
+            asset_type=asset_type,
+            root_domain=root,
+            discovery_source="agent",
+            status=AssetStatus.DISCOVERED,
+            is_monitored=True,
+        )
+        db.add(new_asset)
+        db.flush()
+        return new_asset
+
+    async def add_asset(
+        self,
+        value: str,
+        asset_type: Optional[str] = None,
+        description: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Add a target to the asset inventory so it can be scanned and receive findings.
+
+        Use this when a target URL/domain/IP is not yet in the database. The asset
+        will be created with status=discovered and can then be used with create_finding,
+        query_assets, and scan tools.
+
+        Args:
+            value: The hostname, domain, IP, or URL to add (e.g. "test-git.glensserver.com")
+            asset_type: Optional override — DOMAIN, SUBDOMAIN, IP_ADDRESS, URL, etc. Auto-detected if omitted.
+            description: Optional description of the asset.
+        """
+        _, org_id = get_tenant_context()
+        if not org_id:
+            return "Error: No organization context."
+        if not value or not value.strip():
+            return "Error: 'value' is required (hostname, domain, IP, or URL)."
+
+        target_clean = self._extract_hostname(value.strip())
+
+        db = SessionLocal()
+        try:
+            existing = (
+                db.query(Asset)
+                .filter(Asset.organization_id == org_id, Asset.value.ilike(target_clean))
+                .first()
+            )
+            if existing:
+                return (
+                    f"Asset already exists: id={existing.id}, value={existing.value}, "
+                    f"type={existing.asset_type.value if existing.asset_type else 'N/A'}. "
+                    f"No action needed — you can now use create_finding with target='{existing.value}'."
+                )
+
+            resolved_type = self._resolve_asset_type(value.strip())
+            if asset_type:
+                try:
+                    resolved_type = AssetType(asset_type.upper())
+                except (ValueError, KeyError):
+                    pass
+
+            root = target_clean
+            parts = target_clean.split(".")
+            if len(parts) > 2:
+                root = ".".join(parts[-2:])
+
+            new_asset = Asset(
+                organization_id=org_id,
+                name=target_clean,
+                value=target_clean,
+                asset_type=resolved_type,
+                root_domain=root,
+                discovery_source="agent",
+                status=AssetStatus.DISCOVERED,
+                is_monitored=True,
+                description=(description or "")[:2000] if description else None,
+            )
+            db.add(new_asset)
+            db.commit()
+            db.refresh(new_asset)
+            return (
+                f"Asset added: id={new_asset.id}, value={new_asset.value}, "
+                f"type={new_asset.asset_type.value}. "
+                f"You can now scan it and use create_finding with target='{new_asset.value}'."
+            )
+        except Exception as e:
+            db.rollback()
+            logger.exception("add_asset failed")
+            return f"Error adding asset: {e}"
+        finally:
+            db.close()
+
     async def create_finding(
         self,
         title: str,
@@ -761,24 +934,11 @@ class ASMToolsManager:
         severity_enum = sev_map.get((severity or "info").strip().lower(), Severity.INFO)
         db = SessionLocal()
         try:
-            asset = (
-                db.query(Asset)
-                .filter(Asset.organization_id == org_id, Asset.value == target_clean)
-                .first()
-            )
-            if not asset:
-                # Try ilike in case of case mismatch
-                asset = (
-                    db.query(Asset)
-                    .filter(Asset.organization_id == org_id, Asset.value.ilike(target_clean))
-                    .first()
-                )
-            if not asset:
-                return (
-                    f"No asset found with value '{target_clean}' in this organization. "
-                    "Use query_assets to list in-scope assets; target must match an asset's value (hostname/domain/IP). "
-                    "Add the asset to inventory first if needed."
-                )
+            asset = self._get_or_create_asset(db, org_id, target_clean)
+            auto_added = not asset.id or db.is_modified(asset)
+            if auto_added:
+                db.flush()
+                logger.info(f"create_finding auto-added asset: {asset.value} (id={asset.id})")
             vuln = Vulnerability(
                 title=(title or "Agent finding")[:500],
                 description=(description or "")[:10000] if description else None,
