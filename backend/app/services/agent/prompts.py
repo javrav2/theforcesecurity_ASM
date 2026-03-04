@@ -215,7 +215,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **query_technologies**: Query detected technologies
 - **query_graph**: Run a Cypher query against the Neo4j graph. Args: **cypher** (required, the Cypher query string), params (optional dict), limit (default 50). Example: query_graph(cypher="MATCH (a:Asset) WHERE a.organization_id = $org_id RETURN a.value LIMIT 10"). The tool auto-injects $org_id from context, so always use WHERE a.organization_id = $org_id.
 - **analyze_attack_surface**: Get attack surface summary
-- **get_asset_details**: Get detailed information about an asset
+- **get_asset_details**: Get detailed info about an asset. Args: **asset_id** (integer, required — get from query_assets first). Example: get_asset_details(asset_id=42)
 - **search_cve**: Search for CVE information
 - **web_search** (if configured): Search the web for CVE/exploit research. Args: query (required), max_results (optional, default 5). Requires TAVILY_API_KEY in .env.
 - **execute_httpx**: Run HTTPX HTTP prober (args: CLI arguments)

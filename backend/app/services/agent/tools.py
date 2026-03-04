@@ -172,6 +172,17 @@ class ASMToolsManager:
                 "output": result,
                 "error": None
             }
+        except TypeError as e:
+            import inspect
+            sig = inspect.signature(tool)
+            params = [p for p in sig.parameters if p != "self"]
+            hint = f"Tool '{tool_name}' accepts: {', '.join(params)}. You passed: {list(tool_args.keys())}."
+            logger.error(f"Tool argument mismatch: {tool_name} - {e}. {hint}")
+            return {
+                "success": False,
+                "output": hint,
+                "error": f"{e}. {hint}"
+            }
         except Exception as e:
             logger.error(f"Tool execution failed: {tool_name} - {e}")
             return {
@@ -548,27 +559,51 @@ class ASMToolsManager:
         finally:
             db.close()
     
-    async def get_asset_details(self, asset_id: int) -> str:
+    async def get_asset_details(
+        self,
+        asset_id: Optional[int] = None,
+        # Accept common LLM argument name variations
+        asset_identifier: Optional[Any] = None,
+        hostname: Optional[str] = None,
+        asset: Optional[Any] = None,
+        id: Optional[int] = None,
+        **kwargs: Any,
+    ) -> str:
         """
         Get detailed information about a specific asset.
         
         Args:
-            asset_id: ID of the asset to retrieve
+            asset_id: ID (integer) of the asset to retrieve. Use query_assets first to find asset IDs.
         
         Returns:
             String with detailed asset information
         """
+        resolved_id = asset_id or id or asset_identifier or asset or kwargs.get("asset_value")
+        lookup_by_name = hostname or (resolved_id if isinstance(resolved_id, str) and not str(resolved_id).isdigit() else None)
+
         user_id, org_id = get_tenant_context()
         
         db = SessionLocal()
         try:
-            query = db.query(Asset).filter(Asset.id == asset_id)
-            if org_id:
-                query = query.filter(Asset.organization_id == org_id)
+            if lookup_by_name:
+                query = db.query(Asset).filter(Asset.value.ilike(f"%{lookup_by_name}%"))
+                if org_id:
+                    query = query.filter(Asset.organization_id == org_id)
+                asset_obj = query.first()
+            else:
+                try:
+                    resolved_id = int(resolved_id)
+                except (TypeError, ValueError):
+                    return f"Invalid asset_id: {resolved_id}. Use query_assets to find integer asset IDs."
+                query = db.query(Asset).filter(Asset.id == resolved_id)
+                if org_id:
+                    query = query.filter(Asset.organization_id == org_id)
+                asset_obj = query.first()
             
-            asset = query.first()
-            if not asset:
-                return f"Asset with ID {asset_id} not found or not accessible."
+            if not asset_obj:
+                return f"Asset '{resolved_id or lookup_by_name}' not found. Use query_assets to list available assets."
+            
+            asset = asset_obj
             
             details = f"# Asset Details: {asset.value}\n\n"
             details += f"- **Type**: {asset.asset_type.value if asset.asset_type else 'Unknown'}\n"
