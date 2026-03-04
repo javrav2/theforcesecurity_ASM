@@ -5,6 +5,7 @@ REST and WebSocket endpoints for the AI security agent.
 Includes conversation history CRUD and real-time WebSocket streaming.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -193,22 +194,32 @@ async def query_agent(
         if objective:
             question = objective
     
-    # Save user message
     _save_conversation(db, session_id, current_user.id, org_id, "user", question, mode=request.mode or "assist")
 
-    result = await orchestrator.invoke(
-        question=question,
-        user_id=str(current_user.id),
-        organization_id=org_id,
-        session_id=session_id,
-        initial_todos=initial_todos,
-        mode=request.mode or "assist",
-    )
+    try:
+        result = await asyncio.wait_for(
+            orchestrator.invoke(
+                question=question,
+                user_id=str(current_user.id),
+                organization_id=org_id,
+                session_id=session_id,
+                initial_todos=initial_todos,
+                mode=request.mode or "assist",
+                max_iterations=settings.AGENT_REST_MAX_ITERATIONS,
+            ),
+            timeout=settings.AGENT_REQUEST_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"Agent query timed out after {settings.AGENT_REQUEST_TIMEOUT_SECONDS}s for session {session_id}")
+        raise HTTPException(
+            status_code=504,
+            detail=f"The agent took longer than {settings.AGENT_REQUEST_TIMEOUT_SECONDS // 60} minutes. "
+                   "Try a more specific question, or use WebSocket mode for real-time streaming (avoids timeouts)."
+        )
     
     if result.error:
         _handle_agent_error(result.error)
 
-    # Save agent response
     _save_conversation(db, session_id, current_user.id, org_id, "agent", result.answer or "", result)
 
     return _build_agent_response(result, session_id)
@@ -232,13 +243,22 @@ async def approve_phase_transition(
     if not org_id:
         raise HTTPException(status_code=400, detail="User must belong to an organization to use the agent.")
     
-    result = await orchestrator.resume_after_approval(
-        session_id=request.session_id,
-        user_id=str(current_user.id),
-        organization_id=org_id,
-        decision=request.decision,
-        modification=request.modification,
-    )
+    try:
+        result = await asyncio.wait_for(
+            orchestrator.resume_after_approval(
+                session_id=request.session_id,
+                user_id=str(current_user.id),
+                organization_id=org_id,
+                decision=request.decision,
+                modification=request.modification,
+            ),
+            timeout=settings.AGENT_REQUEST_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Agent timed out after {settings.AGENT_REQUEST_TIMEOUT_SECONDS // 60} minutes. Use WebSocket mode for long operations."
+        )
     
     if result.error:
         _handle_agent_error(result.error)
@@ -264,12 +284,21 @@ async def answer_agent_question(
     
     _save_conversation(db, request.session_id, current_user.id, org_id, "user", request.answer)
 
-    result = await orchestrator.resume_after_answer(
-        session_id=request.session_id,
-        user_id=str(current_user.id),
-        organization_id=org_id,
-        answer=request.answer,
-    )
+    try:
+        result = await asyncio.wait_for(
+            orchestrator.resume_after_answer(
+                session_id=request.session_id,
+                user_id=str(current_user.id),
+                organization_id=org_id,
+                answer=request.answer,
+            ),
+            timeout=settings.AGENT_REQUEST_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Agent timed out after {settings.AGENT_REQUEST_TIMEOUT_SECONDS // 60} minutes. Use WebSocket mode for long operations."
+        )
 
     if result.error:
         _handle_agent_error(result.error)

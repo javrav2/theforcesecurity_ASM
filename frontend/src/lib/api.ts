@@ -10,6 +10,17 @@ export function getApiErrorMessage(error: any, fallback: string = 'An error occu
   const status = error?.response?.status;
   const data = error?.response?.data;
 
+  // Agent timeout — 504 from backend or proxy
+  if (status === 504) {
+    if (typeof detail === 'string') return detail;
+    return 'The agent request timed out. Try a more specific question, or wait a moment and retry.';
+  }
+
+  // Axios network timeout (no response received)
+  if (error?.code === 'ECONNABORTED' || error?.message?.includes('timeout')) {
+    return 'The request timed out. The agent may still be running — check back shortly.';
+  }
+
   // AI provider (e.g. Anthropic) overloaded - 529 or 503 with overloaded message
   if (status === 529 || status === 503) {
     if (typeof detail === 'string' && (detail.toLowerCase().includes('overloaded') || detail.includes('try again')))

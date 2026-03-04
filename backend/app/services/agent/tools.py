@@ -229,7 +229,7 @@ class ASMToolsManager:
                     "value": asset.value,
                     "type": asset.asset_type.value if asset.asset_type else None,
                     "first_seen": asset.first_seen.isoformat() if asset.first_seen else None,
-                    "is_active": asset.is_active,
+                    "is_live": getattr(asset, 'is_live', None),
                     "risk_score": getattr(asset, 'ars_score', None),
                 })
             
@@ -269,13 +269,23 @@ class ASMToolsManager:
             if org_id:
                 query = query.filter(Asset.organization_id == org_id)
             
-            # Apply severity filter
+            # Apply severity filter (handles both string "critical" and list ["critical","high"])
             if severity:
-                try:
-                    severity_enum = Severity(severity.lower())
-                    query = query.filter(Vulnerability.severity == severity_enum)
-                except ValueError:
-                    pass
+                if isinstance(severity, list):
+                    sev_enums = []
+                    for s in severity:
+                        try:
+                            sev_enums.append(Severity(str(s).lower()))
+                        except (ValueError, AttributeError):
+                            pass
+                    if sev_enums:
+                        query = query.filter(Vulnerability.severity.in_(sev_enums))
+                else:
+                    try:
+                        severity_enum = Severity(str(severity).lower())
+                        query = query.filter(Vulnerability.severity == severity_enum)
+                    except (ValueError, AttributeError):
+                        pass
             
             # Apply CVE filter
             if cve_id:
@@ -430,9 +440,13 @@ class ASMToolsManager:
     
     async def query_graph(
         self,
-        cypher: str,
+        cypher: Optional[str] = None,
         params: Optional[Dict[str, Any]] = None,
         limit: int = 50,
+        # Accept common LLM argument name variations
+        cypher_query: Optional[str] = None,
+        query: Optional[str] = None,
+        **kwargs: Any,
     ) -> str:
         """
         Run a Cypher query against the Neo4j attack surface graph.
@@ -450,6 +464,9 @@ class ASMToolsManager:
         Returns:
             JSON string of query results
         """
+        cypher = cypher or cypher_query or query or kwargs.get("cypher_string", "")
+        if not cypher:
+            return json.dumps({"error": "No Cypher query provided. Pass the query as the 'cypher' argument."})
         user_id, org_id = get_tenant_context()
         if not org_id:
             return json.dumps({"error": "No organization context. Set organization for this session."})
@@ -556,7 +573,7 @@ class ASMToolsManager:
             details = f"# Asset Details: {asset.value}\n\n"
             details += f"- **Type**: {asset.asset_type.value if asset.asset_type else 'Unknown'}\n"
             details += f"- **First Seen**: {asset.first_seen.isoformat() if asset.first_seen else 'Unknown'}\n"
-            details += f"- **Active**: {'Yes' if asset.is_active else 'No'}\n"
+            details += f"- **Live**: {'Yes' if getattr(asset, 'is_live', False) else 'No'}\n"
             
             if hasattr(asset, 'ars_score') and asset.ars_score:
                 details += f"- **Risk Score (ARS)**: {asset.ars_score}/100\n"

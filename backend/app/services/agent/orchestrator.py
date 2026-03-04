@@ -160,6 +160,8 @@ class AgentOrchestrator:
             api_key=settings.OPENAI_API_KEY,
             temperature=0,
             max_tokens=settings.AGENT_MAX_OUTPUT_TOKENS,
+            timeout=120,
+            max_retries=2,
         )
         self._provider = "openai"
     
@@ -186,6 +188,8 @@ class AgentOrchestrator:
             model=settings.ANTHROPIC_MODEL,
             temperature=0,
             max_tokens=settings.AGENT_MAX_OUTPUT_TOKENS,
+            timeout=120,
+            max_retries=2,
         )
         self._provider = "anthropic"
     
@@ -330,7 +334,7 @@ class AgentOrchestrator:
         
         return {
             "current_iteration": 0,
-            "max_iterations": settings.AGENT_MAX_ITERATIONS,
+            "max_iterations": getattr(self, '_max_iterations_override', None) or settings.AGENT_MAX_ITERATIONS,
             "task_complete": False,
             "current_phase": "informational",
             "phase_history": [PhaseHistoryEntry(phase="informational").model_dump()],
@@ -922,15 +926,23 @@ class AgentOrchestrator:
         initial_todos: Optional[List[Dict[str, Any]]] = None,
         mode: str = "assist",
         status_callback: StatusCallback = None,
+        max_iterations: Optional[int] = None,
     ) -> InvokeResponse:
-        """Main entry point for agent invocation."""
+        """Main entry point for agent invocation.
+        
+        Args:
+            max_iterations: Override the default iteration cap. REST routes
+                pass AGENT_REST_MAX_ITERATIONS to keep responses under proxy
+                timeout limits.
+        """
         if not self._initialized:
             await self.initialize()
         
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized - check OPENAI_API_KEY")
         
-        logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}... (mode={mode})")
+        self._max_iterations_override = max_iterations
+        logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}... (mode={mode}, max_iter={max_iterations or 'default'})")
 
         if status_callback:
             self.set_status_callback(status_callback)

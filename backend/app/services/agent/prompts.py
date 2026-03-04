@@ -210,10 +210,10 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
     informational_tools = """
 ### Informational Phase Tools
 - **query_assets**: Query assets from the ASM database
-- **query_vulnerabilities**: Query vulnerabilities and findings
+- **query_vulnerabilities**: Query vulnerabilities. Args: severity (string or list, e.g. "critical" or ["critical","high"]), status, cve_id, limit
 - **query_ports**: Query open ports and services
 - **query_technologies**: Query detected technologies
-- **query_graph**: Run a Cypher query against the Neo4j attack surface graph. Use this to answer relationship and context questions: e.g. which assets have path to critical vulns, what technologies sit on the same IP as a CVE, how domains/subdomains/IPs/ports/services/technologies/vulns connect. Always filter by organization: include WHERE a.organization_id = $org_id (or similar) and pass org_id; the tool injects $org_id automatically.
+- **query_graph**: Run a Cypher query against the Neo4j graph. Args: **cypher** (required, the Cypher query string), params (optional dict), limit (default 50). Example: query_graph(cypher="MATCH (a:Asset) WHERE a.organization_id = $org_id RETURN a.value LIMIT 10"). The tool auto-injects $org_id from context, so always use WHERE a.organization_id = $org_id.
 - **analyze_attack_surface**: Get attack surface summary
 - **get_asset_details**: Get detailed information about an asset
 - **search_cve**: Search for CVE information
