@@ -191,7 +191,7 @@ export default function AgentPage() {
       wsAuthenticatedRef.current = true;
       setConnectionMode('websocket');
     } else if (msgType === 'thinking' || msgType === 'tool_start' || msgType === 'tool_complete') {
-      setLiveStatus(data as StatusUpdate);
+      setLiveStatus(data as unknown as StatusUpdate);
     } else if (msgType === 'response') {
       setLiveStatus(null);
       setLoading(false);
