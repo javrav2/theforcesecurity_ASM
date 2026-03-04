@@ -60,6 +60,9 @@ ANTHROPIC_MODEL=claude-sonnet-4-20250514
 # Get key at: https://tavily.com (free tier available)
 # TAVILY_API_KEY=
 
+# Agent LLM max output tokens (default 4096; increase for long answers, e.g. 8192, 16384, 64000)
+# AGENT_MAX_OUTPUT_TOKENS=4096
+
 # Agent tool output truncation (chars passed to LLM; default 20000)
 # AGENT_TOOL_OUTPUT_MAX_CHARS=20000
 
@@ -168,6 +171,63 @@ If the AI agent returns **Error code: 401 - invalid x-api-key**:
 
 5. **Create a new key**  
    In [Anthropic Console](https://console.anthropic.com) → API Keys, create a new key and replace the value in `.env` in case the previous one was revoked or incorrect.
+
+---
+
+## Troubleshooting: Agent not running when key is configured
+
+If you set `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) but the Agent page still shows "Agent is not available":
+
+1. **Restart the backend after adding the key**  
+   The backend reads env vars only at startup. After editing `.env`, run:
+   ```bash
+   docker compose up -d backend
+   ```
+   On AWS (EC2): `cd /opt/asm` then the same command with `sudo` if needed.
+
+2. **Use the correct `.env` and variable name**  
+   - The `.env` file must be in the **same directory as `docker-compose.yml`** (e.g. project root or `/opt/asm` on the server).
+   - Variable must be exactly: `ANTHROPIC_API_KEY=sk-ant-api03-...` (no space around `=`; no typo like `ANTHROPIC_KEY`).
+
+3. **Use an Anthropic API key, not Cursor/Claude Code**  
+   Get the key from [Anthropic Console → API Keys](https://console.anthropic.com). Keys from Cursor or "Claude Code" are not valid for this API. Valid keys start with `sk-ant-`.
+
+4. **Confirm the key is in the container**  
+   On the server:
+   ```bash
+   sudo docker exec asm_backend env | grep ANTHROPIC
+   ```
+   You should see `ANTHROPIC_API_KEY=sk-ant-...` (the value is shown). If it’s missing or empty, fix `.env` and restart the backend.
+
+5. **Check the Agent page message**  
+   After the latest frontend/backend updates, the Agent page shows a hint when the agent is unavailable (e.g. "Set ANTHROPIC_API_KEY in .env and restart the backend") or the error from the status request (e.g. network or auth). Use that to narrow down the issue.
+
+---
+
+## Troubleshooting: 504 Gateway Timeout (Agent)
+
+If the agent shows **Request failed with status code 504**:
+
+- **Cause:** A reverse proxy (nginx, ALB, Cloudflare, etc.) in front of the backend stopped waiting for the response. Agent requests can take a long time (LLM calls plus tool runs). Many proxies default to 60 seconds.
+- **What to do:** Increase the proxy’s timeout for the API (or at least for agent paths).
+
+  **Nginx** (in the `location` that proxies to the backend):
+  ```nginx
+  proxy_connect_timeout 300s;
+  proxy_send_timeout 300s;
+  proxy_read_timeout 300s;
+  ```
+  Use 300–600 seconds for the agent; you can use a longer timeout only for `/api/v1/agent/` if you prefer.
+
+  **AWS Application Load Balancer:**  
+  ALB idle timeout defaults to 60 seconds. Increase it (e.g. to 300 seconds):
+  - Console: EC2 → Load Balancers → your ALB → Attributes → Idle timeout.
+  - CLI: `aws elbv2 modify-load-balancer-attributes --load-balancer-arn <ARN> --attributes Key=idle_timeout.timeout_seconds,Value=300`
+
+  **Cloudflare / other CDN:**  
+  Increase the proxy timeout in the dashboard (e.g. 300s) or use a “stream”/passthrough so the CDN doesn’t time out long requests.
+
+  After changing the proxy, reload nginx or wait for ALB changes to apply, then try the agent again.
 
 ---
 

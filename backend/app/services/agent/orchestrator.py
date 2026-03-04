@@ -3,13 +3,14 @@ Agent Orchestrator
 
 ReAct-style agent orchestrator for security analysis and autonomous assessment.
 Uses LangGraph for state management and LangChain for LLM interactions.
+Supports WebSocket streaming callbacks and cross-session learning via EvoGraph.
 """
 
 import json
 import logging
 import re
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable, Awaitable
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -60,8 +61,12 @@ from app.services.agent.prompts import (
 )
 from app.services.agent.tools import ASMToolsManager, set_tenant_context
 from app.services.agent.knowledge import retrieve_knowledge
+from app.services.agent import evograph
 
 logger = logging.getLogger(__name__)
+
+# Type alias for the optional WebSocket status callback
+StatusCallback = Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
 
 # Global checkpointer for session persistence
 checkpointer = MemorySaver()
@@ -89,6 +94,8 @@ class AgentOrchestrator:
     - LLM-managed todo lists
     - Checkpoint-based approval for phase transitions
     - Full execution trace in memory
+    - WebSocket streaming callbacks for real-time UI updates
+    - Cross-session learning via EvoGraph (Neo4j)
     
     Supports multiple LLM providers:
     - OpenAI (GPT-4, GPT-4o, etc.)
@@ -102,6 +109,7 @@ class AgentOrchestrator:
         self.graph = None
         self._initialized = False
         self._provider = None
+        self._status_callback: StatusCallback = None
     
     async def initialize(self) -> None:
         """Initialize all components asynchronously."""
@@ -146,11 +154,12 @@ class AgentOrchestrator:
     
     def _setup_openai(self) -> None:
         """Initialize OpenAI LLM."""
-        logger.info(f"Setting up OpenAI LLM: {settings.OPENAI_MODEL}")
+        logger.info(f"Setting up OpenAI LLM: {settings.OPENAI_MODEL} (max_tokens={settings.AGENT_MAX_OUTPUT_TOKENS})")
         self.llm = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             api_key=settings.OPENAI_API_KEY,
-            temperature=0
+            temperature=0,
+            max_tokens=settings.AGENT_MAX_OUTPUT_TOKENS,
         )
         self._provider = "openai"
     
@@ -172,11 +181,11 @@ class AgentOrchestrator:
             )
         # Let the SDK read the key from env (avoids any encoding/quoting issues from passing it in code)
         os.environ["ANTHROPIC_API_KEY"] = key
-        logger.info(f"Setting up Anthropic LLM: {settings.ANTHROPIC_MODEL}")
+        logger.info(f"Setting up Anthropic LLM: {settings.ANTHROPIC_MODEL} (max_tokens={settings.AGENT_MAX_OUTPUT_TOKENS})")
         self.llm = ChatAnthropic(
             model=settings.ANTHROPIC_MODEL,
             temperature=0,
-            max_tokens=4096,
+            max_tokens=settings.AGENT_MAX_OUTPUT_TOKENS,
         )
         self._provider = "anthropic"
     
@@ -270,6 +279,18 @@ class AgentOrchestrator:
         logger.info("ReAct LangGraph compiled")
     
     # =========================================================================
+    # STREAMING HELPERS
+    # =========================================================================
+
+    async def _emit_status(self, msg: Dict[str, Any]) -> None:
+        """Send a status update to the WebSocket callback if one is registered."""
+        if self._status_callback:
+            try:
+                await self._status_callback(msg)
+            except Exception:
+                pass
+
+    # =========================================================================
     # LANGGRAPH NODES
     # =========================================================================
     
@@ -335,6 +356,13 @@ class AgentOrchestrator:
         phase = state.get("current_phase", "informational")
         
         logger.info(f"[{user_id}] Think node - iteration {iteration}, phase: {phase}")
+
+        await self._emit_status({
+            "type": "thinking",
+            "iteration": iteration,
+            "phase": phase,
+            "thought": "Reasoning about next action...",
+        })
         
         # Set tenant context for tools (including session_id for save_note/get_notes)
         session_id = state.get("session_id")
@@ -367,6 +395,14 @@ class AgentOrchestrator:
             )
         if not knowledge_context:
             knowledge_context = "None."
+
+        # Cross-session learning: load prior chain context from EvoGraph
+        prior_chain_context = ""
+        if org_id and session_id:
+            prior_chain_context = evograph.get_prior_chain_context(
+                organization_id=org_id,
+                current_session_id=session_id,
+            )
         
         # Build prompt
         execution_trace_formatted = format_execution_trace(state.get("execution_trace", []))
@@ -375,6 +411,11 @@ class AgentOrchestrator:
         qa_history_formatted = format_qa_history(state.get("qa_history", []))
         objective_history_formatted = format_objective_history(state.get("objective_history", []))
         available_tools = get_phase_tools(phase)
+
+        # Append prior session intelligence to knowledge context
+        combined_knowledge = knowledge_context
+        if prior_chain_context:
+            combined_knowledge = f"{knowledge_context}\n\n{prior_chain_context}"
         
         system_prompt = REACT_SYSTEM_PROMPT.format(
             current_phase=phase,
@@ -387,7 +428,7 @@ class AgentOrchestrator:
             todo_list=todo_list_formatted,
             target_info=target_info_formatted,
             session_notes=session_notes,
-            knowledge_context=knowledge_context,
+            knowledge_context=combined_knowledge,
             qa_history=qa_history_formatted,
         )
         
@@ -406,6 +447,15 @@ class AgentOrchestrator:
         decision = self._parse_llm_decision(response_text)
         
         logger.info(f"[{user_id}] Decision: action={decision.action}, tool={decision.tool_name}")
+
+        await self._emit_status({
+            "type": "thinking",
+            "iteration": iteration,
+            "phase": phase,
+            "thought": decision.thought[:300],
+            "action": decision.action,
+            "tool_name": decision.tool_name,
+        })
         
         # Create execution step
         step = ExecutionStep(
@@ -476,13 +526,22 @@ class AgentOrchestrator:
         """Execute the selected tool."""
         user_id = state.get("user_id", "unknown")
         org_id = state.get("organization_id")
+        session_id = state.get("session_id", "")
         
         step_data = state.get("_current_step") or {}
         tool_name = step_data.get("tool_name")
         tool_args = step_data.get("tool_args") or {}
         phase = state.get("current_phase", "informational")
+        iteration = state.get("current_iteration", 0)
         
         logger.info(f"[{user_id}] Executing tool: {tool_name}")
+
+        await self._emit_status({
+            "type": "tool_start",
+            "tool_name": tool_name or "",
+            "tool_args": tool_args,
+            "iteration": iteration,
+        })
         
         if not tool_name:
             step_data["tool_output"] = "Error: No tool specified"
@@ -494,7 +553,7 @@ class AgentOrchestrator:
             set_tenant_context(
                 int(user_id) if user_id.isdigit() else 0,
                 org_id,
-                session_id=state.get("session_id"),
+                session_id=session_id,
             )
         
         # Check phase restriction
@@ -511,6 +570,34 @@ class AgentOrchestrator:
         step_data["error_message"] = result.get("error")
         
         logger.info(f"[{user_id}] Tool result: success={step_data['success']}")
+
+        await self._emit_status({
+            "type": "tool_complete",
+            "tool_name": tool_name,
+            "success": step_data["success"],
+            "output_summary": (step_data["tool_output"] or "")[:300],
+            "iteration": iteration,
+        })
+
+        # EvoGraph: record step (fire-and-forget)
+        evograph.record_step(
+            session_id=session_id,
+            iteration=iteration,
+            phase=phase,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_output_summary=(step_data["tool_output"] or "")[:500],
+            success=step_data["success"],
+            thought=step_data.get("thought", ""),
+        )
+        if not step_data["success"] and step_data.get("error_message"):
+            evograph.record_failure(
+                session_id=session_id,
+                iteration=iteration,
+                tool_name=tool_name,
+                error=step_data["error_message"][:300],
+                lesson=f"{tool_name} failed with args {str(tool_args)[:200]}",
+            )
         
         return {"_current_step": step_data}
     
@@ -556,6 +643,26 @@ class AgentOrchestrator:
         
         # Add to execution trace
         execution_trace = state.get("execution_trace", []) + [step_data]
+
+        # EvoGraph: record actionable findings
+        session_id = state.get("session_id", "")
+        iteration = step_data.get("iteration", 0)
+        for finding_text in (analysis.actionable_findings or []):
+            evograph.record_finding(
+                session_id=session_id,
+                iteration=iteration,
+                finding_type="actionable",
+                severity="medium",
+                description=finding_text,
+            )
+        for vuln in (analysis.extracted_info.vulnerabilities or []):
+            evograph.record_finding(
+                session_id=session_id,
+                iteration=iteration,
+                finding_type="vulnerability",
+                severity="high",
+                description=vuln,
+            )
         
         return {
             "_current_step": step_data,
@@ -798,6 +905,14 @@ class AgentOrchestrator:
     # PUBLIC API
     # =========================================================================
     
+    def set_status_callback(self, callback: StatusCallback) -> None:
+        """Register a callback for streaming status updates (WebSocket)."""
+        self._status_callback = callback
+
+    def clear_status_callback(self) -> None:
+        """Remove the streaming status callback."""
+        self._status_callback = None
+
     async def invoke(
         self,
         question: str,
@@ -806,6 +921,7 @@ class AgentOrchestrator:
         session_id: str,
         initial_todos: Optional[List[Dict[str, Any]]] = None,
         mode: str = "assist",
+        status_callback: StatusCallback = None,
     ) -> InvokeResponse:
         """Main entry point for agent invocation."""
         if not self._initialized:
@@ -815,7 +931,19 @@ class AgentOrchestrator:
             return InvokeResponse(error="Agent not initialized - check OPENAI_API_KEY")
         
         logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}... (mode={mode})")
+
+        if status_callback:
+            self.set_status_callback(status_callback)
         
+        # EvoGraph: record chain start
+        evograph.record_chain_start(
+            session_id=session_id,
+            organization_id=organization_id,
+            user_id=user_id,
+            objective=question,
+            mode=mode,
+        )
+
         try:
             config = {"configurable": {"thread_id": session_id}}
             input_data = {
@@ -829,11 +957,26 @@ class AgentOrchestrator:
                 input_data["initial_todos"] = initial_todos
             
             final_state = await self.graph.ainvoke(input_data, config)
-            return self._build_response(final_state)
+            response = self._build_response(final_state)
+
+            # EvoGraph: record chain end
+            evograph.record_chain_end(
+                session_id=session_id,
+                status="completed" if response.task_complete else "paused",
+                outcome=response.answer[:300] if response.answer else "",
+                final_phase=response.current_phase,
+                iteration_count=response.iteration_count,
+            )
+
+            return response
         
         except Exception as e:
             logger.error(f"[{user_id}/{session_id}] Error: {e}")
+            evograph.record_chain_end(session_id=session_id, status="error", outcome=str(e)[:300])
             return InvokeResponse(error=str(e))
+        finally:
+            if status_callback:
+                self.clear_status_callback()
     
     async def resume_after_approval(
         self,
@@ -841,11 +984,15 @@ class AgentOrchestrator:
         user_id: str,
         organization_id: int,
         decision: str,
-        modification: Optional[str] = None
+        modification: Optional[str] = None,
+        status_callback: StatusCallback = None,
     ) -> InvokeResponse:
         """Resume after user approval."""
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized")
+
+        if status_callback:
+            self.set_status_callback(status_callback)
         
         try:
             config = {"configurable": {"thread_id": session_id}}
@@ -863,17 +1010,24 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"[{user_id}/{session_id}] Resume error: {e}")
             return InvokeResponse(error=str(e))
+        finally:
+            if status_callback:
+                self.clear_status_callback()
     
     async def resume_after_answer(
         self,
         session_id: str,
         user_id: str,
         organization_id: int,
-        answer: str
+        answer: str,
+        status_callback: StatusCallback = None,
     ) -> InvokeResponse:
         """Resume after user answers a question."""
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized")
+
+        if status_callback:
+            self.set_status_callback(status_callback)
         
         try:
             config = {"configurable": {"thread_id": session_id}}
@@ -890,6 +1044,9 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"[{user_id}/{session_id}] Resume error: {e}")
             return InvokeResponse(error=str(e))
+        finally:
+            if status_callback:
+                self.clear_status_callback()
     
     def _build_response(self, state: dict) -> InvokeResponse:
         """Build response from final state."""

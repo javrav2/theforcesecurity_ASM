@@ -1,12 +1,11 @@
-#!/usr/bin/env python3
 """
 Migration script to add manual pentest finding fields to vulnerabilities table.
 
-Run with:
-    python -m scripts.migrate_add_manual_finding_fields
+Run with (from repo root, or from backend/ locally):
+    python scripts/migrate_add_manual_finding_fields.py
 
-Or via Docker:
-    sudo docker exec asm_backend python -m scripts.migrate_add_manual_finding_fields
+Or via Docker on the server:
+    sudo docker exec asm_backend python scripts/migrate_add_manual_finding_fields.py
 """
 
 import sys

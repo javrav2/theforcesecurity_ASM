@@ -3,7 +3,7 @@
 from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.db.database import get_db
@@ -32,11 +32,23 @@ def build_vuln_response(vuln: Vulnerability) -> dict:
     d["name"] = vuln.title
     d["host"] = vuln.asset.value if vuln.asset else None
     d["matched_at"] = (vuln.evidence[:200] if vuln.evidence else None)
+    # Ensure list fields are never None (JSON columns can be NULL in DB)
+    if d.get("references") is None:
+        d["references"] = []
+    if d.get("tags") is None:
+        d["tags"] = []
     # Ensure datetimes required by schema are set (legacy rows may have None)
     if d.get("first_detected") is None:
         d["first_detected"] = vuln.created_at
     if d.get("last_detected") is None:
         d["last_detected"] = vuln.updated_at or vuln.created_at
+    if d.get("created_at") is None:
+        d["created_at"] = vuln.first_detected or vuln.last_detected or datetime.utcnow()
+    if d.get("updated_at") is None:
+        d["updated_at"] = d["created_at"]
+    # Ensure status is set (legacy rows may have NULL)
+    if d.get("status") is None:
+        d["status"] = VulnerabilityStatus.OPEN
     return d
 
 
@@ -52,7 +64,7 @@ def list_vulnerabilities(
     current_user: User = Depends(get_current_active_user)
 ):
     """List vulnerabilities with filtering options."""
-    query = db.query(Vulnerability).join(Asset)
+    query = db.query(Vulnerability).join(Asset).options(joinedload(Vulnerability.asset))
     
     # Organization filter
     if not current_user.is_superuser:

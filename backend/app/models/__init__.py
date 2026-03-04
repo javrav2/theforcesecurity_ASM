@@ -17,6 +17,7 @@ from app.models.scan_config import ScanConfig, DEFAULT_PORT_LISTS, seed_default_
 from app.models.acquisition import Acquisition, AcquisitionStatus, AcquisitionType
 from app.models.agent_note import AgentNote
 from app.models.agent_knowledge import AgentKnowledge
+from app.models.agent_conversation import AgentConversation
 from app.models.project_settings import (
     ProjectSettings,
     ALL_MODULES,
@@ -74,6 +75,7 @@ __all__ = [
     "AcquisitionType",
     "AgentNote",
     "AgentKnowledge",
+    "AgentConversation",
     "ProjectSettings",
     "ALL_MODULES",
     "get_default_config",

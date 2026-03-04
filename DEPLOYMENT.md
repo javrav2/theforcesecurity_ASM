@@ -726,7 +726,16 @@ sudo docker exec asm_database psql -U asm_user -d asm_db -c "SELECT 1"
 sudo docker compose logs db
 ```
 
-### Scanner Not Processing Jobs
+### Findings Page: "column vulnerabilities.is_manual does not exist"
+
+If the Findings page shows a database error and backend logs say `column vulnerabilities.is_manual does not exist`, the `vulnerabilities` table is missing columns added by a migration. Run the migration once on the server:
+
+```bash
+cd /opt/asm
+sudo docker exec asm_backend python scripts/migrate_add_manual_finding_fields.py
+```
+
+Then reload the Findings page. No need to restart containers.
 
 ```bash
 # Check scanner status
@@ -754,6 +763,14 @@ grep NEXT_PUBLIC_API_URL .env
 # Rebuild frontend with correct URL
 sudo docker compose up -d --build frontend
 ```
+
+### 504 Gateway Timeout (Agent)
+
+If the Agent page shows **504** when you send a message, the reverse proxy (nginx, ALB, or CDN) in front of the backend is closing the connection before the agent finishes. Agent requests can take several minutes (LLM + tools). Increase the proxy timeout:
+
+- **Nginx:** In the `location` that proxies to the backend, set `proxy_read_timeout 300s;` (and optionally `proxy_connect_timeout` / `proxy_send_timeout`). Reload nginx.
+- **AWS ALB:** In the load balancer attributes, set **Idle timeout** to 300 seconds (or higher). Default is 60.
+- See [ENV_EXAMPLE.md](ENV_EXAMPLE.md) → "Troubleshooting: 504 Gateway Timeout" for details and CLI examples.
 
 ### "No such container" Error
 

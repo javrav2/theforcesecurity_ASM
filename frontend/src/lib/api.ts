@@ -1374,7 +1374,7 @@ class ApiClient {
       playbook_id: options?.playbookId ?? undefined,
       target: options?.target ?? undefined,
       mode: options?.mode ?? 'assist',
-    });
+    }, { timeout: 330000 });
     return response.data;
   }
 
@@ -1383,7 +1383,7 @@ class ApiClient {
       session_id: sessionId,
       decision,
       modification: modification ?? undefined,
-    });
+    }, { timeout: 330000 });
     return response.data;
   }
 
@@ -1391,8 +1391,40 @@ class ApiClient {
     const response = await this.client.post('/agent/answer', {
       session_id: sessionId,
       answer,
-    });
+    }, { timeout: 330000 });
     return response.data;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agent Conversation History
+  // ---------------------------------------------------------------------------
+
+  async getAgentConversations(limit: number = 50) {
+    const response = await this.client.get('/agent/conversations', { params: { limit } });
+    return response.data;
+  }
+
+  async getAgentConversation(sessionId: string) {
+    const response = await this.client.get(`/agent/conversations/${sessionId}`);
+    return response.data;
+  }
+
+  async deleteAgentConversation(sessionId: string) {
+    const response = await this.client.delete(`/agent/conversations/${sessionId}`);
+    return response.data;
+  }
+
+  /**
+   * Build a WebSocket URL for the agent endpoint.
+   * Handles http→ws and https→wss protocol conversion.
+   */
+  getAgentWebSocketUrl(sessionId: string): string {
+    let base = API_URL;
+    if (typeof window !== 'undefined') {
+      base = window.location.origin;
+    }
+    const wsBase = base.replace(/^http/, 'ws');
+    return `${wsBase}/api/v1/agent/ws/${sessionId}`;
   }
 
   // ---------------------------------------------------------------------------
