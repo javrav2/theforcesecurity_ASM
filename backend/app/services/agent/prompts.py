@@ -80,8 +80,21 @@ Analyze the current state and decide on your next action. You MUST output a vali
 6. **Phase restrictions** — Some tools require phase transitions. Request a transition if needed.
 7. **Complete when done** — Set action to "complete" when the objective is achieved or you're running low on iterations.
 
-**Workflow for scanning a target:**
+**Workflow for scanning a single target:**
 1. add_asset (if not in DB) → 2. execute_httpx (probe it) → 3. execute_nuclei (scan for vulns) → 4. create_finding (save results) → 5. complete
+
+**Workflow for bulk / follow-up scanning (many targets, IP ranges, deep scans):**
+Use **create_scan** to queue async scan jobs that the scanner worker handles. This is better than execute_* for:
+- Scanning IP ranges or subnets (e.g. 1,223 IPs)
+- Running port scans, vulnerability scans, waybackurls, katana across many assets
+- Follow-up scans recommended in your report
+Example: create_scan(scan_type="port_scan", targets=["10.0.0.1", "10.0.0.2", ...])
+Example: create_scan(scan_type="vulnerability") — scans all org assets
+
+**When you identify gaps** (unscanned IPs, services needing deeper inspection):
+1. Use create_scan to queue the bulk work
+2. Report what scans you kicked off and their expected scope
+3. Users can monitor progress on the Scans page
 
 **DO NOT** spend more than 2-3 iterations on query_assets/query_vulnerabilities/analyze_attack_surface before moving to scanning tools. Discovery without scanning produces no value.
 
@@ -210,6 +223,9 @@ Structure:
 2. **Findings** — Specific vulnerabilities/issues with severity, affected asset, and evidence. Omit if none.
 3. **Recommendations** — Specific remediation for actual findings. Omit if no findings.
 4. **Scan Coverage** — What tools ran, what was scanned, what was NOT scanned (so the user knows gaps)
+5. **Queued Follow-up Scans** — If you used create_scan to queue async scans for gaps you identified, list them here with scan type, target count, and expected coverage. Tell the user to check the Scans page for results.
+
+IMPORTANT: If you identified gaps (unscanned IPs, services needing deeper inspection, etc.), you SHOULD have used create_scan to queue those follow-up scans before completing. If you did, report what you queued. If the gaps were too large or out of scope, explain what the user should do manually.
 
 Do NOT write generic security advice, compliance recommendations, or template content. Only report concrete results from this session.
 """
@@ -247,6 +263,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_ffuf**: Web fuzzer. Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
 - **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**: Get CLI usage for each tool
 - **add_asset**: Add a target to the asset inventory. Use when the target is NOT already in the database. Args: **value** (required — hostname, domain, IP, or URL), asset_type (optional, auto-detected), description (optional). Example: add_asset(value="test-git.glensserver.com"). Once added, you can scan it and use create_finding.
+- **create_scan**: Create an async bulk scan job handled by the scanner worker. Use this instead of execute_* tools when you need to scan many targets (e.g. a list of IPs, subnets, or domains). Args: **scan_type** (required — port_scan, vulnerability, waybackurls, katana, paramspider, http_probe, technology, screenshot, login_portal, subdomain_enum, dns_resolution, discovery, full, geo_enrich, tldfinder, whatweb), **targets** (optional list of hostnames/IPs — omit to scan all org assets), name (optional), config (optional dict, e.g. {"severity": ["critical","high"]}). Examples: create_scan(scan_type="port_scan", targets=["10.0.0.0/24"]), create_scan(scan_type="vulnerability", targets=["example.com"]), create_scan(scan_type="waybackurls", targets=["example.com"]). The scan runs asynchronously — results appear on the Scans page and update asset records automatically.
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
 - **get_notes**: Get session notes (optional category filter)
 - **create_finding**: Add a finding to the platform findings table. Args: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL — will be auto-added to inventory if not found), optional: evidence, cve_id, remediation. Findings appear in the UI.
@@ -278,6 +295,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 TOOL_PHASE_MAP = {
     # Informational tools - available in all phases
     "add_asset": ["informational", "exploitation", "post_exploitation"],
+    "create_scan": ["informational", "exploitation", "post_exploitation"],
     "query_assets": ["informational", "exploitation", "post_exploitation"],
     "query_vulnerabilities": ["informational", "exploitation", "post_exploitation"],
     "query_ports": ["informational", "exploitation", "post_exploitation"],

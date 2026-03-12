@@ -73,6 +73,8 @@ class ASMToolsManager:
             "search_cve": self.search_cve,
             # Asset management
             "add_asset": self.add_asset,
+            # Scan management
+            "create_scan": self.create_scan,
             # Session notes and findings
             "save_note": self.save_note,
             "get_notes": self.get_notes,
@@ -902,6 +904,102 @@ class ASMToolsManager:
             db.rollback()
             logger.exception("add_asset failed")
             return f"Error adding asset: {e}"
+        finally:
+            db.close()
+
+    async def create_scan(
+        self,
+        scan_type: str,
+        targets: Optional[List[str]] = None,
+        name: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Create an async scan job processed by the scanner worker. Use this for
+        bulk operations (scanning many IPs/domains) instead of execute_* tools.
+
+        The scan runs in the background — results appear in the Scans page and
+        update asset records automatically.
+
+        Args:
+            scan_type: One of: port_scan, vulnerability, waybackurls, katana,
+                       paramspider, http_probe, technology, screenshot,
+                       login_portal, subdomain_enum, dns_resolution, discovery,
+                       full, geo_enrich, tldfinder, whatweb
+            targets: List of hostnames, domains, or IPs to scan. If omitted,
+                     scans all org domains/assets automatically.
+            name: Optional scan name (auto-generated if omitted).
+            config: Optional dict with scan-specific settings, e.g.
+                    {"severity": ["critical","high"]} for vulnerability scans,
+                    {"ports": "80,443,8080"} for port_scan.
+        """
+        _, org_id = get_tenant_context()
+        if not org_id:
+            return "Error: No organization context."
+        if not scan_type:
+            return "Error: scan_type is required."
+
+        from app.models.scan import Scan, ScanType as ST, ScanStatus
+
+        type_map = {
+            "port_scan": ST.PORT_SCAN,
+            "vulnerability": ST.VULNERABILITY,
+            "waybackurls": ST.WAYBACKURLS,
+            "katana": ST.KATANA,
+            "paramspider": ST.PARAMSPIDER,
+            "http_probe": ST.HTTP_PROBE,
+            "technology": ST.TECHNOLOGY,
+            "whatweb": ST.WHATWEB,
+            "screenshot": ST.SCREENSHOT,
+            "login_portal": ST.LOGIN_PORTAL,
+            "subdomain_enum": ST.SUBDOMAIN_ENUM,
+            "dns_resolution": ST.DNS_RESOLUTION,
+            "discovery": ST.DISCOVERY,
+            "full": ST.FULL,
+            "geo_enrich": ST.GEO_ENRICH,
+            "tldfinder": ST.TLDFINDER,
+        }
+        st = type_map.get(scan_type.lower().strip())
+        if not st:
+            return (
+                f"Unknown scan_type '{scan_type}'. Valid types: {', '.join(sorted(type_map.keys()))}"
+            )
+
+        auto_name = name or f"Agent {scan_type} scan"
+        scan_config = dict(config or {})
+        scan_config["created_by"] = "agent"
+
+        db = SessionLocal()
+        try:
+            new_scan = Scan(
+                name=auto_name[:255],
+                scan_type=st,
+                organization_id=org_id,
+                targets=targets or [],
+                config=scan_config,
+                status=ScanStatus.PENDING,
+                started_by="agent",
+            )
+            db.add(new_scan)
+            db.commit()
+            db.refresh(new_scan)
+
+            try:
+                from app.api.routes.scans import send_scan_to_sqs
+                send_scan_to_sqs(new_scan)
+            except Exception:
+                pass
+
+            target_desc = f"{len(targets)} targets" if targets else "all org assets"
+            return (
+                f"Scan created: id={new_scan.id}, type={scan_type}, status=pending, "
+                f"targets={target_desc}. The scanner worker will pick it up automatically. "
+                f"Results will appear on the Scans page and update asset records."
+            )
+        except Exception as e:
+            db.rollback()
+            logger.exception("create_scan failed")
+            return f"Error creating scan: {e}"
         finally:
             db.close()
 
