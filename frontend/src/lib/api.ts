@@ -1385,7 +1385,7 @@ class ApiClient {
       playbook_id: options?.playbookId ?? undefined,
       target: options?.target ?? undefined,
       mode: options?.mode ?? 'assist',
-    }, { timeout: 330000 });
+    }, { timeout: 720000 });
     return response.data;
   }
 
@@ -1394,7 +1394,7 @@ class ApiClient {
       session_id: sessionId,
       decision,
       modification: modification ?? undefined,
-    }, { timeout: 330000 });
+    }, { timeout: 720000 });
     return response.data;
   }
 
@@ -1402,7 +1402,7 @@ class ApiClient {
     const response = await this.client.post('/agent/answer', {
       session_id: sessionId,
       answer,
-    }, { timeout: 330000 });
+    }, { timeout: 720000 });
     return response.data;
   }
 

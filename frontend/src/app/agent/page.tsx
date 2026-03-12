@@ -84,6 +84,7 @@ export default function AgentPage() {
   const [liveStatus, setLiveStatus] = useState<StatusUpdate | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const wsAuthenticatedRef = useRef(false);
+  const pendingWsMsgRef = useRef<Record<string, unknown> | null>(null);
 
   // Conversation history
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -125,6 +126,9 @@ export default function AgentPage() {
     if (agentAvailable) {
       api.getAgentPlaybooks().then(setPlaybooks).catch(() => setPlaybooks([]));
       loadConversations();
+      if (!sessionId) {
+        setSessionId(crypto.randomUUID());
+      }
     }
   }, [agentAvailable]);
 
@@ -171,11 +175,13 @@ export default function AgentPage() {
     ws.onerror = () => {
       setConnectionMode('rest');
       wsAuthenticatedRef.current = false;
+      pendingWsMsgRef.current = null;
     };
 
     ws.onclose = () => {
       wsRef.current = null;
       wsAuthenticatedRef.current = false;
+      pendingWsMsgRef.current = null;
       if (connectionMode === 'websocket') {
         setConnectionMode('rest');
       }
@@ -190,6 +196,10 @@ export default function AgentPage() {
     } else if (msgType === 'authenticated') {
       wsAuthenticatedRef.current = true;
       setConnectionMode('websocket');
+      if (pendingWsMsgRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify(pendingWsMsgRef.current));
+        pendingWsMsgRef.current = null;
+      }
     } else if (msgType === 'thinking' || msgType === 'tool_start' || msgType === 'tool_complete') {
       setLiveStatus(data as unknown as StatusUpdate);
     } else if (msgType === 'response') {
@@ -285,6 +295,11 @@ export default function AgentPage() {
       wsRef.current.send(JSON.stringify(msgObj));
       return true;
     }
+    // Queue the message if WS is connecting — it will be flushed on authentication
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)) {
+      pendingWsMsgRef.current = msgObj;
+      return true;
+    }
     return false;
   };
 
@@ -308,11 +323,11 @@ export default function AgentPage() {
     if (!sessionId) setSessionId(sid);
 
     try {
-      if (pendingAnswer && sessionId) {
+      if (pendingAnswer && sid) {
         setPendingAnswer(false);
         const sent = sendViaWs({ type: 'answer', answer: q || displayContent });
         if (!sent) {
-          const data = await api.answerAgentQuestion(sessionId, q || displayContent);
+          const data = await api.answerAgentQuestion(sid, q || displayContent);
           setLoading(false);
           appendAgentMessage(data);
           if (data.awaiting_question) setPendingAnswer(true);
@@ -331,7 +346,6 @@ export default function AgentPage() {
 
         const sent = sendViaWs(wsMsg);
         if (!sent) {
-          // REST fallback
           const data = await api.queryAgent(
             usePreset ? displayContent : q,
             sid,
@@ -403,8 +417,7 @@ export default function AgentPage() {
       await api.deleteAgentConversation(sid);
       setConversations((prev) => prev.filter((c) => c.session_id !== sid));
       if (sessionId === sid) {
-        setSessionId(null);
-        setMessages([]);
+        startNewConversation();
       }
     } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not delete conversation' });
@@ -412,7 +425,6 @@ export default function AgentPage() {
   };
 
   const startNewConversation = () => {
-    setSessionId(null);
     setMessages([]);
     setPendingAnswer(false);
     setLiveStatus(null);
@@ -421,6 +433,10 @@ export default function AgentPage() {
       wsRef.current.close();
       wsRef.current = null;
     }
+    wsAuthenticatedRef.current = false;
+    pendingWsMsgRef.current = null;
+    const newSid = crypto.randomUUID();
+    setSessionId(newSid);
     setConnectionMode('connecting');
   };
 

@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     AGENT_MAX_OUTPUT_TOKENS: int = 4096  # Max tokens for LLM response (Claude/OpenAI); increase for long answers (e.g. 8192, 16384, 64000)
     AGENT_TOOL_OUTPUT_MAX_CHARS: int = 20000  # RedAmon-style default; truncation for LLM context
     AGENT_REST_MAX_ITERATIONS: int = 15  # Cap per REST request to avoid proxy timeouts
-    AGENT_REQUEST_TIMEOUT_SECONDS: int = 300  # Hard timeout for a single agent REST call (5 min)
+    AGENT_REQUEST_TIMEOUT_SECONDS: int = 660  # Hard timeout for a single agent REST call (11 min, covers Nuclei 10-min max + LLM overhead)
 
     # Optional: Tavily API for agent web search (CVE/exploit research). Get key at tavily.com
     TAVILY_API_KEY: Optional[str] = None

@@ -66,6 +66,12 @@ ANTHROPIC_MODEL=claude-sonnet-4-20250514
 # Agent tool output truncation (chars passed to LLM; default 20000)
 # AGENT_TOOL_OUTPUT_MAX_CHARS=20000
 
+# Agent request timeout in seconds (default 660; increase for complex multi-tool runs)
+# AGENT_REQUEST_TIMEOUT_SECONDS=660
+
+# Agent max iterations per REST request (default 15; increase for longer tool chains)
+# AGENT_REST_MAX_ITERATIONS=15
+
 # =============================================================================
 # Neo4j Graph Database (optional - for asset relationship modeling)
 # =============================================================================
@@ -83,6 +89,25 @@ NEO4J_BOLT_PORT=7687
 # GitHub Personal Access Token for secret scanning
 # Create at: https://github.com/settings/tokens
 GITHUB_TOKEN=
+
+# =============================================================================
+# Scanner Performance Tuning (optional)
+# =============================================================================
+
+# Max concurrent scans the worker can process (default 5)
+# MAX_CONCURRENT_SCANS=5
+
+# Scanner poll interval in seconds (default 10)
+# POLL_INTERVAL=10
+
+# Port scan rate for Masscan (packets/sec, default 2000)
+# PORT_SCAN_RATE=2000
+
+# Nuclei rate limit (requests/sec, default 300)
+# NUCLEI_RATE_LIMIT=300
+
+# Schedule check interval in seconds (default 60)
+# SCHEDULE_CHECK_INTERVAL=60
 
 ```
 

@@ -50,13 +50,15 @@
 │  │  │   │   :80        │    │   :8000      │    │              │    │   :6379     │   │   │ │
 │  │  │   └──────────────┘    └──────┬───────┘    └──────┬───────┘    └─────────────┘   │   │ │
 │  │  │                              │                    │                              │   │ │
-│  │  │                              ▼                    │                              │   │ │
-│  │  │                       ┌──────────────┐            │                              │   │ │
-│  │  │                       │  PostgreSQL  │            │                              │   │ │
-│  │  │                       │  Database    │            │                              │   │ │
-│  │  │                       │   :5432      │            │                              │   │ │
-│  │  │                       └──────────────┘            │                              │   │ │
-│  │  │                                                   │                              │   │ │
+│  │  │              ┌───────────────┼────────────────────┘                              │   │ │
+│  │  │              │               │                                                   │   │ │
+│  │  │              ▼               ▼                                                   │   │ │
+│  │  │   ┌──────────────┐   ┌──────────────┐    ┌──────────────┐    ┌─────────────┐   │   │ │
+│  │  │   │  PostgreSQL  │   │  Scheduler   │    │   Neo4j      │    │  AI Agent   │   │   │ │
+│  │  │   │  Database    │   │ Cron Worker  │    │  (optional)  │    │ Claude/GPT  │   │   │ │
+│  │  │   │   :5432      │   │              │    │  :7474,:7687 │    │ via Backend │   │   │ │
+│  │  │   └──────────────┘   └──────────────┘    └──────────────┘    └─────────────┘   │   │ │
+│  │  │                                                                                  │   │ │
 │  │  │   ┌─────────────────────────────────────────────────────────────────────────┐   │   │ │
 │  │  │   │                    Security Tools Suite                                  │   │   │ │
 │  │  │   │  • Nuclei (Vulnerability Scanner)    • Masscan (Port Scanner)           │   │   │ │
@@ -64,6 +66,7 @@
 │  │  │   │  • HTTPX (HTTP Probing)              • EyeWitness (Screenshots)         │   │   │ │
 │  │  │   │  • DNSX (DNS Resolver)               • WaybackURLs (Historical URLs)    │   │   │ │
 │  │  │   │  • Naabu (Port Scanner)              • Katana (Web Crawler)             │   │   │ │
+│  │  │   │  • ParamSpider (Param Finder)        • FFUF (Web Fuzzer)                │   │   │ │
 │  │  │   └─────────────────────────────────────────────────────────────────────────┘   │   │ │
 │  │  └──────────────────────────────────────────────────────────────────────────────────┘   │ │
 │  └─────────────────────────────────────────────────────────────────────────────────────────┘ │
@@ -144,10 +147,13 @@
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **Frontend** | Next.js 14, React, Tailwind CSS | Dashboard UI, asset explorer, scan management |
-| **Backend** | FastAPI, Python 3.11, SQLAlchemy | REST API, authentication, business logic |
+| **Frontend** | Next.js 14, React 18, TypeScript, Tailwind CSS, shadcn/ui | Dashboard UI, asset explorer, scan management, agent chat |
+| **Backend** | FastAPI, Python 3.11, SQLAlchemy 2.0, Pydantic v2 | REST API, authentication, business logic, 29 route modules |
 | **Scanner** | Python worker + CLI tools | Async scan execution, vulnerability detection |
-| **Database** | PostgreSQL 15 | Asset storage, findings, user management |
+| **Scheduler** | Python cron worker | Recurring scan scheduling |
+| **AI Agent** | LangChain, LangGraph, Anthropic Claude / OpenAI GPT | Conversational security analysis via MCP tools |
+| **Database** | PostgreSQL 15 | Asset storage, findings, user management, agent conversations |
+| **Graph DB** | Neo4j 5 (optional) | Asset relationship modeling, attack path analysis |
 | **Cache** | Redis 7 | Session cache, job queue, rate limiting |
 | **SQS** | Amazon SQS | Reliable async scan job processing |
 | **S3** | Amazon S3 | Common Crawl subdomain index storage |
@@ -156,10 +162,23 @@
 
 | Resource | Name/ID | Purpose |
 |----------|---------|---------|
-| **EC2 Instance** | t3.large | Application host |
+| **EC2 Instance** | t3.large (min), t3.xlarge (recommended) | Application host |
 | **SQS Queue** | `asm-scan-jobs` | Async scan processing |
 | **S3 Bucket** | `asm-commoncrawl-theforce` | Subdomain index |
 | **Security Group** | Ports 22, 80, 443, 8000 | Network access control |
+
+### Docker Compose Services
+
+| Service | Image | Port | Purpose |
+|---------|-------|------|---------|
+| **db** | postgres:15-alpine | 5432 | PostgreSQL database |
+| **redis** | redis:7-alpine | 6379 | Cache and job queue |
+| **backend** | build backend/ | 8000 | FastAPI API server |
+| **frontend** | build frontend/ | 80→3000 | Next.js web UI |
+| **scanner** | Dockerfile.scanner | — | Async scan worker |
+| **scheduler** | Dockerfile.scanner | — | Recurring scan cron |
+| **adminer** | adminer (profile: dev) | 8080 | Database admin UI |
+| **neo4j** | neo4j:5-community (profile: graph) | 7474, 7687 | Graph database |
 
 ---
 

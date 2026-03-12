@@ -21,32 +21,41 @@
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Docker Compose                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │  Frontend   │    │   Backend   │    │  PostgreSQL │    │    Redis    │  │
-│  │  (Next.js)  │───▶│  (FastAPI)  │───▶│     DB      │    │   (Cache)   │  │
-│  │  Port 80    │    │  Port 8000  │    │  Port 5432  │    │  Port 6379  │  │
-│  └─────────────┘    └──────┬──────┘    └─────────────┘    └─────────────┘  │
-│                            │                                                │
-│         ┌──────────────────┴──────────────────┐                            │
-│         │                                      │                            │
-│         ▼                                      ▼                            │
-│  ┌─────────────────┐              ┌─────────────────────────────┐          │
-│  │    Scheduler    │              │   Security Tools Suite      │          │
-│  │  (Cron Worker)  │              │  • Nuclei (Vuln Scanner)    │          │
-│  │                 │              │  • Subfinder (Subdomains)   │          │
-│  └─────────────────┘              │  • HTTPX (HTTP Probing)     │          │
-│                                   │  • DNSX (DNS Toolkit)       │          │
-│  ┌─────────────────┐              │  • Naabu (Port Scanner)     │          │
-│  │    Scanner      │              │  • Masscan (Mass Scanner)   │          │
-│  │   (Worker)      │              │  • EyeWitness (Screenshots) │          │
-│  │                 │              │  • WaybackURLs (Historical) │          │
-│  └─────────────────┘              └─────────────────────────────┘          │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                                Docker Compose                                     │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                   │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐      │
+│  │   Frontend   │   │   Backend    │   │  PostgreSQL  │   │    Redis     │      │
+│  │  (Next.js)   │──▶│  (FastAPI)   │──▶│   Database   │   │  Cache/Queue │      │
+│  │   Port 80    │   │  Port 8000   │   │  Port 5432   │   │  Port 6379   │      │
+│  └──────────────┘   └──────┬───────┘   └──────────────┘   └──────────────┘      │
+│                            │                                                      │
+│         ┌──────────────────┼──────────────────┐                                  │
+│         │                  │                  │                                    │
+│         ▼                  ▼                  ▼                                    │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐      │
+│  │   Scanner    │   │  Scheduler   │   │   AI Agent   │   │   Neo4j      │      │
+│  │  (Worker)    │   │ (Cron Worker)│   │ Claude / GPT │   │  (Graph DB)  │      │
+│  │              │   │              │   │  LangGraph   │   │  Port 7474   │      │
+│  └──────┬───────┘   └──────────────┘   └──────┬───────┘   └──────────────┘      │
+│         │                                      │                                  │
+│         ▼                                      ▼                                  │
+│  ┌──────────────────────────────────┐   ┌──────────────────────────────────┐     │
+│  │      Security Tools Suite       │   │         MCP Tool Server          │     │
+│  │  • Nuclei (Vuln Scanner)        │   │  • Agent-accessible scan tools   │     │
+│  │  • Subfinder (Subdomains)       │   │  • Discovery, recon, analysis    │     │
+│  │  • HTTPX (HTTP Probing)         │   │  • Remediation guidance          │     │
+│  │  • DNSX (DNS Toolkit)           │   └──────────────────────────────────┘     │
+│  │  • Naabu (Port Scanner)         │                                             │
+│  │  • Masscan (Mass Scanner)       │                                             │
+│  │  • Katana (Web Crawler)         │                                             │
+│  │  • EyeWitness (Screenshots)     │                                             │
+│  │  • WaybackURLs (Historical)     │                                             │
+│  │  • ParamSpider (Param Finder)   │                                             │
+│  └──────────────────────────────────┘                                             │
+│                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## ✨ Features
@@ -95,6 +104,27 @@ Unified inventory page with three tabs:
 - **Vulnerability Details**: CVSS scores, remediation guidance, detection timeline
 - **Port Scanning**: Masscan + Nmap for comprehensive service discovery
 - **Finding Tracking**: First seen, last seen, resurfaced dates
+- **Finding Exceptions**: Track accepted risks and false positives with justifications
+- **MITRE ATT&CK Enrichment**: Map findings to MITRE techniques and CWEs
+
+### 🤖 AI Security Agent
+- **Conversational Interface**: Chat-based security analysis powered by Claude or GPT
+- **MCP Tool Integration**: Agent can run scans, discover assets, and analyze findings through natural language
+- **Playbook Library**: Pre-built playbooks for common recon and analysis workflows
+- **Dual Mode**: "Assist" mode (requires approval for actions) or "Agent" mode (autonomous)
+- **WebSocket Streaming**: Real-time status updates during tool execution
+- **Knowledge Base**: Persistent agent notes and knowledge for context across sessions
+
+### 🕸️ Graph Visualization & Attack Paths
+- **Neo4j Integration**: Asset relationship modeling (Domain → Subdomain → IP → Port → Service → Technology → Vulnerability → CVE)
+- **Attack Path Analysis**: Discover how vulnerabilities chain across infrastructure
+- **Attack Surface Overview**: Risk distribution, discovery sources, technology breakdown (PostgreSQL fallback when Neo4j is unavailable)
+- **Relationship Explorer**: Visual graph of asset connections and co-hosted services
+
+### 📊 Remediation Management
+- **Remediation Playbooks**: Auto-generated guidance based on CWE and vulnerability type
+- **Progress Tracking**: Track remediation status across findings
+- **CWE Database**: Built-in weakness classification and mitigation advice
 
 ### 📅 Scheduled Scanning
 Automated recurring scans with flexible frequencies:
@@ -137,21 +167,28 @@ Automated recurring scans with flexible frequencies:
 | **DNSX** | DNS toolkit | DNS resolution |
 | **Naabu** | Port scanner | Service discovery |
 | **Masscan** | Mass port scanner | Large-scale scanning |
-| **Katana** | Web crawler | URL discovery |
+| **Nmap** | Service detection | Port/service fingerprinting |
+| **Katana** | Web crawler | URL and endpoint discovery |
 | **EyeWitness** | Screenshot capture | Visual reconnaissance |
 | **WaybackURLs** | Historical URLs | Attack surface history |
+| **ParamSpider** | Parameter finder | URL parameter discovery |
 | **Amass** | Asset discovery | Advanced enumeration |
 | **MassDNS** | DNS resolver | Bulk DNS queries |
+| **FFUF** | Web fuzzer | Directory/file brute-forcing |
+| **TLDFinder** | TLD discovery | ProjectDiscovery TLD coverage |
 
 ## 🛠️ Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| **Frontend** | Next.js 14, TypeScript, Tailwind CSS, shadcn/ui |
-| **Backend** | Python 3.11, FastAPI, SQLAlchemy 2.0 |
+| **Frontend** | Next.js 14, React 18, TypeScript, Tailwind CSS, shadcn/ui (Radix) |
+| **State Management** | Zustand, TanStack React Query, Axios |
+| **Backend** | Python 3.11, FastAPI, SQLAlchemy 2.0, Pydantic v2 |
 | **Database** | PostgreSQL 15 |
-| **Cache** | Redis 7 |
-| **Auth** | JWT (python-jose), bcrypt |
+| **Graph Database** | Neo4j 5 (optional, for relationship modeling) |
+| **Cache / Queue** | Redis 7 |
+| **Auth** | JWT (python-jose), bcrypt, OAuth2 password flow |
+| **AI Agent** | LangChain, LangGraph, Anthropic Claude / OpenAI GPT |
 | **Container** | Docker, Docker Compose |
 | **Cloud** | AWS (EC2, SQS, S3) |
 
@@ -240,7 +277,7 @@ db.close()
 | **Frontend Dashboard** | `http://localhost` |
 | **Backend API** | `http://localhost:8000` |
 | **API Documentation** | `http://localhost:8000/api/docs` |
-| **MCP (tools for agent)** | `GET/POST /api/v1/mcp/tools`, `/api/v1/mcp/call` — see [MCP & TLDFinder](docs/MCP_AND_TLDFINDER.md) |
+| **MCP (agent tools)** | `GET/POST /api/v1/mcp/tools`, `/api/v1/mcp/call` — see [MCP & TLDFinder](docs/MCP_AND_TLDFINDER.md) |
 
 **Default Login:**
 - Username: `admin`
@@ -379,64 +416,72 @@ For optional env vars (e.g. `TAVILY_API_KEY`, `AGENT_TOOL_OUTPUT_MAX_CHARS`) and
 
 ```
 theforcesecurity_ASM/
-├── frontend/                    # Next.js Frontend
+├── frontend/                    # Next.js 14 Frontend
 │   ├── src/
-│   │   ├── app/                # Pages (dashboard, assets, inventory, etc.)
-│   │   ├── components/         # UI components
-│   │   ├── lib/               # API client, utilities
-│   │   └── store/             # State management
+│   │   ├── app/                # 21 pages (dashboard, assets, agent, graph, etc.)
+│   │   ├── components/         # UI components (shadcn/ui + custom)
+│   │   ├── lib/               # API client (api.ts), utilities
+│   │   └── store/             # Zustand state management
 │   ├── public/                # Static assets, logo
 │   ├── Dockerfile
 │   └── package.json
 │
 ├── backend/                    # FastAPI Backend
 │   ├── app/
-│   │   ├── api/routes/        # API endpoints (22 route modules)
-│   │   ├── models/            # Database models (16 models)
-│   │   ├── schemas/           # Pydantic schemas
-│   │   ├── services/          # Business logic (33 services)
+│   │   ├── api/routes/        # 29 API route modules
+│   │   ├── models/            # 20 database models
+│   │   ├── schemas/           # Pydantic v2 schemas
+│   │   ├── services/          # 55+ services (incl. agent/, mcp/)
 │   │   └── workers/           # Background workers (scanner, scheduler)
 │   ├── scripts/               # Database migrations
-│   ├── Dockerfile             # Includes security tools
+│   ├── Dockerfile             # Backend + security tools
+│   ├── Dockerfile.scanner     # Scanner worker image
 │   └── requirements.txt
 │
 ├── db/init/                   # Database initialization
+├── docs/                      # Technical documentation (11 guides)
 ├── aws/                       # AWS deployment configs
 │   ├── cloudformation/        # CloudFormation templates
 │   ├── terraform/            # Terraform IaC
 │   ├── ec2-single/           # Single EC2 setup
-│   └── commoncrawl/          # S3 index setup
+│   ├── commoncrawl/          # S3 index setup
+│   └── sni-ip-ranges/        # SNI discovery data
 │
-├── docker-compose.yml         # Container orchestration
+├── docker-compose.yml         # Container orchestration (7 services)
+├── APPLICATION_MAP.md         # Visual architecture & data flow map
 ├── DEPLOYMENT.md             # AWS deployment guide
+├── ENV_EXAMPLE.md            # Environment variable reference
 ├── Makefile                  # Development commands
 └── README.md
 ```
 
 ## 📊 API Endpoints
 
-All endpoints are prefixed with `/api/v1/`
+All endpoints are prefixed with `/api/v1/`. Full interactive docs available at `/api/docs`.
 
 ### Core APIs
 
 | Category | Endpoints | Description |
 |----------|-----------|-------------|
-| **Auth** | `/auth/login`, `/auth/me`, `/auth/logout` | Authentication |
-| **Organizations** | `/organizations/` | Multi-tenant management |
+| **Auth** | `/auth/login`, `/auth/me`, `/auth/logout`, `/auth/refresh` | JWT authentication |
+| **Users** | `/users/` | User CRUD and role management |
+| **Organizations** | `/organizations/` | Multi-tenant org management |
 | **Assets** | `/assets/`, `/assets/{id}`, `/assets/enrich-geolocation` | Asset CRUD + enrichment |
 | **Vulnerabilities** | `/vulnerabilities/`, `/vulnerabilities/stats/*` | Findings + analytics |
-| **Scans** | `/scans/`, `/scans/by-label` | Scan management |
-| **Schedules** | `/scan-schedules/` | Automated scanning |
+| **Scans** | `/scans/`, `/scans/by-label`, `/scans/{id}/cancel` | Scan management |
+| **Schedules** | `/scan-schedules/` | Automated recurring scans |
+| **Scan Config** | `/scan-config/` | Scan configuration profiles |
 
 ### Discovery APIs
 
 | Endpoint | Description |
 |----------|-------------|
-| `/discovery/run` | Subdomain discovery |
-| `/external-discovery/run` | External source discovery |
-| `/external-discovery/enrich-dns` | DNS record enrichment |
-| `/external-discovery/validate-domains` | Domain validation |
+| `/discovery/run` | Subdomain discovery (Subfinder, crt.sh, etc.) |
+| `/external-discovery/run` | External source discovery (VT, Whoxy, OTX, etc.) |
+| `/external-discovery/enrich-dns` | DNS record enrichment (WhoisXML) |
+| `/external-discovery/validate-domains` | Domain validation (parked, suspicious) |
 | `/netblocks/discover` | CIDR discovery by org name |
+| `/sni-discovery/` | SNI-based asset discovery |
 
 ### Inventory APIs
 
@@ -446,18 +491,50 @@ All endpoints are prefixed with `/api/v1/`
 | `/acquisitions/` | M&A tracking |
 | `/acquisitions/import-from-tracxn` | Tracxn import |
 | `/acquisitions/{id}/discover-domains` | Domain discovery for M&A |
+| `/labels/` | Asset labeling and organization |
 
-### Other APIs
+### AI Agent APIs
 
 | Endpoint | Description |
 |----------|-------------|
-| `/screenshots/` | Screenshot management |
-| `/ports/` | Port scan results |
-| `/waybackurls/` | Historical URL fetching |
-| `/labels/` | Asset labeling |
-| `/tools/status` | Security tool status |
+| `/agent/status` | Agent availability and config |
+| `/agent/query` | Send query to AI agent (REST) |
+| `/agent/ws/{sessionId}` | WebSocket streaming for agent |
+| `/agent/conversations` | Conversation history |
+| `/agent/approve`, `/agent/answer` | Approval and Q&A flows |
+| `/agent-knowledge/` | Agent knowledge base CRUD |
+| `/mcp/tools`, `/mcp/call` | MCP tool listing and invocation |
 
-Full API documentation available at `/api/docs`
+### Security & Analysis APIs
+
+| Endpoint | Description |
+|----------|-------------|
+| `/nuclei/` | Nuclei vulnerability scans |
+| `/ports/` | Port scan results |
+| `/screenshots/` | Screenshot management |
+| `/waybackurls/` | Historical URL fetching |
+| `/remediation/` | Remediation playbooks and CWE info |
+| `/exceptions/` | Finding exceptions management |
+| `/github-secrets/` | GitHub secret scanning |
+| `/mitre/` | MITRE ATT&CK enrichment |
+| `/reports/` | PDF/HTML report generation |
+
+### Graph APIs
+
+| Endpoint | Description |
+|----------|-------------|
+| `/graph/status` | Neo4j connection status |
+| `/graph/sync` | Sync PostgreSQL data to Neo4j |
+| `/graph/relationships` | Query asset relationships |
+| `/graph/attack-paths` | Attack path analysis |
+| `/graph/fallback/*` | PostgreSQL-based attack surface overview |
+
+### Utility APIs
+
+| Endpoint | Description |
+|----------|-------------|
+| `/tools/status` | Security tool availability check |
+| `/app-structure/` | Application structure discovery |
 
 ## 🔧 Useful Commands
 
@@ -490,6 +567,22 @@ sudo docker exec asm_scanner nuclei -update-templates
 sudo docker compose down -v
 sudo docker system prune -a -f
 ```
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [APPLICATION_MAP.md](APPLICATION_MAP.md) | Visual architecture, data flow, and database schema diagrams |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Complete AWS deployment guide (CloudFormation, EC2, SSL) |
+| [ENV_EXAMPLE.md](ENV_EXAMPLE.md) | Environment variable reference and troubleshooting |
+| [docs/RECON_WORKFLOW.md](docs/RECON_WORKFLOW.md) | Full reconnaissance pipeline (5 phases) |
+| [docs/GRAPH_SCHEMA.md](docs/GRAPH_SCHEMA.md) | Neo4j graph database schema and queries |
+| [docs/MCP_AND_TLDFINDER.md](docs/MCP_AND_TLDFINDER.md) | MCP tool server and TLDFinder setup |
+| [docs/SCAN_TYPES_AND_PROJECT_SETTINGS.md](docs/SCAN_TYPES_AND_PROJECT_SETTINGS.md) | Scan type configuration |
+| [docs/SCAN_EXECUTION_AND_RESULTS.md](docs/SCAN_EXECUTION_AND_RESULTS.md) | Scan execution flow and result handling |
+| [docs/SCAN_TROUBLESHOOTING.md](docs/SCAN_TROUBLESHOOTING.md) | Common scan issues and fixes |
+| [docs/ADHOC_AND_RECURRING_SCANS.md](docs/ADHOC_AND_RECURRING_SCANS.md) | Ad-hoc vs scheduled scan workflows |
+| [docs/GRAPH_AND_DATA_FLOW_ROADMAP.md](docs/GRAPH_AND_DATA_FLOW_ROADMAP.md) | Graph feature roadmap |
 
 ## 🔒 Security Considerations
 
