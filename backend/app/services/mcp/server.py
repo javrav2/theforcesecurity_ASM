@@ -442,6 +442,38 @@ class MCPServer:
             phase="informational",
             handler=self._whatweb_help,
         ))
+        
+        # LLM Red Team Scanner
+        self.registry.register(MCPTool(
+            name="execute_llm_red_team",
+            description=(
+                "Run LLM red team security assessment against chatbot/AI endpoints. "
+                "Tests for prompt injection, jailbreak, data exfiltration, SSRF, "
+                "excessive agency, and more. Auto-discovers chat endpoints on the target."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "target_url": {
+                    "type": "string",
+                    "description": "Target URL to scan for chatbot/AI endpoints"
+                },
+                "categories": {
+                    "type": "string",
+                    "description": "Comma-separated attack categories (prompt_injection,jailbreak,data_exfiltration,ssrf_tool_abuse,system_prompt_leakage,excessive_agency,hallucination,harmful_content). Omit for all."
+                },
+                "endpoint_url": {
+                    "type": "string",
+                    "description": "Direct URL to a known chatbot API endpoint (optional)"
+                },
+                "message_field": {
+                    "type": "string",
+                    "description": "JSON field name for the message in the API request (default: message)"
+                },
+            },
+            required_params=["target_url"],
+            phase="exploitation",
+            handler=None,  # Handled by ASMToolsManager directly
+        ))
     
     @staticmethod
     def _parse_args(args: str) -> List[str]:

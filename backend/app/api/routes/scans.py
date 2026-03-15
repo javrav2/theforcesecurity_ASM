@@ -78,6 +78,7 @@ def send_scan_to_sqs(scan: Scan) -> bool:
         ScanType.KATANA: 'KATANA',
         ScanType.TLDFINDER: 'TLDFINDER',
         ScanType.CLEANUP: 'CLEANUP',
+        ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
     }
     
     job_type = job_type_map.get(scan.scan_type, 'NUCLEI_SCAN')

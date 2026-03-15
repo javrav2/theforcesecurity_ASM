@@ -79,6 +79,8 @@ class ASMToolsManager:
             "save_note": self.save_note,
             "get_notes": self.get_notes,
             "create_finding": self.create_finding,
+            # LLM Red Team Scanner
+            "execute_llm_red_team": self.execute_llm_red_team,
             # MCP Security Tools (delegated)
             "execute_nuclei": self.execute_mcp_tool,
             "execute_naabu": self.execute_mcp_tool,
@@ -1057,6 +1059,95 @@ class ASMToolsManager:
             return f"Error creating finding: {e}"
         finally:
             db.close()
+
+    async def execute_llm_red_team(
+        self,
+        target_url: str,
+        categories: Optional[List[str]] = None,
+        endpoint_url: Optional[str] = None,
+        message_field: Optional[str] = None,
+        auto_discover: bool = True,
+        max_payloads: Optional[int] = None,
+        create_findings: bool = True,
+        **kwargs: Any,
+    ) -> str:
+        """Run LLM red team scan against chatbot/AI endpoints on a target URL. Tests for prompt injection, jailbreak, data exfiltration, SSRF, excessive agency, and more. Optionally auto-discovers chat endpoints. If endpoint_url is provided, it will be tested directly. categories = prompt_injection|system_prompt_leakage|data_exfiltration|jailbreak|ssrf_tool_abuse|excessive_agency|hallucination|harmful_content (comma-separated or list; omit for all). Returns a formatted report of findings."""
+        from app.services.llm_red_team.scanner import (
+            run_scan, ScanConfig, ChatEndpoint, format_scan_report, build_finding_data,
+        )
+        _, org_id = get_tenant_context()
+
+        cat_list = None
+        if categories:
+            if isinstance(categories, str):
+                cat_list = [c.strip() for c in categories.split(",")]
+            else:
+                cat_list = list(categories)
+
+        endpoints = []
+        if endpoint_url:
+            endpoints.append(ChatEndpoint(
+                url=endpoint_url.strip(),
+                message_field=message_field or "message",
+                detected_by="agent",
+            ))
+
+        config = ScanConfig(
+            target_url=target_url.strip(),
+            endpoints=endpoints,
+            categories=cat_list,
+            auto_discover=auto_discover,
+            use_llm_grading=True,
+            max_payloads=int(max_payloads) if max_payloads else None,
+        )
+
+        try:
+            scan_result = await run_scan(config)
+        except Exception as e:
+            logger.exception("LLM red team scan failed")
+            return f"Error running LLM red team scan: {e}"
+
+        if create_findings and org_id and scan_result.vulnerabilities_found > 0:
+            db = SessionLocal()
+            try:
+                created_count = 0
+                for test_result in scan_result.results:
+                    if test_result.get("verdict") != "fail":
+                        continue
+                    finding_data = build_finding_data(test_result, target_url)
+                    asset = self._get_or_create_asset(db, org_id, target_url.strip())
+                    if not asset.id or db.is_modified(asset):
+                        db.flush()
+                    sev_map = {"critical": Severity.CRITICAL, "high": Severity.HIGH, "medium": Severity.MEDIUM, "low": Severity.LOW, "info": Severity.INFO}
+                    vuln = Vulnerability(
+                        title=finding_data["title"][:500],
+                        description=finding_data.get("description", "")[:10000],
+                        severity=sev_map.get(finding_data.get("severity", "medium"), Severity.MEDIUM),
+                        asset_id=asset.id,
+                        detected_by="llm_red_team",
+                        template_id=finding_data.get("template_id"),
+                        evidence=finding_data.get("evidence", "")[:5000],
+                        cwe_id=finding_data.get("cwe_id"),
+                        remediation=finding_data.get("remediation", "")[:5000],
+                        tags=finding_data.get("tags", []),
+                        metadata_=finding_data.get("metadata", {}),
+                    )
+                    db.add(vuln)
+                    created_count += 1
+                db.commit()
+                logger.info(f"LLM red team: created {created_count} findings for {target_url}")
+            except Exception as e:
+                db.rollback()
+                logger.exception("Failed to create LLM red team findings")
+                scan_result.errors.append(f"Finding creation error: {e}")
+            finally:
+                db.close()
+
+        report = format_scan_report(scan_result)
+        max_chars = _tool_output_max_chars()
+        if len(report) > max_chars:
+            report = report[:max_chars] + "\n\n... (truncated)"
+        return report
 
     async def save_note(
         self,

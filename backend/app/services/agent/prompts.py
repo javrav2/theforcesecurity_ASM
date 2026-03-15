@@ -263,10 +263,11 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_ffuf**: Web fuzzer. Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
 - **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**: Get CLI usage for each tool
 - **add_asset**: Add a target to the asset inventory. Use when the target is NOT already in the database. Args: **value** (required — hostname, domain, IP, or URL), asset_type (optional, auto-detected), description (optional). Example: add_asset(value="test-git.glensserver.com"). Once added, you can scan it and use create_finding.
-- **create_scan**: Create an async bulk scan job handled by the scanner worker. Use this instead of execute_* tools when you need to scan many targets (e.g. a list of IPs, subnets, or domains). Args: **scan_type** (required — port_scan, vulnerability, waybackurls, katana, paramspider, http_probe, technology, screenshot, login_portal, subdomain_enum, dns_resolution, discovery, full, geo_enrich, tldfinder, whatweb), **targets** (optional list of hostnames/IPs — omit to scan all org assets), name (optional), config (optional dict, e.g. {"severity": ["critical","high"]}). Examples: create_scan(scan_type="port_scan", targets=["10.0.0.0/24"]), create_scan(scan_type="vulnerability", targets=["example.com"]), create_scan(scan_type="waybackurls", targets=["example.com"]). The scan runs asynchronously — results appear on the Scans page and update asset records automatically.
+- **create_scan**: Create an async bulk scan job handled by the scanner worker. Use this instead of execute_* tools when you need to scan many targets (e.g. a list of IPs, subnets, or domains). Args: **scan_type** (required — port_scan, vulnerability, waybackurls, katana, paramspider, http_probe, technology, screenshot, login_portal, subdomain_enum, dns_resolution, discovery, full, geo_enrich, tldfinder, whatweb, llm_red_team), **targets** (optional list of hostnames/IPs — omit to scan all org assets), name (optional), config (optional dict, e.g. {"severity": ["critical","high"]}). Examples: create_scan(scan_type="port_scan", targets=["10.0.0.0/24"]), create_scan(scan_type="vulnerability", targets=["example.com"]), create_scan(scan_type="llm_red_team", targets=["https://example.com"], config={"categories": ["prompt_injection","jailbreak"]}). The scan runs asynchronously — results appear on the Scans page and update asset records automatically.
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
 - **get_notes**: Get session notes (optional category filter)
 - **create_finding**: Add a finding to the platform findings table. Args: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL — will be auto-added to inventory if not found), optional: evidence, cve_id, remediation. Findings appear in the UI.
+- **execute_llm_red_team**: Run AI/LLM red team security scan against chatbot endpoints on a target URL. Tests for prompt injection, jailbreak, data exfiltration, SSRF, system prompt leakage, excessive agency, hallucination, and harmful content generation. Auto-discovers chatbot API endpoints. Args: **target_url** (required), categories (optional comma-separated: prompt_injection,jailbreak,data_exfiltration,ssrf_tool_abuse,system_prompt_leakage,excessive_agency,hallucination,harmful_content), endpoint_url (optional — direct chatbot API URL if known), message_field (optional — JSON field name, default "message"), max_payloads (optional int). Example: execute_llm_red_team(target_url="https://example.com"), execute_llm_red_team(target_url="https://example.com", endpoint_url="https://example.com/api/chat", categories="prompt_injection,jailbreak"). Findings are auto-created in the platform.
 """
 
     exploitation_tools = """
@@ -339,6 +340,9 @@ TOOL_PHASE_MAP = {
     "execute_nmap": ["informational", "exploitation", "post_exploitation"],
     "execute_masscan": ["informational", "exploitation", "post_exploitation"],
     "execute_ffuf": ["informational", "exploitation", "post_exploitation"],
+    
+    # LLM Red Team Scanner
+    "execute_llm_red_team": ["informational", "exploitation", "post_exploitation"],
     
     # Legacy scanning tools
     "run_nuclei_scan": ["informational", "exploitation", "post_exploitation"],

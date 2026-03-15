@@ -279,6 +279,7 @@ class ScannerWorker:
                 ScanType.WHATWEB: 'WHATWEB_SCAN',
                 ScanType.GEO_ENRICH: 'GEO_ENRICH',
                 ScanType.TLDFINDER: 'TLDFINDER',
+                ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
             }
             
             messages = []
@@ -650,6 +651,8 @@ class ScannerWorker:
                     await self.handle_tldfinder_scan(body)
                 elif job_type == 'RECON_PIPELINE':
                     await self.handle_recon_pipeline(body)
+                elif job_type == 'LLM_RED_TEAM':
+                    await self.handle_llm_red_team(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -3842,6 +3845,140 @@ class ScannerWorker:
                 active_scans.discard(scan_id)
                 logger.info(f"Scan {scan_id} removed from active scans")
     
+    async def handle_llm_red_team(self, job_data: dict):
+        """Handle LLM red team scan against chatbot/AI endpoints."""
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for LLM red team scan")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+
+        try:
+            from app.services.llm_red_team.scanner import (
+                run_scan, ScanConfig, ChatEndpoint, build_finding_data,
+            )
+            from app.models.vulnerability import Vulnerability, Severity
+
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running LLM red team assessment"
+                db.commit()
+
+            target_url = targets[0] if targets else config.get('target_url', '')
+            if not target_url:
+                self._mark_scan_failed(scan_id, "No target URL provided")
+                return
+
+            endpoints = []
+            for ep_cfg in config.get('endpoints', []):
+                endpoints.append(ChatEndpoint(
+                    url=ep_cfg.get('url', ''),
+                    method=ep_cfg.get('method', 'POST'),
+                    message_field=ep_cfg.get('message_field', 'message'),
+                    response_field=ep_cfg.get('response_field'),
+                    headers=ep_cfg.get('headers', {}),
+                    auth_token=ep_cfg.get('auth_token'),
+                    extra_body=ep_cfg.get('extra_body', {}),
+                    detected_by="scan_config",
+                ))
+
+            scan_config = ScanConfig(
+                target_url=target_url,
+                endpoints=endpoints,
+                categories=config.get('categories'),
+                auto_discover=config.get('auto_discover', True),
+                use_llm_grading=config.get('use_llm_grading', True),
+                rate_limit_delay=config.get('rate_limit_delay', 1.0),
+                max_payloads=config.get('max_payloads'),
+            )
+
+            async def progress_cb(pct, step):
+                try:
+                    s = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if s:
+                        s.progress = pct
+                        s.current_step = step
+                        db.commit()
+                except Exception:
+                    pass
+
+            scan_result = await run_scan(scan_config, progress_callback=progress_cb)
+
+            created = 0
+            sev_map = {
+                "critical": Severity.CRITICAL, "high": Severity.HIGH,
+                "medium": Severity.MEDIUM, "low": Severity.LOW, "info": Severity.INFO,
+            }
+            if scan_result.vulnerabilities_found > 0:
+                from app.models.asset import Asset, AssetType, AssetStatus
+                from urllib.parse import urlparse
+                parsed = urlparse(target_url)
+                hostname = parsed.netloc or parsed.path.split("/")[0]
+                asset = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.value == hostname,
+                ).first()
+                if not asset:
+                    asset = Asset(
+                        value=hostname,
+                        asset_type=AssetType.DOMAIN,
+                        organization_id=organization_id,
+                        status=AssetStatus.ACTIVE,
+                    )
+                    db.add(asset)
+                    db.flush()
+
+                for test_result in scan_result.results:
+                    if test_result.get("verdict") != "fail":
+                        continue
+                    finding_data = build_finding_data(test_result, target_url)
+                    vuln = Vulnerability(
+                        title=finding_data["title"][:500],
+                        description=finding_data.get("description", "")[:10000],
+                        severity=sev_map.get(finding_data.get("severity", "medium"), Severity.MEDIUM),
+                        asset_id=asset.id,
+                        scan_id=scan_id,
+                        detected_by="llm_red_team",
+                        template_id=finding_data.get("template_id"),
+                        evidence=finding_data.get("evidence", "")[:5000],
+                        cwe_id=finding_data.get("cwe_id"),
+                        remediation=finding_data.get("remediation", "")[:5000],
+                        tags=finding_data.get("tags", []),
+                        metadata_=finding_data.get("metadata", {}),
+                    )
+                    db.add(vuln)
+                    created += 1
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.vulnerabilities_found = created
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = scan_result.summary
+            db.commit()
+
+            logger.info(
+                f"LLM red team scan {scan_id} completed: "
+                f"{scan_result.endpoints_tested} endpoints, "
+                f"{scan_result.payloads_sent} payloads, "
+                f"{created} findings"
+            )
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"LLM red team scan {scan_id} failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
     async def run(self):
         """
         Main worker loop with concurrent scan processing.
