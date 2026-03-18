@@ -515,44 +515,82 @@ class CommonCrawlService:
         
         all_domains: Set[str] = set()
         all_subdomains: Set[str] = set()
+        errors: List[str] = []
         
-        try:
-            # 1. Search org_name across all TLDs
-            logger.info(f"CC: Searching for {org_name}.* across TLDs")
-            tld_result = await self.search_org_all_tlds(org_name)
-            if tld_result.domains:
-                all_domains.update(tld_result.domains)
-            
-            # 2. Search *org_name* keyword pattern
-            logger.info(f"CC: Searching for *{org_name}* keyword pattern")
-            keyword_result = await self.search_by_keyword(org_name)
-            if keyword_result.domains:
-                all_domains.update(keyword_result.domains)
-            
-            # 3. Search additional keywords
-            if keywords:
-                for keyword in keywords:
-                    logger.info(f"CC: Searching for *{keyword}* keyword pattern")
-                    kw_result = await self.search_by_keyword(keyword)
-                    if kw_result.domains:
-                        all_domains.update(kw_result.domains)
-            
-            # 4. Search subdomains of primary domain
-            if primary_domain:
+        # 1. Search subdomains of primary domain first (fastest, most reliable)
+        if primary_domain:
+            try:
                 logger.info(f"CC: Searching for subdomains of {primary_domain}")
                 sub_result = await self.search_domain(primary_domain)
-                if sub_result.subdomains:
+                if sub_result.error:
+                    logger.warning(f"CC subdomain search error: {sub_result.error}")
+                    errors.append(f"subdomain search: {sub_result.error}")
+                elif sub_result.subdomains:
                     all_subdomains.update(sub_result.subdomains)
-            
-            result.domains = sorted(list(all_domains))
-            result.subdomains = sorted(list(all_subdomains))
-            result.success = True
-            
-            logger.info(f"CC comprehensive search: {len(result.domains)} domains, {len(result.subdomains)} subdomains")
-            
+                    logger.info(f"CC: Found {len(sub_result.subdomains)} subdomains for {primary_domain}")
+            except Exception as e:
+                logger.warning(f"CC subdomain search failed: {e}")
+                errors.append(f"subdomain search: {e}")
+        
+        # 2. Search org_name across all TLDs
+        try:
+            logger.info(f"CC: Searching for {org_name}.* across TLDs")
+            tld_result = await self.search_org_all_tlds(org_name)
+            if tld_result.error:
+                logger.warning(f"CC TLD search error: {tld_result.error}")
+                errors.append(f"TLD search: {tld_result.error}")
+            elif tld_result.domains:
+                all_domains.update(tld_result.domains)
+                logger.info(f"CC: Found {len(tld_result.domains)} TLD variations for {org_name}")
         except Exception as e:
-            result.error = str(e)
-            logger.error(f"Common Crawl comprehensive search error: {e}")
+            logger.warning(f"CC TLD search failed: {e}")
+            errors.append(f"TLD search: {e}")
+        
+        # 3. Search *org_name* keyword pattern
+        try:
+            logger.info(f"CC: Searching for *{org_name}* keyword pattern")
+            keyword_result = await self.search_by_keyword(org_name)
+            if keyword_result.error:
+                logger.warning(f"CC keyword search error for '{org_name}': {keyword_result.error}")
+                errors.append(f"keyword '{org_name}': {keyword_result.error}")
+            elif keyword_result.domains:
+                all_domains.update(keyword_result.domains)
+                logger.info(f"CC: Found {len(keyword_result.domains)} domains matching *{org_name}*")
+        except Exception as e:
+            logger.warning(f"CC keyword search failed for '{org_name}': {e}")
+            errors.append(f"keyword '{org_name}': {e}")
+        
+        # 4. Search additional keywords
+        if keywords:
+            for keyword in keywords:
+                try:
+                    logger.info(f"CC: Searching for *{keyword}* keyword pattern")
+                    kw_result = await self.search_by_keyword(keyword)
+                    if kw_result.error:
+                        logger.warning(f"CC keyword search error for '{keyword}': {kw_result.error}")
+                        errors.append(f"keyword '{keyword}': {kw_result.error}")
+                    elif kw_result.domains:
+                        all_domains.update(kw_result.domains)
+                        logger.info(f"CC: Found {len(kw_result.domains)} domains matching *{keyword}*")
+                except Exception as e:
+                    logger.warning(f"CC keyword search failed for '{keyword}': {e}")
+                    errors.append(f"keyword '{keyword}': {e}")
+        
+        result.domains = sorted(list(all_domains))
+        result.subdomains = sorted(list(all_subdomains))
+        
+        # Succeed if we got ANY results, even if some sub-queries failed
+        if all_domains or all_subdomains:
+            result.success = True
+        elif errors:
+            result.error = f"All searches failed: {'; '.join(errors)}"
+        else:
+            result.success = True  # No errors but no results either
+        
+        logger.info(
+            f"CC comprehensive search: {len(result.domains)} domains, "
+            f"{len(result.subdomains)} subdomains, {len(errors)} errors"
+        )
         
         result.elapsed_time = (datetime.utcnow() - start_time).total_seconds()
         return result
