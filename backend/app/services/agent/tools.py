@@ -96,6 +96,13 @@ class ASMToolsManager:
             "execute_ffuf": self.execute_mcp_tool,
             "execute_amass": self.execute_mcp_tool,
             "execute_whatweb": self.execute_mcp_tool,
+            "execute_knockpy": self.execute_mcp_tool,
+            "execute_gau": self.execute_mcp_tool,
+            "execute_kiterunner": self.execute_mcp_tool,
+            "execute_wappalyzer": self.execute_mcp_tool,
+            "execute_crtsh": self.execute_mcp_tool,
+            "execute_schemathesis": self.execute_mcp_tool,
+            "execute_browser": self.execute_mcp_tool,
             "nuclei_help": self.execute_mcp_tool,
             "naabu_help": self.execute_mcp_tool,
             "httpx_help": self.execute_mcp_tool,
@@ -109,6 +116,10 @@ class ASMToolsManager:
             "ffuf_help": self.execute_mcp_tool,
             "amass_help": self.execute_mcp_tool,
             "whatweb_help": self.execute_mcp_tool,
+            "knockpy_help": self.execute_mcp_tool,
+            "gau_help": self.execute_mcp_tool,
+            "kiterunner_help": self.execute_mcp_tool,
+            "schemathesis_help": self.execute_mcp_tool,
         }
         # Optional: web search (RedAmon-style) when Tavily API key is set
         if getattr(settings, "TAVILY_API_KEY", None):

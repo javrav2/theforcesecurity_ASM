@@ -443,6 +443,173 @@ class MCPServer:
             handler=self._whatweb_help,
         ))
         
+        # Knockpy - active subdomain brute-forcing
+        self.registry.register(MCPTool(
+            name="execute_knockpy",
+            description="Run Knockpy for active subdomain brute-forcing and DNS enumeration. Discovers subdomains by wordlist-based brute-forcing and zone transfer checks.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Knockpy CLI arguments (e.g., 'example.com' or 'example.com --json')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_knockpy,
+        ))
+        self.registry.register(MCPTool(
+            name="knockpy_help",
+            description="Get Knockpy command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._knockpy_help,
+        ))
+        
+        # GAU (GetAllUrls) - passive URL discovery from multiple sources
+        self.registry.register(MCPTool(
+            name="execute_gau",
+            description="Run GAU (GetAllUrls) for passive URL discovery from Wayback Machine, Common Crawl, OTX, and URLScan. More comprehensive than waybackurls as it aggregates multiple archive sources.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "GAU CLI arguments (e.g., 'example.com' or 'example.com --subs --json')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_gau,
+        ))
+        self.registry.register(MCPTool(
+            name="gau_help",
+            description="Get GAU (GetAllUrls) command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._gau_help,
+        ))
+        
+        # Kiterunner - API endpoint brute-forcer
+        self.registry.register(MCPTool(
+            name="execute_kiterunner",
+            description="Run Kiterunner for API endpoint brute-forcing. Discovers hidden API routes using smart wordlists and content-length analysis. Effective for finding undocumented REST/GraphQL endpoints.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Kiterunner CLI arguments (e.g., 'scan https://target.com -w routes-large.kite' or 'scan https://target.com -A=apiroutes-210228')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_kiterunner,
+        ))
+        self.registry.register(MCPTool(
+            name="kiterunner_help",
+            description="Get Kiterunner command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._kiterunner_help,
+        ))
+        
+        # Wappalyzer - technology fingerprinting (Python-based, uses built-in fingerprint DB)
+        self.registry.register(MCPTool(
+            name="execute_wappalyzer",
+            description="Run Wappalyzer technology fingerprinting against a URL. Detects 6,000+ technologies including CMS, frameworks, analytics, CDN, WAF, payment processors, and more. Returns JSON with detected technologies, versions, and confidence scores.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Target URL to fingerprint (e.g., 'https://example.com')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_wappalyzer,
+        ))
+        
+        # crt.sh - certificate transparency subdomain discovery
+        self.registry.register(MCPTool(
+            name="execute_crtsh",
+            description="Query crt.sh certificate transparency logs to discover subdomains from SSL/TLS certificates. Passive reconnaissance - no direct target interaction. Returns subdomains found in CT logs.",
+            tool_type=ToolType.QUERY,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Domain to query CT logs for (e.g., 'example.com')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_crtsh,
+        ))
+        
+        # Schemathesis - API fuzzer for OpenAPI/GraphQL schemas
+        self.registry.register(MCPTool(
+            name="execute_schemathesis",
+            description=(
+                "Run Schemathesis API fuzzer against OpenAPI or GraphQL schema endpoints. "
+                "Automatically generates test cases from the schema to find server errors, "
+                "validation issues, and security flaws (500 errors, crashes, auth bypasses). "
+                "Provide the URL to the OpenAPI spec (e.g., /openapi.json, /swagger.json, /docs) "
+                "or a GraphQL endpoint."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Schemathesis CLI arguments (e.g., 'run https://target.com/openapi.json --checks all' or 'run https://target.com/graphql --checks all')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_schemathesis,
+        ))
+        self.registry.register(MCPTool(
+            name="schemathesis_help",
+            description="Get Schemathesis command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._schemathesis_help,
+        ))
+        
+        # Browser automation - headless browser for live exploit execution
+        self.registry.register(MCPTool(
+            name="execute_browser",
+            description=(
+                "Headless browser automation for live web application exploit testing. "
+                "Supports XSS detection (check_xss), form injection (submit_form), "
+                "authentication bypass (set_cookie, check_response), SSRF detection "
+                "(monitors outgoing network requests), JavaScript execution (execute_js), "
+                "and multi-step exploit chains with session persistence. "
+                "Pass a JSON object with an 'actions' array."
+            ),
+            tool_type=ToolType.EXPLOIT,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": (
+                        'JSON actions. Example: \'{"actions": ['
+                        '{"action": "navigate", "url": "https://target.com/login"}, '
+                        '{"action": "fill", "selector": "#user", "value": "admin"}, '
+                        '{"action": "click", "selector": "#submit"}, '
+                        '{"action": "get_cookies"}]}\''
+                    )
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_browser,
+        ))
+        
         # LLM Red Team Scanner
         self.registry.register(MCPTool(
             name="execute_llm_red_team",
@@ -646,6 +813,113 @@ class MCPServer:
     
     async def _whatweb_help(self) -> Dict[str, Any]:
         return await self._run_command(["whatweb", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_knockpy(self, args: str) -> Dict[str, Any]:
+        cmd = ["knockpy"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _knockpy_help(self) -> Dict[str, Any]:
+        return await self._run_command(["knockpy", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_gau(self, args: str) -> Dict[str, Any]:
+        cmd = ["gau"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=300)
+    
+    async def _gau_help(self) -> Dict[str, Any]:
+        return await self._run_command(["gau", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_kiterunner(self, args: str) -> Dict[str, Any]:
+        cmd = ["kiterunner"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _kiterunner_help(self) -> Dict[str, Any]:
+        return await self._run_command(["kiterunner", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_wappalyzer(self, args: str) -> Dict[str, Any]:
+        """Run Wappalyzer fingerprinting using the built-in Python service."""
+        import json as _json
+        url = args.strip()
+        if not url:
+            return {"success": False, "output": "", "error": "URL is required. Example: execute_wappalyzer(args=\"https://example.com\")", "exit_code": -1}
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        try:
+            from app.services.wappalyzer_service import WappalyzerService
+            svc = WappalyzerService()
+            techs = await svc.analyze_url(url)
+            if not techs:
+                return {"success": True, "output": f"No technologies detected for {url}", "error": None, "exit_code": 0}
+            results = []
+            for t in techs:
+                entry = {"name": t.name, "confidence": t.confidence, "categories": t.categories}
+                if t.version:
+                    entry["version"] = t.version
+                if t.cpe:
+                    entry["cpe"] = t.cpe
+                if t.website:
+                    entry["website"] = t.website
+                results.append(entry)
+            output = f"Wappalyzer detected {len(results)} technologies for {url}:\n\n"
+            output += _json.dumps(results, indent=2)
+            return {"success": True, "output": output, "error": None, "exit_code": 0}
+        except Exception as e:
+            logger.error(f"Wappalyzer scan failed for {url}: {e}")
+            return {"success": False, "output": "", "error": f"Wappalyzer error: {e}", "exit_code": -1}
+    
+    async def _execute_crtsh(self, args: str) -> Dict[str, Any]:
+        """Query crt.sh certificate transparency logs."""
+        import json as _json
+        domain = args.strip().lower()
+        if not domain:
+            return {"success": False, "output": "", "error": "Domain is required. Example: execute_crtsh(args=\"example.com\")", "exit_code": -1}
+        domain = domain.replace("https://", "").replace("http://", "").rstrip("/").split("/")[0]
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"https://crt.sh/?q=%.{domain}&output=json",
+                    follow_redirects=True
+                )
+                if response.status_code != 200:
+                    return {"success": False, "output": "", "error": f"crt.sh returned HTTP {response.status_code}", "exit_code": -1}
+                data = response.json()
+            subdomains = set()
+            for entry in data:
+                name = entry.get("name_value", "")
+                for n in name.split("\n"):
+                    n = n.strip().lower()
+                    if n.startswith("*."):
+                        n = n[2:]
+                    if n.endswith(f".{domain}") or n == domain:
+                        subdomains.add(n)
+            sorted_subs = sorted(subdomains)
+            output = f"crt.sh found {len(sorted_subs)} unique subdomains for {domain}:\n\n"
+            output += "\n".join(sorted_subs)
+            return {"success": True, "output": output, "error": None, "exit_code": 0}
+        except Exception as e:
+            logger.error(f"crt.sh query failed for {domain}: {e}")
+            return {"success": False, "output": "", "error": f"crt.sh error: {e}", "exit_code": -1}
+    
+    async def _execute_schemathesis(self, args: str) -> Dict[str, Any]:
+        parsed = self._parse_args(args)
+        if parsed and parsed[0] != "run":
+            parsed.insert(0, "run")
+        cmd = ["schemathesis"] + parsed
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _schemathesis_help(self) -> Dict[str, Any]:
+        return await self._run_command(["schemathesis", "run", "--help"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_browser(self, args: str) -> Dict[str, Any]:
+        """Execute browser automation actions for security testing."""
+        try:
+            from app.services.browser_automation_service import execute_browser_actions
+            return await execute_browser_actions(args)
+        except ImportError as e:
+            return {"success": False, "output": "", "error": f"Browser automation service not available: {e}", "exit_code": -1}
+        except Exception as e:
+            logger.error(f"Browser automation failed: {e}")
+            return {"success": False, "output": "", "error": f"Browser automation error: {e}", "exit_code": -1}
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """

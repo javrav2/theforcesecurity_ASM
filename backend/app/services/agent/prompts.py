@@ -256,12 +256,25 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_waybackurls**: Historical URLs. Example: execute_waybackurls(args="example.com")
 - **execute_amass**: Network mapping. Example: execute_amass(args="enum -d example.com -json -")
 - **execute_whatweb**: Tech fingerprinting. Example: execute_whatweb(args="https://target.com -a 1")
+- **execute_knockpy**: Active subdomain brute-forcing. Discovers subdomains by wordlist-based brute-force and zone transfer checks. Use when you need to find subdomains that passive sources miss. Example: execute_knockpy(args="example.com")
+- **execute_gau**: Passive URL discovery from Wayback Machine, Common Crawl, OTX, and URLScan. More comprehensive than waybackurls — aggregates multiple archive sources. Use for discovering historical endpoints, parameters, and hidden paths. Example: execute_gau(args="example.com --subs")
+- **execute_kiterunner**: API endpoint brute-forcer. Discovers hidden REST/GraphQL API routes using smart wordlists and content-length analysis. Use when you suspect undocumented API endpoints. Example: execute_kiterunner(args="scan https://target.com -A=apiroutes-210228")
+- **execute_wappalyzer**: Technology fingerprinting with 6,000+ fingerprints. Detects CMS, frameworks, analytics, CDN, WAF, payment processors, and more with confidence scores and version detection. Use for comprehensive tech stack identification. Example: execute_wappalyzer(args="https://target.com")
+- **execute_crtsh**: Certificate transparency subdomain discovery. Queries crt.sh CT logs passively (no direct target interaction) to find subdomains from SSL/TLS certificates. Use as a fast, passive subdomain source. Example: execute_crtsh(args="example.com")
 - **execute_nuclei**: Vulnerability scanner. Example: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
-- **execute_naabu**: Port scanner. Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
+- **execute_naabu**: Fast SYN/CONNECT port scanner. Use for quick port discovery on single hosts or ranges. Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
 - **execute_nmap**: Port/service scan. Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
 - **execute_masscan**: Fast port scan. Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
 - **execute_ffuf**: Web fuzzer. Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
-- **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**: Get CLI usage for each tool
+- **execute_schemathesis**: API fuzzer for OpenAPI/GraphQL schemas. Reads the schema and auto-generates test cases to find 500 errors, validation issues, and security flaws. Point it at the OpenAPI spec URL. Example: execute_schemathesis(args="run https://target.com/openapi.json --checks all") or execute_schemathesis(args="run https://target.com/graphql --checks all")
+- **execute_browser**: Headless browser for live exploit execution. Supports multi-step action chains with session persistence. Use for:
+  - **XSS testing**: `{{"actions": [{{"action": "check_xss", "url": "https://target.com/search?q=<script>alert(1)</script>"}}]}}`
+  - **Form injection**: `{{"actions": [{{"action": "submit_form", "url": "https://target.com/login", "fields": {{"#user": "admin' OR 1=1--", "#pass": "x"}}, "submit_selector": "#login-btn"}}]}}`
+  - **Auth bypass**: `{{"actions": [{{"action": "set_cookie", "name": "role", "value": "admin", "url": "https://target.com"}}, {{"action": "check_response", "url": "https://target.com/admin", "expected_status": 403, "description": "admin panel auth bypass"}}]}}`
+  - **JavaScript execution**: `{{"actions": [{{"action": "navigate", "url": "https://target.com"}}, {{"action": "execute_js", "script": "document.cookie"}}]}}`
+  - **SSRF detection**: Navigate and inspect network_requests in the output to see outgoing connections
+  Actions: navigate, fill, click, type, execute_js, get_source, get_cookies, set_cookie, screenshot, wait, check_xss, submit_form, check_response
+- **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**, **knockpy_help**, **gau_help**, **kiterunner_help**, **schemathesis_help**: Get CLI usage for each tool
 - **add_asset**: Add a target to the asset inventory. Use when the target is NOT already in the database. Args: **value** (required — hostname, domain, IP, or URL), asset_type (optional, auto-detected), description (optional). Example: add_asset(value="test-git.glensserver.com"). Once added, you can scan it and use create_finding.
 - **create_scan**: Create an async bulk scan job handled by the scanner worker. Use this instead of execute_* tools when you need to scan many targets (e.g. a list of IPs, subnets, or domains). Args: **scan_type** (required — port_scan, vulnerability, waybackurls, katana, paramspider, http_probe, technology, screenshot, login_portal, subdomain_enum, dns_resolution, discovery, full, geo_enrich, tldfinder, whatweb, llm_red_team), **targets** (optional list of hostnames/IPs — omit to scan all org assets), name (optional), config (optional dict, e.g. {"severity": ["critical","high"]}). Examples: create_scan(scan_type="port_scan", targets=["10.0.0.0/24"]), create_scan(scan_type="vulnerability", targets=["example.com"]), create_scan(scan_type="llm_red_team", targets=["https://example.com"], config={"categories": ["prompt_injection","jailbreak"]}). The scan runs asynchronously — results appear on the Scans page and update asset records automatically.
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
@@ -272,8 +285,9 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 
     exploitation_tools = """
 ### Exploitation Phase Tools (if enabled)
-- All Informational tools (including Nuclei, Naabu, Nmap, Masscan, FFuf) are available in informational phase for normal assessments.
-- No additional tools in exploitation; use informational phase for vulnerability and port scanning.
+- All Informational tools are available in this phase.
+- **execute_schemathesis**: API schema fuzzing (requires exploitation phase for active fuzzing).
+- **execute_browser**: Headless browser automation for live exploit execution (XSS, injection, auth bypass, SSRF). Use for interactive web app testing that requires a real browser.
 """
 
     post_exploitation_tools = """
@@ -330,6 +344,17 @@ TOOL_PHASE_MAP = {
     "amass_help": ["informational", "exploitation", "post_exploitation"],
     "execute_whatweb": ["informational", "exploitation", "post_exploitation"],
     "whatweb_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_knockpy": ["informational", "exploitation", "post_exploitation"],
+    "knockpy_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_gau": ["informational", "exploitation", "post_exploitation"],
+    "gau_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_kiterunner": ["informational", "exploitation", "post_exploitation"],
+    "kiterunner_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_wappalyzer": ["informational", "exploitation", "post_exploitation"],
+    "execute_crtsh": ["informational", "exploitation", "post_exploitation"],
+    "execute_schemathesis": ["informational", "exploitation", "post_exploitation"],
+    "schemathesis_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_browser": ["informational", "exploitation", "post_exploitation"],
     "nmap_help": ["informational", "exploitation", "post_exploitation"],
     "masscan_help": ["informational", "exploitation", "post_exploitation"],
     "ffuf_help": ["informational", "exploitation", "post_exploitation"],

@@ -89,12 +89,20 @@ RUN git clone --depth 1 https://github.com/blechschmidt/massdns.git /tmp/massdns
     && cp bin/massdns /tools/ \
     && rm -rf /tmp/massdns
 
-# Download waybackurls and assetfinder (smaller tools, compile quickly if needed)
+# Download waybackurls, assetfinder, and GAU (smaller Go tools)
 RUN apt-get update && apt-get install -y --no-install-recommends golang \
     && rm -rf /var/lib/apt/lists/* \
     && go install github.com/tomnomnom/waybackurls@latest \
     && go install github.com/tomnomnom/assetfinder@latest \
+    && go install github.com/lc/gau/v2/cmd/gau@latest \
     && cp /root/go/bin/* /tools/
+
+# Download Kiterunner (API endpoint brute-forcer)
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then KR_ARCH="arm64"; else KR_ARCH="amd64"; fi && \
+    wget -q "https://github.com/assetnote/kiterunner/releases/download/v1.0.2/kiterunner_1.0.2_linux_${KR_ARCH}.tar.gz" -O kiterunner.tar.gz && \
+    tar -xzf kiterunner.tar.gz -C /tools && \
+    rm kiterunner.tar.gz || echo "Kiterunner download skipped (release may not exist for ${KR_ARCH})"
 
 RUN chmod +x /tools/*
 
@@ -147,6 +155,8 @@ COPY --from=tool-downloader /tools/masscan /usr/local/bin/
 COPY --from=tool-downloader /tools/massdns /usr/local/bin/
 COPY --from=tool-downloader /tools/waybackurls /usr/local/bin/
 COPY --from=tool-downloader /tools/assetfinder /usr/local/bin/
+COPY --from=tool-downloader /tools/gau /usr/local/bin/
+COPY --from=tool-downloader /tools/kr /usr/local/bin/kiterunner
 
 RUN chmod +x /usr/local/bin/*
 
@@ -173,6 +183,12 @@ RUN playwright install chromium && playwright install-deps chromium || true
 
 # Install ParamSpider
 RUN pip install paramspider || echo "ParamSpider installation skipped"
+
+# Install Knockpy (subdomain brute-forcer)
+RUN pip install knockpy || echo "Knockpy installation skipped"
+
+# Install Schemathesis (API fuzzer for OpenAPI/GraphQL schemas)
+RUN pip install schemathesis || echo "Schemathesis installation skipped"
 
 # Update nuclei templates
 RUN nuclei -update-templates || true

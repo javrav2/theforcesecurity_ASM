@@ -59,6 +59,17 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then PD_ARCH="arm64"; else PD_ARCH="amd64"; 
     curl -sL "https://github.com/tomnomnom/waybackurls/releases/download/v0.1.0/waybackurls-linux-${PD_ARCH}-0.1.0.tgz" -o waybackurls.tgz && \
     tar -xzf waybackurls.tgz -C /tools && rm waybackurls.tgz
 
+# Install Go tools (GAU)
+RUN apt-get update && apt-get install -y --no-install-recommends golang && rm -rf /var/lib/apt/lists/* && \
+    go install github.com/lc/gau/v2/cmd/gau@latest && \
+    cp /root/go/bin/gau /tools/
+
+# Download Kiterunner (API endpoint brute-forcer)
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then KR_ARCH="arm64"; else KR_ARCH="amd64"; fi && \
+    curl -sL "https://github.com/assetnote/kiterunner/releases/download/v1.0.2/kiterunner_1.0.2_linux_${KR_ARCH}.tar.gz" -o kiterunner.tgz && \
+    tar -xzf kiterunner.tgz -C /tools && rm kiterunner.tgz || echo "Kiterunner download skipped"
+
 # Make all tools executable
 RUN chmod +x /tools/*
 
@@ -113,6 +124,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install ParamSpider for URL parameter discovery (from GitHub since not on PyPI)
 RUN pip install --no-cache-dir git+https://github.com/devanshbatham/ParamSpider.git || echo "ParamSpider installation skipped"
 
+# Install Knockpy (subdomain brute-forcer)
+RUN pip install --no-cache-dir knockpy || echo "Knockpy installation skipped"
+
+# Install Schemathesis (API fuzzer for OpenAPI/GraphQL schemas)
+RUN pip install --no-cache-dir schemathesis || echo "Schemathesis installation skipped"
+
 # Playwright for reliable screenshots in Docker (primary method; no display needed)
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers
 RUN playwright install chromium && playwright install-deps chromium || true
@@ -145,10 +162,13 @@ COPY --from=builder /tools/naabu /usr/local/bin/
 COPY --from=builder /tools/dnsx /usr/local/bin/
 COPY --from=builder /tools/katana /usr/local/bin/
 COPY --from=builder /tools/waybackurls /usr/local/bin/
+COPY --from=builder /tools/gau /usr/local/bin/
+COPY --from=builder /tools/kr /usr/local/bin/kiterunner
 
 # Ensure binaries are executable and not overwritten
 RUN chmod +x /usr/local/bin/nuclei /usr/local/bin/subfinder /usr/local/bin/httpx \
-    /usr/local/bin/naabu /usr/local/bin/dnsx /usr/local/bin/katana /usr/local/bin/waybackurls
+    /usr/local/bin/naabu /usr/local/bin/dnsx /usr/local/bin/katana /usr/local/bin/waybackurls \
+    /usr/local/bin/gau /usr/local/bin/kiterunner
 
 # Copy application code
 COPY . .
