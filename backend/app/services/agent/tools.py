@@ -82,6 +82,9 @@ class ASMToolsManager:
             "create_finding": self.create_finding,
             # LLM Red Team Scanner
             "execute_llm_red_team": self.execute_llm_red_team,
+            # Injection testing tools (pure-Python, no external binary)
+            "generate_injection_payloads": self.generate_injection_payloads,
+            "discover_parameters": self.discover_parameters,
             # MCP Security Tools (delegated)
             "execute_nuclei": self.execute_mcp_tool,
             "execute_naabu": self.execute_mcp_tool,
@@ -1251,6 +1254,136 @@ class ASMToolsManager:
         sid = session_id or current_session_id.get()
         return self.get_session_notes(session_id=sid, category=category)
     
+    async def generate_injection_payloads(
+        self,
+        vuln_type: str = "sqli",
+        technique: Optional[str] = None,
+        max_payloads: int = 20,
+        collaborator_url: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Generate injection payloads for a given vulnerability type.
+
+        Args:
+            vuln_type: sqli, xss, ssti, cmdi, path_traversal, xxe, ssrf, crlf, open_redirect
+            technique: Sub-technique (e.g. "time_based" for sqli, "encoded" for xss).
+                       Omit to get payloads from all sub-techniques.
+            max_payloads: Max payloads to return (default 20).
+            collaborator_url: Replace COLLABORATOR placeholder for out-of-band payloads.
+        """
+        from app.services.agent.injection_payloads import generate_payloads
+        result = generate_payloads(
+            vuln_type=vuln_type,
+            technique=technique,
+            max_payloads=max_payloads,
+            collaborator_url=collaborator_url,
+        )
+        return json.dumps(result, indent=2)
+
+    async def discover_parameters(
+        self,
+        url: str = "",
+        **kwargs: Any,
+    ) -> str:
+        """Fetch a URL and extract injectable parameters from HTML forms, URL query strings, and JavaScript.
+
+        Args:
+            url: The URL to analyze for parameters.
+
+        Returns:
+            JSON with discovered parameters, their locations, and which vuln classes they may be prone to.
+        """
+        if not url or not url.strip():
+            return json.dumps({"error": "url is required"})
+
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
+        import re as _re_local
+        from app.services.agent.injection_payloads import INTERESTING_PARAM_NAMES
+
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True, verify=False) as client:
+                resp = await client.get(url)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to fetch {url}: {e}"})
+
+        body = resp.text
+        params_found: Dict[str, Dict[str, Any]] = {}
+
+        # 1. Query string params from the final URL
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(str(resp.url))
+        for name in parse_qs(parsed.query):
+            params_found[name] = {"source": "query_string", "method": "GET"}
+
+        # 2. HTML form inputs
+        form_pattern = _re_local.compile(
+            r'<form[^>]*>(.*?)</form>', _re_local.DOTALL | _re_local.IGNORECASE
+        )
+        input_pattern = _re_local.compile(
+            r'<(?:input|textarea|select)[^>]*?name=["\']([^"\']+)["\']', _re_local.IGNORECASE
+        )
+        action_pattern = _re_local.compile(
+            r'action=["\']([^"\']*)["\']', _re_local.IGNORECASE
+        )
+        method_pattern = _re_local.compile(
+            r'method=["\']([^"\']*)["\']', _re_local.IGNORECASE
+        )
+
+        for form_match in form_pattern.finditer(body):
+            form_html = form_match.group(0)
+            action = action_pattern.search(form_html)
+            method = method_pattern.search(form_html)
+            form_action = action.group(1) if action else ""
+            form_method = (method.group(1) if method else "GET").upper()
+
+            for inp in input_pattern.finditer(form_html):
+                name = inp.group(1)
+                params_found[name] = {
+                    "source": "form",
+                    "method": form_method,
+                    "form_action": form_action,
+                }
+
+        # 3. Hidden inputs (sometimes outside forms)
+        hidden_pattern = _re_local.compile(
+            r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\']', _re_local.IGNORECASE
+        )
+        for m in hidden_pattern.finditer(body):
+            name = m.group(1)
+            if name not in params_found:
+                params_found[name] = {"source": "hidden_input", "method": "POST"}
+
+        # 4. JavaScript variable names and AJAX params
+        js_param_patterns = [
+            _re_local.compile(r'[?&](\w+)=', _re_local.IGNORECASE),
+            _re_local.compile(r'["\']([\w]+)["\']:\s*["\']', _re_local.IGNORECASE),
+        ]
+        for pat in js_param_patterns:
+            for m in pat.finditer(body):
+                name = m.group(1)
+                if len(name) >= 2 and name not in params_found and not name.startswith(("__", "0x")):
+                    params_found[name] = {"source": "javascript", "method": "GET/POST"}
+
+        # 5. Classify parameters by vulnerability proneness
+        for name, info in params_found.items():
+            name_lower = name.lower()
+            prone_to = []
+            for vuln_class, param_names in INTERESTING_PARAM_NAMES.items():
+                if name_lower in param_names:
+                    prone_to.append(vuln_class.replace("_prone", ""))
+            if prone_to:
+                info["likely_vulnerable_to"] = prone_to
+
+        return json.dumps({
+            "url": str(resp.url),
+            "status_code": resp.status_code,
+            "parameter_count": len(params_found),
+            "parameters": params_found,
+        }, indent=2)
+
     async def execute_mcp_tool(self, tool_name: str = None, args: str = "", **kwargs) -> str:
         """
         Execute an MCP security tool.
