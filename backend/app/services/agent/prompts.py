@@ -261,11 +261,12 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_kiterunner**: API endpoint brute-forcer. Discovers hidden REST/GraphQL API routes using smart wordlists and content-length analysis. Use when you suspect undocumented API endpoints. Example: execute_kiterunner(args="scan https://target.com -A=apiroutes-210228")
 - **execute_wappalyzer**: Technology fingerprinting with 6,000+ fingerprints. Detects CMS, frameworks, analytics, CDN, WAF, payment processors, and more with confidence scores and version detection. Use for comprehensive tech stack identification. Example: execute_wappalyzer(args="https://target.com")
 - **execute_crtsh**: Certificate transparency subdomain discovery. Queries crt.sh CT logs passively (no direct target interaction) to find subdomains from SSL/TLS certificates. Use as a fast, passive subdomain source. Example: execute_crtsh(args="example.com")
-- **execute_nuclei**: Vulnerability scanner. Example: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
-- **execute_naabu**: Fast SYN/CONNECT port scanner. Use for quick port discovery on single hosts or ranges. Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
-- **execute_nmap**: Port/service scan. Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
-- **execute_masscan**: Fast port scan. Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
-- **execute_ffuf**: Web fuzzer. Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
+**NOTE: The following active scanning tools require the EXPLOITATION phase. Request a phase transition first.**
+- **execute_nuclei**: Vulnerability scanner (exploitation phase). Example: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
+- **execute_naabu**: Fast SYN/CONNECT port scanner (exploitation phase). Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
+- **execute_nmap**: Port/service scan (exploitation phase). Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
+- **execute_masscan**: Fast port scan (exploitation phase). Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
+- **execute_ffuf**: Web fuzzer (exploitation phase). Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
 - **execute_schemathesis**: API fuzzer for OpenAPI/GraphQL schemas. Reads the schema and auto-generates test cases to find 500 errors, validation issues, and security flaws. Point it at the OpenAPI spec URL. Example: execute_schemathesis(args="run https://target.com/openapi.json --checks all") or execute_schemathesis(args="run https://target.com/graphql --checks all")
 - **execute_browser**: Headless browser for live exploit execution. Supports multi-step action chains with session persistence. Use for:
   - **XSS testing**: `{{"actions": [{{"action": "check_xss", "url": "https://target.com/search?q=<script>alert(1)</script>"}}]}}`
@@ -359,12 +360,14 @@ TOOL_PHASE_MAP = {
     "masscan_help": ["informational", "exploitation", "post_exploitation"],
     "ffuf_help": ["informational", "exploitation", "post_exploitation"],
     
-    # MCP scanning tools - allowed in informational so agent can run vuln/port scans without phase transition
-    "execute_nuclei": ["informational", "exploitation", "post_exploitation"],
-    "execute_naabu": ["informational", "exploitation", "post_exploitation"],
-    "execute_nmap": ["informational", "exploitation", "post_exploitation"],
-    "execute_masscan": ["informational", "exploitation", "post_exploitation"],
-    "execute_ffuf": ["informational", "exploitation", "post_exploitation"],
+    # MCP scanning tools - active scanners require exploitation phase for safety.
+    # The agent must request a phase transition before running these, giving the
+    # user visibility and control over what gets actively scanned.
+    "execute_nuclei": ["exploitation", "post_exploitation"],
+    "execute_naabu": ["exploitation", "post_exploitation"],
+    "execute_nmap": ["exploitation", "post_exploitation"],
+    "execute_masscan": ["exploitation", "post_exploitation"],
+    "execute_ffuf": ["exploitation", "post_exploitation"],
     
     # LLM Red Team Scanner
     "execute_llm_red_team": ["informational", "exploitation", "post_exploitation"],

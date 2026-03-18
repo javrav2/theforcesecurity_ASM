@@ -18,20 +18,46 @@ def retrieve_knowledge(
 ) -> str:
     """
     Retrieve knowledge docs for the org (and global) relevant to the query.
-    Uses simple keyword search over title, content, and tags. Returns concatenated snippets.
+    Uses keyword search over title and content, falling back to most recent docs.
+    Returns concatenated snippets.
     """
     if not query or not query.strip():
         return ""
     db = SessionLocal()
     try:
-        # Org-specific and global (organization_id IS NULL); most recent first
-        q = db.query(AgentKnowledge).filter(
-            or_(
-                AgentKnowledge.organization_id == organization_id,
-                AgentKnowledge.organization_id.is_(None),
-            )
+        base_filter = or_(
+            AgentKnowledge.organization_id == organization_id,
+            AgentKnowledge.organization_id.is_(None),
         )
-        docs = q.order_by(AgentKnowledge.updated_at.desc()).limit(limit).all()
+
+        # Extract meaningful keywords (3+ chars, skip common words)
+        _stop_words = {"the", "and", "for", "are", "but", "not", "you", "all",
+                        "can", "had", "her", "was", "one", "our", "out", "has",
+                        "with", "this", "that", "from", "they", "been", "have",
+                        "what", "when", "will", "how", "than", "its", "also"}
+        keywords = [
+            w for w in query.lower().split()
+            if len(w) >= 3 and w not in _stop_words
+        ]
+
+        docs = []
+        if keywords:
+            # Try keyword-matched docs first (title or content contains any keyword)
+            keyword_filters = []
+            for kw in keywords[:5]:  # Cap at 5 keywords to keep query reasonable
+                keyword_filters.append(AgentKnowledge.title.ilike(f"%{kw}%"))
+                keyword_filters.append(AgentKnowledge.content.ilike(f"%{kw}%"))
+            q = db.query(AgentKnowledge).filter(
+                base_filter,
+                or_(*keyword_filters),
+            )
+            docs = q.order_by(AgentKnowledge.updated_at.desc()).limit(limit).all()
+
+        # Fall back to most recent docs if keyword search returned nothing
+        if not docs:
+            q = db.query(AgentKnowledge).filter(base_filter)
+            docs = q.order_by(AgentKnowledge.updated_at.desc()).limit(limit).all()
+
         result = []
         total = 0
         for d in docs:

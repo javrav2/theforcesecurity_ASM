@@ -489,6 +489,15 @@ class ASMToolsManager:
         finally:
             db.close()
     
+    # Cypher keywords that are allowed in read-only queries
+    _CYPHER_READ_KEYWORDS = {"MATCH", "WHERE", "RETURN", "WITH", "OPTIONAL", "ORDER", "BY",
+                              "LIMIT", "SKIP", "UNWIND", "AS", "AND", "OR", "NOT", "IN",
+                              "IS", "NULL", "TRUE", "FALSE", "DISTINCT", "COUNT", "COLLECT",
+                              "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END", "DESC", "ASC",
+                              "CONTAINS", "STARTS", "ENDS", "CALL", "YIELD", "UNION", "ALL"}
+    _CYPHER_WRITE_KEYWORDS = {"CREATE", "DELETE", "DETACH", "SET", "REMOVE", "MERGE",
+                               "DROP", "FOREACH", "LOAD", "CSV"}
+
     async def query_graph(
         self,
         cypher: Optional[str] = None,
@@ -500,18 +509,20 @@ class ASMToolsManager:
         **kwargs: Any,
     ) -> str:
         """
-        Run a Cypher query against the Neo4j attack surface graph.
-        
+        Run a READ-ONLY Cypher query against the Neo4j attack surface graph.
+
         Use this to understand relationships: Domain → Subdomain → IP → Port → Service
         → Technology → Vulnerability → CVE. Always include a filter on organization_id
         for tenant safety (use $org_id in your WHERE clause).
-        
+
+        Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP) are blocked.
+
         Args:
             cypher: Cypher query string. Must filter by organization_id, e.g.
                     WHERE a.organization_id = $org_id
             params: Optional query parameters (org_id is added automatically from context)
             limit: Max rows to return (default 50)
-        
+
         Returns:
             JSON string of query results
         """
@@ -521,16 +532,27 @@ class ASMToolsManager:
         user_id, org_id = get_tenant_context()
         if not org_id:
             return json.dumps({"error": "No organization context. Set organization for this session."})
-        
+
+        # Security: block write operations to prevent Cypher injection
+        cypher_upper = cypher.upper()
+        for keyword in self._CYPHER_WRITE_KEYWORDS:
+            # Check for the keyword as a standalone word (not part of a property name)
+            import re as _re
+            if _re.search(r'\b' + keyword + r'\b', cypher_upper):
+                return json.dumps({
+                    "error": f"Write operation '{keyword}' is not allowed. query_graph is read-only. "
+                             f"Use MATCH ... RETURN queries only."
+                })
+
         try:
             from app.services.graph_service import get_graph_service
             graph = get_graph_service()
             if not graph.connect():
                 return json.dumps({"error": "Neo4j graph not available."})
-            
+
             merged = dict(params or {})
             merged["org_id"] = org_id
-            if "LIMIT" not in cypher.upper():
+            if "LIMIT" not in cypher_upper:
                 cypher = cypher.rstrip() + f" LIMIT {limit}"
             results = graph.query(cypher, merged)
             return json.dumps(results[:limit], default=str)
