@@ -11,7 +11,7 @@ import logging
 import uuid
 from typing import Optional, Literal, List
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,15 @@ class AgentQueryRequest(BaseModel):
     playbook_id: Optional[str] = None
     target: Optional[str] = None
     mode: Optional[Literal["assist", "agent"]] = "assist"
+
+    @field_validator("question")
+    @classmethod
+    def validate_question_length(cls, v: str) -> str:
+        if len(v) > 10_000:
+            raise ValueError("question must be at most 10,000 characters")
+        if not v.strip():
+            raise ValueError("question must not be empty")
+        return v
 
 
 class AgentApprovalRequest(BaseModel):
@@ -527,17 +536,41 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
     - {"type": "pong"}
     """
     await ws_manager.connect(websocket, session_id)
-    
+
     try:
         await websocket.send_json({"type": "connected", "session_id": session_id})
-        
+
         user = None
         user_id = None
         org_id = None
-        
+        authenticated = False
+
         async def status_callback(msg: dict):
             """Forward orchestrator status updates to WebSocket."""
             await ws_manager.send_message(session_id, msg)
+
+        # Require authentication within 30 seconds
+        try:
+            data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+        except asyncio.TimeoutError:
+            await websocket.send_json({"type": "error", "message": "Authentication timeout. Send {type: 'init', token: '...'} within 30 seconds."})
+            await websocket.close(code=4001)
+            return
+
+        if data.get("type") != "init":
+            await websocket.send_json({"type": "error", "message": "First message must be {type: 'init', token: '...'}"})
+            await websocket.close(code=4002)
+            return
+
+        token = data.get("token", "")
+        user, org_id = _authenticate_ws_token(token)
+        if not user or not org_id:
+            await websocket.send_json({"type": "error", "message": "Authentication failed"})
+            await websocket.close(code=4003)
+            return
+        user_id = user.id
+        authenticated = True
+        await websocket.send_json({"type": "authenticated", "user_id": user_id})
 
         while True:
             data = await websocket.receive_json()
@@ -558,6 +591,12 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
                     continue
                 
                 question = data.get("question", "")
+                if not question or not question.strip():
+                    await websocket.send_json({"type": "error", "message": "question must not be empty"})
+                    continue
+                if len(question) > 10_000:
+                    await websocket.send_json({"type": "error", "message": "question must be at most 10,000 characters"})
+                    continue
                 playbook_id = data.get("playbook_id")
                 target = data.get("target")
                 mode = data.get("mode", "assist")

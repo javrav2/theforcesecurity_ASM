@@ -72,6 +72,7 @@ StatusCallback = Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
 
 # Per-request status callback stored in a ContextVar for thread/task safety.
 # This avoids the race condition of storing it as instance state on the singleton.
+_max_iterations_var: ContextVar[Optional[int]] = ContextVar('_max_iterations_var', default=None)
 _status_callback_var: ContextVar[StatusCallback] = ContextVar('_status_callback_var', default=None)
 
 # Global checkpointer for session persistence.
@@ -345,7 +346,7 @@ class AgentOrchestrator:
         
         return {
             "current_iteration": 0,
-            "max_iterations": getattr(self, '_max_iterations_override', None) or settings.AGENT_MAX_ITERATIONS,
+            "max_iterations": _max_iterations_var.get(None) or settings.AGENT_MAX_ITERATIONS,
             "task_complete": False,
             "current_phase": "informational",
             "phase_history": [PhaseHistoryEntry(phase="informational").model_dump()],
@@ -955,7 +956,7 @@ class AgentOrchestrator:
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized - check OPENAI_API_KEY")
         
-        self._max_iterations_override = max_iterations
+        _max_iterations_var.set(max_iterations)
         logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}... (mode={mode}, max_iter={max_iterations or 'default'})")
 
         if status_callback:

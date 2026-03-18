@@ -6,6 +6,7 @@ Tools for the AI agent to interact with the ASM platform.
 
 import json
 import logging
+import re as _re
 from typing import List, Optional, Dict, Any
 from contextvars import ContextVar
 from sqlalchemy.orm import Session
@@ -537,7 +538,6 @@ class ASMToolsManager:
         cypher_upper = cypher.upper()
         for keyword in self._CYPHER_WRITE_KEYWORDS:
             # Check for the keyword as a standalone word (not part of a property name)
-            import re as _re
             if _re.search(r'\b' + keyword + r'\b', cypher_upper):
                 return json.dumps({
                     "error": f"Write operation '{keyword}' is not allowed. query_graph is read-only. "
