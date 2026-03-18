@@ -24,8 +24,40 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Common Crawl Index API endpoint
-CC_INDEX_API = "https://index.commoncrawl.org/CC-MAIN-2024-10-index"  # Recent index
+# Common Crawl Index API - resolved dynamically via collinfo.json
+CC_COLLECTIONS_URL = "https://index.commoncrawl.org/collinfo.json"
+CC_INDEX_API_TEMPLATE = "https://index.commoncrawl.org/{release}-index"
+
+# Cached latest release to avoid repeated lookups
+_cached_cc_release: Optional[str] = None
+
+
+async def _get_latest_cc_release() -> str:
+    """Fetch the latest Common Crawl release ID from collinfo.json."""
+    global _cached_cc_release
+    if _cached_cc_release:
+        return _cached_cc_release
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(CC_COLLECTIONS_URL)
+            if response.status_code == 200:
+                collections = response.json()
+                if collections:
+                    release_id = collections[0]["id"]
+                    _cached_cc_release = release_id
+                    logger.info(f"Using latest Common Crawl release: {release_id}")
+                    return release_id
+    except Exception as e:
+        logger.warning(f"Failed to fetch CC collections, using fallback: {e}")
+
+    return "CC-MAIN-2024-51"
+
+
+def _get_cc_index_url(release: Optional[str] = None) -> str:
+    """Get the CC Index API URL for a given release."""
+    rel = release or _cached_cc_release or "CC-MAIN-2024-51"
+    return CC_INDEX_API_TEMPLATE.format(release=rel)
 
 
 @dataclass
@@ -66,7 +98,7 @@ class CommonCrawlService:
     
     def __init__(
         self,
-        index_api: str = CC_INDEX_API,
+        index_api: Optional[str] = None,
         local_index_path: Optional[str] = None,
         timeout: float = 60.0,
         max_results: int = 10000
@@ -75,15 +107,26 @@ class CommonCrawlService:
         Initialize Common Crawl service.
         
         Args:
-            index_api: CC Index API endpoint (uses latest by default)
+            index_api: CC Index API endpoint (auto-resolves latest if None)
             local_index_path: Path to pre-downloaded local index file
             timeout: HTTP request timeout
             max_results: Maximum results to return from API
         """
-        self.index_api = index_api
+        self._explicit_index_api = index_api
         self.local_index_path = local_index_path
         self.timeout = timeout
         self.max_results = max_results
+        self._resolved_api: Optional[str] = None
+
+    async def _get_index_api(self) -> str:
+        """Resolve the CC Index API URL, fetching latest release if needed."""
+        if self._explicit_index_api:
+            return self._explicit_index_api
+        if self._resolved_api:
+            return self._resolved_api
+        release = await _get_latest_cc_release()
+        self._resolved_api = _get_cc_index_url(release)
+        return self._resolved_api
     
     async def search_domain(self, domain: str) -> CommonCrawlResult:
         """
@@ -107,10 +150,11 @@ class CommonCrawlService:
         try:
             # CC Index uses URL search - match any subdomain
             search_url = f"*.{domain}/*"
+            index_api = await self._get_index_api()
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
-                    self.index_api,
+                    index_api,
                     params={
                         "url": search_url,
                         "output": "json",
@@ -301,10 +345,11 @@ class CommonCrawlService:
         try:
             # CC Index wildcard search: *keyword*
             search_url = f"*{keyword}*"
+            index_api = await self._get_index_api()
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
-                    self.index_api,
+                    index_api,
                     params={
                         "url": search_url,
                         "output": "json",
@@ -393,10 +438,11 @@ class CommonCrawlService:
             
             # Search for org_name.* pattern
             search_url = f"{org_name}.*"
+            index_api = await self._get_index_api()
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
-                    self.index_api,
+                    index_api,
                     params={
                         "url": search_url,
                         "output": "json",

@@ -90,6 +90,8 @@ services:
       - nuclei_templates:/home/appuser/.config/nuclei
       - scan_outputs:/app/outputs
       - screenshots_data:/app/data/screenshots
+      - commoncrawl_data:/app/data/commoncrawl
+      - sni_data:/app/data/sni-ip-ranges
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -239,6 +241,10 @@ volumes:
   scan_outputs:
     driver: local
   screenshots_data:
+    driver: local
+  commoncrawl_data:
+    driver: local
+  sni_data:
     driver: local
   neo4j_data:
     driver: local

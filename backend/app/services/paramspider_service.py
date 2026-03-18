@@ -74,8 +74,8 @@ class ParamSpiderService:
         
         Args:
             domain: Domain to scan (e.g., example.com)
-            level: Crawl level (high, medium, low)
-            exclude_extensions: File extensions to exclude
+            level: Unused (kept for API compat); ParamSpider has no level flag
+            exclude_extensions: Unused (kept for API compat); ParamSpider uses hardcoded extensions
             timeout: Command timeout in seconds
             
         Returns:
@@ -88,32 +88,22 @@ class ParamSpiderService:
             result.error = "ParamSpider not installed. Run: pip install paramspider"
             return result
         
-        # Default extensions to exclude
-        if exclude_extensions is None:
-            exclude_extensions = ["css", "js", "png", "jpg", "jpeg", "gif", "svg", "ico", "woff", "woff2", "ttf", "eot"]
-        
-        # Create output file
-        output_file = os.path.join(self.output_dir, f"paramspider_{domain.replace('.', '_')}_{int(datetime.utcnow().timestamp())}.txt")
+        work_dir = tempfile.mkdtemp(prefix="paramspider_")
         
         try:
-            # Build command
             cmd = [
                 self.paramspider_path,
                 "-d", domain,
-                "-o", output_file,
-                "--level", level,
+                "-s",
             ]
-            
-            if exclude_extensions:
-                cmd.extend(["--exclude", ",".join(exclude_extensions)])
             
             logger.info(f"Running ParamSpider on {domain}: {' '.join(cmd)}")
             
-            # Run ParamSpider
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                cwd=work_dir,
             )
             
             try:
@@ -126,37 +116,41 @@ class ParamSpiderService:
                 result.error = f"ParamSpider timed out after {timeout}s"
                 return result
             
-            # Parse results
+            if process.returncode not in (0, None):
+                stderr_text = stderr.decode('utf-8', errors='ignore').strip() if stderr else ''
+                logger.warning(f"ParamSpider exited {process.returncode} for {domain}: {stderr_text}")
+            
             all_urls: Set[str] = set()
             all_params: Set[str] = set()
             all_endpoints: Set[str] = set()
             all_js_files: Set[str] = set()
             
+            # ParamSpider writes output to results/{domain}.txt in its cwd
+            output_file = os.path.join(work_dir, "results", f"{domain}.txt")
             if os.path.exists(output_file):
                 with open(output_file, 'r') as f:
                     for line in f:
                         url = line.strip()
-                        if not url or url.startswith('#'):
-                            continue
-                        
+                        if url and not url.startswith('#'):
+                            all_urls.add(url)
+            
+            # Also capture URLs from stdout (-s stream mode)
+            if stdout:
+                for line in stdout.decode('utf-8', errors='ignore').splitlines():
+                    url = line.strip()
+                    if url and url.startswith(('http://', 'https://')) and '?' in url:
                         all_urls.add(url)
-                        
-                        # Extract parameters
-                        parsed = urlparse(url)
-                        
-                        # Get the endpoint (path without query)
-                        if parsed.path and parsed.path != '/':
-                            all_endpoints.add(parsed.path)
-                        
-                        # Check for JS files
-                        if parsed.path.endswith('.js'):
-                            all_js_files.add(url)
-                        
-                        # Extract query parameters
-                        if parsed.query:
-                            params = parse_qs(parsed.query)
-                            for param_name in params.keys():
-                                all_params.add(param_name)
+            
+            for url in all_urls:
+                parsed = urlparse(url)
+                if parsed.path and parsed.path != '/':
+                    all_endpoints.add(parsed.path)
+                if parsed.path.endswith('.js'):
+                    all_js_files.add(url)
+                if parsed.query:
+                    params = parse_qs(parsed.query)
+                    for param_name in params.keys():
+                        all_params.add(param_name)
             
             result.urls = sorted(list(all_urls))
             result.parameters = sorted(list(all_params))
@@ -174,12 +168,10 @@ class ParamSpiderService:
             logger.error(f"ParamSpider error for {domain}: {e}")
             result.error = str(e)
         finally:
-            # Cleanup output file
-            if os.path.exists(output_file):
-                try:
-                    os.remove(output_file)
-                except:
-                    pass
+            try:
+                shutil.rmtree(work_dir, ignore_errors=True)
+            except Exception:
+                pass
         
         result.elapsed_time = (datetime.utcnow() - start_time).total_seconds()
         return result

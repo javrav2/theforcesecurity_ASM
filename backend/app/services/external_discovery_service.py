@@ -681,7 +681,7 @@ class ExternalDiscoveryService:
         Discover subdomains from Common Crawl web archive.
         
         Uses S3-backed index if CC_S3_BUCKET is configured (fast, ~100ms).
-        Falls back to CC Index API if S3 not configured (slower, 30-60s).
+        Falls back to CC Index API if S3 not configured or S3 sync fails.
         
         Args:
             domain: Domain to search (e.g., rockwellautomation.com)
@@ -691,26 +691,32 @@ class ExternalDiscoveryService:
         result = DiscoveryResult(source=ExternalService.COMMONCRAWL, success=False)
         
         try:
-            # Check if S3-backed index is configured
             s3_bucket = os.getenv("CC_S3_BUCKET")
+            used_s3 = False
             
             if s3_bucket:
-                # Use fast S3-backed index
-                from app.services.commoncrawl_s3_service import CommonCrawlS3Service
-                
-                cc_service = CommonCrawlS3Service(s3_bucket=s3_bucket)
-                await cc_service.sync_from_s3()  # Sync if needed
-                cc_result = await cc_service.search_domain(domain)
-                
-                if cc_result.error:
-                    result.error = cc_result.error
-                else:
-                    result.success = True
-                    result.subdomains = cc_result.subdomains
+                try:
+                    from app.services.commoncrawl_s3_service import CommonCrawlS3Service
                     
-                logger.info(f"Common Crawl (S3) found {len(result.subdomains)} subdomains for {domain}")
-            else:
-                # Fall back to API
+                    cc_service = CommonCrawlS3Service(s3_bucket=s3_bucket)
+                    synced = await cc_service.sync_from_s3()
+                    
+                    if synced:
+                        cc_result = await cc_service.search_domain(domain)
+                        
+                        if not cc_result.error:
+                            result.success = True
+                            result.subdomains = cc_result.subdomains
+                            used_s3 = True
+                            logger.info(f"Common Crawl (S3) found {len(result.subdomains)} subdomains for {domain}")
+                        else:
+                            logger.warning(f"CC S3 search error: {cc_result.error}, falling back to API")
+                    else:
+                        logger.warning("CC S3 sync failed (index may not exist), falling back to API")
+                except Exception as e:
+                    logger.warning(f"CC S3 service error: {e}, falling back to API")
+            
+            if not used_s3:
                 from app.services.commoncrawl_service import CommonCrawlService
                 
                 cc_service = CommonCrawlService(timeout=60.0)
@@ -721,7 +727,7 @@ class ExternalDiscoveryService:
                 else:
                     result.success = True
                     result.subdomains = cc_result.subdomains
-                    result.urls = cc_result.urls[:500]  # Limit for response size
+                    result.urls = cc_result.urls[:500]
                     
                 logger.info(f"Common Crawl (API) found {len(result.subdomains)} subdomains for {domain}")
             
@@ -809,9 +815,8 @@ class ExternalDiscoveryService:
         """
         Discover cloud-hosted assets using SNI IP ranges data.
         
-        Uses data from kaeferjaeger.gay which scans cloud provider IP ranges
-        (AWS, Google, Azure, Oracle, DigitalOcean) and collects SSL/TLS
-        certificate information.
+        Uses S3-backed index if SNI_S3_BUCKET or CC_S3_BUCKET is configured (fast).
+        Falls back to direct download from kaeferjaeger.gay if S3 not available.
         
         Args:
             domain: Primary domain to search for
@@ -821,46 +826,90 @@ class ExternalDiscoveryService:
         Returns:
             DiscoveryResult with discovered domains, subdomains, and IPs
         """
+        import os
         start_time = time.time()
         result = DiscoveryResult(source="sni_ip_ranges", success=False)
         
+        effective_org = org_name or domain.split('.')[0]
+        used_s3 = False
+        
         try:
-            from app.services.sni_scanner_service import get_sni_service
+            # Try S3-backed service first (fast, pre-built index)
+            s3_bucket = os.getenv("SNI_S3_BUCKET") or os.getenv("CC_S3_BUCKET")
             
-            service = get_sni_service()
+            if s3_bucket:
+                try:
+                    from app.services.sni_s3_service import SNIS3Service
+                    
+                    sni_s3 = SNIS3Service(s3_bucket=s3_bucket)
+                    synced = await sni_s3.sync_from_s3()
+                    
+                    if synced:
+                        sni_result = await sni_s3.search_organization(
+                            org_name=effective_org,
+                            primary_domain=domain,
+                            keywords=keywords
+                        )
+                        
+                        if not sni_result.error:
+                            result.success = True
+                            result.domains = sni_result.domains
+                            result.subdomains = sni_result.subdomains
+                            result.ip_addresses = sni_result.ips
+                            result.raw_data = {
+                                "total_records": sni_result.total_records,
+                                "by_cloud_provider": sni_result.by_provider,
+                                "query": sni_result.query,
+                                "source_mode": "s3",
+                            }
+                            used_s3 = True
+                            
+                            logger.info(
+                                f"SNI IP ranges (S3): found {len(result.domains)} domains, "
+                                f"{len(result.subdomains)} subdomains, {len(result.ip_addresses)} IPs"
+                            )
+                        else:
+                            logger.warning(f"SNI S3 search error: {sni_result.error}, falling back to direct download")
+                    else:
+                        logger.warning("SNI S3 sync failed (index may not exist), falling back to direct download")
+                except Exception as e:
+                    logger.warning(f"SNI S3 service error: {e}, falling back to direct download")
             
-            # Check if data is available
-            stats = service.get_stats()
-            if stats["unique_domains"] == 0:
-                # Try to sync data first (this happens in background but we log it)
-                logger.info("SNI data not loaded, attempting sync...")
-                await service.sync_all_providers()
-            
-            # Perform organization search
-            sni_result = await service.search_organization(
-                org_name=org_name or domain.split('.')[0],
-                primary_domain=domain,
-                keywords=keywords
-            )
-            
-            if sni_result.success:
-                result.success = True
-                result.domains = sni_result.domains
-                result.subdomains = sni_result.subdomains
-                result.ip_addresses = sni_result.ips
-                result.raw_data = {
-                    "total_records": sni_result.total_records,
-                    "by_cloud_provider": sni_result.by_cloud_provider,
-                    "query": sni_result.query,
-                }
+            if not used_s3:
+                from app.services.sni_scanner_service import get_sni_service
                 
-                logger.info(
-                    f"SNI IP ranges: found {len(result.domains)} domains, "
-                    f"{len(result.subdomains)} subdomains, {len(result.ip_addresses)} IPs "
-                    f"across {sni_result.by_cloud_provider}"
+                service = get_sni_service()
+                
+                stats = service.get_stats()
+                if stats["unique_domains"] == 0:
+                    logger.info("SNI data not loaded, attempting sync from kaeferjaeger.gay...")
+                    await service.sync_all_providers()
+                
+                sni_result = await service.search_organization(
+                    org_name=effective_org,
+                    primary_domain=domain,
+                    keywords=keywords
                 )
-            else:
-                result.error = sni_result.error
+                
+                if sni_result.success:
+                    result.success = True
+                    result.domains = sni_result.domains
+                    result.subdomains = sni_result.subdomains
+                    result.ip_addresses = sni_result.ips
+                    result.raw_data = {
+                        "total_records": sni_result.total_records,
+                        "by_cloud_provider": sni_result.by_cloud_provider,
+                        "query": sni_result.query,
+                        "source_mode": "direct",
+                    }
+                    
+                    logger.info(
+                        f"SNI IP ranges (direct): found {len(result.domains)} domains, "
+                        f"{len(result.subdomains)} subdomains, {len(result.ip_addresses)} IPs "
+                        f"across {sni_result.by_cloud_provider}"
+                    )
+                else:
+                    result.error = sni_result.error
                 
         except ImportError:
             result.error = "SNI scanner service not available"

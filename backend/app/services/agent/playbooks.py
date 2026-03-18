@@ -51,6 +51,48 @@ PLAYBOOKS: List[Dict[str, Any]] = [
             {"description": "Summarize findings", "status": "pending", "priority": "medium"},
         ],
     },
+    {
+        "id": "llm_red_team",
+        "name": "AI/LLM Red Team Assessment",
+        "description": "Security assessment of chatbots and AI-powered endpoints: discover, test, and report AI-specific vulnerabilities.",
+        "objective": (
+            "Perform an AI/LLM red team security assessment against the target application. "
+            "Follow the OWASP Top 10 for LLM Applications methodology:\n\n"
+            "**Phase 1 — Reconnaissance & Endpoint Discovery**\n"
+            "1) Use execute_httpx to probe the target for live web services and technologies.\n"
+            "2) Use execute_katana to crawl the target and discover API endpoints, chat widgets, and JavaScript references to AI/chatbot functionality.\n"
+            "3) Look for indicators of chatbot presence: /api/chat, /api/message, /api/ask, /api/completions, WebSocket upgrade headers, "
+            "references to OpenAI/Anthropic/LangChain in JavaScript, chat widget iframes, or Intercom/Drift/Zendesk AI integrations.\n\n"
+            "**Phase 2 — Chatbot Endpoint Validation**\n"
+            "4) If chat endpoints are found, use execute_curl to send a test message ('Hello') and confirm the endpoint responds like an AI chatbot.\n"
+            "5) Identify the API contract: request format (JSON field name for messages), authentication requirements, response structure.\n\n"
+            "**Phase 3 — Automated Red Team Testing**\n"
+            "6) Run execute_llm_red_team against confirmed chatbot endpoints. Test all categories or focus based on risk:\n"
+            "   - prompt_injection: Can the system prompt be overridden?\n"
+            "   - system_prompt_leakage: Can hidden instructions be extracted?\n"
+            "   - data_exfiltration: Can PII or internal data be leaked?\n"
+            "   - jailbreak: Can safety filters be bypassed?\n"
+            "   - ssrf_tool_abuse: Can the chatbot be used for SSRF (cloud metadata, localhost)?\n"
+            "   - excessive_agency: Will it perform unauthorized actions?\n"
+            "   - hallucination: Does it fabricate security-relevant information?\n"
+            "   - harmful_content: Will it generate malicious code or phishing content?\n\n"
+            "**Phase 4 — Analysis & Reporting**\n"
+            "7) Review results. For each failed test (vulnerability found), create_finding with:\n"
+            "   - Title referencing the OWASP LLM category\n"
+            "   - CWE ID from the test payload\n"
+            "   - Evidence showing the prompt sent and response received\n"
+            "   - Specific remediation steps\n"
+            "8) Summarize: total endpoints tested, test categories, pass/fail rates, risk score, and prioritized remediation.\n\n"
+            "IMPORTANT: execute_llm_red_team auto-creates findings, so don't duplicate them with create_finding unless you have additional manual observations."
+        ),
+        "initial_todos": [
+            {"description": "Probe target with HTTPX and crawl with Katana to find chat/AI endpoints", "status": "pending", "priority": "high"},
+            {"description": "Validate discovered endpoints with curl test messages", "status": "pending", "priority": "high"},
+            {"description": "Run execute_llm_red_team against confirmed chatbot endpoints", "status": "pending", "priority": "high"},
+            {"description": "Review results and create findings for any manual observations", "status": "pending", "priority": "medium"},
+            {"description": "Generate final report with OWASP LLM Top 10 mapping and remediation", "status": "pending", "priority": "medium"},
+        ],
+    },
 ]
 
 

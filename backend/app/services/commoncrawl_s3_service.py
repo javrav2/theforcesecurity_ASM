@@ -373,7 +373,7 @@ class CommonCrawlIndexBuilder:
     def __init__(
         self,
         s3_bucket: str,
-        cc_release: str = "CC-MAIN-2024-10",
+        cc_release: str = "CC-MAIN-2024-51",
         aws_region: str = "us-east-1",
         max_domains: int = 50_000_000,  # Limit for memory/storage
         batch_size: int = 10000
