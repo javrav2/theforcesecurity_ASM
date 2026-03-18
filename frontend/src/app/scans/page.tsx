@@ -188,6 +188,9 @@ export default function ScansPage() {
       } else if (formData.scan_type === 'katana') {
         config.depth = 5;
         config.batch_stdin = formData.katana_batch_stdin;
+      } else if (formData.scan_type === 'llm_red_team') {
+        config.auto_discover = true;
+        config.use_llm_grading = true;
       }
 
       await api.createScan({
@@ -410,6 +413,7 @@ export default function ScansPage() {
                       <SelectItem value="dns_resolution">DNS Resolution</SelectItem>
                       <SelectItem value="geo_enrich">Geolocation Enrichment</SelectItem>
                       <SelectItem value="full">Full Scan (All)</SelectItem>
+                      <SelectItem value="llm_red_team">AI/LLM Red Team (Chatbot Testing)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -476,6 +480,24 @@ export default function ScansPage() {
                     </div>
                     <p className="text-xs text-muted-foreground">
                       One Katana process with URLs on stdin; outputs a single list of JS URLs for review.
+                    </p>
+                  </div>
+                )}
+
+                {/* LLM Red Team Options */}
+                {formData.scan_type === 'llm_red_team' && (
+                  <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950 p-3">
+                    <p className="text-sm font-medium">AI/LLM Red Team Assessment</p>
+                    <p className="text-xs text-muted-foreground">
+                      Tests chatbot and AI endpoints for prompt injection, jailbreak, data exfiltration, SSRF,
+                      system prompt leakage, excessive agency, hallucination, and harmful content generation.
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      <strong>Targets:</strong> Enter full URLs (e.g. https://example.com). The scanner will auto-discover
+                      chatbot API endpoints (/api/chat, /api/message, etc.) and test them against OWASP Top 10 for LLMs.
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Findings are mapped to CWE IDs and created automatically in the findings table.
                     </p>
                   </div>
                 )}

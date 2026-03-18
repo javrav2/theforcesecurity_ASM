@@ -63,7 +63,7 @@ def get_latest_cc_release() -> str:
         logger.warning(f"Could not get latest CC release: {e}")
     
     # Fallback to a known recent release
-    return "CC-MAIN-2024-10"
+    return "CC-MAIN-2024-51"
 
 
 async def collect_domains_from_cc(
