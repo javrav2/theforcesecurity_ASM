@@ -59,6 +59,8 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       # Common Crawl S3 Index (optional - for fast subdomain lookups)
       - CC_S3_BUCKET=${CC_S3_BUCKET:-}
+      # SNI IP Ranges S3 Index (optional - for cloud asset discovery)
+      - SNI_S3_BUCKET=${SNI_S3_BUCKET:-}
       # ProjectDiscovery Cloud API Key (optional - for Chaos subdomain dataset)
       - PDCP_API_KEY=${PDCP_API_KEY:-}
       # Neo4j Graph Database (optional - for asset relationship visualization)
