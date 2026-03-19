@@ -1,0 +1,600 @@
+"""
+Auto Tool Selector
+
+Context-aware tool recommendation engine that analyzes discovered target state
+(technologies, ports, parameters, WAF) and returns prioritized tool chains
+the agent should execute next.
+
+This replaces guesswork with deterministic, rules-based recommendations
+that the LLM uses to make faster, smarter tool choices.
+"""
+
+import logging
+from typing import List, Dict, Any, Optional, Set
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Target classification rules
+# ---------------------------------------------------------------------------
+
+# Technology keywords → target type mapping
+_TECH_CLASSIFIERS: Dict[str, List[str]] = {
+    "wordpress": ["wordpress", "wp-content", "wp-includes", "wp-json"],
+    "joomla": ["joomla", "com_content"],
+    "drupal": ["drupal"],
+    "cms": ["wordpress", "joomla", "drupal", "magento", "shopify", "squarespace", "wix", "ghost", "typo3"],
+    "php": ["php", "laravel", "symfony", "codeigniter", "cakephp", "yii"],
+    "dotnet": [".net", "asp.net", "aspnet", "iis", "blazor"],
+    "java": ["java", "spring", "tomcat", "jboss", "wildfly", "jetty", "struts"],
+    "python": ["python", "django", "flask", "fastapi", "gunicorn", "uvicorn"],
+    "nodejs": ["node.js", "express", "next.js", "nuxt", "koa", "nest"],
+    "ruby": ["ruby", "rails", "sinatra", "puma", "unicorn"],
+    "api": ["swagger", "openapi", "graphql", "rest", "api-docs", "redoc"],
+    "spa": ["react", "angular", "vue", "svelte", "ember"],
+    "nginx": ["nginx"],
+    "apache": ["apache"],
+    "cloudflare": ["cloudflare"],
+    "cdn": ["cloudflare", "akamai", "fastly", "cloudfront", "incapsula"],
+    "waf": ["cloudflare", "akamai", "imperva", "incapsula", "f5", "modsecurity", "sucuri", "barracuda"],
+    "chatbot": ["openai", "anthropic", "langchain", "chatbot", "chatgpt", "intercom", "drift", "zendesk"],
+}
+
+# Port → service type mapping for common non-HTTP services
+_PORT_SERVICE_MAP: Dict[int, str] = {
+    21: "ftp",
+    22: "ssh",
+    25: "smtp",
+    53: "dns",
+    110: "pop3",
+    143: "imap",
+    389: "ldap",
+    443: "https",
+    445: "smb",
+    993: "imaps",
+    995: "pop3s",
+    1433: "mssql",
+    1521: "oracle",
+    3306: "mysql",
+    3389: "rdp",
+    5432: "postgresql",
+    5900: "vnc",
+    6379: "redis",
+    8080: "http-alt",
+    8443: "https-alt",
+    9200: "elasticsearch",
+    27017: "mongodb",
+}
+
+
+# ---------------------------------------------------------------------------
+# Tool recommendation chains
+# ---------------------------------------------------------------------------
+
+class ToolRecommendation:
+    """A single tool recommendation with priority and rationale."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        args_template: str,
+        priority: int,
+        rationale: str,
+        phase_required: str = "informational",
+        category: str = "general",
+    ):
+        self.tool_name = tool_name
+        self.args_template = args_template  # uses {target} placeholder
+        self.priority = priority  # 1 = highest
+        self.rationale = rationale
+        self.phase_required = phase_required
+        self.category = category
+
+    def format_args(self, target: str) -> str:
+        return self.args_template.format(target=target)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "args_template": self.args_template,
+            "priority": self.priority,
+            "rationale": self.rationale,
+            "phase_required": self.phase_required,
+            "category": self.category,
+        }
+
+
+class ToolSelector:
+    """
+    Context-aware tool selector that analyzes the current assessment state
+    and recommends which tools to run next.
+
+    Usage:
+        selector = ToolSelector(target_info, execution_trace, current_phase)
+        recommendations = selector.get_recommendations()
+    """
+
+    def __init__(
+        self,
+        target: str,
+        target_info: Dict[str, Any],
+        execution_trace: List[Dict[str, Any]],
+        current_phase: str = "informational",
+        parameters: Optional[Dict[str, Any]] = None,
+        waf_detected: Optional[str] = None,
+    ):
+        self.target = target
+        self.target_info = target_info or {}
+        self.execution_trace = execution_trace or []
+        self.current_phase = current_phase
+        self.parameters = parameters or {}
+        self.waf_detected = waf_detected
+
+        # Derived state
+        self._tools_already_run: Set[str] = self._extract_tools_run()
+        self._technologies: Set[str] = self._extract_technologies()
+        self._ports: Set[int] = set(self.target_info.get("ports", []))
+        self._services: Set[str] = set(s.lower() for s in self.target_info.get("services", []))
+        self._vulns: List[str] = self.target_info.get("vulnerabilities", [])
+        self._target_types: Set[str] = self._classify_target()
+
+    # ------------------------------------------------------------------
+    # State extraction helpers
+    # ------------------------------------------------------------------
+
+    def _extract_tools_run(self) -> Set[str]:
+        """Get set of tools already executed in this session."""
+        tools = set()
+        for step in self.execution_trace:
+            tool = step.get("tool_name")
+            if tool:
+                tools.add(tool)
+        return tools
+
+    def _extract_technologies(self) -> Set[str]:
+        """Get lowercase set of discovered technologies."""
+        return set(t.lower() for t in self.target_info.get("technologies", []))
+
+    def _classify_target(self) -> Set[str]:
+        """Classify the target based on discovered technologies."""
+        types: Set[str] = set()
+        tech_str = " ".join(self._technologies)
+
+        for target_type, keywords in _TECH_CLASSIFIERS.items():
+            for kw in keywords:
+                if kw in tech_str:
+                    types.add(target_type)
+                    break
+
+        # Classify by ports
+        if self._ports:
+            http_ports = {80, 443, 8080, 8443, 8000, 3000, 5000}
+            if self._ports & http_ports:
+                types.add("web")
+            db_ports = {3306, 5432, 1433, 1521, 27017, 6379}
+            if self._ports & db_ports:
+                types.add("database")
+
+        # Default: if nothing detected, assume web
+        if not types:
+            types.add("web")
+
+        return types
+
+    # ------------------------------------------------------------------
+    # Core recommendation engine
+    # ------------------------------------------------------------------
+
+    def get_recommendations(self) -> List[Dict[str, Any]]:
+        """
+        Return prioritized list of tool recommendations based on current state.
+
+        Each recommendation has: tool_name, args_template, priority, rationale,
+        phase_required, category.
+        """
+        recs: List[ToolRecommendation] = []
+
+        # Phase 1: Reconnaissance (always recommend if not done)
+        recs.extend(self._recon_recommendations())
+
+        # Phase 2: Technology-specific tools
+        recs.extend(self._technology_recommendations())
+
+        # Phase 3: Parameter discovery & injection testing
+        recs.extend(self._injection_recommendations())
+
+        # Phase 4: Active scanning (exploitation phase)
+        recs.extend(self._active_scan_recommendations())
+
+        # Phase 5: Specialty scans based on findings
+        recs.extend(self._specialty_recommendations())
+
+        # Filter out already-run tools and sort by priority
+        filtered = [
+            r for r in recs
+            if r.tool_name not in self._tools_already_run
+        ]
+        filtered.sort(key=lambda r: r.priority)
+
+        return [r.to_dict() for r in filtered]
+
+    def get_recommendations_text(self) -> str:
+        """Format recommendations as text for prompt injection."""
+        recs = self.get_recommendations()
+        if not recs:
+            return "All recommended tools have been executed. Consider completing or deepening specific findings."
+
+        lines = ["### Smart Tool Recommendations (based on discovered state)"]
+        lines.append(f"**Target classification**: {', '.join(sorted(self._target_types))}")
+        if self.waf_detected:
+            lines.append(f"**WAF detected**: {self.waf_detected} — use evasion-aware payloads")
+        lines.append("")
+
+        # Group by category
+        by_category: Dict[str, List[Dict[str, Any]]] = {}
+        for r in recs:
+            cat = r.get("category", "general")
+            by_category.setdefault(cat, []).append(r)
+
+        priority_order = [
+            "reconnaissance", "technology", "waf_detection",
+            "parameter_discovery", "injection_testing",
+            "active_scanning", "tls_ssl", "cms", "api", "ai_security",
+            "general",
+        ]
+
+        for cat in priority_order:
+            items = by_category.get(cat, [])
+            if not items:
+                continue
+            lines.append(f"**{cat.replace('_', ' ').title()}**:")
+            for r in items[:5]:  # Top 5 per category
+                phase_tag = f" [{r['phase_required']}]" if r["phase_required"] != "informational" else ""
+                lines.append(
+                    f"  {r['priority']}. `{r['tool_name']}` — {r['rationale']}{phase_tag}"
+                )
+            lines.append("")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Recommendation generators
+    # ------------------------------------------------------------------
+
+    def _recon_recommendations(self) -> List[ToolRecommendation]:
+        """Basic reconnaissance tools that should always run first."""
+        recs = []
+        t = self.target
+
+        if "execute_httpx" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_httpx",
+                args_template="-u {target} -json -tech-detect -status-code -title -follow-redirects",
+                priority=1,
+                rationale="HTTP probing — get status, tech stack, redirects. Run first to understand the target.",
+                category="reconnaissance",
+            ))
+
+        if "execute_dnsx" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_dnsx",
+                args_template="-d {target} -a -aaaa -mx -ns -cname -json",
+                priority=2,
+                rationale="DNS resolution — get IPs, mail servers, nameservers. Essential baseline.",
+                category="reconnaissance",
+            ))
+
+        if "execute_wafw00f" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_wafw00f",
+                args_template="-a https://{target}",
+                priority=3,
+                rationale="WAF detection — identify protections BEFORE injection testing.",
+                category="waf_detection",
+            ))
+
+        if "execute_wappalyzer" not in self._tools_already_run and "execute_whatweb" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_wappalyzer",
+                args_template="https://{target}",
+                priority=4,
+                rationale="Technology fingerprinting — identify CMS, frameworks, server stack with 6000+ signatures.",
+                category="technology",
+            ))
+
+        return recs
+
+    def _technology_recommendations(self) -> List[ToolRecommendation]:
+        """Technology-specific tool recommendations."""
+        recs = []
+
+        # WordPress detected
+        if "wordpress" in self._target_types:
+            recs.append(ToolRecommendation(
+                tool_name="execute_wpscan",
+                args_template="--url https://{target} --enumerate vp,vt,u",
+                priority=5,
+                rationale="WordPress detected — scan for plugin/theme vulnerabilities and user enumeration.",
+                phase_required="exploitation",
+                category="cms",
+            ))
+
+        # Other CMS
+        if "cms" in self._target_types and "wordpress" not in self._target_types:
+            if "execute_cmseek" not in self._tools_already_run:
+                recs.append(ToolRecommendation(
+                    tool_name="execute_cmseek",
+                    args_template="-u https://{target}",
+                    priority=5,
+                    rationale="CMS detected — identify CMS type and known vulnerabilities.",
+                    category="cms",
+                ))
+
+        # API/Swagger/GraphQL detected
+        if "api" in self._target_types:
+            recs.append(ToolRecommendation(
+                tool_name="execute_schemathesis",
+                args_template="run https://{target}/openapi.json --checks all",
+                priority=6,
+                rationale="API/OpenAPI detected — fuzz API endpoints for validation issues and 500 errors.",
+                phase_required="exploitation",
+                category="api",
+            ))
+            recs.append(ToolRecommendation(
+                tool_name="execute_kiterunner",
+                args_template="scan https://{target} -A=apiroutes-210228",
+                priority=7,
+                rationale="API detected — discover hidden REST/GraphQL routes.",
+                category="api",
+            ))
+
+        # SPA / JavaScript-heavy
+        if "spa" in self._target_types or "nodejs" in self._target_types:
+            if "execute_katana" not in self._tools_already_run:
+                recs.append(ToolRecommendation(
+                    tool_name="execute_katana",
+                    args_template="-u https://{target} -d 3 -jc -json",
+                    priority=5,
+                    rationale="SPA/JS-heavy app — deep crawl to find JS endpoints, API calls, and hidden routes.",
+                    category="reconnaissance",
+                ))
+            recs.append(ToolRecommendation(
+                tool_name="execute_browser",
+                args_template='{"actions": [{"action": "navigate", "url": "https://{target}"}, {"action": "execute_js", "script": "JSON.stringify({cookies: document.cookie, localStorage: Object.keys(localStorage), scripts: Array.from(document.scripts).map(s=>s.src).filter(Boolean)})"}]}',
+                priority=8,
+                rationale="JS-heavy app — extract cookies, localStorage keys, and external script URLs for sensitive data leakage.",
+                phase_required="exploitation",
+                category="active_scanning",
+            ))
+
+        # Chatbot / AI endpoint detected
+        if "chatbot" in self._target_types:
+            recs.append(ToolRecommendation(
+                tool_name="execute_llm_red_team",
+                args_template="target_url=https://{target}",
+                priority=6,
+                rationale="AI/chatbot technology detected — run OWASP LLM Top 10 assessment.",
+                category="ai_security",
+            ))
+
+        return recs
+
+    def _injection_recommendations(self) -> List[ToolRecommendation]:
+        """Parameter discovery and injection testing recommendations."""
+        recs = []
+
+        # Parameter discovery
+        if "discover_parameters" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="discover_parameters",
+                args_template="https://{target}",
+                priority=5,
+                rationale="Discover injectable parameters — forms, query strings, hidden inputs, JS variables.",
+                category="parameter_discovery",
+            ))
+
+        if "execute_arjun" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_arjun",
+                args_template="-u https://{target}",
+                priority=6,
+                rationale="Find hidden HTTP parameters with smart wordlists and response analysis.",
+                category="parameter_discovery",
+            ))
+
+        # If parameters have been discovered, recommend injection tools
+        if self.parameters:
+            sqli_params = []
+            xss_params = []
+            for name, info in self.parameters.items():
+                vulns = info.get("likely_vulnerable_to", [])
+                if "sqli" in vulns:
+                    sqli_params.append(name)
+                if "xss" in vulns:
+                    xss_params.append(name)
+
+            if sqli_params:
+                first_param = sqli_params[0]
+                recs.append(ToolRecommendation(
+                    tool_name="execute_sqlmap",
+                    args_template=f'-u "https://{{target}}/?{first_param}=1" --batch --dbs --level=3 --risk=2',
+                    priority=7,
+                    rationale=f"SQLi-prone params found ({', '.join(sqli_params[:3])}) — automated SQL injection testing.",
+                    phase_required="exploitation",
+                    category="injection_testing",
+                ))
+
+            if xss_params:
+                first_param = xss_params[0]
+                recs.append(ToolRecommendation(
+                    tool_name="execute_xsstrike",
+                    args_template=f'-u "https://{{target}}/?{first_param}=test" --crawl',
+                    priority=7,
+                    rationale=f"XSS-prone params found ({', '.join(xss_params[:3])}) — advanced XSS scanning.",
+                    phase_required="exploitation",
+                    category="injection_testing",
+                ))
+
+            # Generate payloads for manual testing
+            if sqli_params and "generate_injection_payloads" not in self._tools_already_run:
+                recs.append(ToolRecommendation(
+                    tool_name="generate_injection_payloads",
+                    args_template="vuln_type=sqli",
+                    priority=6,
+                    rationale="Generate SQLi payloads (error-based, time-based, boolean-based) for manual testing.",
+                    category="injection_testing",
+                ))
+
+            if xss_params and "generate_injection_payloads" not in self._tools_already_run:
+                recs.append(ToolRecommendation(
+                    tool_name="generate_injection_payloads",
+                    args_template="vuln_type=xss",
+                    priority=6,
+                    rationale="Generate XSS payloads (reflected, stored, DOM) for manual testing.",
+                    category="injection_testing",
+                ))
+
+        return recs
+
+    def _active_scan_recommendations(self) -> List[ToolRecommendation]:
+        """Active scanning tools (require exploitation phase)."""
+        recs = []
+
+        recs.append(ToolRecommendation(
+            tool_name="execute_nuclei",
+            args_template="-u https://{target} -jsonl",
+            priority=6,
+            rationale="Comprehensive vulnerability scan — CVEs, misconfigs, exposures, tech detection (all severities).",
+            phase_required="exploitation",
+            category="active_scanning",
+        ))
+
+        recs.append(ToolRecommendation(
+            tool_name="execute_naabu",
+            args_template="-host {target} -top-ports 1000 -json",
+            priority=7,
+            rationale="Port scan — discover open ports beyond 80/443.",
+            phase_required="exploitation",
+            category="active_scanning",
+        ))
+
+        recs.append(ToolRecommendation(
+            tool_name="execute_nikto",
+            args_template="-h https://{target} -Format json",
+            priority=8,
+            rationale="Web server vulnerability scan — 6,700+ dangerous CGIs, configs, and default files.",
+            phase_required="exploitation",
+            category="active_scanning",
+        ))
+
+        # TLS/SSL testing
+        if "execute_testssl" not in self._tools_already_run and "execute_sslyze" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_testssl",
+                args_template="https://{target}",
+                priority=8,
+                rationale="TLS/SSL testing — check for weak ciphers, expired certs, Heartbleed, POODLE, BEAST.",
+                category="tls_ssl",
+            ))
+
+        # Browser-based testing for JS-heavy sites
+        recs.append(ToolRecommendation(
+            tool_name="execute_browser",
+            args_template='{"actions": [{"action": "check_xss", "url": "https://{target}"}]}',
+            priority=9,
+            rationale="Headless browser XSS verification — test for reflected/DOM XSS with real browser.",
+            phase_required="exploitation",
+            category="active_scanning",
+        ))
+
+        return recs
+
+    def _specialty_recommendations(self) -> List[ToolRecommendation]:
+        """Specialty tools based on specific findings or context."""
+        recs = []
+
+        # Historical URL discovery (useful for finding old endpoints)
+        if "execute_gau" not in self._tools_already_run and "execute_waybackurls" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_gau",
+                args_template="{target} --subs",
+                priority=9,
+                rationale="Discover historical URLs from Wayback, CommonCrawl, OTX — find old endpoints and params.",
+                category="reconnaissance",
+            ))
+
+        # Git secret scanning (if git repo indicators found)
+        git_indicators = {"github", "gitlab", "bitbucket", ".git"}
+        if git_indicators & self._technologies:
+            recs.append(ToolRecommendation(
+                tool_name="execute_gitleaks",
+                args_template="detect --source . --report-format json",
+                priority=7,
+                rationale="Git repository indicators found — scan for hardcoded secrets and API keys.",
+                category="general",
+            ))
+
+        # Certificate transparency for subdomain discovery
+        if "execute_crtsh" not in self._tools_already_run:
+            recs.append(ToolRecommendation(
+                tool_name="execute_crtsh",
+                args_template="{target}",
+                priority=10,
+                rationale="Certificate transparency — passively discover subdomains from CT logs.",
+                category="reconnaissance",
+            ))
+
+        return recs
+
+
+# ---------------------------------------------------------------------------
+# Convenience function for orchestrator integration
+# ---------------------------------------------------------------------------
+
+def get_tool_recommendations(
+    target: str,
+    target_info: Dict[str, Any],
+    execution_trace: List[Dict[str, Any]],
+    current_phase: str = "informational",
+    parameters: Optional[Dict[str, Any]] = None,
+    waf_detected: Optional[str] = None,
+) -> str:
+    """
+    Get formatted tool recommendations for injection into the agent prompt.
+
+    Called by the orchestrator's _think_node to provide context-aware guidance.
+    """
+    selector = ToolSelector(
+        target=target,
+        target_info=target_info,
+        execution_trace=execution_trace,
+        current_phase=current_phase,
+        parameters=parameters,
+        waf_detected=waf_detected,
+    )
+    return selector.get_recommendations_text()
+
+
+def get_tool_recommendations_json(
+    target: str,
+    target_info: Dict[str, Any],
+    execution_trace: List[Dict[str, Any]],
+    current_phase: str = "informational",
+    parameters: Optional[Dict[str, Any]] = None,
+    waf_detected: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Get raw tool recommendations as a list of dicts.
+
+    Used by the auto_select_tools agent tool for programmatic access.
+    """
+    selector = ToolSelector(
+        target=target,
+        target_info=target_info,
+        execution_trace=execution_trace,
+        current_phase=current_phase,
+        parameters=parameters,
+        waf_detected=waf_detected,
+    )
+    return selector.get_recommendations()

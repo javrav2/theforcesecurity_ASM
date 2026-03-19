@@ -4,6 +4,51 @@ from typing import List, Dict, Any, Optional
 
 PLAYBOOKS: List[Dict[str, Any]] = [
     {
+        "id": "web_app_assessment",
+        "name": "Web App Assessment (Auto-Select)",
+        "description": "Comprehensive web application vulnerability assessment with automatic tool selection based on discovered technologies.",
+        "objective": (
+            "Perform a comprehensive web application vulnerability assessment using automatic tool selection.\n\n"
+            "**Phase 1 — Initial Reconnaissance**\n"
+            "1) add_asset if the target is not in the database.\n"
+            "2) execute_httpx — probe for HTTP status, tech stack, redirects.\n"
+            "3) execute_dnsx — DNS resolution (IPs, MX, NS, CNAME).\n"
+            "4) execute_wafw00f — detect WAF protections before injection testing.\n"
+            "5) execute_wappalyzer — fingerprint technologies (CMS, frameworks, servers).\n\n"
+            "**Phase 2 — Smart Tool Selection**\n"
+            "6) Call auto_select_tools to get context-aware tool recommendations based on what was discovered.\n"
+            "7) Follow the recommendations in priority order. The selector will recommend:\n"
+            "   - WordPress → wpscan, Other CMS → cmseek\n"
+            "   - API/Swagger → schemathesis, kiterunner\n"
+            "   - SPA/JS-heavy → katana deep crawl, browser JS analysis\n"
+            "   - AI/chatbot → llm_red_team\n\n"
+            "**Phase 3 — Parameter Discovery & Injection Testing**\n"
+            "8) discover_parameters + execute_arjun — find all injectable params.\n"
+            "9) For SQLi-prone params: execute_sqlmap with --batch --dbs.\n"
+            "10) For XSS-prone params: execute_xsstrike, execute_browser check_xss.\n"
+            "11) generate_injection_payloads for manual payload crafting if automated tools miss.\n\n"
+            "**Phase 4 — Active Vulnerability Scanning** (requires exploitation phase)\n"
+            "12) execute_nuclei — comprehensive scan (NO severity filter).\n"
+            "13) execute_naabu — port scan beyond 80/443.\n"
+            "14) execute_nikto — web server vuln scan (6,700+ checks).\n"
+            "15) execute_testssl — TLS/SSL vulnerability testing.\n"
+            "16) execute_browser — headless browser for XSS verification and JS analysis.\n\n"
+            "**Phase 5 — Findings & Reporting**\n"
+            "17) create_finding for each confirmed vulnerability with evidence.\n"
+            "18) save_note for important discoveries.\n"
+            "19) Complete with a summary of findings, scan coverage, and remediation.\n\n"
+            "IMPORTANT: Call auto_select_tools after initial recon (step 6) AND after parameter discovery (before step 9) to get updated recommendations."
+        ),
+        "initial_todos": [
+            {"description": "Initial recon: httpx, dnsx, wafw00f, wappalyzer", "status": "pending", "priority": "high"},
+            {"description": "Call auto_select_tools for context-aware recommendations", "status": "pending", "priority": "high"},
+            {"description": "Parameter discovery: discover_parameters + arjun", "status": "pending", "priority": "high"},
+            {"description": "Injection testing: sqlmap, xsstrike, browser for identified params", "status": "pending", "priority": "high"},
+            {"description": "Active scanning: nuclei, naabu, nikto, testssl", "status": "pending", "priority": "high"},
+            {"description": "Record findings and generate final report", "status": "pending", "priority": "medium"},
+        ],
+    },
+    {
         "id": "web_assessment",
         "name": "Web assessment",
         "description": "Structured web application assessment: discovery then vulnerability scanning.",

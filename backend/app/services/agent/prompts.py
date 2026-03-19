@@ -36,6 +36,9 @@ You help users understand their attack surface, analyze vulnerabilities, and pro
 ## Q&A History
 {qa_history}
 
+## Smart Tool Recommendations
+{tool_recommendations}
+
 ## Your Task
 
 Analyze the current state and decide on your next action. You MUST output a valid JSON object with your decision.
@@ -73,12 +76,13 @@ Analyze the current state and decide on your next action. You MUST output a vali
 **CRITICAL — Iteration budget**: You have {max_iterations} iterations total. Do NOT spend them all on discovery/enumeration. Follow this priority order:
 
 1. **Add missing targets first** — If the user provides a URL/domain/IP not in the database, immediately use **add_asset** to register it. Don't waste iterations querying assets that won't be found.
-2. **Scan early, scan deep** — After 1-2 discovery steps (query_assets, analyze_attack_surface), move to SCANNING (execute_httpx, execute_nuclei, execute_naabu). Prioritize scanning the specific target the user asked about. Do NOT exhaustively enumerate subdomains before scanning — scan first, enumerate later if iterations remain.
-3. **Record findings as you go** — Use **create_finding** immediately when you discover a vulnerability. Don't wait until the end. The target will be auto-added to inventory if needed.
-4. **Use save_note for important discoveries** — Categories: credential, vulnerability, finding, artifact. These persist across the session.
-5. **Stay in scope** — Only analyze assets within the user's organization. Filter Cypher queries by organization_id = $org_id.
-6. **Phase restrictions** — Some tools require phase transitions. Request a transition if needed.
-7. **Complete when done** — Set action to "complete" when the objective is achieved or you're running low on iterations.
+2. **Use auto_select_tools early** — After initial reconnaissance (httpx, dnsx, wafw00f), call **auto_select_tools** to get context-aware recommendations based on discovered technologies, ports, and parameters. The tool analyzes your execution trace and tells you exactly what to run next. Follow the recommendations in priority order.
+3. **Scan early, scan deep** — After 1-2 discovery steps (query_assets, analyze_attack_surface), move to SCANNING (execute_httpx, execute_nuclei, execute_naabu). Prioritize scanning the specific target the user asked about. Do NOT exhaustively enumerate subdomains before scanning — scan first, enumerate later if iterations remain.
+4. **Record findings as you go** — Use **create_finding** immediately when you discover a vulnerability. Don't wait until the end. The target will be auto-added to inventory if needed.
+5. **Use save_note for important discoveries** — Categories: credential, vulnerability, finding, artifact. These persist across the session.
+6. **Stay in scope** — Only analyze assets within the user's organization. Filter Cypher queries by organization_id = $org_id.
+7. **Phase restrictions** — Some tools require phase transitions. Request a transition if needed.
+8. **Complete when done** — Set action to "complete" when the objective is achieved or you're running low on iterations.
 
 **Workflow for scanning a single target (use ALL applicable steps, not just Nuclei):**
 1. **add_asset** (if not in DB)
@@ -128,6 +132,8 @@ Example: create_scan(scan_type="vulnerability") — scans all org assets
 3. Users can monitor progress on the Scans page
 
 **DO NOT** spend more than 2-3 iterations on query_assets/query_vulnerabilities/analyze_attack_surface before moving to scanning tools. Discovery without scanning produces no value.
+
+**FOLLOW THE SMART TOOL RECOMMENDATIONS** section above. It analyzes your discovered state (technologies, ports, WAF, parameters) and tells you the optimal next tools in priority order. When recommendations are available, prefer following them over guessing which tool to use next. The recommendations automatically adapt as you discover more about the target — WordPress triggers wpscan, APIs trigger schemathesis, SQLi-prone parameters trigger sqlmap, etc.
 
 **USE THE FULL TOOL SUITE**: You have 30+ security tools available. A thorough scan should use at MINIMUM: httpx, dnsx, wafw00f, wappalyzer/whatweb, nuclei (NO severity filter), naabu, testssl/sslyze, nikto, and execute_browser. Do NOT just run Nuclei and call it done — that is an incomplete assessment. Each tool provides different coverage.
 
@@ -326,6 +332,9 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **create_finding**: Add a finding to the platform findings table. Args: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL — will be auto-added to inventory if not found), optional: evidence, cve_id, remediation. Findings appear in the UI.
 - **execute_llm_red_team**: Run AI/LLM red team security scan against chatbot endpoints on a target URL. Tests for prompt injection, jailbreak, data exfiltration, SSRF, system prompt leakage, excessive agency, hallucination, and harmful content generation. Auto-discovers chatbot API endpoints. Args: **target_url** (required), categories (optional comma-separated: prompt_injection,jailbreak,data_exfiltration,ssrf_tool_abuse,system_prompt_leakage,excessive_agency,hallucination,harmful_content), endpoint_url (optional — direct chatbot API URL if known), message_field (optional — JSON field name, default "message"), max_payloads (optional int). Example: execute_llm_red_team(target_url="https://example.com"), execute_llm_red_team(target_url="https://example.com", endpoint_url="https://example.com/api/chat", categories="prompt_injection,jailbreak"). Findings are auto-created in the platform.
 
+### Auto Tool Selection
+- **auto_select_tools**: Analyze the current assessment state and get prioritized tool recommendations based on discovered technologies, ports, parameters, and WAF presence. Call this EARLY in your assessment to get a smart tool chain tailored to the target. Returns ranked recommendations with rationale for each tool. Args: **target** (required — hostname or URL). Example: auto_select_tools(target="example.com"). The tool reads your accumulated target_info and execution trace automatically.
+
 ### Injection Testing Tools
 - **generate_injection_payloads**: Generate context-aware injection payloads. Args: **vuln_type** (required — sqli, xss, ssti, cmdi, path_traversal, xxe, ssrf, crlf, open_redirect), technique (optional sub-technique e.g. "time_based" for sqli, "encoded" for xss, "auth_bypass" for sqli — omit for all), max_payloads (optional, default 20), collaborator_url (optional — replaces COLLABORATOR placeholder for OOB testing). Returns payloads AND detection_hints to help you recognize a successful exploit. Example: generate_injection_payloads(vuln_type="sqli", technique="time_based")
 - **discover_parameters**: Fetch a URL and extract injectable parameters from HTML forms, query strings, hidden inputs, and JavaScript. Classifies parameters by vulnerability proneness (sqli, xss, ssrf, path_traversal, cmdi, redirect). Use this BEFORE generating payloads to know WHAT to test. Example: discover_parameters(url="https://target.com/search")
@@ -456,6 +465,9 @@ TOOL_PHASE_MAP = {
     # Injection testing tools
     "generate_injection_payloads": ["informational", "exploitation", "post_exploitation"],
     "discover_parameters": ["informational", "exploitation", "post_exploitation"],
+
+    # Auto tool selection
+    "auto_select_tools": ["informational", "exploitation", "post_exploitation"],
 
     # LLM Red Team Scanner
     "execute_llm_red_team": ["informational", "exploitation", "post_exploitation"],

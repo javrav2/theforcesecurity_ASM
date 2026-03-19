@@ -85,6 +85,8 @@ class ASMToolsManager:
             # Injection testing tools (pure-Python, no external binary)
             "generate_injection_payloads": self.generate_injection_payloads,
             "discover_parameters": self.discover_parameters,
+            # Auto tool selection
+            "auto_select_tools": self.auto_select_tools,
             # MCP Security Tools (delegated)
             "execute_nuclei": self.execute_mcp_tool,
             "execute_naabu": self.execute_mcp_tool,
@@ -1403,6 +1405,58 @@ class ASMToolsManager:
             "status_code": resp.status_code,
             "parameter_count": len(params_found),
             "parameters": params_found,
+        }, indent=2)
+
+    async def auto_select_tools(
+        self,
+        target: str = "",
+        **kwargs: Any,
+    ) -> str:
+        """Analyze the current assessment state and return prioritized tool
+        recommendations based on discovered technologies, ports, parameters,
+        and WAF presence.
+
+        This tool reads the agent's accumulated target_info and execution_trace
+        from the orchestrator state (passed via kwargs by the orchestrator) and
+        returns a ranked list of tools to run next with rationale.
+
+        Args:
+            target: The primary target hostname/URL to generate recommendations for.
+        """
+        from app.services.agent.tool_selector import get_tool_recommendations_json
+
+        target_info = kwargs.get("_target_info") or {}
+        execution_trace = kwargs.get("_execution_trace") or []
+        current_phase = kwargs.get("_current_phase") or "informational"
+        parameters = kwargs.get("_parameters") or {}
+        waf_detected = kwargs.get("_waf_detected")
+
+        if not target:
+            target = target_info.get("primary_target") or ""
+
+        if not target:
+            return json.dumps({
+                "error": "No target specified. Provide a target URL or hostname.",
+                "hint": "Use auto_select_tools(target='example.com') or run execute_httpx first to populate target_info.",
+            }, indent=2)
+
+        recs = get_tool_recommendations_json(
+            target=target,
+            target_info=target_info,
+            execution_trace=execution_trace,
+            current_phase=current_phase,
+            parameters=parameters,
+            waf_detected=waf_detected,
+        )
+
+        return json.dumps({
+            "target": target,
+            "current_phase": current_phase,
+            "tools_already_run": list({
+                s.get("tool_name") for s in execution_trace if s.get("tool_name")
+            }),
+            "recommendation_count": len(recs),
+            "recommendations": recs,
         }, indent=2)
 
     async def execute_mcp_tool(self, tool_name: str = None, args: str = "", **kwargs) -> str:
