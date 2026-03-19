@@ -632,6 +632,8 @@ async def run_full_js_secrets_pipeline(
         "input_domains": len(domains),
         "live_domains": [],
         "js_files_discovered": [],
+        "js_files_by_host": {},  # hostname -> [js_url, ...] for asset attribution
+        "all_urls_by_host": {},  # hostname -> [url, ...] for asset attribution
         "urls_scanned": 0,
         "findings": [],
         "summary": {},
@@ -683,8 +685,32 @@ async def run_full_js_secrets_pipeline(
         )
 
         js_urls = batch_result.js_files if batch_result.success else []
+        all_urls = batch_result.urls if batch_result.success else []
         pipeline_result["js_files_discovered"] = js_urls
-        logger.info(f"JS secrets pipeline: {len(js_urls)} JS files discovered")
+
+        # Group JS files and all URLs by hostname for asset attribution
+        from urllib.parse import urlparse as _urlparse
+        js_by_host: Dict[str, List[str]] = {}
+        urls_by_host: Dict[str, List[str]] = {}
+        for u in all_urls:
+            try:
+                host = _urlparse(u).hostname or ""
+                if not host:
+                    continue
+                urls_by_host.setdefault(host, []).append(u)
+            except Exception:
+                pass
+        for u in js_urls:
+            try:
+                host = _urlparse(u).hostname or ""
+                if not host:
+                    continue
+                js_by_host.setdefault(host, []).append(u)
+            except Exception:
+                pass
+        pipeline_result["js_files_by_host"] = js_by_host
+        pipeline_result["all_urls_by_host"] = urls_by_host
+        logger.info(f"JS secrets pipeline: {len(js_urls)} JS files across {len(js_by_host)} hosts")
     except Exception as e:
         logger.error(f"Katana crawl failed: {e}")
         pipeline_result["errors"].append(f"Katana failed: {e}")

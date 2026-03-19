@@ -3989,7 +3989,9 @@ class ScannerWorker:
         Full pipeline:
         1. httpx liveness check on target domains
         2. Katana crawl for JS file discovery
-        3. Regex + AI analysis on each JS file for secrets
+        3. Log all discovered JS files on domain asset records
+        4. Regex + AI analysis on each JS file for secrets
+        5. Create findings in the vulnerabilities table for files with secrets
 
         Equivalent CLI workflow:
             httpx -l domains.txt -silent >> live_domains.txt
@@ -4043,44 +4045,127 @@ class ScannerWorker:
                 httpx_first=config.get('httpx_first', True),
             )
 
-            # Create vulnerability findings for critical/high secrets
+            # ---------------------------------------------------------------
+            # Step A: Log all discovered JS files on domain asset records
+            # ---------------------------------------------------------------
+            from app.models.asset import Asset, AssetType
+            js_by_host = pipeline_result.get("js_files_by_host", {})
+            assets_updated = 0
+
+            if scan:
+                scan.current_step = f"Updating {len(js_by_host)} asset records with JS files"
+                db.commit()
+
+            for hostname, js_urls in js_by_host.items():
+                try:
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == hostname,
+                    ).first()
+                    if not asset:
+                        continue
+                    # Merge new JS files with any existing ones (from previous katana scans)
+                    existing_js = set(asset.js_files or [])
+                    existing_js.update(js_urls)
+                    asset.js_files = sorted(existing_js)[:500]
+                    if not asset.metadata_:
+                        asset.metadata_ = {}
+                    asset.metadata_["js_secrets_scan_last"] = datetime.utcnow().isoformat()
+                    asset.metadata_["js_secrets_scan_files_found"] = len(js_urls)
+                    asset.last_seen = datetime.utcnow()
+                    assets_updated += 1
+                except Exception as e:
+                    logger.warning(f"JS secrets: failed to update asset {hostname}: {e}")
+
+            db.commit()
+            logger.info(f"JS secrets scan: updated {assets_updated} asset records with JS files")
+
+            # ---------------------------------------------------------------
+            # Step B: Create vulnerability findings for secrets found
+            # ---------------------------------------------------------------
             findings_created = 0
             if pipeline_result.get("findings"):
-                from app.models.vulnerability import Vulnerability
-                from app.models.asset import Asset
+                from app.models.vulnerability import Vulnerability, Severity as VulnSeverity
+                from urllib.parse import urlparse
+
+                if scan:
+                    scan.current_step = "Creating findings for detected secrets"
+                    db.commit()
+
+                severity_map = {
+                    "critical": VulnSeverity.CRITICAL,
+                    "high": VulnSeverity.HIGH,
+                    "medium": VulnSeverity.MEDIUM,
+                    "low": VulnSeverity.LOW,
+                    "info": VulnSeverity.INFO,
+                }
+
+                # Cache asset lookups by hostname
+                asset_cache = {}
 
                 for finding in pipeline_result["findings"]:
-                    if finding.get("severity") not in ("critical", "high"):
-                        continue
-
-                    # Find the asset this URL belongs to
-                    from urllib.parse import urlparse
+                    # Parse hostname from URL to find/create asset
                     try:
                         parsed = urlparse(finding["url"])
                         hostname = parsed.hostname or ""
                     except Exception:
                         hostname = ""
 
-                    asset = db.query(Asset).filter(
-                        Asset.organization_id == organization_id,
-                        Asset.value == hostname,
-                    ).first() if hostname else None
+                    if not hostname:
+                        continue
+
+                    # Look up or create asset
+                    if hostname not in asset_cache:
+                        asset = db.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.value == hostname,
+                        ).first()
+                        if not asset:
+                            # Create the asset so we can attach the finding
+                            parts = hostname.split(".")
+                            a_type = AssetType.SUBDOMAIN if len(parts) > 2 else AssetType.DOMAIN
+                            asset = Asset(
+                                organization_id=organization_id,
+                                name=hostname,
+                                value=hostname,
+                                asset_type=a_type,
+                                in_scope=True,
+                                is_monitored=True,
+                                discovery_source="js_secrets_scan",
+                                association_reason=f"Discovered during JS secrets scan (scan {scan_id})",
+                            )
+                            db.add(asset)
+                            db.flush()  # Get asset.id
+                        asset_cache[hostname] = asset
+
+                    asset = asset_cache[hostname]
+
+                    # Check for duplicate findings (same template_id + asset + URL)
+                    template_id = f"js-secret-{finding['type']}"
+                    existing = db.query(Vulnerability).filter(
+                        Vulnerability.asset_id == asset.id,
+                        Vulnerability.template_id == template_id,
+                        Vulnerability.evidence.contains(finding["url"]),
+                    ).first()
+                    if existing:
+                        # Update last_detected instead of creating duplicate
+                        existing.last_detected = datetime.utcnow()
+                        continue
 
                     vuln = Vulnerability(
-                        title=f"Exposed {finding.get('description', finding['type'])} in JS file",
+                        title=f"Exposed {finding.get('description') or finding['type']} in JS file",
                         description=(
-                            f"Sensitive data detected in JavaScript file: {finding['url']}\n\n"
-                            f"Type: {finding['type']}\n"
-                            f"Context: {finding.get('snippet', '')}\n"
-                            f"Detection: {finding.get('source', 'regex')}"
+                            f"Sensitive data detected in JavaScript file.\n\n"
+                            f"**URL:** {finding['url']}\n"
+                            f"**Type:** {finding['type']}\n"
+                            f"**Detection method:** {finding.get('source', 'regex')}\n"
+                            f"**Context:** {finding.get('snippet', 'N/A')}"
                         ),
-                        severity=finding["severity"],
-                        url=finding["url"],
-                        asset_id=asset.id if asset else None,
-                        organization_id=organization_id,
+                        severity=severity_map.get(finding["severity"], VulnSeverity.INFO),
+                        asset_id=asset.id,
                         scan_id=scan_id,
                         detected_by="js_secrets_scan",
-                        template_id=f"js-secret-{finding['type']}",
+                        template_id=template_id,
                         remediation=(
                             "1. Immediately rotate the exposed credential\n"
                             "2. Remove the secret from the JavaScript file\n"
@@ -4093,26 +4178,37 @@ class ScannerWorker:
                             "type": finding["type"],
                             "snippet": finding.get("snippet", ""),
                             "line": finding.get("line_hint"),
+                            "source": finding.get("source", "regex"),
                         }),
+                        tags=["js-secrets", finding["type"], finding.get("source", "regex")],
+                        metadata_={
+                            "js_url": finding["url"],
+                            "secret_type": finding["type"],
+                            "detection_source": finding.get("source", "regex"),
+                        },
                     )
                     db.add(vuln)
                     findings_created += 1
 
                 db.commit()
 
-            # Update scan record
+            # ---------------------------------------------------------------
+            # Step C: Update scan record with results
+            # ---------------------------------------------------------------
             if scan:
                 scan.status = ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
                 scan.current_step = None
                 scan.vulnerabilities_found = findings_created
+                scan.assets_discovered = assets_updated
                 scan.results = pipeline_result
                 db.commit()
 
             logger.info(
                 f"JS secrets scan {scan_id} completed: "
                 f"{pipeline_result.get('summary', {}).get('total_findings', 0)} total findings, "
-                f"{findings_created} vulnerability records created"
+                f"{findings_created} vulnerability records created, "
+                f"{assets_updated} assets updated with JS files"
             )
             trigger_graph_sync(organization_id)
 

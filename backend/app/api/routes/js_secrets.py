@@ -310,7 +310,7 @@ async def quick_js_secrets_scan(
             ))
             severity_counts[f.severity] = severity_counts.get(f.severity, 0) + 1
 
-    # Optionally save as scan record
+    # Save scan record
     scan = Scan(
         name=request.name or f"JS Secrets Quick Scan - {len(request.urls)} URLs",
         scan_type=ScanType.JS_SECRETS_SCAN,
@@ -333,6 +333,88 @@ async def quick_js_secrets_scan(
     db.commit()
     db.refresh(scan)
 
+    # Log JS URLs on asset records and create vulnerability findings
+    from urllib.parse import urlparse
+    from app.models.vulnerability import Vulnerability, Severity as VulnSeverity
+    import json as _json
+
+    severity_map = {
+        "critical": VulnSeverity.CRITICAL, "high": VulnSeverity.HIGH,
+        "medium": VulnSeverity.MEDIUM, "low": VulnSeverity.LOW, "info": VulnSeverity.INFO,
+    }
+    asset_cache = {}
+    findings_created = 0
+
+    for f in findings:
+        try:
+            hostname = urlparse(f.url).hostname or ""
+        except Exception:
+            hostname = ""
+        if not hostname:
+            continue
+
+        # Get or create asset
+        if hostname not in asset_cache:
+            asset = db.query(Asset).filter(
+                Asset.organization_id == request.organization_id,
+                Asset.value == hostname,
+            ).first()
+            if not asset:
+                parts = hostname.split(".")
+                a_type = AssetType.SUBDOMAIN if len(parts) > 2 else AssetType.DOMAIN
+                asset = Asset(
+                    organization_id=request.organization_id,
+                    name=hostname, value=hostname, asset_type=a_type,
+                    in_scope=True, is_monitored=True,
+                    discovery_source="js_secrets_scan",
+                )
+                db.add(asset)
+                db.flush()
+            # Log the JS URL on the asset
+            existing_js = set(asset.js_files or [])
+            existing_js.add(f.url)
+            asset.js_files = sorted(existing_js)[:500]
+            asset.last_seen = datetime.utcnow()
+            asset_cache[hostname] = asset
+
+        asset = asset_cache[hostname]
+
+        # Create vulnerability finding
+        template_id = f"js-secret-{f.type}"
+        vuln = Vulnerability(
+            title=f"Exposed {f.description or f.type} in JS file",
+            description=(
+                f"Sensitive data detected in JavaScript file.\n\n"
+                f"**URL:** {f.url}\n**Type:** {f.type}\n"
+                f"**Detection:** {f.source}\n**Context:** {f.snippet}"
+            ),
+            severity=severity_map.get(f.severity, VulnSeverity.INFO),
+            asset_id=asset.id,
+            scan_id=scan.id,
+            detected_by="js_secrets_scan",
+            template_id=template_id,
+            remediation=(
+                "1. Immediately rotate the exposed credential\n"
+                "2. Remove the secret from the JavaScript file\n"
+                "3. Use environment variables or a secrets manager instead\n"
+                "4. Review git history for the same secret in previous commits\n"
+                "5. Monitor for unauthorized usage of the exposed credential"
+            ),
+            evidence=_json.dumps({
+                "url": f.url, "type": f.type,
+                "snippet": f.snippet, "line": f.line_hint,
+            }),
+            tags=["js-secrets", f.type, f.source],
+        )
+        db.add(vuln)
+        findings_created += 1
+
+    db.commit()
+
+    # Update scan with actual findings count
+    scan.vulnerabilities_found = findings_created
+    db.commit()
+
     return JsSecretsScanResponse(
         scan_id=scan.id,
         status="completed",
@@ -340,7 +422,7 @@ async def quick_js_secrets_scan(
         total_findings=len(findings),
         severity_breakdown=severity_counts,
         findings=findings[:200],
-        message=f"Scanned {len(results)} URLs, found {len(findings)} potential secrets",
+        message=f"Scanned {len(results)} URLs, found {len(findings)} potential secrets, created {findings_created} findings",
     )
 
 
@@ -408,9 +490,17 @@ async def get_js_secrets_results(
 # =============================================================================
 
 async def _run_js_secrets_scan_bg(scan_id: int):
-    """Run the full JS secrets pipeline as a background task."""
+    """Run the full JS secrets pipeline as a background task (fallback when no SQS)."""
     from app.db.database import SessionLocal
     from app.services.js_secrets_scan_service import run_full_js_secrets_pipeline
+    from app.models.vulnerability import Vulnerability, Severity as VulnSeverity
+    from urllib.parse import urlparse
+    import json as _json
+
+    severity_map = {
+        "critical": VulnSeverity.CRITICAL, "high": VulnSeverity.HIGH,
+        "medium": VulnSeverity.MEDIUM, "low": VulnSeverity.LOW, "info": VulnSeverity.INFO,
+    }
 
     db = SessionLocal()
     try:
@@ -425,6 +515,7 @@ async def _run_js_secrets_scan_bg(scan_id: int):
 
         config = scan.config or {}
         domains = scan.targets or []
+        organization_id = scan.organization_id
 
         pipeline_result = await run_full_js_secrets_pipeline(
             domains=domains,
@@ -435,10 +526,93 @@ async def _run_js_secrets_scan_bg(scan_id: int):
             httpx_first=config.get("httpx_first", True),
         )
 
+        # Log JS files on asset records
+        js_by_host = pipeline_result.get("js_files_by_host", {})
+        assets_updated = 0
+        for hostname, js_urls in js_by_host.items():
+            asset = db.query(Asset).filter(
+                Asset.organization_id == organization_id,
+                Asset.value == hostname,
+            ).first()
+            if asset:
+                existing_js = set(asset.js_files or [])
+                existing_js.update(js_urls)
+                asset.js_files = sorted(existing_js)[:500]
+                if not asset.metadata_:
+                    asset.metadata_ = {}
+                asset.metadata_["js_secrets_scan_last"] = datetime.utcnow().isoformat()
+                asset.metadata_["js_secrets_scan_files_found"] = len(js_urls)
+                asset.last_seen = datetime.utcnow()
+                assets_updated += 1
+        db.commit()
+
+        # Create vulnerability findings
+        findings_created = 0
+        asset_cache = {}
+        for finding in pipeline_result.get("findings", []):
+            try:
+                hostname = urlparse(finding["url"]).hostname or ""
+            except Exception:
+                hostname = ""
+            if not hostname:
+                continue
+
+            if hostname not in asset_cache:
+                asset = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.value == hostname,
+                ).first()
+                if not asset:
+                    parts = hostname.split(".")
+                    a_type = AssetType.SUBDOMAIN if len(parts) > 2 else AssetType.DOMAIN
+                    asset = Asset(
+                        organization_id=organization_id,
+                        name=hostname, value=hostname, asset_type=a_type,
+                        in_scope=True, is_monitored=True,
+                        discovery_source="js_secrets_scan",
+                    )
+                    db.add(asset)
+                    db.flush()
+                asset_cache[hostname] = asset
+
+            asset = asset_cache[hostname]
+            template_id = f"js-secret-{finding['type']}"
+
+            vuln = Vulnerability(
+                title=f"Exposed {finding.get('description') or finding['type']} in JS file",
+                description=(
+                    f"Sensitive data detected in JavaScript file.\n\n"
+                    f"**URL:** {finding['url']}\n**Type:** {finding['type']}\n"
+                    f"**Detection:** {finding.get('source', 'regex')}\n"
+                    f"**Context:** {finding.get('snippet', 'N/A')}"
+                ),
+                severity=severity_map.get(finding["severity"], VulnSeverity.INFO),
+                asset_id=asset.id,
+                scan_id=scan_id,
+                detected_by="js_secrets_scan",
+                template_id=template_id,
+                remediation=(
+                    "1. Immediately rotate the exposed credential\n"
+                    "2. Remove the secret from the JavaScript file\n"
+                    "3. Use environment variables or a secrets manager\n"
+                    "4. Review git history for previous commits with the same secret\n"
+                    "5. Monitor for unauthorized usage of the exposed credential"
+                ),
+                evidence=_json.dumps({
+                    "url": finding["url"], "type": finding["type"],
+                    "snippet": finding.get("snippet", ""), "line": finding.get("line_hint"),
+                }),
+                tags=["js-secrets", finding["type"], finding.get("source", "regex")],
+            )
+            db.add(vuln)
+            findings_created += 1
+        db.commit()
+
         scan.status = ScanStatus.COMPLETED
         scan.completed_at = datetime.utcnow()
         scan.current_step = None
-        scan.vulnerabilities_found = pipeline_result["summary"].get("total_findings", 0)
+        scan.vulnerabilities_found = findings_created
+        scan.assets_discovered = assets_updated
         scan.results = pipeline_result
         db.commit()
 
