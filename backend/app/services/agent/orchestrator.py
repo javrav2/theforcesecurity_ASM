@@ -64,6 +64,7 @@ from app.services.agent.prompts import (
 from app.services.agent.tools import ASMToolsManager, set_tenant_context
 from app.services.agent.knowledge import retrieve_knowledge
 from app.services.agent import evograph
+from app.services.agent.tool_selector import get_tool_recommendations
 
 logger = logging.getLogger(__name__)
 
@@ -432,7 +433,41 @@ class AgentOrchestrator:
         combined_knowledge = knowledge_context
         if prior_chain_context:
             combined_knowledge = f"{knowledge_context}\n\n{prior_chain_context}"
-        
+
+        # Auto tool recommendations based on discovered state
+        target_info_raw = state.get("target_info", {})
+        primary_target = target_info_raw.get("primary_target") or ""
+        # Extract WAF from execution trace
+        waf_detected = None
+        for step in reversed(state.get("execution_trace", [])):
+            if step.get("tool_name") == "execute_wafw00f" and step.get("success"):
+                output = step.get("tool_output", "")
+                if "is behind" in output.lower() or "detected" in output.lower():
+                    waf_detected = output[:200]
+                break
+        # Extract discovered parameters
+        discovered_params = {}
+        for step in reversed(state.get("execution_trace", [])):
+            if step.get("tool_name") == "discover_parameters" and step.get("success"):
+                try:
+                    import json as _json
+                    param_data = _json.loads(step.get("tool_output", "{}"))
+                    discovered_params = param_data.get("parameters", {})
+                except Exception:
+                    pass
+                break
+
+        tool_recommendations = ""
+        if primary_target:
+            tool_recommendations = get_tool_recommendations(
+                target=primary_target,
+                target_info=target_info_raw,
+                execution_trace=state.get("execution_trace", []),
+                current_phase=phase,
+                parameters=discovered_params,
+                waf_detected=waf_detected,
+            )
+
         system_prompt = REACT_SYSTEM_PROMPT.format(
             current_phase=phase,
             available_tools=available_tools,
@@ -446,6 +481,7 @@ class AgentOrchestrator:
             session_notes=session_notes,
             knowledge_context=combined_knowledge,
             qa_history=qa_history_formatted,
+            tool_recommendations=tool_recommendations,
         )
         
         # Get LLM decision
@@ -578,6 +614,27 @@ class AgentOrchestrator:
             step_data["success"] = False
             return {"_current_step": step_data}
         
+        # Inject agent state context for auto_select_tools
+        if tool_name == "auto_select_tools":
+            tool_args["_target_info"] = state.get("target_info", {})
+            tool_args["_execution_trace"] = state.get("execution_trace", [])
+            tool_args["_current_phase"] = phase
+            # Extract params and WAF from trace
+            for step in reversed(state.get("execution_trace", [])):
+                if step.get("tool_name") == "discover_parameters" and step.get("success"):
+                    try:
+                        param_data = json.loads(step.get("tool_output", "{}"))
+                        tool_args["_parameters"] = param_data.get("parameters", {})
+                    except Exception:
+                        pass
+                    break
+            for step in reversed(state.get("execution_trace", [])):
+                if step.get("tool_name") == "execute_wafw00f" and step.get("success"):
+                    output = step.get("tool_output", "")
+                    if "is behind" in output.lower() or "detected" in output.lower():
+                        tool_args["_waf_detected"] = output[:200]
+                    break
+
         # Execute tool
         result = await self.tool_manager.execute(tool_name, tool_args)
         
