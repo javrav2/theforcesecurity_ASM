@@ -261,11 +261,12 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_kiterunner**: API endpoint brute-forcer. Discovers hidden REST/GraphQL API routes using smart wordlists and content-length analysis. Use when you suspect undocumented API endpoints. Example: execute_kiterunner(args="scan https://target.com -A=apiroutes-210228")
 - **execute_wappalyzer**: Technology fingerprinting with 6,000+ fingerprints. Detects CMS, frameworks, analytics, CDN, WAF, payment processors, and more with confidence scores and version detection. Use for comprehensive tech stack identification. Example: execute_wappalyzer(args="https://target.com")
 - **execute_crtsh**: Certificate transparency subdomain discovery. Queries crt.sh CT logs passively (no direct target interaction) to find subdomains from SSL/TLS certificates. Use as a fast, passive subdomain source. Example: execute_crtsh(args="example.com")
-- **execute_nuclei**: Vulnerability scanner. Example: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
-- **execute_naabu**: Fast SYN/CONNECT port scanner. Use for quick port discovery on single hosts or ranges. Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
-- **execute_nmap**: Port/service scan. Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
-- **execute_masscan**: Fast port scan. Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
-- **execute_ffuf**: Web fuzzer. Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
+**NOTE: The following active scanning tools require the EXPLOITATION phase. Request a phase transition first.**
+- **execute_nuclei**: Vulnerability scanner (exploitation phase). Example: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
+- **execute_naabu**: Fast SYN/CONNECT port scanner (exploitation phase). Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
+- **execute_nmap**: Port/service scan (exploitation phase). Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
+- **execute_masscan**: Fast port scan (exploitation phase). Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
+- **execute_ffuf**: Web fuzzer (exploitation phase). Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
 - **execute_schemathesis**: API fuzzer for OpenAPI/GraphQL schemas. Reads the schema and auto-generates test cases to find 500 errors, validation issues, and security flaws. Point it at the OpenAPI spec URL. Example: execute_schemathesis(args="run https://target.com/openapi.json --checks all") or execute_schemathesis(args="run https://target.com/graphql --checks all")
 - **execute_browser**: Headless browser for live exploit execution. Supports multi-step action chains with session persistence. Use for:
   - **XSS testing**: `{{"actions": [{{"action": "check_xss", "url": "https://target.com/search?q=<script>alert(1)</script>"}}]}}`
@@ -281,6 +282,24 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **get_notes**: Get session notes (optional category filter)
 - **create_finding**: Add a finding to the platform findings table. Args: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL — will be auto-added to inventory if not found), optional: evidence, cve_id, remediation. Findings appear in the UI.
 - **execute_llm_red_team**: Run AI/LLM red team security scan against chatbot endpoints on a target URL. Tests for prompt injection, jailbreak, data exfiltration, SSRF, system prompt leakage, excessive agency, hallucination, and harmful content generation. Auto-discovers chatbot API endpoints. Args: **target_url** (required), categories (optional comma-separated: prompt_injection,jailbreak,data_exfiltration,ssrf_tool_abuse,system_prompt_leakage,excessive_agency,hallucination,harmful_content), endpoint_url (optional — direct chatbot API URL if known), message_field (optional — JSON field name, default "message"), max_payloads (optional int). Example: execute_llm_red_team(target_url="https://example.com"), execute_llm_red_team(target_url="https://example.com", endpoint_url="https://example.com/api/chat", categories="prompt_injection,jailbreak"). Findings are auto-created in the platform.
+
+### Injection Testing Tools
+- **generate_injection_payloads**: Generate context-aware injection payloads. Args: **vuln_type** (required — sqli, xss, ssti, cmdi, path_traversal, xxe, ssrf, crlf, open_redirect), technique (optional sub-technique e.g. "time_based" for sqli, "encoded" for xss, "auth_bypass" for sqli — omit for all), max_payloads (optional, default 20), collaborator_url (optional — replaces COLLABORATOR placeholder for OOB testing). Returns payloads AND detection_hints to help you recognize a successful exploit. Example: generate_injection_payloads(vuln_type="sqli", technique="time_based")
+- **discover_parameters**: Fetch a URL and extract injectable parameters from HTML forms, query strings, hidden inputs, and JavaScript. Classifies parameters by vulnerability proneness (sqli, xss, ssrf, path_traversal, cmdi, redirect). Use this BEFORE generating payloads to know WHAT to test. Example: discover_parameters(url="https://target.com/search")
+
+### Injection Testing Methodology (use this workflow when testing for vulnerabilities)
+**Step 1: Discover parameters** — Run `discover_parameters(url="https://target.com/page")` on pages with forms, search bars, or query parameters. Check the `likely_vulnerable_to` field for each parameter.
+**Step 2: Generate payloads** — Run `generate_injection_payloads(vuln_type="sqli")` (or xss, ssti, etc.) to get payloads with detection hints.
+**Step 3: Test with payloads** — Use `execute_browser` (submit_form, check_xss), `execute_curl`, or `execute_ffuf` to inject each payload into the discovered parameters. For SQLi, test both error-based and time-based. For XSS, use the check_xss browser action.
+**Step 4: Analyze responses** — Use the `detection_hints` from Step 2 to evaluate whether the payload succeeded. Look for SQL error messages, reflected payloads, timing differences, or unexpected content.
+**Step 5: Record findings** — Use `create_finding` immediately for each confirmed vulnerability with the payload and evidence.
+
+**Quick-test workflow for a single page:**
+1. `discover_parameters(url="...")` → find params
+2. `generate_injection_payloads(vuln_type="sqli")` → get SQLi payloads
+3. `execute_curl(args="-s 'https://target.com/page?id=PAYLOAD'")` for each interesting payload
+4. OR `execute_browser` with `submit_form` action for POST forms
+5. `create_finding(...)` for confirmed vulns
 """
 
     exploitation_tools = """
@@ -352,20 +371,26 @@ TOOL_PHASE_MAP = {
     "kiterunner_help": ["informational", "exploitation", "post_exploitation"],
     "execute_wappalyzer": ["informational", "exploitation", "post_exploitation"],
     "execute_crtsh": ["informational", "exploitation", "post_exploitation"],
-    "execute_schemathesis": ["informational", "exploitation", "post_exploitation"],
+    "execute_schemathesis": ["exploitation", "post_exploitation"],
     "schemathesis_help": ["informational", "exploitation", "post_exploitation"],
-    "execute_browser": ["informational", "exploitation", "post_exploitation"],
+    "execute_browser": ["exploitation", "post_exploitation"],
     "nmap_help": ["informational", "exploitation", "post_exploitation"],
     "masscan_help": ["informational", "exploitation", "post_exploitation"],
     "ffuf_help": ["informational", "exploitation", "post_exploitation"],
     
-    # MCP scanning tools - allowed in informational so agent can run vuln/port scans without phase transition
-    "execute_nuclei": ["informational", "exploitation", "post_exploitation"],
-    "execute_naabu": ["informational", "exploitation", "post_exploitation"],
-    "execute_nmap": ["informational", "exploitation", "post_exploitation"],
-    "execute_masscan": ["informational", "exploitation", "post_exploitation"],
-    "execute_ffuf": ["informational", "exploitation", "post_exploitation"],
+    # MCP scanning tools - active scanners require exploitation phase for safety.
+    # The agent must request a phase transition before running these, giving the
+    # user visibility and control over what gets actively scanned.
+    "execute_nuclei": ["exploitation", "post_exploitation"],
+    "execute_naabu": ["exploitation", "post_exploitation"],
+    "execute_nmap": ["exploitation", "post_exploitation"],
+    "execute_masscan": ["exploitation", "post_exploitation"],
+    "execute_ffuf": ["exploitation", "post_exploitation"],
     
+    # Injection testing tools
+    "generate_injection_payloads": ["informational", "exploitation", "post_exploitation"],
+    "discover_parameters": ["informational", "exploitation", "post_exploitation"],
+
     # LLM Red Team Scanner
     "execute_llm_red_team": ["informational", "exploitation", "post_exploitation"],
     

@@ -749,8 +749,35 @@ class MCPServer:
         cmd = ["katana"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=600)
     
+    # Blocked URL patterns for SSRF prevention
+    _BLOCKED_CURL_PATTERNS = [
+        "169.254.169.254",   # AWS metadata
+        "metadata.google",    # GCP metadata
+        "100.100.100.200",   # Alibaba metadata
+        "metadata.azure",     # Azure metadata
+        "file://",            # Local file access
+        "gopher://",          # Gopher protocol abuse
+        "dict://",            # Dict protocol abuse
+        "ftp://localhost",    # Local FTP
+        "127.0.0.1",         # Localhost
+        "0.0.0.0",           # All interfaces
+        "[::1]",             # IPv6 localhost
+        "localhost",          # Localhost by name
+    ]
+
     async def _execute_curl(self, args: str) -> Dict[str, Any]:
-        cmd = ["curl"] + self._parse_args(args)
+        # SSRF prevention: block access to metadata endpoints and internal services
+        args_lower = args.lower()
+        for pattern in self._BLOCKED_CURL_PATTERNS:
+            if pattern.lower() in args_lower:
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": f"Blocked: curl access to '{pattern}' is not allowed (SSRF prevention). "
+                             f"Only external targets within your organization's scope are permitted.",
+                    "exit_code": -1,
+                }
+        cmd = ["curl", "--max-time", "30"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=60)
     
     async def _httpx_help(self) -> Dict[str, Any]:

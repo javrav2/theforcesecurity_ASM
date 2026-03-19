@@ -26,6 +26,8 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
     ChatAnthropic = None
 
+from contextvars import ContextVar
+
 from app.core.config import settings
 from app.services.agent.state import (
     AgentState,
@@ -68,7 +70,17 @@ logger = logging.getLogger(__name__)
 # Type alias for the optional WebSocket status callback
 StatusCallback = Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
 
-# Global checkpointer for session persistence
+# Per-request status callback stored in a ContextVar for thread/task safety.
+# This avoids the race condition of storing it as instance state on the singleton.
+_max_iterations_var: ContextVar[Optional[int]] = ContextVar('_max_iterations_var', default=None)
+_status_callback_var: ContextVar[StatusCallback] = ContextVar('_status_callback_var', default=None)
+
+# Global checkpointer for session persistence.
+# NOTE: MemorySaver stores all checkpoints in-memory. For production deployments
+# with many sessions, replace with a persistent checkpointer (e.g. PostgresSaver
+# from langgraph-checkpoint-postgres, or RedisSaver) to avoid unbounded memory
+# growth and to survive backend restarts.
+# See: https://langchain-ai.github.io/langgraph/concepts/persistence/
 checkpointer = MemorySaver()
 
 
@@ -109,7 +121,6 @@ class AgentOrchestrator:
         self.graph = None
         self._initialized = False
         self._provider = None
-        self._status_callback: StatusCallback = None
     
     async def initialize(self) -> None:
         """Initialize all components asynchronously."""
@@ -288,11 +299,12 @@ class AgentOrchestrator:
 
     async def _emit_status(self, msg: Dict[str, Any]) -> None:
         """Send a status update to the WebSocket callback if one is registered."""
-        if self._status_callback:
+        callback = _status_callback_var.get(None)
+        if callback:
             try:
-                await self._status_callback(msg)
+                await callback(msg)
             except Exception:
-                pass
+                logger.debug("Status callback failed", exc_info=True)
 
     # =========================================================================
     # LANGGRAPH NODES
@@ -334,7 +346,7 @@ class AgentOrchestrator:
         
         return {
             "current_iteration": 0,
-            "max_iterations": getattr(self, '_max_iterations_override', None) or settings.AGENT_MAX_ITERATIONS,
+            "max_iterations": _max_iterations_var.get(None) or settings.AGENT_MAX_ITERATIONS,
             "task_complete": False,
             "current_phase": "informational",
             "phase_history": [PhaseHistoryEntry(phase="informational").model_dump()],
@@ -910,12 +922,15 @@ class AgentOrchestrator:
     # =========================================================================
     
     def set_status_callback(self, callback: StatusCallback) -> None:
-        """Register a callback for streaming status updates (WebSocket)."""
-        self._status_callback = callback
+        """Register a callback for streaming status updates (WebSocket).
+
+        Uses a ContextVar so concurrent invocations don't overwrite each other.
+        """
+        _status_callback_var.set(callback)
 
     def clear_status_callback(self) -> None:
         """Remove the streaming status callback."""
-        self._status_callback = None
+        _status_callback_var.set(None)
 
     async def invoke(
         self,
@@ -941,7 +956,7 @@ class AgentOrchestrator:
         if not self._initialized:
             return InvokeResponse(error="Agent not initialized - check OPENAI_API_KEY")
         
-        self._max_iterations_override = max_iterations
+        _max_iterations_var.set(max_iterations)
         logger.info(f"[{user_id}/{session_id}] Invoking with: {question[:100]}... (mode={mode}, max_iter={max_iterations or 'default'})")
 
         if status_callback:
