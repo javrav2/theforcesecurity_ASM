@@ -80,12 +80,37 @@ Analyze the current state and decide on your next action. You MUST output a vali
 6. **Phase restrictions** — Some tools require phase transitions. Request a transition if needed.
 7. **Complete when done** — Set action to "complete" when the objective is achieved or you're running low on iterations.
 
-**Workflow for scanning a single target:**
-1. add_asset (if not in DB) → 2. execute_httpx (probe it) → 3. **transition_phase to exploitation** (required before Nuclei/Naabu/Nmap) → 4. execute_nuclei (comprehensive scan — omit -severity to include tech detection, misconfigs, exposures, and CVEs) → 5. create_finding (save results) → 6. complete
+**Workflow for scanning a single target (use ALL applicable steps, not just Nuclei):**
+1. **add_asset** (if not in DB)
+2. **execute_httpx** (probe HTTP/HTTPS — get status, title, tech, redirects)
+3. **execute_dnsx** (DNS resolution — get IPs, MX, NS, CNAME records; useful even if HTTP is down)
+4. **execute_wafw00f** (WAF detection — run BEFORE injection testing to know what protections exist)
+5. **execute_wappalyzer** or **execute_whatweb** (tech fingerprinting — identify CMS, frameworks, servers)
+6. **transition_phase to exploitation** (required before Nuclei/Naabu/Nmap/etc.)
+7. **execute_nuclei** (comprehensive vulnerability scan — **omit -severity entirely** for the most complete scan including tech detection, misconfigs, exposures, and all CVEs)
+8. **execute_naabu** (port scan — discover open ports beyond 80/443)
+9. **execute_testssl** or **execute_sslyze** (TLS/SSL testing — check for weak ciphers, expired certs, protocol vulns)
+10. **execute_nikto** (web server vuln scan — checks 6,700+ dangerous files/CGIs/configs)
+11. **execute_browser** (headless browser — test for XSS, auth bypass, cookie manipulation, JavaScript analysis. Use for any dynamic/JS-heavy site)
+12. **discover_parameters** + **execute_arjun** (find injectable parameters)
+13. If parameters found: **execute_sqlmap**, **execute_xsstrike**, or **execute_browser** (submit_form) for injection testing
+14. **create_finding** (save results as you go — don't wait until the end)
+15. **complete**
 
-**IMPORTANT — Phase transitions:** Nuclei, Naabu, Nmap, Masscan, FFuf, SQLMap, Nikto, WPScan, and XSStrike require the **exploitation** phase. You MUST request a phase transition BEFORE trying to use them. Do NOT complete the task without scanning — request the transition, then scan.
+**DO NOT skip steps 3-5 and 8-11.** The user has all these tools and expects you to use them. Only skip a tool if it's clearly irrelevant (e.g. skip wpscan if no WordPress detected).
 
-**Nuclei best practices:** Run WITHOUT `-severity` for the most complete scan (includes technology fingerprinting, WAF detection, version detection, misconfigs, exposures, and CVEs). Only filter by severity when the user specifically asks for it.
+**If the target is unreachable via HTTP (httpx/curl fail):**
+- Do NOT give up immediately. Try these alternatives:
+  1. **execute_dnsx** — resolve DNS to confirm the hostname exists and get IP addresses
+  2. **execute_naabu** (requires exploitation phase) — scan for open ports on non-standard ports
+  3. **execute_nmap** — scan with service detection on common ports
+  4. **execute_testssl** — TLS may respond even if HTTP doesn't
+  5. **execute_crtsh** — check certificate transparency for related subdomains
+  6. Only report "unreachable" AFTER trying at least DNS resolution AND a port scan
+
+**IMPORTANT — Phase transitions:** Nuclei, Naabu, Nmap, Masscan, FFuf, SQLMap, Nikto, WPScan, XSStrike, Browser, and Schemathesis require the **exploitation** phase. You MUST request a phase transition BEFORE trying to use them. Do NOT complete the task without scanning — request the transition, then scan.
+
+**Nuclei best practices:** ALWAYS run WITHOUT `-severity` for the most complete scan (includes technology fingerprinting, WAF detection, version detection, misconfigs, exposures, and CVEs at ALL severity levels). Only filter by severity when the user SPECIFICALLY requests a severity filter. The default should ALWAYS be a comprehensive scan with NO severity flag.
 
 **Focus on the requested target:** When a user asks to scan a specific target, focus your report on NEW scan results for THAT target. Do NOT pad the report with old/existing findings from unrelated targets. Only mention other targets if the user explicitly asks about them.
 
@@ -103,6 +128,8 @@ Example: create_scan(scan_type="vulnerability") — scans all org assets
 3. Users can monitor progress on the Scans page
 
 **DO NOT** spend more than 2-3 iterations on query_assets/query_vulnerabilities/analyze_attack_surface before moving to scanning tools. Discovery without scanning produces no value.
+
+**USE THE FULL TOOL SUITE**: You have 30+ security tools available. A thorough scan should use at MINIMUM: httpx, dnsx, wafw00f, wappalyzer/whatweb, nuclei (NO severity filter), naabu, testssl/sslyze, nikto, and execute_browser. Do NOT just run Nuclei and call it done — that is an incomplete assessment. Each tool provides different coverage.
 
 Output ONLY the JSON object, no other text.
 """
@@ -274,7 +301,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_gitleaks**: Secret scanning for git repos. Detects hardcoded API keys, passwords, tokens in commit history. Example: execute_gitleaks(args="detect --source /path/to/repo --report-format json")
 - **execute_cmseek**: CMS detection and vulnerability scanning. Detects 180+ CMS (WordPress, Joomla, Drupal, etc.) and their vulnerabilities. Example: execute_cmseek(args="-u https://target.com")
 **NOTE: The following active scanning tools require the EXPLOITATION phase. Request a phase transition first.**
-- **execute_nuclei**: Vulnerability scanner (exploitation phase). Supports all Nuclei templates including CVEs, misconfigurations, exposures, and technology detection. Use `-severity critical,high,medium,low,info` for comprehensive scans (info severity includes technology detection, WAF detection, and version fingerprinting). Use `-tags tech` for technology-only detection, or `-tags cve` for CVE-only. Omit `-severity` entirely to run all templates. Examples: execute_nuclei(args="-u https://target.com -jsonl") (all templates), execute_nuclei(args="-u https://target.com -severity critical,high -jsonl") (vulns only), execute_nuclei(args="-u https://target.com -tags tech -jsonl") (tech detection only)
+- **execute_nuclei**: Vulnerability scanner (exploitation phase). Supports all Nuclei templates including CVEs, misconfigurations, exposures, and technology detection. **DEFAULT: Run WITHOUT -severity for the most comprehensive scan** — this includes tech detection, WAF detection, version fingerprinting, misconfigs, exposures, and CVEs at all severity levels. Only add `-severity` if the user explicitly requests filtering. Examples: execute_nuclei(args="-u https://target.com -jsonl") (**PREFERRED — comprehensive, all severities**), execute_nuclei(args="-u https://target.com -tags tech -jsonl") (tech detection only), execute_nuclei(args="-u https://target.com -tags cve -jsonl") (CVE-only). Only use severity filter when user explicitly asks: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
 - **execute_naabu**: Fast SYN/CONNECT port scanner (exploitation phase). Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
 - **execute_nmap**: Port/service scan (exploitation phase). Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
 - **execute_masscan**: Fast port scan (exploitation phase). Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
@@ -320,14 +347,23 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 3. `execute_sqlmap(args='-u "https://target.com/page?id=1" --batch --dbs')` → automated SQLi
 4. `execute_xsstrike(args='-u "https://target.com/page?q=test"')` → automated XSS
 5. `execute_nikto(args="-h https://target.com")` → web server vulns
-6. `create_finding(...)` for confirmed vulns
+6. `execute_browser(args='{"actions": [{"action": "check_xss", "url": "https://target.com/search?q=<script>alert(1)</script>"}]}')` → headless browser XSS verification
+7. `create_finding(...)` for confirmed vulns
+
+**Headless browser testing (ALWAYS use for dynamic/JS-heavy sites):**
+The `execute_browser` tool uses Playwright with a real Chromium browser. Use it for:
+1. **XSS verification**: `{"actions": [{"action": "check_xss", "url": "https://target.com/search?q=<script>alert(1)</script>"}]}`
+2. **Form injection testing**: `{"actions": [{"action": "submit_form", "url": "https://target.com/login", "fields": {"#user": "admin' OR 1=1--", "#pass": "x"}, "submit_selector": "#login-btn"}]}`
+3. **Auth bypass checks**: `{"actions": [{"action": "set_cookie", "name": "role", "value": "admin", "url": "..."}, {"action": "check_response", "url": ".../admin", "expected_status": 403}]}`
+4. **JavaScript analysis**: `{"actions": [{"action": "navigate", "url": "..."}, {"action": "execute_js", "script": "document.cookie"}]}`
+5. **Screenshot evidence**: `{"actions": [{"action": "navigate", "url": "..."}, {"action": "screenshot"}]}`
 
 **CMS/WordPress workflow:**
 1. `execute_cmseek(args="-u https://target.com")` or `execute_wappalyzer(args="https://target.com")` → detect CMS
 2. If WordPress: `execute_wpscan(args="--url https://target.com --enumerate vp,vt,u")` → WP-specific vulns
 3. `create_finding(...)` for confirmed vulns
 
-**TLS/SSL testing workflow:**
+**TLS/SSL testing workflow (ALWAYS include for HTTPS targets):**
 1. `execute_testssl(args="https://target.com")` or `execute_sslyze(args="target.com")` → check TLS config
 2. `create_finding(...)` for weak ciphers, expired certs, or protocol vulnerabilities
 """
