@@ -93,6 +93,44 @@ PLAYBOOKS: List[Dict[str, Any]] = [
             {"description": "Generate final report with OWASP LLM Top 10 mapping and remediation", "status": "pending", "priority": "medium"},
         ],
     },
+    {
+        "id": "js_secrets_scan",
+        "name": "JS Sensitive Data Detection",
+        "description": "Discover JS files across domains and detect exposed API keys, passwords, tokens, and credentials.",
+        "objective": (
+            "Perform a JavaScript sensitive data detection scan against the target domains. "
+            "This follows the SecretFinder methodology for finding exposed secrets in JS files.\n\n"
+            "**Phase 1 — Domain Liveness Check**\n"
+            "1) Use execute_httpx to probe the target domains and confirm which are live.\n\n"
+            "**Phase 2 — JS File Discovery with Katana**\n"
+            "2) Use execute_katana with depth 5, JS crawl enabled (-jc), form extraction (-fx), "
+            "and exclude non-code files (-ef woff,css,png,svg,jpg,woff2,jpeg,gif).\n"
+            "3) Filter the output for .js files — these are the primary targets for secret scanning.\n\n"
+            "**Phase 3 — Sensitive Data Analysis**\n"
+            "4) For each discovered JS file URL, fetch the content and analyze for:\n"
+            "   - API keys (AWS, Google, Azure, Stripe, etc.)\n"
+            "   - Passwords, credentials, connection strings\n"
+            "   - Bearer tokens, JWT tokens, OAuth secrets\n"
+            "   - Private keys\n"
+            "   - Internal/SCADA endpoints\n"
+            "   - PII (emails, usernames in sensitive context)\n"
+            "5) Use both regex pattern matching (fast) and AI analysis (deep) for thorough coverage.\n\n"
+            "**Phase 4 — Reporting**\n"
+            "6) For each critical/high finding, create_finding with:\n"
+            "   - Title describing the exposed secret type\n"
+            "   - Severity based on secret type (critical for keys/passwords, high for tokens)\n"
+            "   - Evidence showing the URL and redacted context\n"
+            "   - Remediation: rotate the credential, remove from JS, use environment variables\n"
+            "7) Summarize: domains scanned, JS files found, secrets detected by severity."
+        ),
+        "initial_todos": [
+            {"description": "Check domain liveness with HTTPX", "status": "pending", "priority": "high"},
+            {"description": "Crawl live domains with Katana for JS files", "status": "pending", "priority": "high"},
+            {"description": "Analyze JS files for sensitive data (regex + AI)", "status": "pending", "priority": "high"},
+            {"description": "Create findings for critical/high secrets found", "status": "pending", "priority": "medium"},
+            {"description": "Generate summary report with remediation guidance", "status": "pending", "priority": "medium"},
+        ],
+    },
 ]
 
 

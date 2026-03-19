@@ -81,6 +81,8 @@ class ASMToolsManager:
             "create_finding": self.create_finding,
             # LLM Red Team Scanner
             "execute_llm_red_team": self.execute_llm_red_team,
+            # JS Sensitive Data Detection
+            "scan_js_secrets": self.scan_js_secrets,
             # MCP Security Tools (delegated)
             "execute_nuclei": self.execute_mcp_tool,
             "execute_naabu": self.execute_mcp_tool,
@@ -1159,6 +1161,89 @@ class ASMToolsManager:
         if len(report) > max_chars:
             report = report[:max_chars] + "\n\n... (truncated)"
         return report
+
+    async def scan_js_secrets(
+        self,
+        domains: Optional[str] = None,
+        urls: Optional[str] = None,
+        use_ai: bool = True,
+        regex_only: bool = False,
+        max_js_urls: int = 50,
+        **kwargs: Any,
+    ) -> str:
+        """Scan domains or JS URLs for exposed sensitive data (API keys, passwords, tokens, credentials). Provide comma-separated domains (runs httpx+katana+secrets pipeline) or comma-separated JS file URLs (direct scan). Uses regex patterns (SecretFinder-style) and optionally AI for deep analysis."""
+        _, org_id = get_tenant_context()
+
+        try:
+            from app.services.js_secrets_scan_service import (
+                run_full_js_secrets_pipeline,
+                scan_urls_for_sensitive_data,
+            )
+
+            if urls:
+                # Direct URL scan (skip httpx/katana)
+                url_list = [u.strip() for u in urls.split(",") if u.strip()]
+                results = await scan_urls_for_sensitive_data(
+                    urls=url_list,
+                    use_ai=use_ai,
+                    regex_only=regex_only,
+                )
+                # Format report
+                lines = [f"# JS Secrets Scan Results\n\nScanned {len(results)} URLs\n"]
+                total_findings = 0
+                for r in results:
+                    if r.findings:
+                        lines.append(f"\n## {r.url}")
+                        for f in r.findings:
+                            total_findings += 1
+                            lines.append(f"- **[{f.severity.upper()}]** {f.type}: {f.snippet}")
+                            if f.description:
+                                lines.append(f"  {f.description}")
+                if total_findings == 0:
+                    lines.append("\nNo sensitive data found.")
+                else:
+                    lines.append(f"\n**Total: {total_findings} findings**")
+                report = "\n".join(lines)
+
+            elif domains:
+                # Full pipeline: domains -> httpx -> katana -> scan
+                domain_list = [d.strip() for d in domains.split(",") if d.strip()]
+                result = await run_full_js_secrets_pipeline(
+                    domains=domain_list,
+                    use_ai=use_ai,
+                    regex_only=regex_only,
+                    max_js_urls=max_js_urls,
+                )
+                summary = result.get("summary", {})
+                lines = [
+                    "# JS Secrets Pipeline Results\n",
+                    f"- Domains scanned: {result.get('input_domains', 0)}",
+                    f"- Live domains: {len(result.get('live_domains', []))}",
+                    f"- JS files discovered: {len(result.get('js_files_discovered', []))}",
+                    f"- URLs analyzed: {result.get('urls_scanned', 0)}",
+                    f"- Total findings: {summary.get('total_findings', 0)}",
+                    f"- Severity: {summary.get('severity_breakdown', {})}",
+                ]
+                if result.get("findings"):
+                    lines.append("\n## Findings\n")
+                    for f in result["findings"][:100]:
+                        lines.append(
+                            f"- **[{f['severity'].upper()}]** {f['type']} in {f['url']}: {f.get('snippet', '')[:200]}"
+                        )
+                if result.get("errors"):
+                    lines.append(f"\n## Errors: {result['errors']}")
+                report = "\n".join(lines)
+            else:
+                return "Error: provide either 'domains' (comma-separated domain list) or 'urls' (comma-separated JS file URLs)"
+
+            max_chars = _tool_output_max_chars()
+            if len(report) > max_chars:
+                report = report[:max_chars] + "\n\n... (truncated)"
+            return report
+
+        except Exception as e:
+            logger.exception("scan_js_secrets failed")
+            return f"Error scanning JS secrets: {e}"
 
     async def save_note(
         self,

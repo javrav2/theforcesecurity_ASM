@@ -280,6 +280,7 @@ class ScannerWorker:
                 ScanType.GEO_ENRICH: 'GEO_ENRICH',
                 ScanType.TLDFINDER: 'TLDFINDER',
                 ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
+                ScanType.JS_SECRETS_SCAN: 'JS_SECRETS_SCAN',
             }
             
             messages = []
@@ -653,6 +654,8 @@ class ScannerWorker:
                     await self.handle_recon_pipeline(body)
                 elif job_type == 'LLM_RED_TEAM':
                     await self.handle_llm_red_team(body)
+                elif job_type == 'JS_SECRETS_SCAN':
+                    await self.handle_js_secrets_scan(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -3975,6 +3978,146 @@ class ScannerWorker:
 
         except Exception as e:
             logger.error(f"LLM red team scan {scan_id} failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
+    async def handle_js_secrets_scan(self, job_data: dict):
+        """
+        Handle JS sensitive data detection scan.
+
+        Full pipeline:
+        1. httpx liveness check on target domains
+        2. Katana crawl for JS file discovery
+        3. Regex + AI analysis on each JS file for secrets
+
+        Equivalent CLI workflow:
+            httpx -l domains.txt -silent >> live_domains.txt
+            katana -u live_domains.txt -d 5 -jc -fx -ef woff,css,png,svg,jpg,woff2,jpeg,gif -o js_urls.txt
+            cat js_urls.txt | while read url; do python3 SecretFinder.py -i $url -o cli; done
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        config = job_data.get('config', {})
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for JS secrets scan")
+            return
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Starting JS secrets pipeline"
+                db.commit()
+
+            # Get targets
+            targets = job_data.get('targets') or (scan.targets if scan else [])
+            if not targets:
+                # Fall back to in-scope domains
+                from app.models.asset import Asset, AssetType
+                assets = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.in_scope == True,
+                    Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                ).all()
+                targets = [a.value for a in assets]
+
+            if not targets:
+                raise Exception("No targets found for JS secrets scan")
+
+            from app.services.js_secrets_scan_service import run_full_js_secrets_pipeline
+
+            if scan:
+                scan.current_step = f"Running JS secrets pipeline on {len(targets)} domains"
+                db.commit()
+
+            pipeline_result = await run_full_js_secrets_pipeline(
+                domains=targets,
+                use_ai=config.get('use_ai', True),
+                regex_only=config.get('regex_only', False),
+                max_js_urls=config.get('max_js_urls', 50),
+                katana_depth=config.get('depth', 5),
+                httpx_first=config.get('httpx_first', True),
+            )
+
+            # Create vulnerability findings for critical/high secrets
+            findings_created = 0
+            if pipeline_result.get("findings"):
+                from app.models.vulnerability import Vulnerability
+                from app.models.asset import Asset
+
+                for finding in pipeline_result["findings"]:
+                    if finding.get("severity") not in ("critical", "high"):
+                        continue
+
+                    # Find the asset this URL belongs to
+                    from urllib.parse import urlparse
+                    try:
+                        parsed = urlparse(finding["url"])
+                        hostname = parsed.hostname or ""
+                    except Exception:
+                        hostname = ""
+
+                    asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == hostname,
+                    ).first() if hostname else None
+
+                    vuln = Vulnerability(
+                        title=f"Exposed {finding.get('description', finding['type'])} in JS file",
+                        description=(
+                            f"Sensitive data detected in JavaScript file: {finding['url']}\n\n"
+                            f"Type: {finding['type']}\n"
+                            f"Context: {finding.get('snippet', '')}\n"
+                            f"Detection: {finding.get('source', 'regex')}"
+                        ),
+                        severity=finding["severity"],
+                        url=finding["url"],
+                        asset_id=asset.id if asset else None,
+                        organization_id=organization_id,
+                        scan_id=scan_id,
+                        detected_by="js_secrets_scan",
+                        template_id=f"js-secret-{finding['type']}",
+                        remediation=(
+                            "1. Immediately rotate the exposed credential\n"
+                            "2. Remove the secret from the JavaScript file\n"
+                            "3. Use environment variables or a secrets manager instead\n"
+                            "4. Review git history for the same secret in previous commits\n"
+                            "5. Monitor for unauthorized usage of the exposed credential"
+                        ),
+                        evidence=json.dumps({
+                            "url": finding["url"],
+                            "type": finding["type"],
+                            "snippet": finding.get("snippet", ""),
+                            "line": finding.get("line_hint"),
+                        }),
+                    )
+                    db.add(vuln)
+                    findings_created += 1
+
+                db.commit()
+
+            # Update scan record
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.vulnerabilities_found = findings_created
+                scan.results = pipeline_result
+                db.commit()
+
+            logger.info(
+                f"JS secrets scan {scan_id} completed: "
+                f"{pipeline_result.get('summary', {}).get('total_findings', 0)} total findings, "
+                f"{findings_created} vulnerability records created"
+            )
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"JS secrets scan {scan_id} failed: {e}", exc_info=True)
             self._mark_scan_failed(scan_id, str(e))
         finally:
             db.close()

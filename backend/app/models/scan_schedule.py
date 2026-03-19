@@ -448,6 +448,19 @@ CONTINUOUS_SCAN_TYPES = {
         },
         "recommended_frequency": "weekly",
     },
+    "js_secrets_scan": {
+        "name": "JS Sensitive Data Detection",
+        "description": "Detect exposed API keys, passwords, tokens, and credentials in JavaScript files. Uses httpx for liveness, Katana for JS discovery, then regex + AI analysis (SecretFinder methodology).",
+        "default_config": {
+            "depth": 5,
+            "use_ai": True,
+            "regex_only": False,
+            "max_js_urls": 50,
+            "httpx_first": True,
+            "headless": False,
+        },
+        "recommended_frequency": "weekly",
+    },
     "cleanup": {
         "name": "System Cleanup",
         "description": "Clean up old scan files, temporary files, and orphaned data. Frees disk space and maintains system health.",

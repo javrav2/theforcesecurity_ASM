@@ -79,6 +79,7 @@ def send_scan_to_sqs(scan: Scan) -> bool:
         ScanType.TLDFINDER: 'TLDFINDER',
         ScanType.CLEANUP: 'CLEANUP',
         ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
+        ScanType.JS_SECRETS_SCAN: 'JS_SECRETS_SCAN',
     }
     
     job_type = job_type_map.get(scan.scan_type, 'NUCLEI_SCAN')
@@ -445,6 +446,7 @@ def create_adhoc_scan(
         "cleanup": ScanType.CLEANUP,
         "geo_enrich": ScanType.GEO_ENRICH,
         "tldfinder": ScanType.TLDFINDER,
+        "js_secrets_scan": ScanType.JS_SECRETS_SCAN,
     }
     
     scan_type_enum = scan_type_map.get(request.scan_type, ScanType.VULNERABILITY)
