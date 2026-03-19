@@ -607,16 +607,31 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
                     if objective:
                         question = objective
                 
-                orchestrator = await get_agent_orchestrator()
-                result = await orchestrator.invoke(
-                    question=question,
-                    user_id=str(user_id),
-                    organization_id=org_id,
-                    session_id=session_id,
-                    initial_todos=initial_todos,
-                    mode=mode,
-                    status_callback=status_callback,
-                )
+                try:
+                    orchestrator = await get_agent_orchestrator()
+                    result = await asyncio.wait_for(
+                        orchestrator.invoke(
+                            question=question,
+                            user_id=str(user_id),
+                            organization_id=org_id,
+                            session_id=session_id,
+                            initial_todos=initial_todos,
+                            mode=mode,
+                            status_callback=status_callback,
+                        ),
+                        timeout=settings.AGENT_REQUEST_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"WS agent query timed out after {settings.AGENT_REQUEST_TIMEOUT_SECONDS}s for session {session_id}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"The agent took longer than {settings.AGENT_REQUEST_TIMEOUT_SECONDS // 60} minutes and timed out. Try a more specific question.",
+                    })
+                    continue
+                except Exception as e:
+                    logger.error(f"WS agent query error for session {session_id}: {e}")
+                    await websocket.send_json({"type": "error", "message": f"Agent error: {e}"})
+                    continue
                 
                 # Save to conversation history
                 db = SessionLocal()
@@ -649,15 +664,27 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
                     await websocket.send_json({"type": "error", "message": "Not authenticated"})
                     continue
                 
-                orchestrator = await get_agent_orchestrator()
-                result = await orchestrator.resume_after_approval(
-                    session_id=session_id,
-                    user_id=str(user_id),
-                    organization_id=org_id,
-                    decision=data.get("decision", "abort"),
-                    modification=data.get("modification"),
-                    status_callback=status_callback,
-                )
+                try:
+                    orchestrator = await get_agent_orchestrator()
+                    result = await asyncio.wait_for(
+                        orchestrator.resume_after_approval(
+                            session_id=session_id,
+                            user_id=str(user_id),
+                            organization_id=org_id,
+                            decision=data.get("decision", "abort"),
+                            modification=data.get("modification"),
+                            status_callback=status_callback,
+                        ),
+                        timeout=settings.AGENT_REQUEST_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"WS agent approval timed out for session {session_id}")
+                    await websocket.send_json({"type": "error", "message": "Agent approval processing timed out."})
+                    continue
+                except Exception as e:
+                    logger.error(f"WS agent approval error for session {session_id}: {e}")
+                    await websocket.send_json({"type": "error", "message": f"Agent error: {e}"})
+                    continue
 
                 db = SessionLocal()
                 try:
@@ -687,7 +714,6 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
                     continue
                 
                 answer_text = data.get("answer", "")
-                orchestrator = await get_agent_orchestrator()
 
                 db = SessionLocal()
                 try:
@@ -695,13 +721,26 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
                 finally:
                     db.close()
 
-                result = await orchestrator.resume_after_answer(
-                    session_id=session_id,
-                    user_id=str(user_id),
-                    organization_id=org_id,
-                    answer=answer_text,
-                    status_callback=status_callback,
-                )
+                try:
+                    orchestrator = await get_agent_orchestrator()
+                    result = await asyncio.wait_for(
+                        orchestrator.resume_after_answer(
+                            session_id=session_id,
+                            user_id=str(user_id),
+                            organization_id=org_id,
+                            answer=answer_text,
+                            status_callback=status_callback,
+                        ),
+                        timeout=settings.AGENT_REQUEST_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"WS agent answer timed out for session {session_id}")
+                    await websocket.send_json({"type": "error", "message": "Agent answer processing timed out."})
+                    continue
+                except Exception as e:
+                    logger.error(f"WS agent answer error for session {session_id}: {e}")
+                    await websocket.send_json({"type": "error", "message": f"Agent error: {e}"})
+                    continue
 
                 db = SessionLocal()
                 try:

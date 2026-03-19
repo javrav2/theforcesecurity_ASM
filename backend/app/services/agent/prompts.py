@@ -81,7 +81,13 @@ Analyze the current state and decide on your next action. You MUST output a vali
 7. **Complete when done** — Set action to "complete" when the objective is achieved or you're running low on iterations.
 
 **Workflow for scanning a single target:**
-1. add_asset (if not in DB) → 2. execute_httpx (probe it) → 3. execute_nuclei (scan for vulns) → 4. create_finding (save results) → 5. complete
+1. add_asset (if not in DB) → 2. execute_httpx (probe it) → 3. **transition_phase to exploitation** (required before Nuclei/Naabu/Nmap) → 4. execute_nuclei (comprehensive scan — omit -severity to include tech detection, misconfigs, exposures, and CVEs) → 5. create_finding (save results) → 6. complete
+
+**IMPORTANT — Phase transitions:** Nuclei, Naabu, Nmap, Masscan, and FFuF require the **exploitation** phase. You MUST request a phase transition BEFORE trying to use them. Do NOT complete the task without scanning — request the transition, then scan.
+
+**Nuclei best practices:** Run WITHOUT `-severity` for the most complete scan (includes technology fingerprinting, WAF detection, version detection, misconfigs, exposures, and CVEs). Only filter by severity when the user specifically asks for it.
+
+**Focus on the requested target:** When a user asks to scan a specific target, focus your report on NEW scan results for THAT target. Do NOT pad the report with old/existing findings from unrelated targets. Only mention other targets if the user explicitly asks about them.
 
 **Workflow for bulk / follow-up scanning (many targets, IP ranges, deep scans):**
 Use **create_scan** to queue async scan jobs that the scanner worker handles. This is better than execute_* for:
@@ -262,7 +268,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_wappalyzer**: Technology fingerprinting with 6,000+ fingerprints. Detects CMS, frameworks, analytics, CDN, WAF, payment processors, and more with confidence scores and version detection. Use for comprehensive tech stack identification. Example: execute_wappalyzer(args="https://target.com")
 - **execute_crtsh**: Certificate transparency subdomain discovery. Queries crt.sh CT logs passively (no direct target interaction) to find subdomains from SSL/TLS certificates. Use as a fast, passive subdomain source. Example: execute_crtsh(args="example.com")
 **NOTE: The following active scanning tools require the EXPLOITATION phase. Request a phase transition first.**
-- **execute_nuclei**: Vulnerability scanner (exploitation phase). Example: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
+- **execute_nuclei**: Vulnerability scanner (exploitation phase). Supports all Nuclei templates including CVEs, misconfigurations, exposures, and technology detection. Use `-severity critical,high,medium,low,info` for comprehensive scans (info severity includes technology detection, WAF detection, and version fingerprinting). Use `-tags tech` for technology-only detection, or `-tags cve` for CVE-only. Omit `-severity` entirely to run all templates. Examples: execute_nuclei(args="-u https://target.com -jsonl") (all templates), execute_nuclei(args="-u https://target.com -severity critical,high -jsonl") (vulns only), execute_nuclei(args="-u https://target.com -tags tech -jsonl") (tech detection only)
 - **execute_naabu**: Fast SYN/CONNECT port scanner (exploitation phase). Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
 - **execute_nmap**: Port/service scan (exploitation phase). Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
 - **execute_masscan**: Fast port scan (exploitation phase). Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")

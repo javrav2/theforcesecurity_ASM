@@ -486,10 +486,22 @@ http {
     limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
     limit_conn_zone $binary_remote_addr zone=conn:10m;
 
-    # Upstream backend
-    upstream backend {
-        server backend:8000;
+    # WebSocket upgrade map — only set Connection: upgrade for WS requests
+    map \$http_upgrade \$connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
+
+    # Upstream: FastAPI backend (API + WebSocket)
+    upstream api_backend {
+        server localhost:8000;
         keepalive 32;
+    }
+
+    # Upstream: Next.js frontend (pages + static assets)
+    upstream frontend {
+        server localhost:${FRONTEND_PORT:-80};
+        keepalive 16;
     }
 
     # HTTP - Redirect to HTTPS (uncomment when SSL is configured)
@@ -503,19 +515,45 @@ http {
         }
 
         # Redirect to HTTPS (uncomment when SSL is ready)
-        # return 301 https://$server_name$request_uri;
+        # return 301 https://\$server_name\$request_uri;
 
-        # Temporary: proxy to backend (remove when SSL is configured)
-        location / {
-            proxy_pass http://backend;
+        # WebSocket: proxy directly to backend (must be BEFORE the general /api/ block)
+        location /api/v1/agent/ws/ {
+            proxy_pass http://api_backend;
             proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_cache_bypass $http_upgrade;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_read_timeout 600s;
+            proxy_send_timeout 600s;
+        }
+
+        # REST API: proxy directly to backend (bypasses Next.js rewrites)
+        location /api/ {
+            proxy_pass http://api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 75s;
+        }
+
+        # Everything else: Next.js frontend
+        location / {
+            proxy_pass http://frontend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_cache_bypass \$http_upgrade;
             proxy_read_timeout 300s;
             proxy_connect_timeout 75s;
         }
@@ -539,14 +577,39 @@ http {
     #     # HSTS
     #     add_header Strict-Transport-Security "max-age=63072000" always;
     #
-    #     location / {
-    #         limit_req zone=api burst=20 nodelay;
-    #         limit_conn conn 10;
-    #
-    #         proxy_pass http://backend;
+    #     # WebSocket: proxy directly to backend
+    #     location /api/v1/agent/ws/ {
+    #         proxy_pass http://api_backend;
     #         proxy_http_version 1.1;
     #         proxy_set_header Upgrade $http_upgrade;
-    #         proxy_set_header Connection 'upgrade';
+    #         proxy_set_header Connection $connection_upgrade;
+    #         proxy_set_header Host $host;
+    #         proxy_set_header X-Real-IP $remote_addr;
+    #         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    #         proxy_set_header X-Forwarded-Proto $scheme;
+    #         proxy_read_timeout 600s;
+    #         proxy_send_timeout 600s;
+    #     }
+    #
+    #     # REST API: proxy directly to backend
+    #     location /api/ {
+    #         limit_req zone=api burst=20 nodelay;
+    #         limit_conn conn 10;
+    #         proxy_pass http://api_backend;
+    #         proxy_http_version 1.1;
+    #         proxy_set_header Host $host;
+    #         proxy_set_header X-Real-IP $remote_addr;
+    #         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    #         proxy_set_header X-Forwarded-Proto $scheme;
+    #         proxy_read_timeout 300s;
+    #     }
+    #
+    #     # Everything else: Next.js frontend
+    #     location / {
+    #         proxy_pass http://frontend;
+    #         proxy_http_version 1.1;
+    #         proxy_set_header Upgrade $http_upgrade;
+    #         proxy_set_header Connection $connection_upgrade;
     #         proxy_set_header Host $host;
     #         proxy_set_header X-Real-IP $remote_addr;
     #         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
