@@ -84,7 +84,7 @@ export default function AgentPage() {
   const [liveStatus, setLiveStatus] = useState<StatusUpdate | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const wsAuthenticatedRef = useRef(false);
-  const pendingWsMsgRef = useRef<Record<string, unknown> | null>(null);
+  const wsFailCountRef = useRef(0);
 
   // Conversation history
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -153,6 +153,11 @@ export default function AgentPage() {
       return;
     }
 
+    if (wsFailCountRef.current >= 1) {
+      setConnectionMode('rest');
+      return;
+    }
+
     setConnectionMode('connecting');
     const url = api.getAgentWebSocketUrl(sid);
     const ws = new WebSocket(url);
@@ -173,20 +178,18 @@ export default function AgentPage() {
     };
 
     ws.onerror = () => {
-      setConnectionMode('rest');
+      wsFailCountRef.current += 1;
+      wsRef.current = null;
       wsAuthenticatedRef.current = false;
-      pendingWsMsgRef.current = null;
+      setConnectionMode('rest');
     };
 
     ws.onclose = () => {
       wsRef.current = null;
       wsAuthenticatedRef.current = false;
-      pendingWsMsgRef.current = null;
-      if (connectionMode === 'websocket') {
-        setConnectionMode('rest');
-      }
+      setConnectionMode('rest');
     };
-  }, [connectionMode]);
+  }, []);
 
   const handleWsMessage = useCallback((data: Record<string, unknown>, sid: string) => {
     const msgType = data.type as string;
@@ -196,10 +199,6 @@ export default function AgentPage() {
     } else if (msgType === 'authenticated') {
       wsAuthenticatedRef.current = true;
       setConnectionMode('websocket');
-      if (pendingWsMsgRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify(pendingWsMsgRef.current));
-        pendingWsMsgRef.current = null;
-      }
     } else if (msgType === 'thinking' || msgType === 'tool_start' || msgType === 'tool_complete') {
       setLiveStatus(data as unknown as StatusUpdate);
     } else if (msgType === 'response') {
@@ -238,12 +237,13 @@ export default function AgentPage() {
     };
   }, []);
 
-  // Auto-connect WebSocket when we have a session
+  // Auto-connect WebSocket once when session and agent are ready
   useEffect(() => {
     if (sessionId && agentAvailable) {
       connectWebSocket(sessionId);
     }
-  }, [sessionId, agentAvailable, connectWebSocket]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, agentAvailable]);
 
   // Keepalive ping
   useEffect(() => {
@@ -254,6 +254,25 @@ export default function AgentPage() {
     }, 25000);
     return () => clearInterval(interval);
   }, []);
+
+  // Safety timeout: reset loading state if no response after 3 minutes
+  const loadingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (loading) {
+      loadingTimeoutRef.current = setTimeout(() => {
+        setLoading(false);
+        setLiveStatus(null);
+        toast({ variant: 'destructive', title: 'Timeout', description: 'No response from the agent after 3 minutes. The backend may still be processing — check back shortly or try again.' });
+        appendAgentMessage({ answer: 'Error: No response received within 3 minutes. The agent may have timed out on the server. Please try again.' });
+      }, 180_000);
+    } else if (loadingTimeoutRef.current) {
+      clearTimeout(loadingTimeoutRef.current);
+      loadingTimeoutRef.current = null;
+    }
+    return () => {
+      if (loadingTimeoutRef.current) clearTimeout(loadingTimeoutRef.current);
+    };
+  }, [loading]);
 
   // =========================================================================
   // Message helpers
@@ -293,11 +312,6 @@ export default function AgentPage() {
   const sendViaWs = (msgObj: Record<string, unknown>): boolean => {
     if (wsRef.current?.readyState === WebSocket.OPEN && wsAuthenticatedRef.current) {
       wsRef.current.send(JSON.stringify(msgObj));
-      return true;
-    }
-    // Queue the message if WS is connecting — it will be flushed on authentication
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)) {
-      pendingWsMsgRef.current = msgObj;
       return true;
     }
     return false;
@@ -434,7 +448,7 @@ export default function AgentPage() {
       wsRef.current = null;
     }
     wsAuthenticatedRef.current = false;
-    pendingWsMsgRef.current = null;
+    wsFailCountRef.current = 0;
     const newSid = crypto.randomUUID();
     setSessionId(newSid);
     setConnectionMode('connecting');

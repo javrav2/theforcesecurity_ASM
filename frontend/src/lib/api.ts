@@ -1430,10 +1430,17 @@ class ApiClient {
    * Handles http→ws and https→wss protocol conversion.
    */
   getAgentWebSocketUrl(sessionId: string): string {
-    let base = API_URL;
-    if (typeof window !== 'undefined') {
-      base = window.location.origin;
+    let base: string;
+    const configuredUrl = process.env.NEXT_PUBLIC_API_URL || '';
+
+    if (configuredUrl && configuredUrl !== 'http://localhost:8000' && typeof window !== 'undefined') {
+      base = configuredUrl;
+    } else if (typeof window !== 'undefined') {
+      base = `${window.location.protocol}//${window.location.hostname}:8000`;
+    } else {
+      base = 'http://localhost:8000';
     }
+
     const wsBase = base.replace(/^http/, 'ws');
     return `${wsBase}/api/v1/agent/ws/${sessionId}`;
   }
