@@ -83,7 +83,7 @@ Analyze the current state and decide on your next action. You MUST output a vali
 **Workflow for scanning a single target:**
 1. add_asset (if not in DB) → 2. execute_httpx (probe it) → 3. **transition_phase to exploitation** (required before Nuclei/Naabu/Nmap) → 4. execute_nuclei (comprehensive scan — omit -severity to include tech detection, misconfigs, exposures, and CVEs) → 5. create_finding (save results) → 6. complete
 
-**IMPORTANT — Phase transitions:** Nuclei, Naabu, Nmap, Masscan, and FFuF require the **exploitation** phase. You MUST request a phase transition BEFORE trying to use them. Do NOT complete the task without scanning — request the transition, then scan.
+**IMPORTANT — Phase transitions:** Nuclei, Naabu, Nmap, Masscan, FFuf, SQLMap, Nikto, WPScan, and XSStrike require the **exploitation** phase. You MUST request a phase transition BEFORE trying to use them. Do NOT complete the task without scanning — request the transition, then scan.
 
 **Nuclei best practices:** Run WITHOUT `-severity` for the most complete scan (includes technology fingerprinting, WAF detection, version detection, misconfigs, exposures, and CVEs). Only filter by severity when the user specifically asks for it.
 
@@ -267,12 +267,22 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_kiterunner**: API endpoint brute-forcer. Discovers hidden REST/GraphQL API routes using smart wordlists and content-length analysis. Use when you suspect undocumented API endpoints. Example: execute_kiterunner(args="scan https://target.com -A=apiroutes-210228")
 - **execute_wappalyzer**: Technology fingerprinting with 6,000+ fingerprints. Detects CMS, frameworks, analytics, CDN, WAF, payment processors, and more with confidence scores and version detection. Use for comprehensive tech stack identification. Example: execute_wappalyzer(args="https://target.com")
 - **execute_crtsh**: Certificate transparency subdomain discovery. Queries crt.sh CT logs passively (no direct target interaction) to find subdomains from SSL/TLS certificates. Use as a fast, passive subdomain source. Example: execute_crtsh(args="example.com")
+- **execute_wafw00f**: WAF detection. Identifies Web Application Firewalls protecting a target. Run BEFORE injection testing to understand protections. Example: execute_wafw00f(args="https://target.com") or execute_wafw00f(args="-a https://target.com") to test all WAFs.
+- **execute_testssl**: Comprehensive TLS/SSL testing. Checks protocols, cipher suites, vulnerabilities (Heartbleed, POODLE, BEAST, ROBOT), certificate details, and security headers. Example: execute_testssl(args="https://target.com") or execute_testssl(args="--json https://target.com")
+- **execute_sslyze**: Fast Python-based TLS/SSL scanner. Tests certificate validation, cipher suites, protocol versions, and known TLS vulnerabilities. Faster than testssl for targeted checks. Example: execute_sslyze(args="target.com") or execute_sslyze(args="--json_out=- target.com")
+- **execute_arjun**: HTTP parameter discovery. Finds hidden GET/POST parameters using smart wordlists and response analysis. Use before injection testing to find params that discover_parameters missed. Example: execute_arjun(args="-u https://target.com/search") or execute_arjun(args="-u https://target.com/api -m POST")
+- **execute_gitleaks**: Secret scanning for git repos. Detects hardcoded API keys, passwords, tokens in commit history. Example: execute_gitleaks(args="detect --source /path/to/repo --report-format json")
+- **execute_cmseek**: CMS detection and vulnerability scanning. Detects 180+ CMS (WordPress, Joomla, Drupal, etc.) and their vulnerabilities. Example: execute_cmseek(args="-u https://target.com")
 **NOTE: The following active scanning tools require the EXPLOITATION phase. Request a phase transition first.**
 - **execute_nuclei**: Vulnerability scanner (exploitation phase). Supports all Nuclei templates including CVEs, misconfigurations, exposures, and technology detection. Use `-severity critical,high,medium,low,info` for comprehensive scans (info severity includes technology detection, WAF detection, and version fingerprinting). Use `-tags tech` for technology-only detection, or `-tags cve` for CVE-only. Omit `-severity` entirely to run all templates. Examples: execute_nuclei(args="-u https://target.com -jsonl") (all templates), execute_nuclei(args="-u https://target.com -severity critical,high -jsonl") (vulns only), execute_nuclei(args="-u https://target.com -tags tech -jsonl") (tech detection only)
 - **execute_naabu**: Fast SYN/CONNECT port scanner (exploitation phase). Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
 - **execute_nmap**: Port/service scan (exploitation phase). Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
 - **execute_masscan**: Fast port scan (exploitation phase). Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
 - **execute_ffuf**: Web fuzzer (exploitation phase). Example: execute_ffuf(args="-u https://target.com/FUZZ -w wordlist.txt -mc 200")
+- **execute_sqlmap**: SQL injection automation (exploitation phase). Detects and exploits all major SQLi types: error-based, boolean-blind, time-blind, UNION, stacked queries. Always runs with --batch (non-interactive). Example: execute_sqlmap(args='-u "https://target.com/page?id=1" --dbs') or execute_sqlmap(args='-u "https://target.com/page?id=1" --level=3 --risk=2')
+- **execute_nikto**: Web server vulnerability scanner (exploitation phase). Checks 6,700+ dangerous CGIs, outdated servers, insecure configs, and default files. Example: execute_nikto(args="-h https://target.com -Format json")
+- **execute_wpscan**: WordPress vulnerability scanner (exploitation phase). Detects WP version, plugins, themes, users, and known vulnerabilities. Use when WordPress is detected. Example: execute_wpscan(args="--url https://target.com --enumerate vp,vt,u")
+- **execute_xsstrike**: Advanced XSS scanner (exploitation phase). Uses fuzzy matching, context analysis, and smart payload generation to find reflected, stored, and DOM XSS. Example: execute_xsstrike(args='-u "https://target.com/search?q=test"') or execute_xsstrike(args='-u "https://target.com/search?q=test" --crawl')
 - **execute_schemathesis**: API fuzzer for OpenAPI/GraphQL schemas. Reads the schema and auto-generates test cases to find 500 errors, validation issues, and security flaws. Point it at the OpenAPI spec URL. Example: execute_schemathesis(args="run https://target.com/openapi.json --checks all") or execute_schemathesis(args="run https://target.com/graphql --checks all")
 - **execute_browser**: Headless browser for live exploit execution. Supports multi-step action chains with session persistence. Use for:
   - **XSS testing**: `{{"actions": [{{"action": "check_xss", "url": "https://target.com/search?q=<script>alert(1)</script>"}}]}}`
@@ -281,7 +291,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
   - **JavaScript execution**: `{{"actions": [{{"action": "navigate", "url": "https://target.com"}}, {{"action": "execute_js", "script": "document.cookie"}}]}}`
   - **SSRF detection**: Navigate and inspect network_requests in the output to see outgoing connections
   Actions: navigate, fill, click, type, execute_js, get_source, get_cookies, set_cookie, screenshot, wait, check_xss, submit_form, check_response
-- **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**, **knockpy_help**, **gau_help**, **kiterunner_help**, **schemathesis_help**: Get CLI usage for each tool
+- **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**, **knockpy_help**, **gau_help**, **kiterunner_help**, **schemathesis_help**, **sqlmap_help**, **nikto_help**, **wafw00f_help**, **testssl_help**, **sslyze_help**, **arjun_help**, **wpscan_help**, **xsstrike_help**, **gitleaks_help**, **cmseek_help**: Get CLI usage for each tool
 - **add_asset**: Add a target to the asset inventory. Use when the target is NOT already in the database. Args: **value** (required — hostname, domain, IP, or URL), asset_type (optional, auto-detected), description (optional). Example: add_asset(value="test-git.glensserver.com"). Once added, you can scan it and use create_finding.
 - **create_scan**: Create an async bulk scan job handled by the scanner worker. Use this instead of execute_* tools when you need to scan many targets (e.g. a list of IPs, subnets, or domains). Args: **scan_type** (required — port_scan, vulnerability, waybackurls, katana, paramspider, http_probe, technology, screenshot, login_portal, subdomain_enum, dns_resolution, discovery, full, geo_enrich, tldfinder, whatweb, llm_red_team), **targets** (optional list of hostnames/IPs — omit to scan all org assets), name (optional), config (optional dict, e.g. {"severity": ["critical","high"]}). Examples: create_scan(scan_type="port_scan", targets=["10.0.0.0/24"]), create_scan(scan_type="vulnerability", targets=["example.com"]), create_scan(scan_type="llm_red_team", targets=["https://example.com"], config={"categories": ["prompt_injection","jailbreak"]}). The scan runs asynchronously — results appear on the Scans page and update asset records automatically.
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
@@ -294,18 +304,32 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **discover_parameters**: Fetch a URL and extract injectable parameters from HTML forms, query strings, hidden inputs, and JavaScript. Classifies parameters by vulnerability proneness (sqli, xss, ssrf, path_traversal, cmdi, redirect). Use this BEFORE generating payloads to know WHAT to test. Example: discover_parameters(url="https://target.com/search")
 
 ### Injection Testing Methodology (use this workflow when testing for vulnerabilities)
-**Step 1: Discover parameters** — Run `discover_parameters(url="https://target.com/page")` on pages with forms, search bars, or query parameters. Check the `likely_vulnerable_to` field for each parameter.
+**Step 0: Detect WAF** — Run `execute_wafw00f(args="https://target.com")` to check for WAF protection. This informs payload selection.
+**Step 1: Discover parameters** — Run `discover_parameters(url="https://target.com/page")` AND `execute_arjun(args="-u https://target.com/page")` for thorough param discovery. Check `likely_vulnerable_to` for each parameter.
 **Step 2: Generate payloads** — Run `generate_injection_payloads(vuln_type="sqli")` (or xss, ssti, etc.) to get payloads with detection hints.
-**Step 3: Test with payloads** — Use `execute_browser` (submit_form, check_xss), `execute_curl`, or `execute_ffuf` to inject each payload into the discovered parameters. For SQLi, test both error-based and time-based. For XSS, use the check_xss browser action.
+**Step 3: Test with payloads** — Choose the right tool:
+  - **SQLi**: Use `execute_sqlmap(args='-u "https://target.com/page?id=1" --dbs')` for automated SQLi testing, OR `execute_curl` for manual payloads.
+  - **XSS**: Use `execute_xsstrike(args='-u "https://target.com/search?q=test"')` for automated XSS, OR `execute_browser` (check_xss action) for manual testing.
+  - **General**: Use `execute_curl`, `execute_browser` (submit_form), or `execute_ffuf` for other vuln types.
 **Step 4: Analyze responses** — Use the `detection_hints` from Step 2 to evaluate whether the payload succeeded. Look for SQL error messages, reflected payloads, timing differences, or unexpected content.
 **Step 5: Record findings** — Use `create_finding` immediately for each confirmed vulnerability with the payload and evidence.
 
 **Quick-test workflow for a single page:**
-1. `discover_parameters(url="...")` → find params
-2. `generate_injection_payloads(vuln_type="sqli")` → get SQLi payloads
-3. `execute_curl(args="-s 'https://target.com/page?id=PAYLOAD'")` for each interesting payload
-4. OR `execute_browser` with `submit_form` action for POST forms
-5. `create_finding(...)` for confirmed vulns
+1. `execute_wafw00f(args="...")` → check for WAF
+2. `discover_parameters(url="...")` + `execute_arjun(args="-u ...")` → find params
+3. `execute_sqlmap(args='-u "https://target.com/page?id=1" --batch --dbs')` → automated SQLi
+4. `execute_xsstrike(args='-u "https://target.com/page?q=test"')` → automated XSS
+5. `execute_nikto(args="-h https://target.com")` → web server vulns
+6. `create_finding(...)` for confirmed vulns
+
+**CMS/WordPress workflow:**
+1. `execute_cmseek(args="-u https://target.com")` or `execute_wappalyzer(args="https://target.com")` → detect CMS
+2. If WordPress: `execute_wpscan(args="--url https://target.com --enumerate vp,vt,u")` → WP-specific vulns
+3. `create_finding(...)` for confirmed vulns
+
+**TLS/SSL testing workflow:**
+1. `execute_testssl(args="https://target.com")` or `execute_sslyze(args="target.com")` → check TLS config
+2. `create_finding(...)` for weak ciphers, expired certs, or protocol vulnerabilities
 """
 
     exploitation_tools = """
@@ -399,6 +423,29 @@ TOOL_PHASE_MAP = {
 
     # LLM Red Team Scanner
     "execute_llm_red_team": ["informational", "exploitation", "post_exploitation"],
+    
+    # Guardian-parity tools: active scanners require exploitation phase
+    "execute_sqlmap": ["exploitation", "post_exploitation"],
+    "sqlmap_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_nikto": ["exploitation", "post_exploitation"],
+    "nikto_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_wpscan": ["exploitation", "post_exploitation"],
+    "wpscan_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_xsstrike": ["exploitation", "post_exploitation"],
+    "xsstrike_help": ["informational", "exploitation", "post_exploitation"],
+    # Informational/passive scanners
+    "execute_wafw00f": ["informational", "exploitation", "post_exploitation"],
+    "wafw00f_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_testssl": ["informational", "exploitation", "post_exploitation"],
+    "testssl_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_sslyze": ["informational", "exploitation", "post_exploitation"],
+    "sslyze_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_arjun": ["informational", "exploitation", "post_exploitation"],
+    "arjun_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_gitleaks": ["informational", "exploitation", "post_exploitation"],
+    "gitleaks_help": ["informational", "exploitation", "post_exploitation"],
+    "execute_cmseek": ["informational", "exploitation", "post_exploitation"],
+    "cmseek_help": ["informational", "exploitation", "post_exploitation"],
     
     # Legacy scanning tools
     "run_nuclei_scan": ["informational", "exploitation", "post_exploitation"],

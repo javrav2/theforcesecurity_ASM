@@ -97,6 +97,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends golang \
     && go install github.com/lc/gau/v2/cmd/gau@latest \
     && cp /root/go/bin/* /tools/
 
+# Download Gitleaks (secret scanner - Go binary)
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then GL_ARCH="arm64"; else GL_ARCH="x64"; fi && \
+    wget -q "https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_${GL_ARCH}.tar.gz" -O gitleaks.tar.gz && \
+    tar -xzf gitleaks.tar.gz -C /tools && \
+    rm gitleaks.tar.gz || echo "Gitleaks download skipped"
+
 # Download Kiterunner (API endpoint brute-forcer)
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "arm64" ]; then KR_ARCH="arm64"; else KR_ARCH="amd64"; fi && \
@@ -157,6 +164,7 @@ COPY --from=tool-downloader /tools/waybackurls /usr/local/bin/
 COPY --from=tool-downloader /tools/assetfinder /usr/local/bin/
 COPY --from=tool-downloader /tools/gau /usr/local/bin/
 COPY --from=tool-downloader /tools/kr /usr/local/bin/kiterunner
+COPY --from=tool-downloader /tools/gitleaks /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/*
 
@@ -189,6 +197,41 @@ RUN pip install knockpy || echo "Knockpy installation skipped"
 
 # Install Schemathesis (API fuzzer for OpenAPI/GraphQL schemas)
 RUN pip install schemathesis || echo "Schemathesis installation skipped"
+
+# Install SQLMap (SQL injection automation)
+RUN pip install sqlmap || echo "SQLMap installation skipped"
+
+# Install wafw00f (WAF detection)
+RUN pip install wafw00f || echo "wafw00f installation skipped"
+
+# Install Arjun (HTTP parameter discovery)
+RUN pip install arjun || echo "Arjun installation skipped"
+
+# Install SSLyze (TLS/SSL scanner - Python)
+RUN pip install sslyze || echo "SSLyze installation skipped"
+
+# Install XSStrike (XSS scanner)
+RUN pip install XSStrike || echo "XSStrike installation skipped"
+
+# Install CMSeeK (CMS detection)
+RUN pip install cmseek || echo "CMSeeK installation skipped"
+
+# Install Nikto (web server scanner)
+RUN apt-get update && apt-get install -y --no-install-recommends nikto \
+    && rm -rf /var/lib/apt/lists/* || echo "Nikto installation skipped"
+
+# Install testssl.sh (TLS/SSL testing)
+RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.git /opt/testssl \
+    && chmod +x /opt/testssl/testssl.sh \
+    && ln -sf /opt/testssl/testssl.sh /usr/local/bin/testssl \
+    || echo "testssl.sh installation skipped"
+
+# Install WPScan (WordPress scanner - Ruby gem)
+RUN apt-get update && apt-get install -y --no-install-recommends ruby ruby-dev build-essential \
+    && gem install wpscan --no-document \
+    && apt-get purge -y build-essential ruby-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* || echo "WPScan installation skipped"
 
 # Update nuclei templates
 RUN nuclei -update-templates || true

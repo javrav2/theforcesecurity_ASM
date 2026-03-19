@@ -11,25 +11,25 @@ This document maps [Guardian-CLI](https://github.com/zakirkun/guardian-cli) tool
 | **nmap** | ✅ `execute_nmap` | ✅ Port verify, service detect, API | Agent can run arbitrary nmap args. |
 | **masscan** | ✅ `execute_masscan` | ✅ Port scan, API | Agent can run arbitrary masscan args. |
 | **httpx** | ✅ `execute_httpx` | ✅ Discovery, scans | |
-| **whatweb** | ✅ `execute_whatweb` | ✅ Technology scan (source=whatweb), WhatWeb service | Agent + scheduled/ad hoc scans; install: `gem install whatweb` or `apt install whatweb`. |
-| **wafw00f** | ❌ | ❌ | Can add if binary installed. |
+| **whatweb** | ✅ `execute_whatweb` | ✅ Technology scan (source=whatweb), WhatWeb service | Agent + scheduled/ad hoc scans. |
+| **wafw00f** | ✅ `execute_wafw00f` | — | WAF detection. Informational phase (passive). pip install wafw00f. |
 | **subfinder** | ✅ `execute_subfinder` | ✅ Discovery | |
 | **amass** | ✅ `execute_amass` | ✅ Backend image | |
 | **dnsrecon** | ❌ | ❌ | We use dnsx; can add dnsrecon if installed. |
 | **nuclei** | ✅ `execute_nuclei` | ✅ Vuln scans | |
-| **nikto** | ❌ | ❌ | Can add if binary installed. |
-| **sqlmap** | ❌ | ❌ | Can add if binary installed. |
-| **wpscan** | ❌ | ❌ | Can add if binary installed. |
-| **testssl** | ❌ | ❌ | Can add if installed; we have TLS playbooks. |
-| **sslyze** | ❌ | ❌ | Can add if installed. |
-| **gobuster** | ❌ | ❌ | We have ffuf; can add gobuster if installed. |
+| **nikto** | ✅ `execute_nikto` | — | Web server scanner. Exploitation phase. apt install nikto. |
+| **sqlmap** | ✅ `execute_sqlmap` | — | SQL injection automation. Exploitation phase. pip install sqlmap. Auto-adds --batch. |
+| **wpscan** | ✅ `execute_wpscan` | — | WordPress scanner. Exploitation phase. gem install wpscan. |
+| **testssl** | ✅ `execute_testssl` | — | TLS/SSL testing. Informational phase. git clone testssl.sh. |
+| **sslyze** | ✅ `execute_sslyze` | — | TLS/SSL scanner. Informational phase. pip install sslyze. |
+| **gobuster** | ❌ | ❌ | We have ffuf; gobuster is redundant. |
 | **ffuf** | ✅ `execute_ffuf` | ✅ Backend + ffuf_service | Agent can run arbitrary ffuf args. |
-| **arjun** | ❌ | ❌ | Param discovery via ParamSpider; can add Arjun. |
-| **xsstrike** | ❌ | ❌ | Can add if installed. |
-| **gitleaks** | ❌ | ❌ | We have github_secrets; can add GitLeaks CLI. |
-| **cmseek** | ❌ | ❌ | Can add if installed. |
+| **arjun** | ✅ `execute_arjun` | — | HTTP param discovery. Informational phase. pip install arjun. |
+| **xsstrike** | ✅ `execute_xsstrike` | — | XSS scanner. Exploitation phase. pip install XSStrike. |
+| **gitleaks** | ✅ `execute_gitleaks` | — | Secret scanning. Informational phase. Go binary. |
+| **cmseek** | ✅ `execute_cmseek` | — | CMS detection. Informational phase. pip install cmseek. |
 
-**Also in ASM agent (not in Guardian list):** `execute_naabu`, `execute_dnsx`, `execute_katana`, `execute_curl`, `execute_tldfinder`, `execute_waybackurls` — all available with `*_help` for usage.
+**Also in ASM agent (not in Guardian list):** `execute_naabu`, `execute_dnsx`, `execute_katana`, `execute_curl`, `execute_tldfinder`, `execute_waybackurls`, `execute_knockpy`, `execute_gau`, `execute_kiterunner`, `execute_wappalyzer`, `execute_crtsh`, `execute_schemathesis`, `execute_browser`, `execute_llm_red_team`, `generate_injection_payloads`, `discover_parameters` — all available with `*_help` for usage.
 
 ---
 
@@ -88,8 +88,16 @@ After that, the agent will see the tool in its phase and can call it (with appro
 | **Nuclei** | Yes execute_nuclei | Yes Dockerfile | Runs when agent calls it. |
 | **FFuf** | Yes execute_ffuf | Yes Dockerfile | Runs when agent calls it. |
 | **Naabu, Nmap, Masscan, httpx, subfinder, dnsx, katana, curl, tldfinder, waybackurls, amass, whatweb** | Yes | Yes (see Dockerfile) | Same: agent can run them. |
-| **SQLMap** | No | No | Not implemented. Add per "How to Add a New Tool" below. |
-| **Nikto, wafw00f, WPScan, etc.** | No | No | Not implemented. |
+| **SQLMap** | Yes execute_sqlmap | Yes (pip) | SQL injection automation. Auto --batch. |
+| **Nikto** | Yes execute_nikto | Yes (apt) | Web server vulnerability scanner. |
+| **wafw00f** | Yes execute_wafw00f | Yes (pip) | WAF detection. |
+| **testssl** | Yes execute_testssl | Yes (git clone) | TLS/SSL testing. |
+| **SSLyze** | Yes execute_sslyze | Yes (pip) | TLS/SSL scanner (Python). |
+| **Arjun** | Yes execute_arjun | Yes (pip) | HTTP parameter discovery. |
+| **WPScan** | Yes execute_wpscan | Yes (gem) | WordPress vulnerability scanner. |
+| **XSStrike** | Yes execute_xsstrike | Yes (pip) | XSS vulnerability scanner. |
+| **Gitleaks** | Yes execute_gitleaks | Yes (Go binary) | Secret scanning. |
+| **CMSeeK** | Yes execute_cmseek | Yes (pip) | CMS detection. |
 
 Tool output (e.g. Nuclei/FFuf stdout) is returned to the agent only; it is **not** auto-saved to the database. To get data into the platform, the agent must call **create_finding** (for the Findings/Vulnerabilities UI) or **save_note** (for session notes).
 
@@ -134,7 +142,7 @@ After the scan completes (see **Scans**), refresh the asset page to see updated 
 
 ## Summary
 
-- **Agent-available (Guardian-style):** Nmap, Masscan, HTTPX, Subfinder, Amass, Nuclei, FFuf, WhatWeb, plus Naabu, DNSX, Katana, curl, TLDFinder, WaybackURLs.
-- **Not yet in agent:** Wafw00f, DNSRecon, Nikto, SQLMap, WPScan, TestSSL, SSLyze, Gobuster, Arjun, XSStrike, GitLeaks, CMSeeK — add by following the steps above once the binary is installed in the backend image.
+- **Agent-available (Guardian-style):** Nmap, Masscan, HTTPX, Subfinder, Amass, Nuclei, FFuf, WhatWeb, SQLMap, Nikto, wafw00f, testssl, SSLyze, Arjun, WPScan, XSStrike, Gitleaks, CMSeeK, plus Naabu, DNSX, Katana, curl, TLDFinder, WaybackURLs, Knockpy, GAU, Kiterunner, Wappalyzer, crt.sh, Schemathesis, Browser, LLM Red Team, injection payloads, parameter discovery.
+- **Not yet in agent:** DNSRecon (covered by dnsx), Gobuster (covered by ffuf).
 - **Findings table:** Use **create_finding** so agent discoveries appear in the UI; **save_note** is for session notes only.
 - **Asset page:** Use “Run scan” (Login portal / Technology / Port scan) so the asset populates with login pages, technologies, and ports; use “Run agent assessment” to drive the agent from that asset.

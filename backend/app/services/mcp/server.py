@@ -581,6 +581,300 @@ class MCPServer:
             handler=self._schemathesis_help,
         ))
         
+        # SQLMap - SQL injection automation
+        self.registry.register(MCPTool(
+            name="execute_sqlmap",
+            description=(
+                "Run SQLMap for automated SQL injection detection and exploitation. "
+                "Supports detection of all major SQL injection types: error-based, boolean-based blind, "
+                "time-based blind, UNION query, stacked queries, and out-of-band. "
+                "Example: '-u \"http://target.com/page?id=1\" --batch --level=3 --risk=2 --dbs'."
+            ),
+            tool_type=ToolType.EXPLOIT,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "SQLMap CLI arguments (e.g., '-u \"http://target.com/page?id=1\" --batch --dbs')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_sqlmap,
+        ))
+        self.registry.register(MCPTool(
+            name="sqlmap_help",
+            description="Get SQLMap command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._sqlmap_help,
+        ))
+        
+        # Nikto - web server vulnerability scanner
+        self.registry.register(MCPTool(
+            name="execute_nikto",
+            description=(
+                "Run Nikto web server vulnerability scanner. Checks for dangerous files, "
+                "outdated server versions, insecure configurations, default files, and "
+                "6,700+ potentially dangerous CGIs. "
+                "Example: '-h http://target.com -Format json'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Nikto CLI arguments (e.g., '-h http://target.com -Format json')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_nikto,
+        ))
+        self.registry.register(MCPTool(
+            name="nikto_help",
+            description="Get Nikto command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._nikto_help,
+        ))
+        
+        # wafw00f - WAF detection
+        self.registry.register(MCPTool(
+            name="execute_wafw00f",
+            description=(
+                "Run wafw00f to detect Web Application Firewalls (WAFs). "
+                "Identifies WAF vendor/product protecting a website. "
+                "Useful to run before injection testing to understand protections. "
+                "Example: 'https://target.com' or '-a https://target.com' (test all WAFs)."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "wafw00f CLI arguments (e.g., 'https://target.com' or '-a https://target.com')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_wafw00f,
+        ))
+        self.registry.register(MCPTool(
+            name="wafw00f_help",
+            description="Get wafw00f command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._wafw00f_help,
+        ))
+        
+        # testssl.sh - TLS/SSL testing
+        self.registry.register(MCPTool(
+            name="execute_testssl",
+            description=(
+                "Run testssl.sh for comprehensive TLS/SSL testing. Checks protocols, ciphers, "
+                "vulnerabilities (Heartbleed, POODLE, BEAST, ROBOT, etc.), certificate details, "
+                "and security headers. Example: 'https://target.com' or '--json https://target.com'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "testssl.sh CLI arguments (e.g., 'https://target.com' or '--json https://target.com')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_testssl,
+        ))
+        self.registry.register(MCPTool(
+            name="testssl_help",
+            description="Get testssl.sh command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._testssl_help,
+        ))
+        
+        # SSLyze - Python TLS scanner
+        self.registry.register(MCPTool(
+            name="execute_sslyze",
+            description=(
+                "Run SSLyze for fast TLS/SSL configuration analysis. Tests certificate validation, "
+                "supported cipher suites, protocol versions, and known TLS vulnerabilities. "
+                "Python-based, faster than testssl.sh for targeted checks. "
+                "Example: 'target.com' or '--json_out=- target.com:443'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "SSLyze CLI arguments (e.g., 'target.com' or '--json_out=- target.com')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_sslyze,
+        ))
+        self.registry.register(MCPTool(
+            name="sslyze_help",
+            description="Get SSLyze command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._sslyze_help,
+        ))
+        
+        # Arjun - HTTP parameter discovery
+        self.registry.register(MCPTool(
+            name="execute_arjun",
+            description=(
+                "Run Arjun for HTTP parameter discovery. Finds hidden GET/POST parameters "
+                "using a smart wordlist and response analysis. Useful before injection testing. "
+                "Example: '-u https://target.com/api/endpoint' or '-u https://target.com/search -m POST'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Arjun CLI arguments (e.g., '-u https://target.com/search')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_arjun,
+        ))
+        self.registry.register(MCPTool(
+            name="arjun_help",
+            description="Get Arjun command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._arjun_help,
+        ))
+        
+        # WPScan - WordPress scanner
+        self.registry.register(MCPTool(
+            name="execute_wpscan",
+            description=(
+                "Run WPScan for WordPress vulnerability scanning. Detects WordPress version, "
+                "plugins, themes, users, and known vulnerabilities. Use when WordPress is detected. "
+                "Example: '--url https://target.com --enumerate vp,vt,u' or '--url https://target.com --api-token YOUR_TOKEN'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "WPScan CLI arguments (e.g., '--url https://target.com --enumerate vp,vt,u')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_wpscan,
+        ))
+        self.registry.register(MCPTool(
+            name="wpscan_help",
+            description="Get WPScan command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._wpscan_help,
+        ))
+        
+        # XSStrike - XSS scanner
+        self.registry.register(MCPTool(
+            name="execute_xsstrike",
+            description=(
+                "Run XSStrike for advanced XSS vulnerability detection. Uses fuzzy matching, "
+                "context analysis, and payload generation to find reflected, stored, and DOM XSS. "
+                "Example: '-u \"https://target.com/search?q=test\"' or '-u \"https://target.com/search?q=test\" --crawl'."
+            ),
+            tool_type=ToolType.EXPLOIT,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "XSStrike CLI arguments (e.g., '-u \"https://target.com/search?q=test\"')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_xsstrike,
+        ))
+        self.registry.register(MCPTool(
+            name="xsstrike_help",
+            description="Get XSStrike command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._xsstrike_help,
+        ))
+        
+        # Gitleaks - secret scanning
+        self.registry.register(MCPTool(
+            name="execute_gitleaks",
+            description=(
+                "Run Gitleaks to detect hardcoded secrets (API keys, passwords, tokens) in git repos "
+                "or directories. Scans commit history for leaked credentials. "
+                "Example: 'detect --source /path/to/repo' or 'detect --source https://github.com/org/repo'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Gitleaks CLI arguments (e.g., 'detect --source /path/to/repo --report-format json')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_gitleaks,
+        ))
+        self.registry.register(MCPTool(
+            name="gitleaks_help",
+            description="Get Gitleaks command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._gitleaks_help,
+        ))
+        
+        # CMSeeK - CMS detection
+        self.registry.register(MCPTool(
+            name="execute_cmseek",
+            description=(
+                "Run CMSeeK for CMS detection and vulnerability scanning. Detects 180+ CMS "
+                "(WordPress, Joomla, Drupal, etc.) and their vulnerabilities. "
+                "Example: '-u https://target.com' or '-u https://target.com --batch'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "CMSeeK CLI arguments (e.g., '-u https://target.com')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_cmseek,
+        ))
+        self.registry.register(MCPTool(
+            name="cmseek_help",
+            description="Get CMSeeK command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._cmseek_help,
+        ))
+        
         # Browser automation - headless browser for live exploit execution
         self.registry.register(MCPTool(
             name="execute_browser",
@@ -947,6 +1241,82 @@ class MCPServer:
         except Exception as e:
             logger.error(f"Browser automation failed: {e}")
             return {"success": False, "output": "", "error": f"Browser automation error: {e}", "exit_code": -1}
+    
+    # --- New Guardian-parity tools ---
+    
+    async def _execute_sqlmap(self, args: str) -> Dict[str, Any]:
+        cmd = ["sqlmap"] + self._parse_args(args)
+        if "--batch" not in args:
+            cmd.append("--batch")
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _sqlmap_help(self) -> Dict[str, Any]:
+        return await self._run_command(["sqlmap", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_nikto(self, args: str) -> Dict[str, Any]:
+        cmd = ["nikto"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _nikto_help(self) -> Dict[str, Any]:
+        return await self._run_command(["nikto", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_wafw00f(self, args: str) -> Dict[str, Any]:
+        cmd = ["wafw00f"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=120)
+    
+    async def _wafw00f_help(self) -> Dict[str, Any]:
+        return await self._run_command(["wafw00f", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_testssl(self, args: str) -> Dict[str, Any]:
+        cmd = ["testssl"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _testssl_help(self) -> Dict[str, Any]:
+        return await self._run_command(["testssl", "--help"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_sslyze(self, args: str) -> Dict[str, Any]:
+        cmd = ["sslyze"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=300)
+    
+    async def _sslyze_help(self) -> Dict[str, Any]:
+        return await self._run_command(["sslyze", "--help"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_arjun(self, args: str) -> Dict[str, Any]:
+        cmd = ["arjun"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=300)
+    
+    async def _arjun_help(self) -> Dict[str, Any]:
+        return await self._run_command(["arjun", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_wpscan(self, args: str) -> Dict[str, Any]:
+        cmd = ["wpscan"] + self._parse_args(args)
+        if "--no-banner" not in args:
+            cmd.append("--no-banner")
+        return await self._run_command(cmd, timeout=600)
+    
+    async def _wpscan_help(self) -> Dict[str, Any]:
+        return await self._run_command(["wpscan", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_xsstrike(self, args: str) -> Dict[str, Any]:
+        cmd = ["xsstrike"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=300)
+    
+    async def _xsstrike_help(self) -> Dict[str, Any]:
+        return await self._run_command(["xsstrike", "-h"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_gitleaks(self, args: str) -> Dict[str, Any]:
+        cmd = ["gitleaks"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=300)
+    
+    async def _gitleaks_help(self) -> Dict[str, Any]:
+        return await self._run_command(["gitleaks", "--help"], timeout=MCP_HELP_TIMEOUT)
+    
+    async def _execute_cmseek(self, args: str) -> Dict[str, Any]:
+        cmd = ["cmseek"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=300)
+    
+    async def _cmseek_help(self) -> Dict[str, Any]:
+        return await self._run_command(["cmseek", "-h"], timeout=MCP_HELP_TIMEOUT)
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
