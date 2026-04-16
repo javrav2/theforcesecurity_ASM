@@ -96,6 +96,8 @@ class ASMToolsManager:
             "execute_katana": self.execute_mcp_tool,
             "execute_curl": self.execute_mcp_tool,
             "execute_tldfinder": self.execute_mcp_tool,
+            "execute_pius": self.execute_mcp_tool,
+            "execute_titus": self.execute_mcp_tool,
             "execute_waybackurls": self.execute_mcp_tool,
             "execute_nmap": self.execute_mcp_tool,
             "execute_masscan": self.execute_mcp_tool,
@@ -128,6 +130,8 @@ class ASMToolsManager:
             "dnsx_help": self.execute_mcp_tool,
             "katana_help": self.execute_mcp_tool,
             "tldfinder_help": self.execute_mcp_tool,
+            "pius_help": self.execute_mcp_tool,
+            "titus_help": self.execute_mcp_tool,
             "waybackurls_help": self.execute_mcp_tool,
             "nmap_help": self.execute_mcp_tool,
             "masscan_help": self.execute_mcp_tool,
@@ -987,7 +991,8 @@ class ASMToolsManager:
             scan_type: One of: port_scan, vulnerability, waybackurls, katana,
                        paramspider, http_probe, technology, screenshot,
                        login_portal, subdomain_enum, dns_resolution, discovery,
-                       full, geo_enrich, tldfinder, whatweb
+                       full, geo_enrich, tldfinder, whatweb, pius_discovery,
+                       titus_secrets
             targets: List of hostnames, domains, or IPs to scan. If omitted,
                      scans all org domains/assets automatically.
             name: Optional scan name (auto-generated if omitted).
@@ -1020,6 +1025,8 @@ class ASMToolsManager:
             "full": ST.FULL,
             "geo_enrich": ST.GEO_ENRICH,
             "tldfinder": ST.TLDFINDER,
+            "pius_discovery": ST.PIUS_DISCOVERY,
+            "titus_secrets": ST.TITUS_SECRETS,
         }
         st = type_map.get(scan_type.lower().strip())
         if not st:

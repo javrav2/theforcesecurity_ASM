@@ -111,15 +111,13 @@ def check_nerva(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
 
 def check_titus(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
     """
-    Secrets scanning via Praetorian titus on a path (optional).
+    Secrets scanning via Praetorian titus on a filesystem path (optional).
 
-    Set titus_path in extra/config or TITUS_SCAN_PATH env. Skips if titus binary missing.
+    Requires `titus_scan_path` (cfg, ctx.extra, or TITUS_SCAN_PATH env) and the
+    `titus` binary on PATH (or TITUS_PATH). Uses the real scanner wrapper for
+    structured parsing and severity mapping.
     """
-    out: List[Finding] = []
-    binary = cfg.get("titus_binary") or os.environ.get("TITUS_PATH") or which("titus")
-    if not binary:
-        logger.debug("titus not on PATH; skip titus check")
-        return out
+    from asm_scanner_core.scanners.titus import run_titus
 
     scan_path = (
         cfg.get("titus_scan_path")
@@ -128,37 +126,64 @@ def check_titus(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
     )
     if not scan_path or not os.path.isdir(scan_path):
         logger.debug("titus_scan_path not set or not a directory; skip titus")
-        return out
+        return []
 
-    timeout = int(cfg.get("titus_timeout", 600))
-    extra_args = cfg.get("titus_cli_args")
-    if isinstance(extra_args, list) and extra_args:
-        cmd = [binary] + [str(x) for x in extra_args]
-    else:
-        # Default matches common `titus filesystem <dir>` style; override via titus_cli_args in org settings.
-        cmd = [binary, "filesystem", scan_path]
-    res = run_command(cmd, timeout=timeout, cwd=scan_path)
-    for line in res.stdout.splitlines():
-        row = _parse_nerva_line(line)
-        if not row:
-            continue
-        sev = str(row.get("severity", "medium")).lower()
-        if sev not in ("critical", "high", "medium", "low", "info"):
-            sev = "medium"
-        out.append(
-            Finding(
-                type="vulnerability",
-                source="titus",
-                target=row.get("file") or row.get("path") or scan_path,
-                title=row.get("rule") or row.get("title") or "Secret finding",
-                description=row.get("match") or row.get("description"),
-                severity=sev,
-                template_id=row.get("rule_id") or "titus-secret",
-                raw_data=row,
-                tags=["titus", "secret"],
-            )
-        )
-    return out
+    timeout = int(cfg.get("titus_timeout", 900))
+    validate = bool(cfg.get("titus_validate", False))
+    extra_args = cfg.get("titus_cli_args") if isinstance(cfg.get("titus_cli_args"), list) else None
+    binary = cfg.get("titus_binary")
+
+    result = run_titus(
+        scan_path,
+        validate=validate,
+        timeout=timeout,
+        binary=binary,
+        extra_args=extra_args,
+    )
+    for err in result.errors:
+        logger.info("titus: %s", err)
+    return result.findings
+
+
+def check_pius(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
+    """
+    Organizational asset discovery via Praetorian pius (optional).
+
+    Requires `pius_org` (cfg, ctx.extra, or PIUS_ORG env) and the `pius` binary.
+    Emits domain/subdomain/ip_range Findings the worker can persist as Assets/Netblocks.
+    """
+    from asm_scanner_core.scanners.pius import run_pius
+
+    org = (
+        cfg.get("pius_org")
+        or os.environ.get("PIUS_ORG")
+        or ctx.extra.get("pius_org")
+    )
+    if not org:
+        logger.debug("pius_org not set; skip pius")
+        return []
+
+    domain = cfg.get("pius_domain") or ctx.domain or ctx.extra.get("pius_domain")
+    asn = cfg.get("pius_asn") or ctx.extra.get("pius_asn")
+    mode = cfg.get("pius_mode", "passive")
+    timeout = int(cfg.get("pius_timeout", 900))
+    plugins = cfg.get("pius_plugins") if isinstance(cfg.get("pius_plugins"), list) else None
+    disable = cfg.get("pius_disable") if isinstance(cfg.get("pius_disable"), list) else None
+    concurrency = int(cfg.get("pius_concurrency", 5))
+
+    result = run_pius(
+        org=org,
+        domain=domain,
+        asn=asn,
+        mode=mode,
+        plugins=plugins,
+        disable=disable,
+        concurrency=concurrency,
+        timeout=timeout,
+    )
+    for err in result.errors:
+        logger.info("pius: %s", err)
+    return result.findings
 
 
 def check_gitleaks(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
@@ -209,5 +234,6 @@ def registry() -> List[Tuple[str, CheckFn]]:
     return [
         ("asm_core_nerva", check_nerva),
         ("asm_core_titus", check_titus),
+        ("asm_core_pius", check_pius),
         ("asm_core_gitleaks", check_gitleaks),
     ]

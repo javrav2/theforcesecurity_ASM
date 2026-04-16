@@ -74,6 +74,17 @@ RUN ARCH=$(dpkg --print-architecture) && \
 RUN chmod +x /tools/*
 
 # =============================================================================
+# Praetorian tool builder (needs Go 1.25+; Debian bookworm ships Go 1.19)
+# Builds titus (secrets scanner) and pius (attack surface discovery).
+# =============================================================================
+FROM golang:1.25-bookworm AS praetorian-builder
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+ENV GOBIN=/praetorian-bin
+RUN mkdir -p /praetorian-bin && \
+    go install github.com/praetorian-inc/pius/cmd/pius@latest && \
+    go install github.com/praetorian-inc/titus/cmd/titus@latest
+
+# =============================================================================
 # Final Image
 # =============================================================================
 FROM python:3.11-slim-bookworm
@@ -165,10 +176,14 @@ COPY --from=builder /tools/waybackurls /usr/local/bin/
 COPY --from=builder /tools/gau /usr/local/bin/
 COPY --from=builder /tools/kr /usr/local/bin/kiterunner
 
+# Praetorian tools (pius, titus) built with Go 1.25
+COPY --from=praetorian-builder /praetorian-bin/pius /usr/local/bin/pius
+COPY --from=praetorian-builder /praetorian-bin/titus /usr/local/bin/titus
+
 # Ensure binaries are executable and not overwritten
 RUN chmod +x /usr/local/bin/nuclei /usr/local/bin/subfinder /usr/local/bin/httpx \
     /usr/local/bin/naabu /usr/local/bin/dnsx /usr/local/bin/katana /usr/local/bin/waybackurls \
-    /usr/local/bin/gau /usr/local/bin/kiterunner
+    /usr/local/bin/gau /usr/local/bin/kiterunner /usr/local/bin/pius /usr/local/bin/titus
 
 # Copy application code
 COPY . .

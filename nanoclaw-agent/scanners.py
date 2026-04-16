@@ -544,6 +544,85 @@ def run_arjun(target_url: str, bridge: ASMBridge, timeout: int = 300) -> List[st
 # Secret & Code Scanning
 # =========================================================================
 
+def run_titus(
+    path: str,
+    bridge: ASMBridge,
+    validate: bool = False,
+    timeout: int = 900,
+) -> List[dict]:
+    """
+    Praetorian titus secrets scanner (487 rules, optional live validation).
+
+    Wraps asm_scanner_core.scanners.titus.run_titus and streams findings into
+    the platform bridge.
+    """
+    try:
+        from asm_scanner_core.scanners.titus import run_titus as core_run_titus
+    except ImportError:
+        logger.error("asm_scanner_core not installed; cannot run titus"); return []
+    if not _tool_available("titus"):
+        logger.error("titus not installed (binary missing)"); return []
+    result = core_run_titus(path, validate=validate, timeout=timeout)
+    for f in result.findings:
+        bridge.submit_vulnerability(
+            host=f.target or path,
+            title=f.title or "Secret finding",
+            severity=f.severity or "medium",
+            source="titus",
+            description=f.description or "",
+        )
+    bridge.flush()
+    logger.info(f"titus: {len(result.findings)} findings in {path}")
+    return [f.to_dict() for f in result.findings]
+
+
+def run_pius(
+    org: str,
+    bridge: ASMBridge,
+    domain: Optional[str] = None,
+    asn: Optional[str] = None,
+    mode: str = "passive",
+    timeout: int = 900,
+) -> Dict[str, Any]:
+    """
+    Praetorian pius org-wide attack surface discovery (domains + CIDRs).
+
+    Submits each discovered domain / subdomain / IP / CIDR to the platform via
+    the bridge. Returns a summary dict with counts.
+    """
+    try:
+        from asm_scanner_core.scanners.pius import run_pius as core_run_pius
+    except ImportError:
+        logger.error("asm_scanner_core not installed; cannot run pius"); return {}
+    if not _tool_available("pius"):
+        logger.error("pius not installed (binary missing)"); return {}
+    result = core_run_pius(org=org, domain=domain, asn=asn, mode=mode, timeout=timeout)
+
+    for d in result.domains:
+        bridge.submit_domain(d, source="pius")
+    for s in result.subdomains:
+        bridge.submit_subdomain(s, source="pius")
+    for c in result.cidrs:
+        bridge.submit_finding(Finding(
+            type="ip_range",
+            source="pius",
+            target=c,
+            title=f"CIDR: {c}",
+            severity="info",
+        ))
+    bridge.flush()
+    logger.info(
+        f"pius: {len(result.domains)} domains, {len(result.subdomains)} subdomains, {len(result.cidrs)} CIDRs for {org}"
+    )
+    return {
+        "org": org,
+        "domains": len(result.domains),
+        "subdomains": len(result.subdomains),
+        "cidrs": len(result.cidrs),
+        "errors": result.errors,
+    }
+
+
 def run_gitleaks(repo_path: str, bridge: ASMBridge, timeout: int = 300) -> List[dict]:
     """Secret scanning via gitleaks."""
     if not _tool_available("gitleaks"):

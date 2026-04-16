@@ -222,6 +222,62 @@ def discover_parameters(target_url: str, timeout: int = 300) -> str:
 
 # --- Vulnerability Analysis Tools ---
 
+@security_tool(category="recon", risk="safe")
+def discover_org_assets(
+    org: str,
+    domain: str = "",
+    asn: str = "",
+    mode: str = "passive",
+    timeout: int = 900,
+) -> str:
+    """Organizational attack-surface discovery using Praetorian pius.
+
+    Given a company name, discovers owned domains, subdomains, and IP netblocks
+    (CIDRs) across all 5 RIRs using 24+ OSINT plugins (CT logs, passive DNS,
+    WHOIS, GLEIF, BGP, etc.). Each result is streamed to the ASM platform.
+
+    Args:
+        org: Organization / company name (required, e.g. "Acme Corp")
+        domain: Optional known root domain hint (unlocks crt-sh, DNS plugins)
+        asn: Optional ASN hint (e.g. "AS12345") for direct BGP lookup
+        mode: "passive" (default, safe), "active", or "all"
+        timeout: Max seconds to run
+    """
+    import scanners
+    summary = scanners.run_pius(
+        org=org,
+        bridge=_get_bridge(),
+        domain=domain or None,
+        asn=asn or None,
+        mode=mode,
+        timeout=timeout,
+    )
+    return json.dumps(summary, default=str)
+
+
+@security_tool(category="vuln_analysis", risk="safe")
+def scan_secrets_titus(path: str, validate: bool = False, timeout: int = 900) -> str:
+    """Scan a filesystem path (directory / file / local git repo) for leaked secrets with Praetorian titus.
+
+    Uses 487 detection rules covering AWS, GCP, Azure, GitHub, Slack, databases,
+    CI/CD, etc. When validate=True, detected secrets are checked against their
+    source APIs and marked active/inactive (slower, makes outbound requests).
+
+    Args:
+        path: Absolute filesystem path (directory, file, or git clone) to scan
+        validate: Enable live credential validation (default False)
+        timeout: Max seconds to run
+    """
+    import scanners
+    findings = scanners.run_titus(
+        path=path,
+        bridge=_get_bridge(),
+        validate=validate,
+        timeout=timeout,
+    )
+    return json.dumps({"findings": findings, "count": len(findings)}, default=str)
+
+
 @security_tool(category="vuln_analysis", risk="low")
 def scan_nuclei(target: str, templates: str = "", severity: str = "low,medium,high,critical", timeout: int = 900) -> str:
     """Run nuclei vulnerability scanner with template-based detection.

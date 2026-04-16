@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y \
     nikto ruby ruby-dev build-essential libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Go toolchain (for ProjectDiscovery + Go tools) ───────────────────
-ARG GO_VERSION=1.22.5
+# ── Go toolchain (for ProjectDiscovery + Praetorian tools) ──────────
+# Go 1.25+ required by Praetorian pius; older tools build fine on 1.25.
+ARG GO_VERSION=1.25.0
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
     | tar -C /usr/local -xz
 
@@ -30,6 +31,12 @@ RUN go install -v github.com/owasp-amass/amass/v4/...@master \
     && go install -v github.com/lc/gau/v2/cmd/gau@latest \
     && go install -v github.com/ffuf/ffuf/v2@latest \
     && go install -v github.com/s0md3v/smap/cmd/smap@latest
+
+# ── Praetorian tools (Aegis Vanguard add-ons) ───────────────────────
+# pius: organizational asset discovery (24+ OSINT plugins, 5 RIRs)
+# titus: secrets scanner (487 rules, optional live validation)
+RUN go install -v github.com/praetorian-inc/pius/cmd/pius@latest \
+    && go install -v github.com/praetorian-inc/titus/cmd/titus@latest
 
 # ── gitleaks ─────────────────────────────────────────────────────────
 ARG GITLEAKS_VERSION=8.18.4

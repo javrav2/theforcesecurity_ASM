@@ -268,6 +268,56 @@ class MCPServer:
             handler=self._katana_help,
         ))
         
+        # Pius (Praetorian) - org-wide attack surface discovery (domains + CIDRs)
+        self.registry.register(MCPTool(
+            name="execute_pius",
+            description="Run Praetorian pius for org-wide asset discovery. Example: 'run --org \"Acme Corp\" --domain acme.com --output ndjson --mode passive'. Discovers domains (CT, passive DNS, WHOIS, GLEIF) and CIDRs across all 5 RIRs.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "pius CLI arguments (e.g., 'run --org \"Acme Corp\" --domain acme.com --output ndjson --mode passive')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_pius,
+        ))
+        self.registry.register(MCPTool(
+            name="pius_help",
+            description="Get pius command usage and plugin list.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._pius_help,
+        ))
+
+        # Titus (Praetorian) - secrets scanner with 487 detectors + live validation
+        self.registry.register(MCPTool(
+            name="execute_titus",
+            description="Run Praetorian titus secrets scanner on a filesystem path or public repo. Example: 'scan /path/to/repo --format json --validate' or 'scan github.com/org/repo --format json'. 487 detection rules, optional live credential validation.",
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "titus CLI arguments (e.g., 'scan /workspace/target --format json --validate')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_titus,
+        ))
+        self.registry.register(MCPTool(
+            name="titus_help",
+            description="Get titus command usage and options.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._titus_help,
+        ))
+
         # TLDFinder (ProjectDiscovery) - TLD/domain discovery
         self.registry.register(MCPTool(
             name="execute_tldfinder",
@@ -1120,6 +1170,20 @@ class MCPServer:
     
     async def _tldfinder_help(self) -> Dict[str, Any]:
         return await self._run_command(["tldfinder", "-h"], timeout=MCP_HELP_TIMEOUT)
+
+    async def _execute_pius(self, args: str) -> Dict[str, Any]:
+        cmd = ["pius"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=900)
+
+    async def _pius_help(self) -> Dict[str, Any]:
+        return await self._run_command(["pius", "--help"], timeout=MCP_HELP_TIMEOUT)
+
+    async def _execute_titus(self, args: str) -> Dict[str, Any]:
+        cmd = ["titus"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=900)
+
+    async def _titus_help(self) -> Dict[str, Any]:
+        return await self._run_command(["titus", "--help"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_waybackurls(self, args: str) -> Dict[str, Any]:
         cmd = ["waybackurls"] + self._parse_args(args)
