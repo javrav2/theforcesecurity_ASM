@@ -10,7 +10,7 @@ import logging
 import shlex
 import subprocess
 import time
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Union
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -845,6 +845,34 @@ class MCPServer:
             phase="informational",
             handler=self._gitleaks_help,
         ))
+
+        # Remote JS / text assets — secret scan (fetch + gitleaks --no-git + regex hints)
+        self.registry.register(MCPTool(
+            name="scan_js_urls_for_secrets",
+            description=(
+                "Download one or more http(s) URLs (typically .js bundles from Katana/crawl), "
+                "write them to a temp directory, run Gitleaks in --no-git mode for hardcoded secrets, "
+                "and add regex-based hints (API keys, tokens) per URL. "
+                "Pass newline- or comma-separated URLs. Use after execute_katana to scan discovered script URLs."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "urls": {
+                    "type": "string",
+                    "description": (
+                        "Newline- or comma-separated https URLs to fetch and scan "
+                        "(e.g. clientlib bundles, /static/*.js)."
+                    ),
+                },
+                "max_urls": {
+                    "type": "integer",
+                    "description": "Max URLs to fetch (default 30, cap 100).",
+                },
+            },
+            required_params=["urls"],
+            phase="informational",
+            handler=self._scan_js_urls_for_secrets,
+        ))
         
         # CMSeeK - CMS detection
         self.registry.register(MCPTool(
@@ -1310,6 +1338,36 @@ class MCPServer:
     
     async def _gitleaks_help(self) -> Dict[str, Any]:
         return await self._run_command(["gitleaks", "--help"], timeout=MCP_HELP_TIMEOUT)
+
+    async def _scan_js_urls_for_secrets(
+        self, urls: str, max_urls: Optional[Union[int, str]] = None,
+    ) -> Dict[str, Any]:
+        from app.services.js_url_secrets_service import scan_js_urls_for_secrets
+
+        try:
+            mu = int(max_urls) if max_urls is not None else 30
+        except (TypeError, ValueError):
+            mu = 30
+        mu = max(1, min(mu, 100))
+
+        try:
+            result = await asyncio.to_thread(scan_js_urls_for_secrets, urls, mu)
+        except Exception as e:
+            logger.exception("scan_js_urls_for_secrets failed")
+            return {
+                "success": False,
+                "output": "",
+                "error": str(e),
+                "exit_code": -1,
+            }
+
+        out = json.dumps(result, indent=2, default=str)
+        return {
+            "success": bool(result.get("success", True)),
+            "output": out,
+            "error": result.get("error") if result.get("success") is False else None,
+            "exit_code": 0,
+        }
     
     async def _execute_cmseek(self, args: str) -> Dict[str, Any]:
         cmd = ["cmseek"] + self._parse_args(args)

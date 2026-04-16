@@ -33,6 +33,11 @@ class ResultType(str, Enum):
     DNS_RECORD = "dns_record"
     SCREENSHOT = "screenshot"
     WAYBACK_URL = "wayback_url"
+    TAKEOVER = "takeover"
+    TLS_ANALYSIS = "tls_analysis"
+    SECURITY_HEADER = "security_header"
+    MAIL_INFRASTRUCTURE = "mail_infrastructure"
+    THIRD_PARTY_VENDOR = "third_party_vendor"
 
 
 class Severity(str, Enum):
@@ -109,6 +114,34 @@ class UnifiedFinding(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Tags/labels")
     references: List[str] = Field(default_factory=list, description="Reference URLs")
     
+    # Subdomain takeover fields
+    takeover_status: Optional[str] = Field(None, description="Takeover status: confirmed, potential, safe")
+    takeover_service: Optional[str] = Field(None, description="Vulnerable service (e.g., 'github', 'aws-s3')")
+    cname_target: Optional[str] = Field(None, description="CNAME chain endpoint for takeover checks")
+
+    # TLS deep analysis fields
+    tls_version: Optional[str] = Field(None, description="TLS protocol version")
+    cipher_suite: Optional[str] = Field(None, description="Negotiated cipher suite")
+    cert_score: Optional[str] = Field(None, description="Certificate grade A-F")
+    key_algorithm: Optional[str] = Field(None, description="Key algorithm (RSA/ECDSA)")
+    key_size: Optional[int] = Field(None, description="Key size in bits")
+    ca_type: Optional[str] = Field(None, description="CA type: lets_encrypt, paid, self_signed")
+    cert_expiry_days: Optional[int] = Field(None, description="Days until certificate expiry")
+
+    # Security header fields
+    security_headers: Optional[Dict[str, Any]] = Field(None, description="Security header analysis results")
+    cors_policy: Optional[Dict[str, Any]] = Field(None, description="CORS policy analysis")
+
+    # Mail infrastructure fields
+    mail_records: Optional[Dict[str, Any]] = Field(None, description="MX/SPF/DKIM/DMARC/DNSSEC records")
+    mail_provider: Optional[str] = Field(None, description="Detected mail provider")
+    email_risk_score: Optional[int] = Field(None, description="Email security risk score 0-100")
+
+    # Third-party vendor fields
+    vendor_name: Optional[str] = Field(None, description="Detected vendor name")
+    vendor_category: Optional[str] = Field(None, description="Vendor category (CDN, Analytics, Auth, etc.)")
+    vendor_detection_source: Optional[str] = Field(None, description="How vendor was detected (csp, js, header)")
+
     # Raw data for debugging/analysis
     raw_data: Optional[Dict[str, Any]] = Field(None, description="Original scanner output")
     

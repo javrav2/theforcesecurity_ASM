@@ -23,6 +23,7 @@ from app.models.organization import Organization
 from app.models.agent_conversation import AgentConversation
 from app.services.agent.orchestrator import get_agent_orchestrator
 from app.services.agent.playbooks import build_initial_objective, list_playbooks
+from app.services.agent import evograph
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -461,6 +462,39 @@ async def delete_conversation(
     db.delete(conv)
     db.commit()
     return {"ok": True}
+
+
+# =============================================================================
+# ATTACK SCENARIO / EVOGRAPH CHAIN
+# =============================================================================
+
+@router.get("/sessions/{session_id}/chain")
+async def get_session_chain(
+    session_id: str,
+    include_attack_paths: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fetch the EvoGraph attack chain for a session as graph nodes/edges.
+    
+    If include_attack_paths=true, also fetches Neo4j attack paths for the
+    organization and merges them into the response.
+    """
+    chain = evograph.get_session_chain(session_id)
+
+    if include_attack_paths:
+        org_id = _resolve_agent_organization_id(current_user, db)
+        if org_id:
+            try:
+                from app.services.graph_service import get_graph_service
+                graph_svc = get_graph_service()
+                if graph_svc.connect():
+                    paths = graph_svc.get_attack_paths(org_id, max_depth=4)
+                    chain["attack_paths"] = paths[:10]
+            except Exception:
+                chain["attack_paths"] = []
+
+    return chain
 
 
 # =============================================================================

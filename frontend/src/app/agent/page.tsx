@@ -11,8 +11,10 @@ import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import {
   MessageSquare, Send, Loader2, AlertCircle, CheckCircle,
-  Wifi, WifiOff, Clock, Trash2, Plus, ChevronRight, History
+  Wifi, WifiOff, Clock, Trash2, Plus, ChevronRight, History,
+  Crosshair,
 } from 'lucide-react';
+import { AttackScenarioPanel, ChainData } from '@/components/agent/AttackScenarioPanel';
 import { api, getApiErrorMessage } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -89,6 +91,11 @@ export default function AgentPage() {
   // Conversation history
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+
+  // Attack scenario panel
+  const [chainData, setChainData] = useState<ChainData | null>(null);
+  const [scenarioCollapsed, setScenarioCollapsed] = useState(false);
+  const [showScenario, setShowScenario] = useState(true);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
@@ -201,6 +208,8 @@ export default function AgentPage() {
       setConnectionMode('websocket');
     } else if (msgType === 'thinking' || msgType === 'tool_start' || msgType === 'tool_complete') {
       setLiveStatus(data as unknown as StatusUpdate);
+    } else if (msgType === 'attack_scenario_update') {
+      if (data.chain) setChainData(data.chain as ChainData);
     } else if (msgType === 'response') {
       setLiveStatus(null);
       setLoading(false);
@@ -216,6 +225,8 @@ export default function AgentPage() {
       });
       if (data.awaiting_question) setPendingAnswer(true);
       loadConversations();
+      // Refresh chain with attack paths on completion
+      if (sid) api.getAgentSessionChain(sid, true).then(setChainData).catch(() => {});
     } else if (msgType === 'error') {
       setLiveStatus(null);
       setLoading(false);
@@ -421,6 +432,7 @@ export default function AgentPage() {
       setMessages(restored);
       setShowHistory(false);
       setPendingAnswer(false);
+      api.getAgentSessionChain(sid, true).then(setChainData).catch(() => setChainData(null));
     } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not load conversation' });
     }
@@ -443,6 +455,7 @@ export default function AgentPage() {
     setPendingAnswer(false);
     setLiveStatus(null);
     setShowHistory(false);
+    setChainData(null);
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -588,6 +601,15 @@ export default function AgentPage() {
                   {connectionBadge()}
                   <Button
                     variant="ghost" size="sm"
+                    onClick={() => setShowScenario(!showScenario)}
+                    className={`h-8 px-2 ${showScenario ? 'bg-muted' : ''}`}
+                    title="Toggle attack scenario panel"
+                  >
+                    <Crosshair className="h-4 w-4 mr-1" />
+                    <span className="text-xs">{showScenario ? 'Hide' : 'Scenario'}</span>
+                  </Button>
+                  <Button
+                    variant="ghost" size="sm"
                     onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadConversations(); }}
                     className="h-8 px-2"
                   >
@@ -723,6 +745,16 @@ export default function AgentPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Attack Scenario Panel */}
+          {showScenario && (
+            <AttackScenarioPanel
+              chainData={chainData}
+              loading={loading}
+              collapsed={scenarioCollapsed}
+              onToggleCollapse={() => setScenarioCollapsed(!scenarioCollapsed)}
+            />
+          )}
         </div>
       </div>
     </MainLayout>

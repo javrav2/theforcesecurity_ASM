@@ -335,3 +335,126 @@ def get_prior_chain_context(
     except Exception as e:
         logger.debug(f"EvoGraph get_prior_chain_context error: {e}")
         return ""
+
+
+def get_session_chain(session_id: str) -> Dict[str, Any]:
+    """
+    Fetch the full attack chain graph for a session.
+    Returns nodes and edges suitable for frontend force-graph visualization.
+    """
+    driver = _get_driver()
+    if not driver:
+        return {"nodes": [], "edges": [], "meta": {}}
+
+    try:
+        with driver.session() as s:
+            chain = s.run(
+                """
+                MATCH (c:AgentChain {session_id: $sid})
+                RETURN c.objective AS objective, c.status AS status,
+                       c.mode AS mode, c.started_at AS started_at,
+                       c.step_count AS step_count, c.final_phase AS final_phase
+                """,
+                sid=session_id,
+            ).single()
+
+            if not chain:
+                return {"nodes": [], "edges": [], "meta": {}}
+
+            steps = s.run(
+                """
+                MATCH (c:AgentChain {session_id: $sid})-[:HAS_STEP]->(step:ChainStep)
+                OPTIONAL MATCH (step)-[:PRODUCED]->(f:ChainFinding)
+                OPTIONAL MATCH (step)-[:FAILED_WITH]->(fail:ChainFailure)
+                RETURN step.iteration AS iteration, step.phase AS phase,
+                       step.tool_name AS tool_name, step.tool_args AS tool_args,
+                       step.output_summary AS output_summary,
+                       step.success AS success, step.thought AS thought,
+                       step.created_at AS created_at,
+                       collect(DISTINCT {type: f.finding_type, severity: f.severity, description: f.description}) AS findings,
+                       collect(DISTINCT {tool: fail.tool_name, error: fail.error, lesson: fail.lesson}) AS failures
+                ORDER BY step.iteration
+                """,
+                sid=session_id,
+            ).data()
+
+            nodes: List[Dict[str, Any]] = []
+            edges: List[Dict[str, Any]] = []
+
+            chain_node_id = f"chain-{session_id[:8]}"
+            nodes.append({
+                "id": chain_node_id,
+                "label": (chain["objective"] or "Session")[:60],
+                "type": "chain",
+                "properties": {
+                    "status": chain["status"],
+                    "mode": chain["mode"],
+                    "started_at": chain["started_at"],
+                },
+            })
+
+            prev_step_id = None
+            for step in steps:
+                step_id = f"step-{step['iteration']}"
+                findings = [f for f in (step.get("findings") or []) if f.get("type")]
+                failures = [f for f in (step.get("failures") or []) if f.get("tool")]
+                step_type = "step"
+                if failures:
+                    step_type = "failure"
+                elif findings:
+                    sev = next((f["severity"] for f in findings if f.get("severity") in ("critical", "high")), None)
+                    step_type = "finding_critical" if sev else "finding"
+
+                tool_label = step.get("tool_name") or "think"
+                phase_label = step.get("phase") or ""
+                nodes.append({
+                    "id": step_id,
+                    "label": f"{tool_label}",
+                    "type": step_type,
+                    "properties": {
+                        "iteration": step["iteration"],
+                        "phase": phase_label,
+                        "tool_name": step.get("tool_name"),
+                        "tool_args": step.get("tool_args"),
+                        "output_summary": step.get("output_summary"),
+                        "success": step.get("success"),
+                        "thought": step.get("thought"),
+                        "created_at": step.get("created_at"),
+                        "findings": findings,
+                        "failures": failures,
+                    },
+                })
+
+                edges.append({
+                    "source": chain_node_id if prev_step_id is None else prev_step_id,
+                    "target": step_id,
+                    "type": "HAS_STEP" if prev_step_id is None else "NEXT_STEP",
+                })
+
+                for i, finding in enumerate(findings):
+                    fid = f"finding-{step['iteration']}-{i}"
+                    nodes.append({
+                        "id": fid,
+                        "label": f"{finding.get('type', 'finding')}: {(finding.get('description') or '')[:50]}",
+                        "type": f"finding_{finding.get('severity', 'info')}",
+                        "properties": finding,
+                    })
+                    edges.append({"source": step_id, "target": fid, "type": "PRODUCED"})
+
+                prev_step_id = step_id
+
+            return {
+                "nodes": nodes,
+                "edges": edges,
+                "meta": {
+                    "session_id": session_id,
+                    "objective": chain.get("objective"),
+                    "status": chain.get("status"),
+                    "step_count": chain.get("step_count"),
+                    "final_phase": chain.get("final_phase"),
+                },
+            }
+
+    except Exception as e:
+        logger.debug(f"EvoGraph get_session_chain error: {e}")
+        return {"nodes": [], "edges": [], "meta": {}}

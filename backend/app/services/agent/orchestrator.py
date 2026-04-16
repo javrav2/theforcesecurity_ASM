@@ -671,7 +671,15 @@ class AgentOrchestrator:
                 error=step_data["error_message"][:300],
                 lesson=f"{tool_name} failed with args {str(tool_args)[:200]}",
             )
-        
+
+        # Emit attack scenario update so the frontend can render the chain in real-time
+        chain_data = evograph.get_session_chain(session_id)
+        if chain_data.get("nodes"):
+            await self._emit_status({
+                "type": "attack_scenario_update",
+                "chain": chain_data,
+            })
+
         return {"_current_step": step_data}
     
     async def _analyze_output_node(self, state: AgentState, config=None) -> dict:

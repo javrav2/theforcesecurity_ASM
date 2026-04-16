@@ -119,6 +119,7 @@ class ASMToolsManager:
             "execute_wpscan": self.execute_mcp_tool,
             "execute_xsstrike": self.execute_mcp_tool,
             "execute_gitleaks": self.execute_mcp_tool,
+            "scan_js_urls_for_secrets": self.scan_js_urls_for_secrets,
             "execute_cmseek": self.execute_mcp_tool,
             "nuclei_help": self.execute_mcp_tool,
             "naabu_help": self.execute_mcp_tool,
@@ -1118,6 +1119,28 @@ class ASMToolsManager:
             return f"Error creating finding: {e}"
         finally:
             db.close()
+
+    async def scan_js_urls_for_secrets(
+        self,
+        urls: str,
+        max_urls: int = 30,
+    ) -> str:
+        """Fetch remote JS/text URLs, run Gitleaks --no-git, and regex hints. urls = newline- or comma-separated https URLs."""
+        import asyncio
+
+        from app.services.js_url_secrets_service import scan_js_urls_for_secrets as run_scan
+
+        try:
+            mu = int(max_urls) if max_urls is not None else 30
+        except (TypeError, ValueError):
+            mu = 30
+        mu = max(1, min(mu, 100))
+        try:
+            result = await asyncio.to_thread(run_scan, urls, mu)
+        except Exception as e:
+            logger.exception("scan_js_urls_for_secrets failed")
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+        return json.dumps(result, indent=2, default=str)
 
     async def execute_llm_red_team(
         self,

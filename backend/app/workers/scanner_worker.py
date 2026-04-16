@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.netblock import Netblock
-from app.models.project_settings import ProjectSettings, MODULE_SCAN_TOGGLES
+from app.models.project_settings import ProjectSettings, MODULE_SCAN_TOGGLES, MODULE_SECURITY_CHECKS
 from app.models.port_service import PortService, PortState, Protocol
 from app.services.nuclei_service import NucleiService
 from app.services.nuclei_findings_service import NucleiFindingsService
@@ -1937,6 +1937,15 @@ class ScannerWorker:
                     'config': config,
                 })
             
+            # Optional asm_scanner_core CLI checks (nerva/titus/gitleaks) → platform ingest
+            await self._run_asm_core_security_checks({
+                'scan_id': scan_id,
+                'organization_id': organization_id,
+                'domain': domain,
+                'targets': targets,
+                'config': config,
+            })
+            
             if resource_enum:
                 _set_pipeline_step("Resource enumeration (Katana)")
                 await self.handle_katana_scan({
@@ -2020,6 +2029,95 @@ class ScannerWorker:
             logger.error(f"Recon pipeline failed: {e}", exc_info=True)
             self._mark_scan_failed(scan_id, str(e))
             raise
+    
+    async def _run_asm_core_security_checks(self, job_data: dict):
+        """
+        Run optional checks from the asm_scanner_core package (shared with OpenClaw workers).
+
+        Controlled by project_settings.security_checks: asm_core_checks + asm_core_nerva /
+        asm_core_titus / asm_core_gitleaks. Findings use the same ingestion path as agents.
+        """
+        scan_id = job_data.get("scan_id")
+        organization_id = job_data.get("organization_id")
+        domain = job_data.get("domain")
+        seed_targets = job_data.get("targets") or []
+
+        try:
+            from asm_scanner_core.checks.context import SecurityCheckContext
+            from asm_scanner_core.checks.runner import run_security_checks
+        except ImportError:
+            logger.debug("asm_scanner_core not installed; skipping asm core checks")
+            return
+
+        from app.models.port_service import PortService
+        from app.services.asm_core_adapter import ingest_core_findings
+
+        db = self.get_db_session()
+        if not db:
+            return
+        try:
+            sec_cfg = ProjectSettings.get_config(db, organization_id, MODULE_SECURITY_CHECKS)
+        finally:
+            db.close()
+
+        if not sec_cfg.get("asm_core_checks", True):
+            logger.info("asm_core_checks disabled for org %s", organization_id)
+            return
+        if not any(sec_cfg.get(k) for k in ("asm_core_nerva", "asm_core_titus", "asm_core_gitleaks")):
+            logger.debug("No asm_core_* tool toggles enabled; skipping")
+            return
+
+        db = self.get_db_session()
+        port_targets = []
+        try:
+            rows = (
+                db.query(PortService, Asset)
+                .join(Asset, PortService.asset_id == Asset.id)
+                .filter(Asset.organization_id == organization_id)
+                .limit(400)
+                .all()
+            )
+            for ps, asset in rows:
+                if not asset.value or not ps.port:
+                    continue
+                pv = getattr(ps.protocol, "value", None) or str(ps.protocol)
+                if pv and str(pv).lower() != "tcp":
+                    continue
+                port_targets.append(f"{asset.value}:{ps.port}")
+        except Exception as e:
+            logger.warning("Could not load port targets for asm core checks: %s", e)
+        finally:
+            db.close()
+
+        if not port_targets and seed_targets:
+            for t in seed_targets[:50]:
+                if isinstance(t, str) and t.strip():
+                    port_targets.append(t.strip())
+
+        ctx = SecurityCheckContext(
+            organization_id=organization_id,
+            scan_id=scan_id,
+            domain=domain,
+            targets=port_targets,
+            extra=dict(job_data.get("config") or {}),
+        )
+
+        findings = await asyncio.to_thread(run_security_checks, sec_cfg, ctx)
+        if not findings:
+            return
+
+        db = self.get_db_session()
+        if not db:
+            return
+        try:
+            summary = ingest_core_findings(db, organization_id, findings, scan_id=scan_id)
+            if summary:
+                logger.info("asm_scanner_core ingest summary: %s", summary)
+        except Exception as e:
+            logger.warning("asm_scanner_core ingest failed: %s", e, exc_info=True)
+            db.rollback()
+        finally:
+            db.close()
     
     def _is_ip_or_cidr(self, value: str) -> bool:
         """Check if a value is an IP address or CIDR block."""
@@ -3050,25 +3148,24 @@ class ScannerWorker:
                 scan.targets = targets
                 db.commit()
 
-            logger.info(
-                f"Running Katana on {num_targets} targets with depth={config.get('depth', 5)} "
-                f"({'batch stdin (one process)' if use_batch_stdin else 'parallel'}, timeout={batch_total_timeout if use_batch_stdin else per_target_timeout}s)"
-            )
-            
             total_urls = 0
             total_endpoints = 0
             total_params = 0
             total_js = 0
             assets_updated = 0
             
-            # Use one Katana process with all URLs on stdin when multiple targets (matches CLI: katana -u urls.txt).
-            # Single-process batch mode is more reliable and often faster than one process per URL (avoids early timeouts).
+            # One Katana process with -list <urls.txt> when multiple targets (matches: katana -list live_sites.txt -d 5 -jc -fx -ef ...).
             per_target_timeout = config.get('timeout', 300)  # Per-target when not using batch
             max_concurrent = config.get('max_concurrent', 3)
             num_targets = len(targets)
             use_batch_stdin = config.get('batch_stdin', num_targets > 1)  # Default True for multi-target
-            # Batch mode: one process, all URLs on stdin; need a total timeout that scales with targets
             batch_total_timeout = min(3600, max(600, 90 * num_targets)) if use_batch_stdin else per_target_timeout
+
+            logger.info(
+                f"Running Katana on {num_targets} targets with depth={config.get('depth', 5)} "
+                f"({'batch -list file (one process)' if use_batch_stdin else 'parallel per target'}, "
+                f"timeout={batch_total_timeout if use_batch_stdin else per_target_timeout}s)"
+            )
             
             # Update progress tracking
             if scan:
@@ -3087,6 +3184,9 @@ class ScannerWorker:
                     depth=depth,
                     js_crawl=config.get('js_crawl', True),
                     form_extraction=config.get('form_extraction', True),
+                    known_files=config.get('known_files', False),
+                    extension_filter_preset=config.get('extension_filter_preset', 'pipeline'),
+                    extension_filter_custom=config.get('extension_filter'),
                     timeout=batch_total_timeout,
                     rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
                     concurrency=config.get('concurrency', 10),
@@ -3102,6 +3202,9 @@ class ScannerWorker:
                     depth=depth,
                     js_crawl=config.get('js_crawl', True),
                     form_extraction=config.get('form_extraction', True),
+                    known_files=config.get('known_files', False),
+                    extension_filter_preset=config.get('extension_filter_preset', 'pipeline'),
+                    extension_filter_custom=config.get('extension_filter'),
                     timeout=per_target_timeout,
                     rate_limit=config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT),
                     concurrency=config.get('concurrency', 10),
@@ -3216,14 +3319,13 @@ class ScannerWorker:
                         if not first_error and result.error:
                             first_error = result.error
                         logger.warning(f"Katana failed for {result.target}: {result.error}")
-                        
-                    except Exception as e:
-                        logger.warning(f"Katana result processing error: {e}")
-                        # Rollback failed transaction to allow subsequent queries
-                        try:
-                            db.rollback()
-                        except Exception:
-                            pass
+                except Exception as e:
+                    logger.warning(f"Katana result processing error: {e}")
+                    # Rollback failed transaction to allow subsequent queries
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
             
             db.commit()
             

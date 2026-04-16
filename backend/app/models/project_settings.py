@@ -108,12 +108,15 @@ def default_banner_grabbing_config():
 def default_katana_config():
     return {
         "enabled": True,
-        "crawl_depth": 3,
+        "crawl_depth": 5,
         "max_urls_per_domain": 500,
         "js_rendering": False,
         "scope": "subdomain",  # exact_domain | root_domain | subdomain
         "rate_limit": 150,
         "exclude_patterns": [],  # or use 100+ default patterns
+        # Match Katana README pipeline; worker also passes js_crawl, form_extraction, extension_filter_preset
+        "extension_filter_preset": "pipeline",  # pipeline | extended
+        "known_files": False,
     }
 
 
@@ -189,6 +192,19 @@ def default_security_checks_config():
         "dns_security": True,
         "exposed_services": True,
         "application_checks": True,
+        # asm_scanner_core (shared package): optional CLI checks → same ingest path as agents
+        "asm_core_checks": True,
+        "asm_core_nerva": False,
+        "asm_core_titus": False,
+        "asm_core_gitleaks": False,
+        "titus_scan_path": None,
+        "titus_cli_args": None,
+        "nerva_extra_args": None,
+        "nerva_timeout": 300,
+        "nerva_max_targets": 50,
+        "titus_timeout": 600,
+        "gitleaks_repo_path": None,
+        "gitleaks_timeout": 600,
     }
 
 

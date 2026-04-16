@@ -33,6 +33,7 @@ class ScanType(str, enum.Enum):
     GEO_ENRICH = "geo_enrich"          # Geo-location enrichment for all assets
     TLDFINDER = "tldfinder"            # TLD/domain discovery via ProjectDiscovery tldfinder
     LLM_RED_TEAM = "llm_red_team"      # AI/LLM red team testing of chatbot endpoints
+    PENTEST = "pentest"                  # Autonomous AI penetration test with PoC validation
 
 
 class ScanStatus(str, enum.Enum):

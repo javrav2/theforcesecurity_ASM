@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "asm-scanner-core"
+version = "0.1.0"
+description = "Shared ASM findings schema, CLI runners, and security checks for platform workers and external agents"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["asm_scanner_core"]
+
+[tool.hatch.build.targets.sdist]
+include = ["asm_scanner_core"]

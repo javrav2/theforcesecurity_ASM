@@ -284,12 +284,12 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **get_asset_details**: Get detailed info about an asset. Args: **asset_id** (integer, required — get from query_assets first). Example: get_asset_details(asset_id=42)
 - **search_cve**: Search for CVE information
 - **web_search** (if configured): Search the web for CVE/exploit research. Args: query (required), max_results (optional, default 5). Requires TAVILY_API_KEY in .env.
-**IMPORTANT**: All execute_* tools take ONE parameter: **args** (a string of CLI arguments). Example: execute_httpx(args="-u https://target.com -json -tech-detect"). Do NOT pass url/target/host as separate parameters.
+**IMPORTANT**: Most execute_* tools take ONE parameter: **args** (a string of CLI arguments). Example: execute_httpx(args="-u https://target.com -json -tech-detect"). **scan_js_urls_for_secrets** is an exception: it takes **urls** (string) and optional **max_urls** (integer). Do NOT pass url/target/host as separate parameters to execute_* tools.
 
 - **execute_httpx**: HTTP prober. Example: execute_httpx(args="-u https://target.com -json -tech-detect -status-code -title")
 - **execute_subfinder**: Subdomain discovery. Example: execute_subfinder(args="-d example.com -json -silent")
 - **execute_dnsx**: DNS toolkit. Example: execute_dnsx(args="-d example.com -a -aaaa -mx -ns -json")
-- **execute_katana**: Web crawler. Example: execute_katana(args="-u https://target.com -d 3 -json")
+- **execute_katana**: Web crawler. Prefer **-list** for multiple seeds (file path) or **-u** for one URL. Typical JS/asset discovery: `execute_katana(args="-list /path/to/live_sites.txt -d 5 -jc -fx -ef woff,css,png,svg,jpg,woff2,jpeg,gif -jsonl -silent")` or single target: `execute_katana(args="-u https://target.com -d 5 -jc -fx -ef woff,css,png,svg,jpg,woff2,jpeg,gif -jsonl -silent")`. Use **-o outfile.txt** to write URLs to disk. See https://github.com/projectdiscovery/katana
 - **execute_curl**: HTTP client. Example: execute_curl(args="-s -i https://target.com/")
 - **execute_tldfinder**: TLD/domain discovery. Example: execute_tldfinder(args="-d example.com -dm domain -oJ")
 - **execute_waybackurls**: Historical URLs. Example: execute_waybackurls(args="example.com")
@@ -305,6 +305,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **execute_sslyze**: Fast Python-based TLS/SSL scanner. Tests certificate validation, cipher suites, protocol versions, and known TLS vulnerabilities. Faster than testssl for targeted checks. Example: execute_sslyze(args="target.com") or execute_sslyze(args="--json_out=- target.com")
 - **execute_arjun**: HTTP parameter discovery. Finds hidden GET/POST parameters using smart wordlists and response analysis. Use before injection testing to find params that discover_parameters missed. Example: execute_arjun(args="-u https://target.com/search") or execute_arjun(args="-u https://target.com/api -m POST")
 - **execute_gitleaks**: Secret scanning for git repos. Detects hardcoded API keys, passwords, tokens in commit history. Example: execute_gitleaks(args="detect --source /path/to/repo --report-format json")
+- **scan_js_urls_for_secrets**: Fetch remote JavaScript (or text) URLs and scan for hardcoded secrets. Downloads each URL, runs Gitleaks in filesystem mode (--no-git), and returns regex-based hints for API keys/tokens. **Not** the same as execute_gitleaks on a repo — use for Katana-discovered `.js` bundles. Args: **urls** (required, newline- or comma-separated https URLs), **max_urls** (optional, default 30). Example: scan_js_urls_for_secrets(urls="https://www.example.com/static/app.js\\nhttps://cdn.example.com/chunk.js")
 - **execute_cmseek**: CMS detection and vulnerability scanning. Detects 180+ CMS (WordPress, Joomla, Drupal, etc.) and their vulnerabilities. Example: execute_cmseek(args="-u https://target.com")
 **NOTE: The following active scanning tools require the EXPLOITATION phase. Request a phase transition first.**
 - **execute_nuclei**: Vulnerability scanner (exploitation phase). Supports all Nuclei templates including CVEs, misconfigurations, exposures, and technology detection. **DEFAULT: Run WITHOUT -severity for the most comprehensive scan** — this includes tech detection, WAF detection, version fingerprinting, misconfigs, exposures, and CVEs at all severity levels. Only add `-severity` if the user explicitly requests filtering. Examples: execute_nuclei(args="-u https://target.com -jsonl") (**PREFERRED — comprehensive, all severities**), execute_nuclei(args="-u https://target.com -tags tech -jsonl") (tech detection only), execute_nuclei(args="-u https://target.com -tags cve -jsonl") (CVE-only). Only use severity filter when user explicitly asks: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
@@ -492,6 +493,7 @@ TOOL_PHASE_MAP = {
     "arjun_help": ["informational", "exploitation", "post_exploitation"],
     "execute_gitleaks": ["informational", "exploitation", "post_exploitation"],
     "gitleaks_help": ["informational", "exploitation", "post_exploitation"],
+    "scan_js_urls_for_secrets": ["informational", "exploitation", "post_exploitation"],
     "execute_cmseek": ["informational", "exploitation", "post_exploitation"],
     "cmseek_help": ["informational", "exploitation", "post_exploitation"],
     

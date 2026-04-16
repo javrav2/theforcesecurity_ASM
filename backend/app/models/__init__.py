@@ -27,6 +27,13 @@ from app.models.project_settings import (
     MODULE_NUCLEI,
     MODULE_SCAN_TOGGLES,
 )
+from app.models.pentest_session import (
+    PentestSession,
+    ExploitResult,
+    PentestPhase,
+    ExploitCategory,
+    ExploitStatus,
+)
 
 __all__ = [
     "User",
@@ -83,4 +90,9 @@ __all__ = [
     "MODULE_WAPPALYZER",
     "MODULE_NUCLEI",
     "MODULE_SCAN_TOGGLES",
+    "PentestSession",
+    "ExploitResult",
+    "PentestPhase",
+    "ExploitCategory",
+    "ExploitStatus",
 ]

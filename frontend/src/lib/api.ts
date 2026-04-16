@@ -1425,6 +1425,13 @@ class ApiClient {
     return response.data;
   }
 
+  async getAgentSessionChain(sessionId: string, includeAttackPaths = false) {
+    const response = await this.client.get(`/agent/sessions/${sessionId}/chain`, {
+      params: includeAttackPaths ? { include_attack_paths: true } : undefined,
+    });
+    return response.data;
+  }
+
   /**
    * Build a WebSocket URL for the agent endpoint.
    * Handles http→ws and https→wss protocol conversion.
