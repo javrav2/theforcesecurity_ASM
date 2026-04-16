@@ -1,6 +1,9 @@
-# NanoClaw ASM Scanner Agent
+# Aegis Vanguard — ASM Scanner Agent
 
-An AI-powered Attack Surface Management agent that runs inside [NanoClaw](https://github.com/qwibitai/nanoclaw) containers and reports findings back to The Force Security ASM platform.
+An AI-powered Attack Surface Management agent that runs inside a
+[NanoClaw](https://github.com/qwibitai/nanoclaw)-style container (folder still
+named `nanoclaw-agent/` for backward compatibility) and reports findings back
+to The Force Security ASM platform.
 
 ## Architecture
 
@@ -43,7 +46,7 @@ Log into your ASM platform and create an agent API key:
 curl -X POST http://your-asm-platform:8000/api/v1/ingest/api-keys \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name": "nanoclaw-scanner-01", "agent_type": "nanoclaw"}'
+  -d '{"name": "aegis-vanguard-01", "agent_type": "aegis_vanguard"}'
 
 # Save the returned api_key (starts with tfasm_) - it's only shown once
 ```
@@ -109,7 +112,7 @@ Add to your NanoClaw `.env`:
 ```env
 ASM_API_URL=https://your-asm-platform.com
 ASM_API_KEY=tfasm_YOUR_KEY_HERE
-ASM_AGENT_ID=nanoclaw-prod-01
+ASM_AGENT_ID=aegis-vanguard-prod-01
 ```
 
 #### 5. Mount scanning tools in the container
@@ -139,9 +142,9 @@ For production deployments:
 #### Multiple Agents
 Deploy multiple scanner agents with different scopes:
 ```
-nanoclaw-scanner-01: Subdomain enumeration + DNS
-nanoclaw-scanner-02: Port scanning
-nanoclaw-scanner-03: Vulnerability scanning
+aegis-vanguard-01: Subdomain enumeration + DNS
+aegis-vanguard-02: Port scanning
+aegis-vanguard-03: Vulnerability scanning
 ```
 
 #### Monitoring

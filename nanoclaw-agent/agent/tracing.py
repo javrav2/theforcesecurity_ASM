@@ -88,7 +88,7 @@ class Tracer:
         output_dir: str = "/agent/traces",
         session_id: Optional[str] = None,
     ):
-        self.enabled = enabled if os.environ.get("NANOCLAW_TRACING", "true").lower() != "false" else False
+        self.enabled = enabled if os.environ.get("AEGIS_TRACING", os.environ.get("NANOCLAW_TRACING", "true")).lower() != "false" else False
         self.output_dir = Path(output_dir)
         self.session_id = session_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.spans: List[Span] = []

@@ -70,7 +70,7 @@ class AgentRunner:
         self.guardrails = guardrails or GuardrailEngine()
         self.tracer = tracer or Tracer(enabled=False)
         self.default_model = default_model or os.environ.get(
-            "NANOCLAW_MODEL", "claude-sonnet-4-20250514"
+            "AEGIS_MODEL", os.environ.get("NANOCLAW_MODEL", "claude-sonnet-4-20250514")
         )
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:

@@ -1,4 +1,4 @@
-"""Normalized finding model (matches platform ingest / NanoClaw bridge shape)."""
+"""Normalized finding model (matches platform ingest / Aegis Vanguard bridge shape)."""
 
 from __future__ import annotations
 

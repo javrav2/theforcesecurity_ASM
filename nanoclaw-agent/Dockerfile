@@ -96,11 +96,12 @@ COPY nanoclaw-agent/agent/ ./agent/
 # Default env vars (override at runtime)
 ENV ASM_API_URL=""
 ENV ASM_API_KEY=""
-ENV ASM_AGENT_ID="nanoclaw-agent"
+ENV ASM_AGENT_ID="aegis-vanguard"
 ENV ANTHROPIC_API_KEY=""
-ENV NANOCLAW_MODEL="claude-sonnet-4-20250514"
-ENV NANOCLAW_GUARDRAILS="true"
-ENV NANOCLAW_TRACING="true"
+# AEGIS_* env vars are preferred; NANOCLAW_* kept as aliases for backward compat.
+ENV AEGIS_MODEL="claude-sonnet-4-20250514"
+ENV AEGIS_GUARDRAILS="true"
+ENV AEGIS_TRACING="true"
 
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
     CMD python3 /agent/healthcheck.py --quick || exit 1

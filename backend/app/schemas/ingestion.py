@@ -15,7 +15,8 @@ from app.schemas.unified_results import UnifiedFinding, Severity, ResultType, Co
 
 
 class AgentType(str, Enum):
-    NANOCLAW = "nanoclaw"
+    AEGIS_VANGUARD = "aegis_vanguard"
+    NANOCLAW = "nanoclaw"  # Legacy alias for pre-rename clients
     EXTERNAL_SCANNER = "external_scanner"
     CI_CD = "ci_cd"
     CUSTOM = "custom"
@@ -25,7 +26,7 @@ class IngestionBatchRequest(BaseModel):
     """Batch submission of findings from an external agent."""
 
     agent_id: str = Field(..., description="Unique agent identifier")
-    agent_type: AgentType = Field(default=AgentType.NANOCLAW)
+    agent_type: AgentType = Field(default=AgentType.AEGIS_VANGUARD)
     agent_version: Optional[str] = Field(None, description="Agent software version")
 
     organization_slug: Optional[str] = Field(None, description="Organization slug (alternative to org ID in API key)")
@@ -37,8 +38,8 @@ class IngestionBatchRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "agent_id": "nanoclaw-prod-01",
-                "agent_type": "nanoclaw",
+                "agent_id": "aegis-vanguard-prod-01",
+                "agent_type": "aegis_vanguard",
                 "scan_context": "scheduled",
                 "findings": [
                     {
@@ -78,7 +79,7 @@ class IngestionBatchResponse(BaseModel):
 class IngestionHeartbeat(BaseModel):
     """Agent heartbeat for monitoring."""
     agent_id: str
-    agent_type: AgentType = AgentType.NANOCLAW
+    agent_type: AgentType = AgentType.AEGIS_VANGUARD
     status: str = "healthy"
     uptime_seconds: Optional[float] = None
     findings_sent_total: Optional[int] = None
@@ -97,7 +98,7 @@ class IngestionHeartbeatResponse(BaseModel):
 class AgentAPIKeyCreate(BaseModel):
     """Request to create an API key for an external agent."""
     name: str = Field(..., min_length=1, max_length=100, description="Human-readable name for this key")
-    agent_type: AgentType = Field(default=AgentType.NANOCLAW)
+    agent_type: AgentType = Field(default=AgentType.AEGIS_VANGUARD)
     scopes: List[str] = Field(default=["ingest:findings", "ingest:heartbeat"], description="Permitted scopes")
     expires_in_days: Optional[int] = Field(None, ge=1, le=3650, description="Days until expiration (None = no expiry)")
 

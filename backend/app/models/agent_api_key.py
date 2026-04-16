@@ -22,7 +22,7 @@ class AgentAPIKey(Base):
     key_prefix = Column(String(12), nullable=False)
 
     name = Column(String(100), nullable=False)
-    agent_type = Column(String(50), nullable=False, default="nanoclaw")
+    agent_type = Column(String(50), nullable=False, default="aegis_vanguard")
     scopes = Column(JSON, default=list)
 
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)

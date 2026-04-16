@@ -73,7 +73,7 @@ class GuardrailEngine:
         scope_domains: Optional[List[str]] = None,
         max_risk: str = "high",
     ):
-        self.enabled = enabled if os.environ.get("NANOCLAW_GUARDRAILS", "true").lower() != "false" else False
+        self.enabled = enabled if os.environ.get("AEGIS_GUARDRAILS", os.environ.get("NANOCLAW_GUARDRAILS", "true")).lower() != "false" else False
         self.scope_domains: Set[str] = set(scope_domains or [])
         self.max_risk = max_risk
         self._risk_levels = ["safe", "low", "medium", "high", "critical"]

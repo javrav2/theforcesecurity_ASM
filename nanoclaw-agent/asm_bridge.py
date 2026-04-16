@@ -111,7 +111,7 @@ class ASMBridge:
     ):
         self.api_url = (api_url or os.environ.get("ASM_API_URL", "")).rstrip("/")
         self.api_key = api_key or os.environ.get("ASM_API_KEY", "")
-        self.agent_id = agent_id or os.environ.get("ASM_AGENT_ID", "nanoclaw-default")
+        self.agent_id = agent_id or os.environ.get("ASM_AGENT_ID", "aegis-vanguard")
         self.batch_size = batch_size
         self.auto_flush = auto_flush
         self._buffer: List[Finding] = []
@@ -265,8 +265,8 @@ class ASMBridge:
 
         payload = {
             "agent_id": self.agent_id,
-            "agent_type": "nanoclaw",
-            "scan_context": "nanoclaw-agent",
+            "agent_type": "aegis_vanguard",
+            "scan_context": "aegis-vanguard-agent",
             "findings": [f.to_dict() for f in batch],
         }
 
@@ -295,7 +295,7 @@ class ASMBridge:
         """Send a heartbeat to the ASM platform."""
         payload = {
             "agent_id": self.agent_id,
-            "agent_type": "nanoclaw",
+            "agent_type": "aegis_vanguard",
             "status": "healthy",
             "findings_sent_total": self._stats["submitted"],
             "capabilities": [

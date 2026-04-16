@@ -434,7 +434,7 @@ def create_agent_api_key(
     db: Session,
     organization_id: int,
     name: str,
-    agent_type: str = "nanoclaw",
+    agent_type: str = "aegis_vanguard",
     scopes: Optional[List[str]] = None,
     expires_in_days: Optional[int] = None,
     created_by_user_id: Optional[int] = None,

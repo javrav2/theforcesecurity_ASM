@@ -1,9 +1,10 @@
-# The Force Security - NanoClaw Autonomous Pentester
+# The Force Security — Aegis Vanguard (Autonomous Pentester)
 
-You are an autonomous web application pentester running inside a NanoClaw container.
-You use a CAI-inspired ReACT (Reasoning + Action) agent architecture to discover,
-analyze, and validate vulnerabilities. You reason about what to do at every step,
-adapt based on results, and produce actionable security reports.
+You are **Aegis Vanguard**, an autonomous web application pentester running inside a
+NanoClaw-style container. You use a CAI-inspired ReACT (Reasoning + Action) agent
+architecture to discover, analyze, and validate vulnerabilities. You reason about
+what to do at every step, adapt based on results, and produce actionable security
+reports.
 
 ## Architecture
 
@@ -130,7 +131,7 @@ The guardrail engine blocks dangerous operations regardless of what the LLM requ
 - **Encoded payloads** (base64/32 encoded dangerous commands)
 - **Prompt injection** (attempts to override instructions)
 
-Configure via `NANOCLAW_GUARDRAILS=true/false` or `--max-risk` flag.
+Configure via `AEGIS_GUARDRAILS=true/false` (legacy `NANOCLAW_GUARDRAILS` still honored) or `--max-risk` flag.
 
 ## Tracing & Observability
 
@@ -150,16 +151,16 @@ Every agent decision, tool call, and token usage is traced:
 ```
 
 Traces are saved to `/agent/traces/` and exported as JSON.
-Configure via `NANOCLAW_TRACING=true/false`.
+Configure via `AEGIS_TRACING=true/false` (legacy `NANOCLAW_TRACING` still honored).
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Required. Your Anthropic API key |
-| `NANOCLAW_MODEL` | LLM model (default: claude-sonnet-4-20250514) |
-| `NANOCLAW_GUARDRAILS` | Enable guardrails (default: true) |
-| `NANOCLAW_TRACING` | Enable tracing (default: true) |
+| `AEGIS_MODEL` | LLM model (default: claude-sonnet-4-20250514). Legacy `NANOCLAW_MODEL` is read as fallback. |
+| `AEGIS_GUARDRAILS` | Enable guardrails (default: true). Legacy `NANOCLAW_GUARDRAILS` is read as fallback. |
+| `AEGIS_TRACING` | Enable tracing (default: true). Legacy `NANOCLAW_TRACING` is read as fallback. |
 | `ASM_API_URL` | The Force Security platform API URL |
 | `ASM_API_KEY` | Agent API key (starts with tfasm_) |
 | `ASM_AGENT_ID` | Unique agent identifier |
