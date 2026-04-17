@@ -318,6 +318,73 @@ class MCPServer:
             handler=self._argus_help,
         ))
 
+        # Hermes (Aegis Vanguard) - remote secrets finder (wraps TruffleHog v3)
+        self.registry.register(MCPTool(
+            name="execute_hermes",
+            description=(
+                "Hermes — Aegis Vanguard's remote secrets-finder (wraps TruffleHog v3). "
+                "Hunts leaked credentials in sources outside the local filesystem: "
+                "GitHub/GitLab orgs, S3/GCS/Azure blobs, Docker images, Postman workspaces, "
+                "Jenkins, Jira, Confluence, and more. Complements Argus (local secrets). "
+                "Examples: 'git https://github.com/org/repo --json --no-update', "
+                "'github --org=acme --only-verified --json --no-update', "
+                "'s3 --bucket=my-bucket --json --no-update', "
+                "'docker --image=acme/app:latest --json --no-update'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Hermes/trufflehog CLI arguments (e.g., 'github --org=acme --only-verified --json --no-update')"
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_hermes,
+        ))
+        self.registry.register(MCPTool(
+            name="hermes_help",
+            description="Get Hermes (trufflehog) command usage and available sources.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._hermes_help,
+        ))
+
+        # Janus (Aegis Vanguard) - DAST gatekeeper (wraps OWASP ZAP)
+        self.registry.register(MCPTool(
+            name="execute_janus",
+            description=(
+                "Janus — Aegis Vanguard's two-faced DAST gatekeeper (wraps OWASP ZAP). "
+                "Baseline mode = passive spider + passive rules only (CI-safe). "
+                "Full mode = baseline + active attack scan (in-scope only). "
+                "Complements nuclei by actually spidering the app, maintaining session, "
+                "and finding reflective XSS / CSRF / CORS / business-logic issues. "
+                "Examples: 'zap-baseline.py -t https://example.com -J report.json -m 5', "
+                "'zap-full-scan.py -t https://example.com -J report.json -m 10 -j'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Janus/ZAP CLI arguments (e.g., 'zap-baseline.py -t https://example.com -J report.json -m 5')"
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_janus,
+        ))
+        self.registry.register(MCPTool(
+            name="janus_help",
+            description="Get Janus (OWASP ZAP baseline/full) command usage.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._janus_help,
+        ))
+
         # TLDFinder (ProjectDiscovery) - TLD/domain discovery
         self.registry.register(MCPTool(
             name="execute_tldfinder",
@@ -1184,6 +1251,32 @@ class MCPServer:
 
     async def _argus_help(self) -> Dict[str, Any]:
         return await self._run_command(["titus", "--help"], timeout=MCP_HELP_TIMEOUT)
+
+    async def _execute_hermes(self, args: str) -> Dict[str, Any]:
+        cmd = ["trufflehog"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=900)
+
+    async def _hermes_help(self) -> Dict[str, Any]:
+        return await self._run_command(["trufflehog", "--help"], timeout=MCP_HELP_TIMEOUT)
+
+    async def _execute_janus(self, args: str) -> Dict[str, Any]:
+        """
+        Janus routes to the right ZAP entrypoint based on the first token.
+        Callers may pass 'zap-baseline.py ...' / 'zap-full-scan.py ...' or plain
+        ZAP CLI flags — in the latter case we default to the baseline script.
+        """
+        parts = self._parse_args(args)
+        if not parts:
+            return {"error": "Janus requires arguments (e.g., 'zap-baseline.py -t https://example.com -J report.json')"}
+        first = parts[0]
+        if first in ("zap-baseline.py", "zap-full-scan.py", "zap.sh"):
+            cmd = parts
+        else:
+            cmd = ["zap-baseline.py"] + parts
+        return await self._run_command(cmd, timeout=1800)
+
+    async def _janus_help(self) -> Dict[str, Any]:
+        return await self._run_command(["zap-baseline.py", "--help"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_waybackurls(self, args: str) -> Dict[str, Any]:
         cmd = ["waybackurls"] + self._parse_args(args)

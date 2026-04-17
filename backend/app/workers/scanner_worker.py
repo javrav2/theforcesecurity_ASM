@@ -282,6 +282,8 @@ class ScannerWorker:
                 ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
                 ScanType.ATLAS_DISCOVERY: 'ATLAS_DISCOVERY',
                 ScanType.ARGUS_SECRETS: 'ARGUS_SECRETS',
+                ScanType.HERMES_SECRETS: 'HERMES_SECRETS',
+                ScanType.JANUS_DAST: 'JANUS_DAST',
             }
             
             messages = []
@@ -659,6 +661,10 @@ class ScannerWorker:
                     await self.handle_atlas_discovery(body)
                 elif job_type == 'ARGUS_SECRETS':
                     await self.handle_argus_secrets(body)
+                elif job_type == 'HERMES_SECRETS':
+                    await self.handle_hermes_secrets(body)
+                elif job_type == 'JANUS_DAST':
+                    await self.handle_janus_dast(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -2070,7 +2076,10 @@ class ScannerWorker:
         if not sec_cfg.get("asm_core_checks", True):
             logger.info("asm_core_checks disabled for org %s", organization_id)
             return
-        if not any(sec_cfg.get(k) for k in ("asm_core_nerva", "asm_core_argus", "asm_core_atlas", "asm_core_gitleaks")):
+        if not any(sec_cfg.get(k) for k in (
+            "asm_core_nerva", "asm_core_argus", "asm_core_atlas",
+            "asm_core_hermes", "asm_core_janus", "asm_core_gitleaks",
+        )):
             logger.debug("No asm_core_* tool toggles enabled; skipping")
             return
 
@@ -4227,6 +4236,262 @@ class ScannerWorker:
 
         except Exception as e:
             logger.error(f"Argus secrets scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if db:
+                db.close()
+
+    async def handle_hermes_secrets(self, job_data: dict):
+        """
+        Hermes - remote secrets across GitHub/GitLab/S3/GCS/Docker/... (wraps TruffleHog v3).
+
+        Config (from scan.config):
+            source (required)   - one of git, github, gitlab, s3, gcs, azure,
+                                  docker, postman, jenkins, filesystem, ...
+            target (required)   - repo URL / org name / bucket / image / path
+            only_verified (bool) - emit only live-validated secrets
+            timeout (seconds, default 900)
+            extra_args (list)   - additional CLI flags
+            env (dict)          - auth env vars (GITHUB_TOKEN, AWS_*, etc.)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        config = job_data.get('config') or {}
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running Hermes remote-secrets scan"
+                db.commit()
+
+            source = config.get('source') or config.get('hermes_source')
+            target = config.get('target') or config.get('hermes_target')
+            if not source or not target:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "Hermes requires config.source and config.target"
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            try:
+                from asm_scanner_core.scanners.hermes import run_hermes
+            except ImportError:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "asm_scanner_core not installed in worker image"
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            timeout = int(config.get('timeout', 900))
+            only_verified = bool(config.get('only_verified', False))
+            extra = config.get('extra_args') if isinstance(config.get('extra_args'), list) else None
+            env = config.get('env') if isinstance(config.get('env'), dict) else None
+
+            result = await asyncio.to_thread(
+                run_hermes,
+                source=source,
+                target=target,
+                only_verified=only_verified,
+                timeout=timeout,
+                extra_args=extra,
+                env=env,
+            )
+
+            if result.errors and not result.findings:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "; ".join(result.errors)[:500]
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            findings_ingested = 0
+            if result.findings:
+                from app.services.asm_core_adapter import ingest_core_findings
+                summary = ingest_core_findings(
+                    db,
+                    organization_id,
+                    result.findings,
+                    scan_id=scan_id,
+                    agent_id="asm-scanner-core:hermes",
+                )
+                if summary:
+                    findings_ingested = summary.get('processed') or len(result.findings)
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.vulnerabilities_found = len(result.findings)
+                scan.results = {
+                    'source': source,
+                    'target': target,
+                    'only_verified': only_verified,
+                    'findings': len(result.findings),
+                    'findings_ingested': findings_ingested,
+                    'sources_scanned': result.sources_scanned,
+                    'errors': result.errors,
+                }
+                db.commit()
+
+            logger.info(
+                "Hermes scan complete (%s/%s): %s findings ingested (%s total)",
+                source, target, findings_ingested, len(result.findings),
+            )
+
+        except Exception as e:
+            logger.error(f"Hermes scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if db:
+                db.close()
+
+    async def handle_janus_dast(self, job_data: dict):
+        """
+        Janus - OWASP ZAP DAST (baseline = passive; full = active).
+
+        Config (from scan.config):
+            target_url (required, else first entry in job_data['targets'])
+            mode ('baseline' default, 'full')
+            minutes (int, caps ZAP internal timers)
+            ajax (bool, enable ajax-spider for SPAs)
+            timeout (seconds, default 1800)
+            context_file (path, optional ZAP .context for auth/scope)
+            extra_args (list)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        config = job_data.get('config') or {}
+        targets = job_data.get('targets') or []
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running Janus DAST scan"
+                db.commit()
+
+            target_url = config.get('target_url') or (targets[0] if targets else None)
+            if not target_url:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "Janus requires config.target_url or a target"
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+            if not str(target_url).startswith("http"):
+                target_url = f"https://{target_url}"
+
+            try:
+                from asm_scanner_core.scanners.janus import run_janus
+            except ImportError:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "asm_scanner_core not installed in worker image"
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            mode = config.get('mode', 'baseline')
+            minutes_raw = config.get('minutes')
+            minutes = int(minutes_raw) if minutes_raw else None
+            ajax = bool(config.get('ajax', False))
+            timeout = int(config.get('timeout', 1800))
+            extra = config.get('extra_args') if isinstance(config.get('extra_args'), list) else None
+            context_file = config.get('context_file')
+
+            result = await asyncio.to_thread(
+                run_janus,
+                target_url=target_url,
+                mode=mode,
+                minutes=minutes,
+                ajax=ajax,
+                timeout=timeout,
+                context_file=context_file,
+                extra_args=extra,
+            )
+
+            if result.errors and not result.findings:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "; ".join(result.errors)[:500]
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            findings_ingested = 0
+            if result.findings:
+                from app.services.asm_core_adapter import ingest_core_findings
+                summary = ingest_core_findings(
+                    db,
+                    organization_id,
+                    result.findings,
+                    scan_id=scan_id,
+                    agent_id="asm-scanner-core:janus",
+                )
+                if summary:
+                    findings_ingested = summary.get('processed') or len(result.findings)
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.vulnerabilities_found = len(result.findings)
+                scan.results = {
+                    'target_url': target_url,
+                    'mode': mode,
+                    'findings': len(result.findings),
+                    'findings_ingested': findings_ingested,
+                    'report_path': result.report_path,
+                    'errors': result.errors,
+                }
+                db.commit()
+
+            logger.info(
+                "Janus %s scan complete (%s): %s findings ingested (%s total)",
+                mode, target_url, findings_ingested, len(result.findings),
+            )
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"Janus DAST scan failed: {e}", exc_info=True)
             if db and scan_id:
                 try:
                     db.rollback()

@@ -1,4 +1,4 @@
-"""Optional CLI-backed checks (nerva, Argus, Atlas, gitleaks). Extend with new tools here."""
+"""Optional CLI-backed checks (nerva, Argus, Atlas, Hermes, Janus, gitleaks)."""
 
 from __future__ import annotations
 
@@ -187,6 +187,86 @@ def check_atlas(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
     return result.findings
 
 
+def check_hermes(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
+    """
+    Hermes (Aegis Vanguard) — remote secrets via TruffleHog v3.
+
+    Runs when `hermes_source` and `hermes_target` are both set. Example configs:
+        hermes_source: 'github' | 'gitlab' | 's3' | 'docker' | 'filesystem' | ...
+        hermes_target: 'acme' (org), 'https://github.com/acme/repo', bucket, image, ...
+        hermes_only_verified: True to emit only live-validated secrets
+        hermes_env: { GITHUB_TOKEN: ..., AWS_ACCESS_KEY_ID: ... } for auth'd sources
+    """
+    from asm_scanner_core.scanners.hermes import run_hermes
+
+    source = cfg.get("hermes_source") or ctx.extra.get("hermes_source")
+    target = cfg.get("hermes_target") or ctx.extra.get("hermes_target")
+    if not source or not target:
+        logger.debug("hermes_source/hermes_target not set; skip Hermes")
+        return []
+
+    timeout = int(cfg.get("hermes_timeout", 900))
+    only_verified = bool(cfg.get("hermes_only_verified", False))
+    extra_args = cfg.get("hermes_cli_args") if isinstance(cfg.get("hermes_cli_args"), list) else None
+    env = cfg.get("hermes_env") if isinstance(cfg.get("hermes_env"), dict) else None
+    binary = cfg.get("hermes_binary")
+
+    result = run_hermes(
+        source=source,
+        target=target,
+        only_verified=only_verified,
+        timeout=timeout,
+        binary=binary,
+        extra_args=extra_args,
+        env=env,
+    )
+    for err in result.errors:
+        logger.info("hermes: %s", err)
+    return result.findings
+
+
+def check_janus(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
+    """
+    Janus (Aegis Vanguard) — OWASP ZAP DAST (baseline by default).
+
+    Runs when `janus_target_url` is set or when ctx.domain is http-probable.
+    Defaults to `baseline` mode (passive, safe). Set `janus_mode: 'full'` to
+    enable active attacks — in-scope only.
+    """
+    from asm_scanner_core.scanners.janus import run_janus
+
+    target_url = (
+        cfg.get("janus_target_url")
+        or ctx.extra.get("janus_target_url")
+        or (f"https://{ctx.domain}" if ctx.domain else None)
+    )
+    if not target_url:
+        logger.debug("janus_target_url not set; skip Janus")
+        return []
+
+    mode = cfg.get("janus_mode", "baseline")
+    minutes = cfg.get("janus_minutes")
+    ajax = bool(cfg.get("janus_ajax", False))
+    timeout = int(cfg.get("janus_timeout", 1800))
+    extra_args = cfg.get("janus_cli_args") if isinstance(cfg.get("janus_cli_args"), list) else None
+    context_file = cfg.get("janus_context_file")
+    binary = cfg.get("janus_binary")
+
+    result = run_janus(
+        target_url=target_url,
+        mode=mode,
+        minutes=int(minutes) if minutes else None,
+        ajax=ajax,
+        timeout=timeout,
+        binary=binary,
+        context_file=context_file,
+        extra_args=extra_args,
+    )
+    for err in result.errors:
+        logger.info("janus: %s", err)
+    return result.findings
+
+
 def check_gitleaks(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
     """Optional gitleaks on a git repo path (asm_core_gitleaks)."""
     out: List[Finding] = []
@@ -236,5 +316,7 @@ def registry() -> List[Tuple[str, CheckFn]]:
         ("asm_core_nerva", check_nerva),
         ("asm_core_argus", check_argus),
         ("asm_core_atlas", check_atlas),
+        ("asm_core_hermes", check_hermes),
+        ("asm_core_janus", check_janus),
         ("asm_core_gitleaks", check_gitleaks),
     ]

@@ -87,6 +87,29 @@ RUN mkdir -p /praetorian-bin && \
     go install github.com/praetorian-inc/titus/cmd/titus@latest
 
 # =============================================================================
+# Aegis Vanguard - Hermes + Janus fetch stage
+# Hermes (trufflehog v3): prebuilt binary from trufflesecurity/trufflehog
+# Janus  (OWASP ZAP):      stable Linux release + packaged python scripts
+# =============================================================================
+FROM debian:bookworm-slim AS aegis-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates tar \
+    && rm -rf /var/lib/apt/lists/*
+
+# Hermes: TruffleHog v3 (~80MB). Install script handles arch detection.
+RUN mkdir -p /aegis-bin && \
+    curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+        | sh -s -- -b /aegis-bin
+
+# Janus: OWASP ZAP 2.16.x stable release (ships zap-baseline.py / zap-full-scan.py)
+ARG ZAP_VERSION=2.16.1
+RUN mkdir -p /aegis-zap && \
+    curl -sSfL "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Linux.tar.gz" \
+        -o /tmp/zap.tgz && \
+    tar -xzf /tmp/zap.tgz -C /aegis-zap --strip-components=1 && \
+    rm /tmp/zap.tgz
+
+# =============================================================================
 # Final Image
 # =============================================================================
 FROM python:3.11-slim-bookworm
@@ -124,6 +147,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
+    # OpenJDK for Janus (OWASP ZAP runs on Java)
+    default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
@@ -182,10 +207,22 @@ COPY --from=builder /tools/kr /usr/local/bin/kiterunner
 COPY --from=praetorian-builder /praetorian-bin/pius /usr/local/bin/pius
 COPY --from=praetorian-builder /praetorian-bin/titus /usr/local/bin/titus
 
+# Hermes (TruffleHog v3) - remote secrets-finder
+COPY --from=aegis-builder /aegis-bin/trufflehog /usr/local/bin/trufflehog
+
+# Janus (OWASP ZAP) - two-faced DAST. ZAP lives at /opt/zap; we symlink the
+# packaged python scripts onto PATH so zap-baseline.py / zap-full-scan.py work.
+COPY --from=aegis-builder /aegis-zap /opt/zap
+RUN ln -sf /opt/zap/zap-baseline.py /usr/local/bin/zap-baseline.py && \
+    ln -sf /opt/zap/zap-full-scan.py /usr/local/bin/zap-full-scan.py && \
+    ln -sf /opt/zap/zap-api-scan.py  /usr/local/bin/zap-api-scan.py && \
+    ln -sf /opt/zap/zap.sh           /usr/local/bin/zap.sh
+
 # Ensure binaries are executable and not overwritten
 RUN chmod +x /usr/local/bin/nuclei /usr/local/bin/subfinder /usr/local/bin/httpx \
     /usr/local/bin/naabu /usr/local/bin/dnsx /usr/local/bin/katana /usr/local/bin/waybackurls \
-    /usr/local/bin/gau /usr/local/bin/kiterunner /usr/local/bin/pius /usr/local/bin/titus
+    /usr/local/bin/gau /usr/local/bin/kiterunner /usr/local/bin/pius /usr/local/bin/titus \
+    /usr/local/bin/trufflehog
 
 # Copy application code
 COPY . .

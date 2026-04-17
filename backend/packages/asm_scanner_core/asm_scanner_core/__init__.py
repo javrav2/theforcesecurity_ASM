@@ -6,6 +6,8 @@ from asm_scanner_core.checks.context import SecurityCheckContext
 from asm_scanner_core.checks.runner import run_security_checks
 from asm_scanner_core.scanners.argus import run_argus, ArgusResult
 from asm_scanner_core.scanners.atlas import run_atlas, AtlasResult
+from asm_scanner_core.scanners.hermes import run_hermes, HermesResult
+from asm_scanner_core.scanners.janus import run_janus, JanusResult
 
 __all__ = [
     "Finding",
@@ -16,4 +18,8 @@ __all__ = [
     "ArgusResult",
     "run_atlas",
     "AtlasResult",
+    "run_hermes",
+    "HermesResult",
+    "run_janus",
+    "JanusResult",
 ]

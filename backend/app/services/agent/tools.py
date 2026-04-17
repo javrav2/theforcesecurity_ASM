@@ -98,6 +98,8 @@ class ASMToolsManager:
             "execute_tldfinder": self.execute_mcp_tool,
             "execute_atlas": self.execute_mcp_tool,
             "execute_argus": self.execute_mcp_tool,
+            "execute_hermes": self.execute_mcp_tool,
+            "execute_janus": self.execute_mcp_tool,
             "execute_waybackurls": self.execute_mcp_tool,
             "execute_nmap": self.execute_mcp_tool,
             "execute_masscan": self.execute_mcp_tool,
@@ -132,6 +134,8 @@ class ASMToolsManager:
             "tldfinder_help": self.execute_mcp_tool,
             "atlas_help": self.execute_mcp_tool,
             "argus_help": self.execute_mcp_tool,
+            "hermes_help": self.execute_mcp_tool,
+            "janus_help": self.execute_mcp_tool,
             "waybackurls_help": self.execute_mcp_tool,
             "nmap_help": self.execute_mcp_tool,
             "masscan_help": self.execute_mcp_tool,
@@ -992,7 +996,7 @@ class ASMToolsManager:
                        paramspider, http_probe, technology, screenshot,
                        login_portal, subdomain_enum, dns_resolution, discovery,
                        full, geo_enrich, tldfinder, whatweb, atlas_discovery,
-                       argus_secrets
+                       argus_secrets, hermes_secrets, janus_dast
             targets: List of hostnames, domains, or IPs to scan. If omitted,
                      scans all org domains/assets automatically.
             name: Optional scan name (auto-generated if omitted).
@@ -1027,6 +1031,8 @@ class ASMToolsManager:
             "tldfinder": ST.TLDFINDER,
             "atlas_discovery": ST.ATLAS_DISCOVERY,
             "argus_secrets": ST.ARGUS_SECRETS,
+            "hermes_secrets": ST.HERMES_SECRETS,
+            "janus_dast": ST.JANUS_DAST,
         }
         st = type_map.get(scan_type.lower().strip())
         if not st:

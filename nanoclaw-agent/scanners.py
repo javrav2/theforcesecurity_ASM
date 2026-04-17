@@ -625,6 +625,106 @@ def run_atlas(
     }
 
 
+def run_hermes(
+    source: str,
+    target: str,
+    bridge: ASMBridge,
+    only_verified: bool = False,
+    timeout: int = 900,
+    env: Optional[Dict[str, str]] = None,
+) -> List[dict]:
+    """
+    Hermes — Aegis Vanguard's remote secrets-finder (wraps TruffleHog v3).
+
+    Unlike Argus (local filesystem), Hermes hunts secrets in remote sources:
+    GitHub/GitLab orgs, S3/GCS/Azure buckets, Docker images, Postman
+    workspaces, Jenkins, Jira, Confluence, etc. Each finding is streamed to
+    the platform bridge tagged as `hermes`.
+    """
+    try:
+        from asm_scanner_core.scanners.hermes import run_hermes as core_run_hermes
+    except ImportError:
+        logger.error("asm_scanner_core not installed; cannot run Hermes"); return []
+    if not _tool_available("trufflehog"):
+        logger.error("trufflehog binary missing; cannot run Hermes"); return []
+
+    result = core_run_hermes(
+        source=source,
+        target=target,
+        only_verified=only_verified,
+        timeout=timeout,
+        env=env,
+    )
+    for f in result.findings:
+        bridge.submit_vulnerability(
+            host=f.target or target,
+            title=f.title or "Secret finding",
+            severity=f.severity or "medium",
+            source="hermes",
+            description=f.description or "",
+        )
+    bridge.flush()
+    logger.info(f"Hermes: {len(result.findings)} findings from {source}:{target}")
+    return [f.to_dict() for f in result.findings]
+
+
+def run_janus(
+    target_url: str,
+    bridge: ASMBridge,
+    mode: str = "baseline",
+    minutes: Optional[int] = None,
+    ajax: bool = False,
+    timeout: int = 1800,
+) -> Dict[str, Any]:
+    """
+    Janus — Aegis Vanguard's two-faced DAST gatekeeper (wraps OWASP ZAP).
+
+    Baseline = passive spider + passive rules only (safe, continuous-monitoring
+    friendly). Full = baseline + active attack scan (in-scope only — sends
+    real payloads). Streams each ZAP alert to the bridge tagged `janus`.
+    """
+    try:
+        from asm_scanner_core.scanners.janus import run_janus as core_run_janus
+    except ImportError:
+        logger.error("asm_scanner_core not installed; cannot run Janus"); return {}
+
+    zap_available = (
+        _tool_available("zap-baseline.py")
+        or _tool_available("zap-full-scan.py")
+        or _tool_available("zap.sh")
+        or _tool_available("docker")
+    )
+    if not zap_available:
+        logger.error("OWASP ZAP not available; cannot run Janus"); return {}
+
+    result = core_run_janus(
+        target_url=target_url,
+        mode=mode,
+        minutes=minutes,
+        ajax=ajax,
+        timeout=timeout,
+    )
+    for f in result.findings:
+        bridge.submit_vulnerability(
+            host=f.host or f.target or target_url,
+            title=f.title or "ZAP alert",
+            severity=f.severity or "info",
+            source="janus",
+            description=f.description or "",
+        )
+    bridge.flush()
+    logger.info(
+        f"Janus ({mode}): {len(result.findings)} findings on {target_url}"
+    )
+    return {
+        "target_url": target_url,
+        "mode": mode,
+        "findings": len(result.findings),
+        "report_path": result.report_path,
+        "errors": result.errors,
+    }
+
+
 def run_gitleaks(repo_path: str, bridge: ASMBridge, timeout: int = 300) -> List[dict]:
     """Secret scanning via gitleaks."""
     if not _tool_available("gitleaks"):

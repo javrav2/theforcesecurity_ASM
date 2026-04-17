@@ -279,6 +279,93 @@ def argus_scan_secrets(path: str, validate: bool = False, timeout: int = 900) ->
     return json.dumps({"findings": findings, "count": len(findings)}, default=str)
 
 
+@security_tool(category="vuln_analysis", risk="safe")
+def hermes_scan_remote_secrets(
+    source: str,
+    target: str,
+    only_verified: bool = False,
+    timeout: int = 900,
+) -> str:
+    """Hermes — remote secrets-finder (wraps TruffleHog v3, 800+ detectors).
+
+    Hunts leaked credentials in sources that live OUTSIDE the local filesystem —
+    GitHub/GitLab orgs, S3/GCS/Azure buckets, Docker images, Postman workspaces,
+    Jenkins, Jira, Confluence, etc. Complement to Argus (local paths).
+
+    Args:
+        source: One of: git, github, gitlab, s3, gcs, azure, docker, postman,
+                jenkins, jira, confluence, filesystem
+        target: Primary target for the source — repo URL for git, org name for
+                github/gitlab, bucket for s3, image ref for docker, directory
+                for filesystem, etc.
+        only_verified: Emit only live-validated credentials (reduces noise)
+        timeout: Max seconds to run
+    """
+    import scanners
+    findings = scanners.run_hermes(
+        source=source,
+        target=target,
+        bridge=_get_bridge(),
+        only_verified=only_verified,
+        timeout=timeout,
+    )
+    return json.dumps({"findings": findings, "count": len(findings)}, default=str)
+
+
+@security_tool(category="vuln_analysis", risk="low")
+def janus_dast_baseline(target_url: str, minutes: int = 5, ajax: bool = False, timeout: int = 1800) -> str:
+    """Janus (baseline) — passive DAST gatekeeper (wraps OWASP ZAP).
+
+    Runs ZAP's baseline scan: spider + passive rules only. Safe for
+    continuous monitoring / CI. Finds missing security headers, cookie flags,
+    information disclosure, SSL/TLS issues that the app's *responses* already
+    reveal — without sending attack payloads.
+
+    Args:
+        target_url: Fully qualified URL (https://example.com)
+        minutes: Max spider duration (caps ZAP internal timer)
+        ajax: Enable ajax-spider (required for heavy SPAs)
+        timeout: Outer subprocess timeout (seconds)
+    """
+    import scanners
+    summary = scanners.run_janus(
+        target_url=target_url,
+        bridge=_get_bridge(),
+        mode="baseline",
+        minutes=minutes,
+        ajax=ajax,
+        timeout=timeout,
+    )
+    return json.dumps(summary, default=str)
+
+
+@security_tool(category="exploit", risk="high")
+def janus_dast_full(target_url: str, minutes: int = 10, ajax: bool = False, timeout: int = 3600) -> str:
+    """Janus (full) — active DAST with real attack payloads (wraps OWASP ZAP).
+
+    Runs ZAP's full-scan: baseline + active scan. Sends attack payloads to
+    discover reflective XSS, SQLi, command injection, insecure deserialisation,
+    CSRF, CORS misconfigs, and business-logic flaws nuclei can't find (spider-
+    aware, session-aware). **In-scope only** — requires written authorization.
+
+    Args:
+        target_url: Fully qualified URL (https://example.com)
+        minutes: Max spider/scan duration (caps ZAP internal timer)
+        ajax: Enable ajax-spider (required for heavy SPAs)
+        timeout: Outer subprocess timeout (seconds, should exceed minutes*60)
+    """
+    import scanners
+    summary = scanners.run_janus(
+        target_url=target_url,
+        bridge=_get_bridge(),
+        mode="full",
+        minutes=minutes,
+        ajax=ajax,
+        timeout=timeout,
+    )
+    return json.dumps(summary, default=str)
+
+
 @security_tool(category="vuln_analysis", risk="low")
 def scan_nuclei(target: str, templates: str = "", severity: str = "low,medium,high,critical", timeout: int = 900) -> str:
     """Run nuclei vulnerability scanner with template-based detection.

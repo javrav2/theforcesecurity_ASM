@@ -40,6 +40,29 @@ RUN go install -v github.com/owasp-amass/amass/v4/...@master \
 RUN go install -v github.com/praetorian-inc/pius/cmd/pius@latest \
     && go install -v github.com/praetorian-inc/titus/cmd/titus@latest
 
+# ── Aegis Vanguard: Hermes (TruffleHog v3) ──────────────────────────
+# Hermes: remote secrets-finder — GitHub/GitLab orgs, S3/GCS/Azure,
+#         Docker images, Postman, Jenkins, Jira/Confluence, + live
+#         credential verification. Complement to Argus (local paths).
+RUN curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+        | sh -s -- -b /usr/local/bin
+
+# ── Aegis Vanguard: Janus (OWASP ZAP) ───────────────────────────────
+# Janus: two-faced DAST gatekeeper — baseline (passive, CI-safe) and
+#        full (active attack scan). Wraps OWASP ZAP 2.16.x; needs JRE.
+ARG ZAP_VERSION=2.16.1
+RUN apt-get update && apt-get install -y --no-install-recommends default-jre-headless \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Linux.tar.gz" \
+        -o /tmp/zap.tgz \
+    && mkdir -p /opt/zap \
+    && tar -xzf /tmp/zap.tgz -C /opt/zap --strip-components=1 \
+    && rm /tmp/zap.tgz \
+    && ln -sf /opt/zap/zap-baseline.py /usr/local/bin/zap-baseline.py \
+    && ln -sf /opt/zap/zap-full-scan.py /usr/local/bin/zap-full-scan.py \
+    && ln -sf /opt/zap/zap-api-scan.py  /usr/local/bin/zap-api-scan.py \
+    && ln -sf /opt/zap/zap.sh           /usr/local/bin/zap.sh
+
 # ── gitleaks ─────────────────────────────────────────────────────────
 ARG GITLEAKS_VERSION=8.18.4
 RUN ARCH=$(dpkg --print-architecture) && \

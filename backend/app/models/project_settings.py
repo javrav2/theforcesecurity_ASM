@@ -197,6 +197,8 @@ def default_security_checks_config():
         "asm_core_nerva": False,
         "asm_core_argus": False,
         "asm_core_atlas": False,
+        "asm_core_hermes": False,
+        "asm_core_janus": False,
         "asm_core_gitleaks": False,
         # Argus (Aegis Vanguard all-seeing secrets scanner, wraps Praetorian titus)
         "argus_scan_path": None,
@@ -215,6 +217,21 @@ def default_security_checks_config():
         "nerva_extra_args": None,
         "nerva_timeout": 300,
         "nerva_max_targets": 50,
+        # Hermes (Aegis Vanguard remote secrets-finder, wraps TruffleHog v3)
+        "hermes_source": None,          # git | github | gitlab | s3 | gcs | azure | docker | postman | filesystem | ...
+        "hermes_target": None,          # repo URL / org / bucket / image / path
+        "hermes_only_verified": False,  # emit only live-validated credentials
+        "hermes_cli_args": None,
+        "hermes_env": None,             # auth env dict: {GITHUB_TOKEN, AWS_ACCESS_KEY_ID, ...}
+        "hermes_timeout": 900,
+        # Janus (Aegis Vanguard two-faced DAST gatekeeper, wraps OWASP ZAP)
+        "janus_target_url": None,
+        "janus_mode": "baseline",       # 'baseline' (passive, safe) or 'full' (active)
+        "janus_minutes": None,          # cap ZAP internal timers
+        "janus_ajax": False,            # enable ajax-spider for SPAs
+        "janus_context_file": None,     # optional .context file for auth/scope
+        "janus_cli_args": None,
+        "janus_timeout": 1800,
         "gitleaks_repo_path": None,
         "gitleaks_timeout": 600,
     }

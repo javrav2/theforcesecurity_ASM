@@ -36,6 +36,8 @@ class ScanType(str, enum.Enum):
     PENTEST = "pentest"                  # Autonomous AI penetration test with PoC validation
     ATLAS_DISCOVERY = "atlas_discovery"  # Atlas (Praetorian pius) - org-wide domain + CIDR mapping
     ARGUS_SECRETS = "argus_secrets"      # Argus (Praetorian titus) - secrets scan of filesystem/repo path
+    HERMES_SECRETS = "hermes_secrets"    # Hermes (TruffleHog v3) - remote secrets (GitHub/S3/Docker/...)
+    JANUS_DAST = "janus_dast"            # Janus (OWASP ZAP) - DAST: baseline (passive) or full (active)
 
 
 class ScanStatus(str, enum.Enum):
