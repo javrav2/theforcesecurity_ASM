@@ -157,7 +157,7 @@ def run_pius(
             else:
                 conf_str = "low"
 
-        tags = ["pius", f"plugin:{source_plugin}"]
+        tags = ["atlas", "pius", f"plugin:{source_plugin}"]
         if needs_review:
             tags.append("needs-review")
 
@@ -166,7 +166,7 @@ def run_pius(
             result.findings.append(
                 Finding(
                     type="ip_range",
-                    source=f"pius:{source_plugin}",
+                    source=f"atlas:{source_plugin}",
                     target=value,
                     title=f"CIDR: {value}",
                     severity="info",
@@ -179,7 +179,7 @@ def run_pius(
             result.findings.append(
                 Finding(
                     type="ip_address",
-                    source=f"pius:{source_plugin}",
+                    source=f"atlas:{source_plugin}",
                     target=value,
                     ip=value,
                     title=f"IP: {value}",
@@ -195,7 +195,7 @@ def run_pius(
             result.findings.append(
                 Finding(
                     type="subdomain" if is_sub else "domain",
-                    source=f"pius:{source_plugin}",
+                    source=f"atlas:{source_plugin}",
                     target=value,
                     host=value,
                     title=f"{'Subdomain' if is_sub else 'Domain'}: {value}",

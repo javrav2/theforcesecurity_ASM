@@ -223,14 +223,14 @@ def discover_parameters(target_url: str, timeout: int = 300) -> str:
 # --- Vulnerability Analysis Tools ---
 
 @security_tool(category="recon", risk="safe")
-def discover_org_assets(
+def atlas_map_attack_surface(
     org: str,
     domain: str = "",
     asn: str = "",
     mode: str = "passive",
     timeout: int = 900,
 ) -> str:
-    """Organizational attack-surface discovery using Praetorian pius.
+    """Atlas — map an organization's external attack surface (wraps Praetorian pius).
 
     Given a company name, discovers owned domains, subdomains, and IP netblocks
     (CIDRs) across all 5 RIRs using 24+ OSINT plugins (CT logs, passive DNS,
@@ -244,7 +244,7 @@ def discover_org_assets(
         timeout: Max seconds to run
     """
     import scanners
-    summary = scanners.run_pius(
+    summary = scanners.run_atlas(
         org=org,
         bridge=_get_bridge(),
         domain=domain or None,
@@ -256,12 +256,13 @@ def discover_org_assets(
 
 
 @security_tool(category="vuln_analysis", risk="safe")
-def scan_secrets_titus(path: str, validate: bool = False, timeout: int = 900) -> str:
-    """Scan a filesystem path (directory / file / local git repo) for leaked secrets with Praetorian titus.
+def argus_scan_secrets(path: str, validate: bool = False, timeout: int = 900) -> str:
+    """Argus — all-seeing secrets scanner (wraps Praetorian titus, 487 rules).
 
-    Uses 487 detection rules covering AWS, GCP, Azure, GitHub, Slack, databases,
-    CI/CD, etc. When validate=True, detected secrets are checked against their
-    source APIs and marked active/inactive (slower, makes outbound requests).
+    Scans a filesystem path (directory / file / local git repo) for leaked
+    credentials across AWS, GCP, Azure, GitHub, Slack, databases, CI/CD, etc.
+    When validate=True, detected secrets are checked against their source
+    APIs and marked active / inactive (slower, makes outbound requests).
 
     Args:
         path: Absolute filesystem path (directory, file, or git clone) to scan
@@ -269,7 +270,7 @@ def scan_secrets_titus(path: str, validate: bool = False, timeout: int = 900) ->
         timeout: Max seconds to run
     """
     import scanners
-    findings = scanners.run_titus(
+    findings = scanners.run_argus(
         path=path,
         bridge=_get_bridge(),
         validate=validate,

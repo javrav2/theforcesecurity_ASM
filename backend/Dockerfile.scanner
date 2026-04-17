@@ -74,8 +74,10 @@ RUN ARCH=$(dpkg --print-architecture) && \
 RUN chmod +x /tools/*
 
 # =============================================================================
-# Praetorian tool builder (needs Go 1.25+; Debian bookworm ships Go 1.19)
-# Builds titus (secrets scanner) and pius (attack surface discovery).
+# Aegis Vanguard operator builder - Atlas + Argus
+# (Needs Go 1.25+; Debian bookworm ships Go 1.19.)
+# Atlas (pius binary)  - attack-surface cartographer
+# Argus (titus binary) - all-seeing secrets scanner
 # =============================================================================
 FROM golang:1.25-bookworm AS praetorian-builder
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -176,7 +178,7 @@ COPY --from=builder /tools/waybackurls /usr/local/bin/
 COPY --from=builder /tools/gau /usr/local/bin/
 COPY --from=builder /tools/kr /usr/local/bin/kiterunner
 
-# Praetorian tools (pius, titus) built with Go 1.25
+# Aegis Vanguard operators (Atlas = pius, Argus = titus) built with Go 1.25
 COPY --from=praetorian-builder /praetorian-bin/pius /usr/local/bin/pius
 COPY --from=praetorian-builder /praetorian-bin/titus /usr/local/bin/titus
 

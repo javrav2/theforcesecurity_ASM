@@ -32,9 +32,11 @@ RUN go install -v github.com/owasp-amass/amass/v4/...@master \
     && go install -v github.com/ffuf/ffuf/v2@latest \
     && go install -v github.com/s0md3v/smap/cmd/smap@latest
 
-# ── Praetorian tools (Aegis Vanguard add-ons) ───────────────────────
-# pius: organizational asset discovery (24+ OSINT plugins, 5 RIRs)
-# titus: secrets scanner (487 rules, optional live validation)
+# ── Aegis Vanguard: Atlas + Argus (Praetorian-backed) ───────────────
+# Atlas (pius binary):  organizational asset cartographer — 24+ OSINT
+#                       plugins, all 5 RIRs, domains + CIDRs from an org name
+# Argus (titus binary): all-seeing secrets scanner — 487 detection rules,
+#                       optional live credential validation
 RUN go install -v github.com/praetorian-inc/pius/cmd/pius@latest \
     && go install -v github.com/praetorian-inc/titus/cmd/titus@latest
 

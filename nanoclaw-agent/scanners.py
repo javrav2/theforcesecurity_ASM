@@ -544,39 +544,40 @@ def run_arjun(target_url: str, bridge: ASMBridge, timeout: int = 300) -> List[st
 # Secret & Code Scanning
 # =========================================================================
 
-def run_titus(
+def run_argus(
     path: str,
     bridge: ASMBridge,
     validate: bool = False,
     timeout: int = 900,
 ) -> List[dict]:
     """
-    Praetorian titus secrets scanner (487 rules, optional live validation).
+    Argus — Aegis Vanguard's all-seeing secrets scanner.
 
-    Wraps asm_scanner_core.scanners.titus.run_titus and streams findings into
-    the platform bridge.
+    Wraps Praetorian's `titus` CLI (487 detection rules, optional live
+    credential validation) via asm_scanner_core.run_argus, and streams
+    findings to the platform bridge tagged as `argus`.
     """
     try:
-        from asm_scanner_core.scanners.titus import run_titus as core_run_titus
+        from asm_scanner_core.scanners.argus import run_argus as core_run_argus
     except ImportError:
-        logger.error("asm_scanner_core not installed; cannot run titus"); return []
+        logger.error("asm_scanner_core not installed; cannot run Argus"); return []
     if not _tool_available("titus"):
-        logger.error("titus not installed (binary missing)"); return []
-    result = core_run_titus(path, validate=validate, timeout=timeout)
+        logger.error("titus binary missing; cannot run Argus"); return []
+    result = core_run_argus(path, validate=validate, timeout=timeout)
     for f in result.findings:
         bridge.submit_vulnerability(
             host=f.target or path,
             title=f.title or "Secret finding",
             severity=f.severity or "medium",
-            source="titus",
+            source="argus",
             description=f.description or "",
         )
     bridge.flush()
-    logger.info(f"titus: {len(result.findings)} findings in {path}")
+    logger.info(f"Argus: {len(result.findings)} findings in {path}")
     return [f.to_dict() for f in result.findings]
 
 
-def run_pius(
+def run_atlas(
     org: str,
     bridge: ASMBridge,
     domain: Optional[str] = None,
@@ -585,34 +586,35 @@ def run_pius(
     timeout: int = 900,
 ) -> Dict[str, Any]:
     """
-    Praetorian pius org-wide attack surface discovery (domains + CIDRs).
+    Atlas — Aegis Vanguard's attack-surface cartographer.
 
-    Submits each discovered domain / subdomain / IP / CIDR to the platform via
-    the bridge. Returns a summary dict with counts.
+    Wraps Praetorian's `pius` CLI (24+ OSINT plugins across all 5 RIRs) via
+    asm_scanner_core.run_atlas, and submits each discovered domain /
+    subdomain / IP / CIDR to the platform through the bridge.
     """
     try:
-        from asm_scanner_core.scanners.pius import run_pius as core_run_pius
+        from asm_scanner_core.scanners.atlas import run_atlas as core_run_atlas
     except ImportError:
-        logger.error("asm_scanner_core not installed; cannot run pius"); return {}
+        logger.error("asm_scanner_core not installed; cannot run Atlas"); return {}
     if not _tool_available("pius"):
-        logger.error("pius not installed (binary missing)"); return {}
-    result = core_run_pius(org=org, domain=domain, asn=asn, mode=mode, timeout=timeout)
+        logger.error("pius binary missing; cannot run Atlas"); return {}
+    result = core_run_atlas(org=org, domain=domain, asn=asn, mode=mode, timeout=timeout)
 
     for d in result.domains:
-        bridge.submit_domain(d, source="pius")
+        bridge.submit_domain(d, source="atlas")
     for s in result.subdomains:
-        bridge.submit_subdomain(s, source="pius")
+        bridge.submit_subdomain(s, source="atlas")
     for c in result.cidrs:
         bridge.submit_finding(Finding(
             type="ip_range",
-            source="pius",
+            source="atlas",
             target=c,
             title=f"CIDR: {c}",
             severity="info",
         ))
     bridge.flush()
     logger.info(
-        f"pius: {len(result.domains)} domains, {len(result.subdomains)} subdomains, {len(result.cidrs)} CIDRs for {org}"
+        f"Atlas: {len(result.domains)} domains, {len(result.subdomains)} subdomains, {len(result.cidrs)} CIDRs for {org}"
     )
     return {
         "org": org,

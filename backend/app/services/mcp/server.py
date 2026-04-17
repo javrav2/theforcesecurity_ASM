@@ -268,54 +268,54 @@ class MCPServer:
             handler=self._katana_help,
         ))
         
-        # Pius (Praetorian) - org-wide attack surface discovery (domains + CIDRs)
+        # Atlas (Aegis Vanguard) - org-wide attack surface mapping (wraps Praetorian pius)
         self.registry.register(MCPTool(
-            name="execute_pius",
-            description="Run Praetorian pius for org-wide asset discovery. Example: 'run --org \"Acme Corp\" --domain acme.com --output ndjson --mode passive'. Discovers domains (CT, passive DNS, WHOIS, GLEIF) and CIDRs across all 5 RIRs.",
+            name="execute_atlas",
+            description="Atlas — Aegis Vanguard's attack-surface cartographer (wraps Praetorian pius). Example: 'run --org \"Acme Corp\" --domain acme.com --output ndjson --mode passive'. Discovers domains (CT logs, passive DNS, WHOIS, GLEIF) and IP netblocks across all 5 RIRs.",
             tool_type=ToolType.SCAN,
             parameters={
                 "args": {
                     "type": "string",
-                    "description": "pius CLI arguments (e.g., 'run --org \"Acme Corp\" --domain acme.com --output ndjson --mode passive')"
+                    "description": "Atlas/pius CLI arguments (e.g., 'run --org \"Acme Corp\" --domain acme.com --output ndjson --mode passive')"
                 }
             },
             required_params=["args"],
             phase="informational",
-            handler=self._execute_pius,
+            handler=self._execute_atlas,
         ))
         self.registry.register(MCPTool(
-            name="pius_help",
-            description="Get pius command usage and plugin list.",
+            name="atlas_help",
+            description="Get Atlas (pius) command usage and plugin list.",
             tool_type=ToolType.QUERY,
             parameters={},
             required_params=[],
             phase="informational",
-            handler=self._pius_help,
+            handler=self._atlas_help,
         ))
 
-        # Titus (Praetorian) - secrets scanner with 487 detectors + live validation
+        # Argus (Aegis Vanguard) - all-seeing secrets scanner (wraps Praetorian titus)
         self.registry.register(MCPTool(
-            name="execute_titus",
-            description="Run Praetorian titus secrets scanner on a filesystem path or public repo. Example: 'scan /path/to/repo --format json --validate' or 'scan github.com/org/repo --format json'. 487 detection rules, optional live credential validation.",
+            name="execute_argus",
+            description="Argus — Aegis Vanguard's all-seeing secrets scanner (wraps Praetorian titus, 487 detection rules, optional live credential validation). Example: 'scan /path/to/repo --format json --validate' or 'scan github.com/org/repo --format json'.",
             tool_type=ToolType.SCAN,
             parameters={
                 "args": {
                     "type": "string",
-                    "description": "titus CLI arguments (e.g., 'scan /workspace/target --format json --validate')"
+                    "description": "Argus/titus CLI arguments (e.g., 'scan /workspace/target --format json --validate')"
                 }
             },
             required_params=["args"],
             phase="informational",
-            handler=self._execute_titus,
+            handler=self._execute_argus,
         ))
         self.registry.register(MCPTool(
-            name="titus_help",
-            description="Get titus command usage and options.",
+            name="argus_help",
+            description="Get Argus (titus) command usage and options.",
             tool_type=ToolType.QUERY,
             parameters={},
             required_params=[],
             phase="informational",
-            handler=self._titus_help,
+            handler=self._argus_help,
         ))
 
         # TLDFinder (ProjectDiscovery) - TLD/domain discovery
@@ -1171,18 +1171,18 @@ class MCPServer:
     async def _tldfinder_help(self) -> Dict[str, Any]:
         return await self._run_command(["tldfinder", "-h"], timeout=MCP_HELP_TIMEOUT)
 
-    async def _execute_pius(self, args: str) -> Dict[str, Any]:
+    async def _execute_atlas(self, args: str) -> Dict[str, Any]:
         cmd = ["pius"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=900)
 
-    async def _pius_help(self) -> Dict[str, Any]:
+    async def _atlas_help(self) -> Dict[str, Any]:
         return await self._run_command(["pius", "--help"], timeout=MCP_HELP_TIMEOUT)
 
-    async def _execute_titus(self, args: str) -> Dict[str, Any]:
+    async def _execute_argus(self, args: str) -> Dict[str, Any]:
         cmd = ["titus"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=900)
 
-    async def _titus_help(self) -> Dict[str, Any]:
+    async def _argus_help(self) -> Dict[str, Any]:
         return await self._run_command(["titus", "--help"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_waybackurls(self, args: str) -> Dict[str, Any]:

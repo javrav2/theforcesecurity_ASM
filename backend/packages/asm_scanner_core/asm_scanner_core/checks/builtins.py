@@ -1,4 +1,4 @@
-"""Optional CLI-backed checks (nerva, titus, gitleaks). Extend with new tools here."""
+"""Optional CLI-backed checks (nerva, Argus, Atlas, gitleaks). Extend with new tools here."""
 
 from __future__ import annotations
 
@@ -109,31 +109,31 @@ def check_nerva(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
     return out
 
 
-def check_titus(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
+def check_argus(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
     """
-    Secrets scanning via Praetorian titus on a filesystem path (optional).
+    Argus (Aegis Vanguard) — secrets scanning via Praetorian `titus`.
 
-    Requires `titus_scan_path` (cfg, ctx.extra, or TITUS_SCAN_PATH env) and the
-    `titus` binary on PATH (or TITUS_PATH). Uses the real scanner wrapper for
-    structured parsing and severity mapping.
+    Requires `argus_scan_path` (cfg, ctx.extra, or ARGUS_SCAN_PATH env) and the
+    `titus` binary on PATH (or TITUS_PATH). Findings are tagged `argus` and
+    flow through the standard Aegis ingest pipeline.
     """
-    from asm_scanner_core.scanners.titus import run_titus
+    from asm_scanner_core.scanners.argus import run_argus
 
     scan_path = (
-        cfg.get("titus_scan_path")
-        or os.environ.get("TITUS_SCAN_PATH")
-        or ctx.extra.get("titus_scan_path")
+        cfg.get("argus_scan_path")
+        or os.environ.get("ARGUS_SCAN_PATH")
+        or ctx.extra.get("argus_scan_path")
     )
     if not scan_path or not os.path.isdir(scan_path):
-        logger.debug("titus_scan_path not set or not a directory; skip titus")
+        logger.debug("argus_scan_path not set or not a directory; skip argus")
         return []
 
-    timeout = int(cfg.get("titus_timeout", 900))
-    validate = bool(cfg.get("titus_validate", False))
-    extra_args = cfg.get("titus_cli_args") if isinstance(cfg.get("titus_cli_args"), list) else None
-    binary = cfg.get("titus_binary")
+    timeout = int(cfg.get("argus_timeout", 900))
+    validate = bool(cfg.get("argus_validate", False))
+    extra_args = cfg.get("argus_cli_args") if isinstance(cfg.get("argus_cli_args"), list) else None
+    binary = cfg.get("argus_binary") or cfg.get("titus_binary")
 
-    result = run_titus(
+    result = run_argus(
         scan_path,
         validate=validate,
         timeout=timeout,
@@ -141,37 +141,38 @@ def check_titus(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
         extra_args=extra_args,
     )
     for err in result.errors:
-        logger.info("titus: %s", err)
+        logger.info("argus: %s", err)
     return result.findings
 
 
-def check_pius(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
+def check_atlas(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
     """
-    Organizational asset discovery via Praetorian pius (optional).
+    Atlas (Aegis Vanguard) — organizational asset discovery via Praetorian `pius`.
 
-    Requires `pius_org` (cfg, ctx.extra, or PIUS_ORG env) and the `pius` binary.
-    Emits domain/subdomain/ip_range Findings the worker can persist as Assets/Netblocks.
+    Requires `atlas_org` (cfg, ctx.extra, or ATLAS_ORG env) and the `pius`
+    binary. Emits domain / subdomain / ip_range Findings the worker can
+    persist as Assets / Netblocks.
     """
-    from asm_scanner_core.scanners.pius import run_pius
+    from asm_scanner_core.scanners.atlas import run_atlas
 
     org = (
-        cfg.get("pius_org")
-        or os.environ.get("PIUS_ORG")
-        or ctx.extra.get("pius_org")
+        cfg.get("atlas_org")
+        or os.environ.get("ATLAS_ORG")
+        or ctx.extra.get("atlas_org")
     )
     if not org:
-        logger.debug("pius_org not set; skip pius")
+        logger.debug("atlas_org not set; skip atlas")
         return []
 
-    domain = cfg.get("pius_domain") or ctx.domain or ctx.extra.get("pius_domain")
-    asn = cfg.get("pius_asn") or ctx.extra.get("pius_asn")
-    mode = cfg.get("pius_mode", "passive")
-    timeout = int(cfg.get("pius_timeout", 900))
-    plugins = cfg.get("pius_plugins") if isinstance(cfg.get("pius_plugins"), list) else None
-    disable = cfg.get("pius_disable") if isinstance(cfg.get("pius_disable"), list) else None
-    concurrency = int(cfg.get("pius_concurrency", 5))
+    domain = cfg.get("atlas_domain") or ctx.domain or ctx.extra.get("atlas_domain")
+    asn = cfg.get("atlas_asn") or ctx.extra.get("atlas_asn")
+    mode = cfg.get("atlas_mode", "passive")
+    timeout = int(cfg.get("atlas_timeout", 900))
+    plugins = cfg.get("atlas_plugins") if isinstance(cfg.get("atlas_plugins"), list) else None
+    disable = cfg.get("atlas_disable") if isinstance(cfg.get("atlas_disable"), list) else None
+    concurrency = int(cfg.get("atlas_concurrency", 5))
 
-    result = run_pius(
+    result = run_atlas(
         org=org,
         domain=domain,
         asn=asn,
@@ -182,7 +183,7 @@ def check_pius(ctx: SecurityCheckContext, cfg: dict) -> List[Finding]:
         timeout=timeout,
     )
     for err in result.errors:
-        logger.info("pius: %s", err)
+        logger.info("atlas: %s", err)
     return result.findings
 
 
@@ -233,7 +234,7 @@ def registry() -> List[Tuple[str, CheckFn]]:
     """Registered checks: (settings_key, function). Key must be True to run."""
     return [
         ("asm_core_nerva", check_nerva),
-        ("asm_core_titus", check_titus),
-        ("asm_core_pius", check_pius),
+        ("asm_core_argus", check_argus),
+        ("asm_core_atlas", check_atlas),
         ("asm_core_gitleaks", check_gitleaks),
     ]

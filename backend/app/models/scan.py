@@ -34,8 +34,8 @@ class ScanType(str, enum.Enum):
     TLDFINDER = "tldfinder"            # TLD/domain discovery via ProjectDiscovery tldfinder
     LLM_RED_TEAM = "llm_red_team"      # AI/LLM red team testing of chatbot endpoints
     PENTEST = "pentest"                  # Autonomous AI penetration test with PoC validation
-    PIUS_DISCOVERY = "pius_discovery"  # Praetorian pius org-wide domain + CIDR discovery
-    TITUS_SECRETS = "titus_secrets"    # Praetorian titus secrets scan of a filesystem/repo path
+    ATLAS_DISCOVERY = "atlas_discovery"  # Atlas (Praetorian pius) - org-wide domain + CIDR mapping
+    ARGUS_SECRETS = "argus_secrets"      # Argus (Praetorian titus) - secrets scan of filesystem/repo path
 
 
 class ScanStatus(str, enum.Enum):

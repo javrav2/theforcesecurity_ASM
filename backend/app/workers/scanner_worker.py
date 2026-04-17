@@ -280,8 +280,8 @@ class ScannerWorker:
                 ScanType.GEO_ENRICH: 'GEO_ENRICH',
                 ScanType.TLDFINDER: 'TLDFINDER',
                 ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
-                ScanType.PIUS_DISCOVERY: 'PIUS_DISCOVERY',
-                ScanType.TITUS_SECRETS: 'TITUS_SECRETS',
+                ScanType.ATLAS_DISCOVERY: 'ATLAS_DISCOVERY',
+                ScanType.ARGUS_SECRETS: 'ARGUS_SECRETS',
             }
             
             messages = []
@@ -655,10 +655,10 @@ class ScannerWorker:
                     await self.handle_recon_pipeline(body)
                 elif job_type == 'LLM_RED_TEAM':
                     await self.handle_llm_red_team(body)
-                elif job_type == 'PIUS_DISCOVERY':
-                    await self.handle_pius_discovery(body)
-                elif job_type == 'TITUS_SECRETS':
-                    await self.handle_titus_secrets(body)
+                elif job_type == 'ATLAS_DISCOVERY':
+                    await self.handle_atlas_discovery(body)
+                elif job_type == 'ARGUS_SECRETS':
+                    await self.handle_argus_secrets(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -2041,7 +2041,8 @@ class ScannerWorker:
         Run optional checks from the asm_scanner_core package (shared with OpenClaw workers).
 
         Controlled by project_settings.security_checks: asm_core_checks + asm_core_nerva /
-        asm_core_titus / asm_core_gitleaks. Findings use the same ingestion path as agents.
+        asm_core_argus / asm_core_atlas / asm_core_gitleaks. Findings use the same ingestion
+        path as agents.
         """
         scan_id = job_data.get("scan_id")
         organization_id = job_data.get("organization_id")
@@ -2069,7 +2070,7 @@ class ScannerWorker:
         if not sec_cfg.get("asm_core_checks", True):
             logger.info("asm_core_checks disabled for org %s", organization_id)
             return
-        if not any(sec_cfg.get(k) for k in ("asm_core_nerva", "asm_core_titus", "asm_core_pius", "asm_core_gitleaks")):
+        if not any(sec_cfg.get(k) for k in ("asm_core_nerva", "asm_core_argus", "asm_core_atlas", "asm_core_gitleaks")):
             logger.debug("No asm_core_* tool toggles enabled; skipping")
             return
 
@@ -3917,9 +3918,9 @@ class ScannerWorker:
             if db:
                 db.close()
     
-    async def handle_pius_discovery(self, job_data: dict):
+    async def handle_atlas_discovery(self, job_data: dict):
         """
-        Run Praetorian pius for org-wide domain + CIDR discovery.
+        Atlas - org-wide attack-surface mapping (wraps Praetorian pius).
 
         Config (from scan.config):
             org (required, falls back to organization.name/domain)
@@ -3948,7 +3949,7 @@ class ScannerWorker:
             if scan:
                 scan.status = ScanStatus.RUNNING
                 scan.started_at = datetime.utcnow()
-                scan.current_step = "Running pius discovery"
+                scan.current_step = "Running Atlas attack-surface discovery"
                 db.commit()
 
             org_row = db.query(Organization).filter(Organization.id == organization_id).first()
@@ -3958,13 +3959,13 @@ class ScannerWorker:
             if not org_name:
                 if scan:
                     scan.status = ScanStatus.FAILED
-                    scan.error_message = "pius requires an organization name (config.org)"
+                    scan.error_message = "Atlas requires an organization name (config.org)"
                     scan.completed_at = datetime.utcnow()
                     db.commit()
                 return
 
             try:
-                from asm_scanner_core.scanners.pius import run_pius
+                from asm_scanner_core.scanners.atlas import run_atlas
             except ImportError:
                 if scan:
                     scan.status = ScanStatus.FAILED
@@ -3981,7 +3982,7 @@ class ScannerWorker:
             timeout = int(config.get('timeout', 900))
 
             result = await asyncio.to_thread(
-                run_pius,
+                run_atlas,
                 org=org_name,
                 domain=domain_hint,
                 asn=asn,
@@ -4020,7 +4021,7 @@ class ScannerWorker:
                     if existing:
                         existing.last_verified = datetime.utcnow()
                         continue
-                    source_plugin = f.source.replace('pius:', '') if f.source else 'pius'
+                    source_plugin = f.source.replace('atlas:', '') if f.source else 'atlas'
                     db.add(Netblock(
                         organization_id=organization_id,
                         inetnum=f"{net.network_address} - {net.broadcast_address}" if net.version == 4 else cidr,
@@ -4032,7 +4033,7 @@ class ScannerWorker:
                         is_owned=True,
                         in_scope=True,
                         ownership_confidence=75 if 'needs-review' not in (f.tags or []) else 40,
-                        discovery_source=f'pius:{source_plugin}',
+                        discovery_source=f'atlas:{source_plugin}',
                         discovered_at=datetime.utcnow(),
                         tags=list(f.tags or []),
                         metadata_={'scan_id': scan_id, 'source_plugin': source_plugin},
@@ -4055,7 +4056,7 @@ class ScannerWorker:
                             Asset.value == root,
                         ).first()
                     asset_type = AssetType.SUBDOMAIN if (root and root != value) else AssetType.DOMAIN
-                    source_plugin = f.source.replace('pius:', '') if f.source else 'pius'
+                    source_plugin = f.source.replace('atlas:', '') if f.source else 'atlas'
                     db.add(Asset(
                         organization_id=organization_id,
                         name=value,
@@ -4063,7 +4064,7 @@ class ScannerWorker:
                         asset_type=asset_type,
                         root_domain=root or value,
                         parent_id=parent.id if parent else None,
-                        discovery_source=f'pius:{source_plugin}',
+                        discovery_source=f'atlas:{source_plugin}',
                     ))
                     domains_created += 1
                 elif f.type == 'ip_address':
@@ -4073,13 +4074,13 @@ class ScannerWorker:
                     ).first()
                     if existing:
                         continue
-                    source_plugin = f.source.replace('pius:', '') if f.source else 'pius'
+                    source_plugin = f.source.replace('atlas:', '') if f.source else 'atlas'
                     db.add(Asset(
                         organization_id=organization_id,
                         name=value,
                         value=value,
                         asset_type=AssetType.IP_ADDRESS,
-                        discovery_source=f'pius:{source_plugin}',
+                        discovery_source=f'atlas:{source_plugin}',
                     ))
                     domains_created += 1
 
@@ -4103,7 +4104,7 @@ class ScannerWorker:
                 db.commit()
 
             logger.info(
-                "pius discovery complete: %s domains/subs, %s CIDRs (%s new assets, %s new netblocks)",
+                "Atlas discovery complete: %s domains/subs, %s CIDRs (%s new assets, %s new netblocks)",
                 len(result.domains) + len(result.subdomains),
                 len(result.cidrs),
                 domains_created,
@@ -4112,7 +4113,7 @@ class ScannerWorker:
             trigger_graph_sync(organization_id)
 
         except Exception as e:
-            logger.error(f"pius discovery failed: {e}", exc_info=True)
+            logger.error(f"Atlas discovery failed: {e}", exc_info=True)
             if db and scan_id:
                 try:
                     db.rollback()
@@ -4129,15 +4130,15 @@ class ScannerWorker:
             if db:
                 db.close()
 
-    async def handle_titus_secrets(self, job_data: dict):
+    async def handle_argus_secrets(self, job_data: dict):
         """
-        Run Praetorian titus for secrets scanning against a provided path.
+        Argus - secrets scanning (wraps Praetorian titus).
 
         Config (from scan.config):
             path (required) - Absolute filesystem path (directory, file, or local git repo)
             validate (bool) - live credential validation (default False)
             timeout (seconds, default 900)
-            extra_args (list) - additional CLI flags passed to `titus scan`
+            extra_args (list) - additional CLI flags passed to the titus CLI
         """
         scan_id = job_data.get('scan_id')
         organization_id = job_data.get('organization_id')
@@ -4153,20 +4154,20 @@ class ScannerWorker:
             if scan:
                 scan.status = ScanStatus.RUNNING
                 scan.started_at = datetime.utcnow()
-                scan.current_step = "Running titus secrets scan"
+                scan.current_step = "Running Argus secrets scan"
                 db.commit()
 
-            path = config.get('path') or config.get('titus_scan_path')
+            path = config.get('path') or config.get('argus_scan_path')
             if not path:
                 if scan:
                     scan.status = ScanStatus.FAILED
-                    scan.error_message = "titus scan requires config.path (filesystem path to scan)"
+                    scan.error_message = "Argus scan requires config.path (filesystem path to scan)"
                     scan.completed_at = datetime.utcnow()
                     db.commit()
                 return
 
             try:
-                from asm_scanner_core.scanners.titus import run_titus
+                from asm_scanner_core.scanners.argus import run_argus
             except ImportError:
                 if scan:
                     scan.status = ScanStatus.FAILED
@@ -4180,7 +4181,7 @@ class ScannerWorker:
             extra = config.get('extra_args') if isinstance(config.get('extra_args'), list) else None
 
             result = await asyncio.to_thread(
-                run_titus,
+                run_argus,
                 path,
                 validate=validate,
                 timeout=timeout,
@@ -4203,7 +4204,7 @@ class ScannerWorker:
                     organization_id,
                     result.findings,
                     scan_id=scan_id,
-                    agent_id="asm-scanner-core:titus",
+                    agent_id="asm-scanner-core:argus",
                 )
                 if summary:
                     findings_ingested = summary.get('processed') or len(result.findings)
@@ -4222,10 +4223,10 @@ class ScannerWorker:
                 }
                 db.commit()
 
-            logger.info("titus scan complete: %s findings ingested (%s total)", findings_ingested, len(result.findings))
+            logger.info("Argus scan complete: %s findings ingested (%s total)", findings_ingested, len(result.findings))
 
         except Exception as e:
-            logger.error(f"titus secrets scan failed: {e}", exc_info=True)
+            logger.error(f"Argus secrets scan failed: {e}", exc_info=True)
             if db and scan_id:
                 try:
                     db.rollback()

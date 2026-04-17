@@ -22,7 +22,7 @@ def run_security_checks(
     `security_checks_config` is the merged JSON from project_settings.security_checks.
     Keys:
       - asm_core_checks: master toggle (default True in platform defaults)
-      - asm_core_nerva / asm_core_titus / asm_core_gitleaks: per-tool toggles
+      - asm_core_nerva / asm_core_argus / asm_core_atlas / asm_core_gitleaks: per-tool toggles
     """
     if not security_checks_config.get("asm_core_checks", True):
         logger.info("asm_core_checks disabled; skipping asm_scanner_core checks")

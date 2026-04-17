@@ -4,16 +4,16 @@ from asm_scanner_core.findings import Finding
 from asm_scanner_core.http_client import ASMIngestClient
 from asm_scanner_core.checks.context import SecurityCheckContext
 from asm_scanner_core.checks.runner import run_security_checks
-from asm_scanner_core.scanners.titus import run_titus, TitusResult
-from asm_scanner_core.scanners.pius import run_pius, PiusResult
+from asm_scanner_core.scanners.argus import run_argus, ArgusResult
+from asm_scanner_core.scanners.atlas import run_atlas, AtlasResult
 
 __all__ = [
     "Finding",
     "ASMIngestClient",
     "SecurityCheckContext",
     "run_security_checks",
-    "run_titus",
-    "TitusResult",
-    "run_pius",
-    "PiusResult",
+    "run_argus",
+    "ArgusResult",
+    "run_atlas",
+    "AtlasResult",
 ]

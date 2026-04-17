@@ -202,7 +202,7 @@ def run_titus(
                     f"Validation: {f['validation_status']}"
                     + (f" — {f['validation_message']}" if f["validation_message"] else "")
                 )
-            tags = ["titus", "secret"]
+            tags = ["argus", "titus", "secret"]
             if f["category"]:
                 tags.append(f["category"])
             if f["validation_status"]:
@@ -211,18 +211,18 @@ def run_titus(
             result.findings.append(
                 Finding(
                     type="vulnerability",
-                    source="titus",
+                    source="argus",
                     target=f["path"] or path,
                     title=f"Secret: {title}",
                     description="\n".join(description_parts) if description_parts else None,
                     severity=severity,
-                    template_id=f["rule_id"] or "titus",
+                    template_id=f["rule_id"] or "argus",
                     url=f"file://{f['path']}" if f["path"] else None,
                     raw_data=obj,
                     tags=tags,
                     is_risky=(f["validation_status"] in ("valid", "active", "confirmed")),
                     risk_reason=(
-                        "Live credential confirmed by titus validation"
+                        "Live credential confirmed by Argus validation"
                         if f["validation_status"] in ("valid", "active", "confirmed")
                         else None
                     ),
