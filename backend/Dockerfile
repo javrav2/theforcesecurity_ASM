@@ -180,8 +180,12 @@ ENV EYEWITNESS_PATH="/opt/EyeWitness/Python/EyeWitness.py"
 ENV EYEWITNESS_VENV="/opt/EyeWitness/eyewitness-venv/bin/python"
 ENV SCREENSHOTS_DIR="/app/data/screenshots"
 
-# Install Python dependencies (install BEFORE copying code for better caching)
+# Install Python dependencies (install BEFORE copying code for better caching).
+# We must also copy the local `packages/` tree here because requirements.txt
+# contains editable installs (`-e packages/asm_scanner_core`, etc.) that pip
+# needs to resolve at install time.
 COPY requirements.txt .
+COPY packages/ ./packages/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 

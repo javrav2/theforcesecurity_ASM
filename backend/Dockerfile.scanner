@@ -177,8 +177,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy Python requirements and install FIRST (before binaries)
-# This is important because pip's httpx package installs a CLI that would overwrite our binary
+# This is important because pip's httpx package installs a CLI that would overwrite our binary.
+# We also need the local `packages/` tree because requirements.txt has editable
+# installs (`-e packages/asm_scanner_core`, etc.) that pip resolves at install time.
 COPY requirements.txt .
+COPY packages/ ./packages/
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install ParamSpider for URL parameter discovery (from GitHub since not on PyPI)
