@@ -26,12 +26,16 @@
 
 FROM python:3.11-slim-bookworm AS builder
 
-# Install build dependencies
+# Install build dependencies.
+# build-essential is required because jsluice pulls in go-tree-sitter which
+# uses CGO; without gcc the Go build excludes the C-linked files and fails
+# with "undefined: Node" in go-tree-sitter/iter.go.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     unzip \
     git \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Download pre-built ProjectDiscovery tools (much faster than compiling)
@@ -75,6 +79,8 @@ RUN ARCH=$(dpkg --print-architecture) && \
     curl -sSfL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tgz && \
     rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+# CGO is required by jsluice -> go-tree-sitter (C parsers).
+ENV CGO_ENABLED=1
 RUN go install github.com/lc/gau/v2/cmd/gau@latest && \
     go install github.com/d3mondev/puredns/v2@latest && \
     go install github.com/haccer/subjack@latest && \
