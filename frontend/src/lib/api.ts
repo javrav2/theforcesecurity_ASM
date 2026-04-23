@@ -97,10 +97,25 @@ class ApiClient {
       (response) => response,
       (error: AxiosError) => {
         if (error.response?.status === 401) {
-          this.token = null;
-          if (typeof window !== 'undefined') {
-            localStorage.removeItem('token');
-            window.location.href = '/login';
+          // Only clear + redirect for genuine session-expiry scenarios.
+          // Skip auth endpoints (login/refresh) so a bad-password 401 doesn't
+          // bounce the user and wipe their half-typed credentials, and skip
+          // when we're already on /login so we don't cause reload loops.
+          const url = error.config?.url || '';
+          const isAuthEndpoint =
+            url.includes('/auth/login') ||
+            url.includes('/auth/refresh') ||
+            url.includes('/auth/register');
+
+          if (!isAuthEndpoint) {
+            this.token = null;
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('token');
+              const onLogin = window.location.pathname.startsWith('/login');
+              if (!onLogin) {
+                window.location.href = '/login';
+              }
+            }
           }
         }
         return Promise.reject(error);
