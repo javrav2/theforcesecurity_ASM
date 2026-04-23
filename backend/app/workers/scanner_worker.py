@@ -284,6 +284,11 @@ class ScannerWorker:
                 ScanType.ARGUS_SECRETS: 'ARGUS_SECRETS',
                 ScanType.HERMES_SECRETS: 'HERMES_SECRETS',
                 ScanType.JANUS_DAST: 'JANUS_DAST',
+                ScanType.THEMIS_CSPM: 'THEMIS_CSPM',
+                ScanType.SUBDOMAIN_TAKEOVER: 'SUBDOMAIN_TAKEOVER',
+                ScanType.GRAPHQL_SCAN: 'GRAPHQL_SCAN',
+                ScanType.JS_RECON: 'JS_RECON',
+                ScanType.TRUFFLEHOG_SCAN: 'TRUFFLEHOG_SCAN',
             }
             
             messages = []
@@ -665,6 +670,16 @@ class ScannerWorker:
                     await self.handle_hermes_secrets(body)
                 elif job_type == 'JANUS_DAST':
                     await self.handle_janus_dast(body)
+                elif job_type == 'THEMIS_CSPM':
+                    await self.handle_themis_cspm(body)
+                elif job_type == 'SUBDOMAIN_TAKEOVER':
+                    await self.handle_subdomain_takeover(body)
+                elif job_type == 'GRAPHQL_SCAN':
+                    await self.handle_graphql_scan(body)
+                elif job_type == 'JS_RECON':
+                    await self.handle_js_recon(body)
+                elif job_type == 'TRUFFLEHOG_SCAN':
+                    await self.handle_trufflehog_scan(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -4508,6 +4523,151 @@ class ScannerWorker:
             if db:
                 db.close()
 
+    async def handle_themis_cspm(self, job_data: dict):
+        """
+        Themis - cloud CSPM via Prowler (AWS/Azure/GCP/Kubernetes).
+
+        Config (from scan.config):
+            provider (required)  - 'aws' | 'azure' | 'gcp' | 'kubernetes' | 'k8s'
+            compliance (str)     - e.g. 'cis_1.5_aws', 'pci_3.2.1', 'soc2_cc'
+            services (list)      - restrict to named services (iam, s3, ...)
+            checks (list)        - restrict to specific Prowler check IDs
+            severity_filter (list)- drop findings below a severity set
+            profile (str)        - AWS named profile
+            region (str)         - AWS / Azure region hint
+            subscription (str)   - Azure subscription id
+            project_id (str)     - GCP project id
+            kubeconfig (str)     - path to kubeconfig for Kubernetes
+            context (str)        - kubeconfig context
+            timeout (seconds, default 1800)
+            extra_args (list)
+            env (dict)           - credential env vars passed to the subprocess
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        config = job_data.get('config') or {}
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection")
+            return
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running Themis cloud CSPM audit"
+                db.commit()
+
+            provider = config.get('provider') or config.get('themis_provider')
+            if not provider:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "Themis requires config.provider (aws|azure|gcp|kubernetes)"
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            try:
+                from asm_scanner_core.scanners.themis import run_themis
+            except ImportError:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "asm_scanner_core not installed in worker image"
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            timeout = int(config.get('timeout', 1800))
+            compliance = config.get('compliance')
+            services = config.get('services') if isinstance(config.get('services'), list) else None
+            checks = config.get('checks') if isinstance(config.get('checks'), list) else None
+            severity_filter = config.get('severity_filter') if isinstance(config.get('severity_filter'), list) else None
+            extra = config.get('extra_args') if isinstance(config.get('extra_args'), list) else None
+            env = config.get('env') if isinstance(config.get('env'), dict) else None
+
+            result = await asyncio.to_thread(
+                run_themis,
+                provider=provider,
+                compliance=compliance,
+                services=services,
+                checks=checks,
+                severity_filter=severity_filter,
+                profile=config.get('profile'),
+                region=config.get('region'),
+                subscription=config.get('subscription'),
+                project_id=config.get('project_id'),
+                kubeconfig=config.get('kubeconfig'),
+                context=config.get('context'),
+                timeout=timeout,
+                extra_args=extra,
+                env=env,
+            )
+
+            if result.errors and not result.findings:
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    scan.error_message = "; ".join(result.errors)[:500]
+                    scan.completed_at = datetime.utcnow()
+                    db.commit()
+                return
+
+            findings_ingested = 0
+            if result.findings:
+                from app.services.asm_core_adapter import ingest_core_findings
+                summary = ingest_core_findings(
+                    db,
+                    organization_id,
+                    result.findings,
+                    scan_id=scan_id,
+                    agent_id="asm-scanner-core:themis",
+                )
+                if summary:
+                    findings_ingested = summary.get('processed') or len(result.findings)
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.vulnerabilities_found = len(result.findings)
+                scan.results = {
+                    'provider': result.provider,
+                    'compliance': compliance,
+                    'findings': len(result.findings),
+                    'findings_ingested': findings_ingested,
+                    'checks_total': result.checks_total,
+                    'passed': result.passed,
+                    'failed': result.failed,
+                    'report_path': result.report_path,
+                    'errors': result.errors,
+                }
+                db.commit()
+
+            logger.info(
+                "Themis %s audit complete: %s findings ingested (%s total, %s failed)",
+                result.provider, findings_ingested, len(result.findings), result.failed,
+            )
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"Themis CSPM scan failed: {e}", exc_info=True)
+            if db and scan_id:
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(e)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if db:
+                db.close()
+
     def _is_valid_domain(self, s: str) -> bool:
         """Basic domain validity."""
         if len(s) < 3 or len(s) > 253:
@@ -4674,6 +4834,413 @@ class ScannerWorker:
 
         except Exception as e:
             logger.error(f"LLM red team scan {scan_id} failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
+    async def handle_subdomain_takeover(self, job_data: dict):
+        """
+        Subdomain takeover scanner.
+
+        Combines a pure-Python CNAME+HTTP fingerprint engine with optional
+        Nuclei takeover templates and Subjack. Findings are persisted as
+        Vulnerability rows (severity HIGH, deterministic template_id for dedup).
+
+        Config (from scan.config):
+            targets (list[str])          - hostnames to test (required if no scan.targets)
+            engines (list[str])          - any of ["cname", "nuclei", "subjack"]; default ["cname","nuclei"]
+            concurrency (int, default 20)
+            timeout (seconds, default 900)
+            dns_only (bool, default False)   - skip HTTP probe, CNAME-only detection
+            nuclei_templates (list[str]) - override template paths for takeover
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets') or []
+        config = job_data.get('config') or {}
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for subdomain takeover scan")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+
+        try:
+            from app.services.takeover_scanner_service import (
+                scan_takeovers,
+                persist_takeover_findings,
+            )
+
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running subdomain takeover detection"
+                scan.progress = 5
+                db.commit()
+
+            hostnames = list(targets) or list(config.get('targets') or [])
+            hostnames = [h.strip() for h in hostnames if h and isinstance(h, str)]
+            if not hostnames:
+                self._mark_scan_failed(scan_id, "No targets provided for subdomain takeover scan")
+                return
+
+            engines = config.get('engines') or ["cname", "nuclei"]
+            if isinstance(engines, str):
+                engines = [engines]
+            engines_set = {e.lower() for e in engines}
+
+            result = await scan_takeovers(
+                hostnames=hostnames,
+                enable_cname="cname" in engines_set,
+                enable_nuclei="nuclei" in engines_set,
+                enable_subjack="subjack" in engines_set,
+                concurrency=int(config.get('concurrency', 20)),
+                http_timeout=float(config.get('timeout', 8)),
+            )
+
+            persist_summary = await asyncio.to_thread(
+                persist_takeover_findings,
+                db, organization_id, scan_id, result,
+            )
+            created = int(persist_summary.get("created", 0))
+
+            by_provider: dict[str, int] = {}
+            by_severity: dict[str, int] = {}
+            for f in result.findings:
+                by_provider[f.provider] = by_provider.get(f.provider, 0) + 1
+                sev = "high" if f.verdict == "confirmed" else ("low" if f.verdict == "manual_review" else "medium")
+                by_severity[sev] = by_severity.get(sev, 0) + 1
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.vulnerabilities_found = created
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "hostnames_tested": len(hostnames),
+                    "findings": len(result.findings),
+                    "engines_used": result.engines_used,
+                    "duration_seconds": result.duration_seconds,
+                    "by_provider": by_provider,
+                    "by_severity": by_severity,
+                    "errors": result.errors,
+                    "persist": persist_summary,
+                }
+            db.commit()
+
+            logger.info(
+                f"Takeover scan {scan_id} completed: {len(hostnames)} hosts, "
+                f"{len(result.findings)} findings, {created} persisted"
+            )
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"Subdomain takeover scan {scan_id} failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
+    async def handle_graphql_scan(self, job_data: dict):
+        """
+        GraphQL security scan.
+
+        Discovers GraphQL endpoints on provided targets, runs introspection
+        probes, and records misconfigurations (introspection exposed,
+        verbose errors, field suggestions, csrf-bypass, etc).
+
+        Config:
+            targets (list[str])          - URLs or hostnames
+            paths (list[str])            - extra paths to probe (defaults to common list)
+            timeout (seconds, default 120)
+            use_graphql_cop (bool)       - also run graphql-cop if installed
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets') or []
+        config = job_data.get('config') or {}
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for GraphQL scan")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+
+        try:
+            from app.services.graphql_scanner_service import (
+                scan_graphql_endpoints,
+                persist_graphql_findings,
+            )
+
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Scanning GraphQL endpoints"
+                scan.progress = 5
+                db.commit()
+
+            urls = list(targets) or list(config.get('targets') or [])
+            urls = [u.strip() for u in urls if u and isinstance(u, str)]
+            if not urls:
+                self._mark_scan_failed(scan_id, "No targets provided for GraphQL scan")
+                return
+
+            async def progress_cb(pct: int, step: str):
+                try:
+                    s = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if s:
+                        s.progress = pct
+                        s.current_step = step
+                        db.commit()
+                except Exception:
+                    pass
+
+            result = await scan_graphql_endpoints(
+                targets=urls,
+                extra_paths=config.get('paths'),
+                timeout=int(config.get('timeout', 120)),
+                use_graphql_cop=bool(config.get('use_graphql_cop', True)),
+                progress_callback=progress_cb,
+            )
+
+            created = await asyncio.to_thread(
+                persist_graphql_findings,
+                db, organization_id, scan_id, result.findings,
+            )
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.vulnerabilities_found = created
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "endpoints_found": len(result.endpoints),
+                    "findings": len(result.findings),
+                    "endpoints": [e.__dict__ for e in result.endpoints][:200],
+                }
+            db.commit()
+
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"GraphQL scan {scan_id} failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
+    async def handle_js_recon(self, job_data: dict):
+        """
+        JS reconnaissance scan.
+
+        Fetches in-scope JavaScript bundles, analyses them for leaked secrets,
+        API endpoints, dependency-confusion risks, exposed source maps and
+        DOM-sink patterns.
+
+        Config:
+            targets (list[str])          - URLs or hostnames
+            max_scripts (int, default 200)
+            timeout (seconds, default 300)
+            include_source_maps (bool, default True)
+            verify_secrets (bool, default True)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets') or []
+        config = job_data.get('config') or {}
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for JS recon scan")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+
+        try:
+            from app.services.js_recon_service import (
+                run_js_recon,
+                persist_js_findings,
+            )
+
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running JS reconnaissance"
+                scan.progress = 5
+                db.commit()
+
+            urls = list(targets) or list(config.get('targets') or [])
+            urls = [u.strip() for u in urls if u and isinstance(u, str)]
+            if not urls:
+                self._mark_scan_failed(scan_id, "No targets provided for JS recon scan")
+                return
+
+            async def progress_cb(pct: int, step: str):
+                try:
+                    s = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if s:
+                        s.progress = pct
+                        s.current_step = step
+                        db.commit()
+                except Exception:
+                    pass
+
+            result = await run_js_recon(
+                targets=urls,
+                max_scripts=int(config.get('max_scripts', 200)),
+                timeout=int(config.get('timeout', 300)),
+                include_source_maps=bool(config.get('include_source_maps', True)),
+                verify_secrets=bool(config.get('verify_secrets', True)),
+                progress_callback=progress_cb,
+            )
+
+            created = await asyncio.to_thread(
+                persist_js_findings,
+                db, organization_id, scan_id, result.findings,
+            )
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.vulnerabilities_found = created
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "scripts_analyzed": result.scripts_analyzed,
+                    "secrets_found": result.secrets_found,
+                    "source_maps_found": result.source_maps_found,
+                    "endpoints_extracted": result.endpoints_extracted,
+                    "dep_confusion_candidates": result.dep_confusion_candidates,
+                }
+            db.commit()
+
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"JS recon scan {scan_id} failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
+    async def handle_trufflehog_scan(self, job_data: dict):
+        """
+        TruffleHog deep secret scan with active verification.
+
+        Config:
+            sources (list[{"type": ..., "name": ...}])
+                Source types: "git" | "github" | "gitlab" | "s3" | "filesystem"
+            only_verified (bool, default True)
+            include_unverified (bool, default False)
+            concurrency (int, default 4)
+            timeout (seconds, default 900)
+            since_commit (str, optional, git sources)
+            branch (str, optional, git sources)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets') or []
+        config = job_data.get('config') or {}
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for TruffleHog scan")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+
+        try:
+            from app.services.trufflehog_service import (
+                run_trufflehog,
+                persist_trufflehog_findings,
+            )
+
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running TruffleHog secret scan"
+                scan.progress = 5
+                db.commit()
+
+            sources = config.get('sources') or []
+            if not sources and targets:
+                # Infer: github slug if it looks like org/repo, else git URL.
+                for t in targets:
+                    if isinstance(t, str):
+                        if t.startswith(("http://", "https://", "git@")):
+                            sources.append({"type": "git", "name": t})
+                        elif "/" in t:
+                            sources.append({"type": "github", "name": t})
+                        else:
+                            sources.append({"type": "github", "name": t})
+
+            if not sources:
+                self._mark_scan_failed(scan_id, "No sources provided for TruffleHog scan")
+                return
+
+            async def progress_cb(pct: int, step: str):
+                try:
+                    s = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if s:
+                        s.progress = pct
+                        s.current_step = step
+                        db.commit()
+                except Exception:
+                    pass
+
+            total_findings = 0
+            total_created = 0
+            errors: list[str] = []
+            per_source: list[dict] = []
+
+            for idx, src in enumerate(sources):
+                pct = 10 + int(80 * (idx / max(1, len(sources))))
+                await progress_cb(pct, f"Scanning {src.get('name')}")
+                result = await run_trufflehog(
+                    source_type=src.get('type', 'git'),
+                    source_name=src.get('name', ''),
+                    only_verified=bool(config.get('only_verified', True)),
+                    include_unverified=bool(config.get('include_unverified', False)),
+                    since_commit=config.get('since_commit'),
+                    branch=config.get('branch'),
+                    concurrency=int(config.get('concurrency', 4)),
+                    timeout=int(config.get('timeout', 900)),
+                )
+                total_findings += len(result.findings)
+                errors.extend(result.errors)
+                created = await asyncio.to_thread(
+                    persist_trufflehog_findings,
+                    db, organization_id, scan_id, result,
+                )
+                total_created += created
+                per_source.append({
+                    "source": src,
+                    "findings": len(result.findings),
+                    "duration_seconds": result.duration_seconds,
+                    "binary_available": result.binary_available,
+                    "errors": result.errors,
+                })
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.vulnerabilities_found = total_created
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "sources_scanned": len(sources),
+                    "findings": total_findings,
+                    "persisted": total_created,
+                    "errors": errors,
+                    "per_source": per_source,
+                }
+            db.commit()
+
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"TruffleHog scan {scan_id} failed: {e}", exc_info=True)
             self._mark_scan_failed(scan_id, str(e))
         finally:
             db.close()

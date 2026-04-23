@@ -43,6 +43,10 @@ import {
   CheckCircle,
   XCircle,
   Users,
+  Flame,
+  TrendingUp,
+  Sparkles,
+  ArrowUpDown,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -58,6 +62,34 @@ import {
 } from '@/components/ui/select';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+interface DelphiKEV {
+  cve_id: string;
+  vendor_project?: string;
+  product?: string;
+  vulnerability_name?: string;
+  date_added?: string;
+  short_description?: string;
+  required_action?: string;
+  due_date?: string;
+  known_ransomware_use?: string;
+  notes?: string;
+}
+
+interface DelphiEPSS {
+  score: number;
+  percentile: number;
+  bucket: string;
+  date?: string;
+}
+
+interface DelphiEnrichment {
+  kev?: DelphiKEV | null;
+  epss?: DelphiEPSS | null;
+  priority?: 'critical' | 'high' | 'medium' | 'low' | 'none';
+  priority_reason?: string;
+  enriched_at?: string;
+}
 
 interface Finding {
   id: number;
@@ -91,6 +123,78 @@ interface Finding {
   asset_id?: number;
   scan_id?: number;
   resolved_at?: string;
+  // Delphi (CISA KEV + FIRST EPSS) enrichment
+  delphi?: DelphiEnrichment;
+}
+
+type SortMode = 'severity' | 'delphi' | 'recent' | 'cvss';
+
+const delphiPriorityRank: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  none: 4,
+};
+
+const delphiPriorityStyle: Record<string, { label: string; className: string }> = {
+  critical: { label: 'Delphi Critical', className: 'bg-red-600/20 text-red-400 border-red-600/40' },
+  high: { label: 'Delphi High', className: 'bg-orange-500/20 text-orange-400 border-orange-500/40' },
+  medium: { label: 'Delphi Medium', className: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40' },
+  low: { label: 'Delphi Low', className: 'bg-blue-500/20 text-blue-400 border-blue-500/40' },
+};
+
+function isRansomwareKev(kev?: DelphiKEV | null): boolean {
+  const v = (kev?.known_ransomware_use || '').toLowerCase();
+  return v === 'known' || v === 'yes';
+}
+
+function DelphiBadges({ delphi, compact = false }: { delphi?: DelphiEnrichment; compact?: boolean }) {
+  if (!delphi || (!delphi.kev && !delphi.epss)) return null;
+  const ransomware = isRansomwareKev(delphi.kev);
+  return (
+    <div className={cn('flex items-center gap-1 flex-wrap', compact ? '' : 'mt-1')}>
+      {delphi.kev && (
+        <Badge
+          variant="outline"
+          className={cn(
+            'text-[10px] px-1.5 py-0 h-5 border',
+            ransomware
+              ? 'bg-red-600/20 text-red-300 border-red-600/40'
+              : 'bg-red-500/15 text-red-400 border-red-500/30'
+          )}
+          title={
+            ransomware
+              ? 'On CISA KEV — known ransomware use'
+              : `On CISA KEV${delphi.kev.date_added ? ` (added ${delphi.kev.date_added})` : ''}`
+          }
+        >
+          <Flame className="h-3 w-3 mr-0.5" />
+          {ransomware ? 'KEV · Ransomware' : 'CISA KEV'}
+        </Badge>
+      )}
+      {delphi.epss && (
+        <Badge
+          variant="outline"
+          className="text-[10px] px-1.5 py-0 h-5 border bg-purple-500/10 text-purple-300 border-purple-500/30"
+          title={`EPSS bucket: ${delphi.epss.bucket} · score ${delphi.epss.score.toFixed(3)} · percentile ${(delphi.epss.percentile * 100).toFixed(1)}%`}
+        >
+          <TrendingUp className="h-3 w-3 mr-0.5" />
+          EPSS {(delphi.epss.percentile * 100).toFixed(0)}%
+        </Badge>
+      )}
+      {!compact && delphi.priority && delphi.priority !== 'none' && delphiPriorityStyle[delphi.priority] && (
+        <Badge
+          variant="outline"
+          className={cn('text-[10px] px-1.5 py-0 h-5 border', delphiPriorityStyle[delphi.priority].className)}
+          title={delphi.priority_reason || ''}
+        >
+          <Sparkles className="h-3 w-3 mr-0.5" />
+          {delphiPriorityStyle[delphi.priority].label}
+        </Badge>
+      )}
+    </div>
+  );
 }
 
 const severities: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
@@ -151,6 +255,8 @@ export default function FindingsPage() {
   const [bulkUpdating, setBulkUpdating] = useState(false);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [assignee, setAssignee] = useState('');
+  const [sortMode, setSortMode] = useState<SortMode>('severity');
+  const [onlyKev, setOnlyKev] = useState(false);
   const { toast } = useToast();
 
   // Fetch remediation playbook when a finding is selected
@@ -421,19 +527,49 @@ export default function FindingsPage() {
   const filteredFindings = findings
     .filter((f) => {
       const searchLower = searchQuery.toLowerCase();
-      return (
+      const matchesSearch =
         (f.title || f.name || '').toLowerCase().includes(searchLower) ||
         (f.host || '').toLowerCase().includes(searchLower) ||
         (f.template_id || '').toLowerCase().includes(searchLower) ||
         (f.description || '').toLowerCase().includes(searchLower) ||
-        (f.cve_id || '').toLowerCase().includes(searchLower)
-      );
+        (f.cve_id || '').toLowerCase().includes(searchLower);
+      if (!matchesSearch) return false;
+      if (onlyKev && !f.delphi?.kev) return false;
+      return true;
     })
     .sort((a, b) => {
+      if (sortMode === 'delphi') {
+        const aRansom = isRansomwareKev(a.delphi?.kev) ? 0 : 1;
+        const bRansom = isRansomwareKev(b.delphi?.kev) ? 0 : 1;
+        if (aRansom !== bRansom) return aRansom - bRansom;
+        const aKev = a.delphi?.kev ? 0 : 1;
+        const bKev = b.delphi?.kev ? 0 : 1;
+        if (aKev !== bKev) return aKev - bKev;
+        const aRank = delphiPriorityRank[a.delphi?.priority || 'none'] ?? 5;
+        const bRank = delphiPriorityRank[b.delphi?.priority || 'none'] ?? 5;
+        if (aRank !== bRank) return aRank - bRank;
+        const aEpss = a.delphi?.epss?.score ?? 0;
+        const bEpss = b.delphi?.epss?.score ?? 0;
+        if (aEpss !== bEpss) return bEpss - aEpss;
+        // Fall through to severity tie-break
+      }
+      if (sortMode === 'recent') {
+        const aT = new Date(a.last_detected || a.first_detected || a.created_at).getTime();
+        const bT = new Date(b.last_detected || b.first_detected || b.created_at).getTime();
+        return bT - aT;
+      }
+      if (sortMode === 'cvss') {
+        const aS = a.cvss_score ?? -1;
+        const bS = b.cvss_score ?? -1;
+        if (aS !== bS) return bS - aS;
+      }
       const orderA = severityOrder[a.severity?.toLowerCase()] ?? 5;
       const orderB = severityOrder[b.severity?.toLowerCase()] ?? 5;
       return orderA - orderB;
     });
+
+  const kevCount = findings.filter((f) => f.delphi?.kev).length;
+  const ransomwareCount = findings.filter((f) => isRansomwareKev(f.delphi?.kev)).length;
 
   // Calculate severity counts
   const severityCounts: Record<Severity, number> = {
@@ -514,7 +650,33 @@ export default function FindingsPage() {
               className="pl-10 bg-secondary/50 border-border"
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Select value={sortMode} onValueChange={(v) => setSortMode(v as SortMode)}>
+              <SelectTrigger className="h-9 w-[200px] text-sm">
+                <ArrowUpDown className="h-4 w-4 mr-2" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="severity">Sort: Severity</SelectItem>
+                <SelectItem value="delphi">
+                  <span className="flex items-center gap-2">
+                    <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+                    Sort: Delphi priority (KEV → EPSS)
+                  </span>
+                </SelectItem>
+                <SelectItem value="cvss">Sort: CVSS score</SelectItem>
+                <SelectItem value="recent">Sort: Most recent</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant={onlyKev ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setOnlyKev((v) => !v)}
+              title="Show only findings on the CISA Known Exploited Vulnerabilities catalog"
+            >
+              <Flame className="h-4 w-4 mr-2" />
+              KEV only {kevCount > 0 && <span className="ml-1 text-xs opacity-70">({kevCount})</span>}
+            </Button>
             <Button variant="outline" size="sm">
               <Filter className="h-4 w-4 mr-2" />
               More Filters
@@ -525,6 +687,37 @@ export default function FindingsPage() {
             </Button>
           </div>
         </div>
+
+        {/* Delphi summary strip */}
+        {(kevCount > 0 || findings.some((f) => f.delphi?.epss)) && (
+          <Card className="border-purple-500/20 bg-purple-500/5">
+            <CardContent className="p-3 flex items-center gap-4 flex-wrap text-sm">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-purple-400" />
+                <span className="font-medium">Delphi enrichment</span>
+                <span className="text-muted-foreground">CISA KEV + FIRST EPSS</span>
+              </div>
+              <div className="flex items-center gap-3 ml-auto flex-wrap">
+                {ransomwareCount > 0 && (
+                  <span className="flex items-center gap-1 text-red-300">
+                    <Flame className="h-3.5 w-3.5" />
+                    {ransomwareCount} known-ransomware
+                  </span>
+                )}
+                {kevCount > 0 && (
+                  <span className="flex items-center gap-1 text-red-400">
+                    <Flame className="h-3.5 w-3.5" />
+                    {kevCount} on CISA KEV
+                  </span>
+                )}
+                <span className="flex items-center gap-1 text-purple-300">
+                  <TrendingUp className="h-3.5 w-3.5" />
+                  {findings.filter((f) => f.delphi?.epss).length} with EPSS
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Error State */}
         {error && (
@@ -691,9 +884,12 @@ export default function FindingsPage() {
                             {finding.title || finding.name || finding.template_id}
                           </span>
                         </div>
-                        {finding.cve_id && (
-                          <span className="text-xs text-primary font-mono">{finding.cve_id}</span>
-                        )}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {finding.cve_id && (
+                            <span className="text-xs text-primary font-mono">{finding.cve_id}</span>
+                          )}
+                          <DelphiBadges delphi={finding.delphi} compact />
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -954,6 +1150,105 @@ export default function FindingsPage() {
                   </div>
                 )}
               </div>
+
+              {/* Delphi enrichment panel */}
+              {selectedFinding?.delphi && (selectedFinding.delphi.kev || selectedFinding.delphi.epss) && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium flex items-center gap-2 text-purple-300">
+                    <Sparkles className="h-4 w-4" />
+                    Delphi Priority
+                    {selectedFinding.delphi.priority && selectedFinding.delphi.priority !== 'none' &&
+                      delphiPriorityStyle[selectedFinding.delphi.priority] && (
+                        <Badge
+                          variant="outline"
+                          className={cn('ml-1', delphiPriorityStyle[selectedFinding.delphi.priority].className)}
+                        >
+                          {delphiPriorityStyle[selectedFinding.delphi.priority].label}
+                        </Badge>
+                      )}
+                  </p>
+                  {selectedFinding.delphi.priority_reason && (
+                    <p className="text-sm text-muted-foreground">{selectedFinding.delphi.priority_reason}</p>
+                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {selectedFinding.delphi.kev && (
+                      <div className={cn(
+                        'rounded-lg border p-3 space-y-1',
+                        isRansomwareKev(selectedFinding.delphi.kev)
+                          ? 'border-red-600/40 bg-red-600/10'
+                          : 'border-red-500/30 bg-red-500/5'
+                      )}>
+                        <div className="flex items-center gap-2">
+                          <Flame className="h-4 w-4 text-red-400" />
+                          <p className="text-sm font-medium text-red-300">CISA Known Exploited Vulnerabilities</p>
+                        </div>
+                        {selectedFinding.delphi.kev.vulnerability_name && (
+                          <p className="text-sm">{selectedFinding.delphi.kev.vulnerability_name}</p>
+                        )}
+                        {(selectedFinding.delphi.kev.vendor_project || selectedFinding.delphi.kev.product) && (
+                          <p className="text-xs text-muted-foreground">
+                            {selectedFinding.delphi.kev.vendor_project} {selectedFinding.delphi.kev.product}
+                          </p>
+                        )}
+                        {selectedFinding.delphi.kev.short_description && (
+                          <p className="text-xs text-muted-foreground line-clamp-3">
+                            {selectedFinding.delphi.kev.short_description}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-3 text-xs pt-1">
+                          {selectedFinding.delphi.kev.date_added && (
+                            <span className="text-muted-foreground">Added: {selectedFinding.delphi.kev.date_added}</span>
+                          )}
+                          {selectedFinding.delphi.kev.due_date && (
+                            <span className="text-yellow-400">CISA Due: {selectedFinding.delphi.kev.due_date}</span>
+                          )}
+                          {isRansomwareKev(selectedFinding.delphi.kev) && (
+                            <Badge variant="outline" className="bg-red-600/20 text-red-300 border-red-600/40 text-[10px]">
+                              Known ransomware use
+                            </Badge>
+                          )}
+                        </div>
+                        {selectedFinding.delphi.kev.required_action && (
+                          <p className="text-xs text-red-200/90 pt-1">
+                            <span className="font-medium">Required action:</span> {selectedFinding.delphi.kev.required_action}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {selectedFinding.delphi.epss && (
+                      <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="h-4 w-4 text-purple-400" />
+                          <p className="text-sm font-medium text-purple-300">FIRST EPSS — Exploit Prediction</p>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                          <div>
+                            <p className="text-xs text-muted-foreground">Score</p>
+                            <p className="text-lg font-mono">{selectedFinding.delphi.epss.score.toFixed(3)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Percentile</p>
+                            <p className="text-lg font-mono">{(selectedFinding.delphi.epss.percentile * 100).toFixed(1)}%</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Bucket</p>
+                            <p className="text-sm uppercase tracking-wide">{selectedFinding.delphi.epss.bucket}</p>
+                          </div>
+                        </div>
+                        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-purple-500"
+                            style={{ width: `${Math.min(100, selectedFinding.delphi.epss.percentile * 100)}%` }}
+                          />
+                        </div>
+                        {selectedFinding.delphi.epss.date && (
+                          <p className="text-xs text-muted-foreground">EPSS scoring date: {selectedFinding.delphi.epss.date}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Matched At / Evidence */}
               {selectedFinding?.matched_at && (

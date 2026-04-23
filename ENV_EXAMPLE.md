@@ -113,7 +113,7 @@ GITHUB_TOKEN=
 
 ## Production example (HTTPS + single domain)
 
-For a deployment like `https://asm.theforcesecurity.io`:
+For a deployment like `https://aegis.theforcesecurity.io`:
 
 ```bash
 # Database
@@ -125,8 +125,8 @@ POSTGRES_DB=asm_db
 SECRET_KEY=your-generated-secret-key
 
 # Frontend / API (use your real domain)
-NEXT_PUBLIC_API_URL=https://asm.theforcesecurity.io
-CORS_ORIGINS=["https://asm.theforcesecurity.io"]
+NEXT_PUBLIC_API_URL=https://aegis.theforcesecurity.io
+CORS_ORIGINS=["https://aegis.theforcesecurity.io"]
 
 # Ports
 BACKEND_PORT=8000

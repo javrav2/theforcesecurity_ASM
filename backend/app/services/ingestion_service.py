@@ -210,6 +210,19 @@ def _upsert_vulnerability(
     )
     db.add(vuln)
     db.flush()
+
+    # Delphi enrichment: attach CISA KEV + EPSS signals to new CVE findings so
+    # the UI can prioritise actively-exploited vulns at ingest time. Best-effort
+    # only — enrichment failures never block ingestion.
+    if finding.cve_id:
+        try:
+            from app.core.config import settings as _settings
+            if getattr(_settings, "DELPHI_AUTO_ENRICH_ON_INGEST", True):
+                from app.services.delphi_enrichment_service import get_delphi_service
+                get_delphi_service().enrich_vulnerability(vuln)
+        except Exception as exc:
+            logger.debug("Delphi auto-enrich skipped for %s: %s", finding.cve_id, exc)
+
     return vuln, "created"
 
 

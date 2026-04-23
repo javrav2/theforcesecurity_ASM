@@ -13,7 +13,8 @@ from app.db.database import engine, Base, SessionLocal
 from app.core.security import get_password_hash
 from app.models.user import User, UserRole
 from app.models.netblock import Netblock  # Import to ensure table creation
-from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, remediation, exceptions, agent, agent_knowledge, graph, github_secrets, mitre, mcp, app_structure, reports, llm_red_team, ingestion, pentest
+from app.services.aegis_bootstrap import bootstrap_aegis_praetorium
+from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, remediation, exceptions, agent, agent_knowledge, graph, github_secrets, mitre, mcp, app_structure, reports, llm_red_team, ingestion, pentest, delphi, roe, agent_confirmations, agent_skills
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+# Configure the shared Aegis Praetorium guard layer (Lictor / Censor / Augur)
+# from platform settings and register a SQLAlchemy-backed scope resolver so
+# enforce_scope can query the Asset table for the calling org.
+bootstrap_aegis_praetorium()
 
 # Create FastAPI app
 app = FastAPI(
@@ -129,6 +135,10 @@ app.include_router(reports.router, prefix=settings.API_PREFIX)
 app.include_router(llm_red_team.router, prefix=settings.API_PREFIX)
 app.include_router(ingestion.router, prefix=settings.API_PREFIX)
 app.include_router(pentest.router, prefix=settings.API_PREFIX)
+app.include_router(delphi.router, prefix=settings.API_PREFIX)
+app.include_router(roe.router, prefix=settings.API_PREFIX)
+app.include_router(agent_confirmations.router, prefix=settings.API_PREFIX)
+app.include_router(agent_skills.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")

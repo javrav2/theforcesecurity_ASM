@@ -27,6 +27,7 @@ MODULE_MITRE_MAPPING = "mitre_mapping"
 MODULE_SECURITY_CHECKS = "security_checks"
 MODULE_AGENT = "agent"
 MODULE_SCAN_TOGGLES = "scan_toggles"
+MODULE_RULES_OF_ENGAGEMENT = "rules_of_engagement"
 
 ALL_MODULES = [
     MODULE_TARGET,
@@ -43,6 +44,7 @@ ALL_MODULES = [
     MODULE_SECURITY_CHECKS,
     MODULE_AGENT,
     MODULE_SCAN_TOGGLES,
+    MODULE_RULES_OF_ENGAGEMENT,
 ]
 
 
@@ -53,6 +55,12 @@ def default_target_config():
         "verify_domain_ownership": False,
         "use_tor": False,
         "use_bruteforce": True,
+        # Filter subdomains whose only resolutions match the zone's wildcard
+        # DNS answer set. Dramatically improves data quality on wildcarded zones.
+        "filter_wildcard_dns": True,
+        # Prefer the ``puredns`` binary when it is installed; falls back to a
+        # pure-Python implementation otherwise.
+        "prefer_puredns_binary": True,
     }
 
 
@@ -254,6 +262,22 @@ def default_agent_config():
         "tool_output_max_chars": 8000,
         "execution_trace_memory": 100,
         "brute_force_max_attempts": 3,
+        # Per-tool confirmation policy. Patterns support ``*`` suffix wildcards
+        # (e.g. ``execute_*``). Values: "auto" (run), "confirm" (pause & ask),
+        # "deny" (refuse outright). More specific patterns win.
+        "tool_confirmation_policy": {
+            "execute_*": "confirm",
+            "execute_llm_red_team": "confirm",
+            "execute_metasploit*": "deny",
+            "execute_sqlmap*": "confirm",
+            "create_scan": "confirm",
+            "add_asset": "auto",
+        },
+        # Global override: when true, the gate is active; when false the
+        # confirmation layer is bypassed (handy for headless automation).
+        "tool_confirmation_enabled": True,
+        # Auto-allow *read-only* tools regardless of the pattern above.
+        "tool_confirmation_readonly_auto_allow": True,
     }
 
 
@@ -265,6 +289,42 @@ def default_scan_toggles_config():
         "http_probe": True,
         "resource_enum": True,  # Katana, ParamSpider, Wayback
         "vuln_scan": True,
+    }
+
+
+def default_rules_of_engagement_config():
+    """
+    Per-org Rules of Engagement. If ``enabled`` is True, every scan creation
+    path calls ``roe_service.check_target(...)`` and hard-refuses work that
+    falls outside ``scope_in`` or lands inside ``scope_out``.
+
+    ``scope_in`` / ``scope_out`` entries may be:
+        - A hostname ("example.com")
+        - A wildcard ("*.example.com")
+        - A CIDR ("10.0.0.0/8")
+
+    ``max_rps_global`` caps the aggregate request rate applied by the agent
+    across tools. ``allowed_scan_types`` / ``restricted_scan_types`` are
+    enforced when creating a scan.
+    """
+    return {
+        "enabled": False,
+        "document_name": "",
+        "document_hash": "",
+        "document_text": "",
+        "scope_in": [],
+        "scope_out": [],
+        "allowed_scan_types": [],
+        "restricted_scan_types": [
+            "llm_red_team",  # requires explicit opt-in per target
+        ],
+        "max_rps_global": 10,
+        "max_concurrency": 10,
+        "requires_agent_confirmation": True,
+        "contacts": [],
+        "notes": "",
+        "accepted_by": "",
+        "accepted_at": None,
     }
 
 
@@ -285,6 +345,7 @@ def get_default_config(module: str) -> dict:
         MODULE_SECURITY_CHECKS: default_security_checks_config,
         MODULE_AGENT: default_agent_config,
         MODULE_SCAN_TOGGLES: default_scan_toggles_config,
+        MODULE_RULES_OF_ENGAGEMENT: default_rules_of_engagement_config,
     }
     fn = defaults.get(module)
     return fn() if fn else {}

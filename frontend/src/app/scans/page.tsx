@@ -44,6 +44,7 @@ import {
   AlertTriangle,
   RefreshCw,
   StopCircle,
+  Cloud,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -117,6 +118,16 @@ export default function ScansPage() {
     ports: '',         // Port specification for port scans
     severity: ['critical', 'high'] as string[],  // Default to critical & high for faster scans
     katana_batch_stdin: false,  // One process, all JS URLs for AI/sensitive-data assessment
+    // Themis (Prowler CSPM) options
+    themis_provider: 'aws',
+    themis_compliance: '',
+    themis_aws_profile: '',
+    themis_aws_region: '',
+    themis_azure_subscription: '',
+    themis_gcp_project: '',
+    themis_kubeconfig: '',
+    themis_kube_context: '',
+    themis_services: '', // comma-separated
   });
   const { toast } = useToast();
 
@@ -191,6 +202,23 @@ export default function ScansPage() {
       } else if (formData.scan_type === 'llm_red_team') {
         config.auto_discover = true;
         config.use_llm_grading = true;
+      } else if (formData.scan_type === 'themis_cspm') {
+        config.provider = formData.themis_provider;
+        if (formData.themis_compliance) config.compliance = formData.themis_compliance;
+        if (formData.themis_services.trim()) {
+          config.services = formData.themis_services.split(',').map((s) => s.trim()).filter(Boolean);
+        }
+        if (formData.themis_provider === 'aws') {
+          if (formData.themis_aws_profile) config.profile = formData.themis_aws_profile;
+          if (formData.themis_aws_region) config.region = formData.themis_aws_region;
+        } else if (formData.themis_provider === 'azure') {
+          if (formData.themis_azure_subscription) config.subscription = formData.themis_azure_subscription;
+        } else if (formData.themis_provider === 'gcp') {
+          if (formData.themis_gcp_project) config.project_id = formData.themis_gcp_project;
+        } else if (formData.themis_provider === 'kubernetes') {
+          if (formData.themis_kubeconfig) config.kubeconfig = formData.themis_kubeconfig;
+          if (formData.themis_kube_context) config.context = formData.themis_kube_context;
+        }
       }
 
       await api.createScan({
@@ -207,7 +235,25 @@ export default function ScansPage() {
       });
 
       setCreateDialogOpen(false);
-      setFormData({ name: '', organization_id: '', scan_type: 'vulnerability', targets: '', scanner: 'naabu', ports: '', severity: ['critical', 'high'], katana_batch_stdin: false });
+      setFormData({
+        name: '',
+        organization_id: '',
+        scan_type: 'vulnerability',
+        targets: '',
+        scanner: 'naabu',
+        ports: '',
+        severity: ['critical', 'high'],
+        katana_batch_stdin: false,
+        themis_provider: 'aws',
+        themis_compliance: '',
+        themis_aws_profile: '',
+        themis_aws_region: '',
+        themis_azure_subscription: '',
+        themis_gcp_project: '',
+        themis_kubeconfig: '',
+        themis_kube_context: '',
+        themis_services: '',
+      });
       fetchData();
     } catch (error: any) {
       toast({
@@ -345,7 +391,7 @@ export default function ScansPage() {
                 New Scan
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Start New Scan</DialogTitle>
                 <DialogDescription>
@@ -414,9 +460,155 @@ export default function ScansPage() {
                       <SelectItem value="geo_enrich">Geolocation Enrichment</SelectItem>
                       <SelectItem value="full">Full Scan (All)</SelectItem>
                       <SelectItem value="llm_red_team">AI/LLM Red Team (Chatbot Testing)</SelectItem>
+                      <SelectItem value="themis_cspm">
+                        <span className="flex items-center gap-2">
+                          <Cloud className="h-3.5 w-3.5 text-cyan-400" />
+                          Themis — Cloud CSPM (Prowler)
+                        </span>
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* Themis (Prowler) Cloud CSPM Options */}
+                {formData.scan_type === 'themis_cspm' && (
+                  <div className="space-y-4 rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-4">
+                    <div className="flex items-center gap-2">
+                      <Cloud className="h-4 w-4 text-cyan-400" />
+                      <p className="text-sm font-medium">Themis — Cloud Security Posture Management</p>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Runs Prowler against your cloud provider and ingests every misconfiguration as a finding.
+                      Targets are ignored — provider credentials must be available to the worker container.
+                    </p>
+
+                    <div className="space-y-2">
+                      <Label>Cloud Provider</Label>
+                      <Select
+                        value={formData.themis_provider}
+                        onValueChange={(value) => setFormData({ ...formData, themis_provider: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="aws">AWS</SelectItem>
+                          <SelectItem value="azure">Azure</SelectItem>
+                          <SelectItem value="gcp">GCP</SelectItem>
+                          <SelectItem value="kubernetes">Kubernetes</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Compliance framework (optional)</Label>
+                      <Select
+                        value={formData.themis_compliance || '__none__'}
+                        onValueChange={(value) =>
+                          setFormData({ ...formData, themis_compliance: value === '__none__' ? '' : value })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="All checks" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">All checks (default)</SelectItem>
+                          <SelectItem value="cis_1.5_aws">CIS AWS Foundations 1.5</SelectItem>
+                          <SelectItem value="cis_2.0_aws">CIS AWS Foundations 2.0</SelectItem>
+                          <SelectItem value="cis_1.5_azure">CIS Azure 1.5</SelectItem>
+                          <SelectItem value="cis_2.0_gcp">CIS GCP 2.0</SelectItem>
+                          <SelectItem value="cis_1.8_kubernetes">CIS Kubernetes 1.8</SelectItem>
+                          <SelectItem value="pci_3.2.1_aws">PCI DSS 3.2.1 (AWS)</SelectItem>
+                          <SelectItem value="soc2_aws">SOC 2 (AWS)</SelectItem>
+                          <SelectItem value="hipaa_aws">HIPAA (AWS)</SelectItem>
+                          <SelectItem value="iso27001_2013_aws">ISO 27001:2013 (AWS)</SelectItem>
+                          <SelectItem value="nist_800_53_revision_5_aws">NIST 800-53 r5 (AWS)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Pass any Prowler-supported compliance ID. Common ones are listed above.
+                      </p>
+                    </div>
+
+                    {formData.themis_provider === 'aws' && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label>AWS Profile (optional)</Label>
+                          <Input
+                            placeholder="default"
+                            value={formData.themis_aws_profile}
+                            onChange={(e) => setFormData({ ...formData, themis_aws_profile: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>AWS Region (optional)</Label>
+                          <Input
+                            placeholder="us-east-1"
+                            value={formData.themis_aws_region}
+                            onChange={(e) => setFormData({ ...formData, themis_aws_region: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {formData.themis_provider === 'azure' && (
+                      <div className="space-y-2">
+                        <Label>Azure Subscription ID (optional)</Label>
+                        <Input
+                          placeholder="00000000-0000-0000-0000-000000000000"
+                          value={formData.themis_azure_subscription}
+                          onChange={(e) =>
+                            setFormData({ ...formData, themis_azure_subscription: e.target.value })
+                          }
+                        />
+                      </div>
+                    )}
+
+                    {formData.themis_provider === 'gcp' && (
+                      <div className="space-y-2">
+                        <Label>GCP Project ID</Label>
+                        <Input
+                          placeholder="my-gcp-project-123"
+                          value={formData.themis_gcp_project}
+                          onChange={(e) => setFormData({ ...formData, themis_gcp_project: e.target.value })}
+                        />
+                      </div>
+                    )}
+
+                    {formData.themis_provider === 'kubernetes' && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label>Kubeconfig path (optional)</Label>
+                          <Input
+                            placeholder="/root/.kube/config"
+                            value={formData.themis_kubeconfig}
+                            onChange={(e) => setFormData({ ...formData, themis_kubeconfig: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Context (optional)</Label>
+                          <Input
+                            placeholder="my-cluster"
+                            value={formData.themis_kube_context}
+                            onChange={(e) => setFormData({ ...formData, themis_kube_context: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      <Label>Services filter (optional, comma-separated)</Label>
+                      <Input
+                        placeholder="iam,s3,ec2"
+                        value={formData.themis_services}
+                        onChange={(e) => setFormData({ ...formData, themis_services: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Limit Prowler to specific services. Leave empty to scan everything.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Vulnerability Scan - Severity Selection */}
                 {formData.scan_type === 'vulnerability' && (
@@ -551,18 +743,20 @@ export default function ScansPage() {
                   </>
                 )}
 
-                <div className="space-y-2">
-                  <Label>Targets (optional, one per line)</Label>
-                  <textarea
-                    className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    placeholder="example.com&#10;sub.example.com&#10;192.168.1.1"
-                    value={formData.targets}
-                    onChange={(e) => setFormData({ ...formData, targets: e.target.value })}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Leave empty to scan all assets in the organization
-                  </p>
-                </div>
+                {formData.scan_type !== 'themis_cspm' && (
+                  <div className="space-y-2">
+                    <Label>Targets (optional, one per line)</Label>
+                    <textarea
+                      className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      placeholder="example.com&#10;sub.example.com&#10;192.168.1.1"
+                      value={formData.targets}
+                      onChange={(e) => setFormData({ ...formData, targets: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Leave empty to scan all assets in the organization
+                    </p>
+                  </div>
+                )}
               </div>
 
               <DialogFooter>

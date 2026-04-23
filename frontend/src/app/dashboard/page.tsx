@@ -25,6 +25,8 @@ import {
   Zap,
   BarChart3,
   AlertCircle,
+  Flame,
+  Sparkles,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { formatNumber } from '@/lib/utils';
@@ -67,6 +69,29 @@ interface RemediationStats {
   overdue_count: number;
 }
 
+interface DelphiPriorityFinding {
+  vulnerability_id: number;
+  cve_id: string;
+  title: string | null;
+  severity: string;
+  asset_value: string | null;
+  priority: 'critical' | 'high' | 'medium' | 'low' | 'none';
+  priority_reason?: string | null;
+  epss_score: number | null;
+  epss_percentile: number | null;
+  on_kev: boolean;
+  ransomware: boolean;
+}
+
+interface DelphiStatus {
+  enabled: boolean;
+  kev_entries: number;
+  epss_entries: number;
+  epss_score_date?: string | null;
+  refresh_hours: number;
+  last_loaded?: string | null;
+}
+
 interface ExposureStats {
   total_exposure_score: number;
   assets_with_vulnerabilities: number;
@@ -96,12 +121,14 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [recentVulns, setRecentVulns] = useState<any[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
+  const [delphiPriorities, setDelphiPriorities] = useState<DelphiPriorityFinding[]>([]);
+  const [delphiStatus, setDelphiStatus] = useState<DelphiStatus | null>(null);
   const { toast } = useToast();
 
   const fetchDashboardData = async () => {
     setLoading(true);
     try {
-      const [vulnSummary, orgs, assetsData, geoAssetsData, vulns, nbSummary, remediationData, exposureData] = await Promise.all([
+      const [vulnSummary, orgs, assetsData, geoAssetsData, vulns, nbSummary, remediationData, exposureData, delphiPrios, delphiStat] = await Promise.all([
         api.getVulnerabilitiesSummary(),
         api.getOrganizations(),
         api.getAssets({ limit: 10000 }), // Fetch assets for stats
@@ -110,6 +137,8 @@ export default function DashboardPage() {
         api.getNetblockSummary().catch(() => null),
         api.getRemediationEfficiency(30).catch(() => null),
         api.getVulnerabilityExposure().catch(() => null),
+        api.getDelphiPriorities(10, false).catch(() => []),
+        api.getDelphiStatus().catch(() => null),
       ]);
 
       // Use geo assets for the map
@@ -142,6 +171,8 @@ export default function DashboardPage() {
       }
 
       setRecentVulns(vulns.items || vulns || []);
+      setDelphiPriorities(Array.isArray(delphiPrios) ? delphiPrios : []);
+      setDelphiStatus(delphiStat);
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
     } finally {
@@ -361,6 +392,113 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Delphi Priorities (CISA KEV + FIRST EPSS) */}
+        <Card className="border-purple-500/20">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-purple-400" />
+                Delphi Priorities
+              </CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                What to fix next — CISA KEV first, then FIRST EPSS exploit-prediction
+                {delphiStatus && delphiStatus.kev_entries > 0 && (
+                  <>
+                    {' '}· {delphiStatus.kev_entries.toLocaleString()} KEV entries
+                    {delphiStatus.epss_entries > 0 && `, ${delphiStatus.epss_entries.toLocaleString()} EPSS scored`}
+                  </>
+                )}
+              </p>
+            </div>
+            <Link href="/findings">
+              <Button variant="ghost" size="sm">
+                Open Findings <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+            </Link>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <p className="text-sm text-muted-foreground text-center py-6">Loading…</p>
+            ) : delphiPriorities.length === 0 ? (
+              <div className="text-center py-6 text-muted-foreground">
+                <Sparkles className="h-10 w-10 mx-auto mb-2 opacity-40" />
+                <p className="text-sm">
+                  No Delphi-prioritised findings yet.
+                </p>
+                <p className="text-xs mt-1">
+                  Run a Nuclei scan to ingest CVEs — Delphi auto-enriches them with KEV + EPSS.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {delphiPriorities.slice(0, 8).map((p) => (
+                  <Link
+                    key={p.vulnerability_id}
+                    href={`/findings`}
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-muted/40 hover:bg-muted transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      {p.ransomware ? (
+                        <Flame className="h-4 w-4 text-red-400 shrink-0" />
+                      ) : p.on_kev ? (
+                        <Flame className="h-4 w-4 text-red-500/80 shrink-0" />
+                      ) : (
+                        <TrendingUp className="h-4 w-4 text-purple-400 shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          <span className="font-mono text-primary">{p.cve_id}</span>
+                          {p.title && <span className="text-muted-foreground"> · {p.title}</span>}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {p.asset_value || 'unknown asset'}
+                          {p.priority_reason && <> — {p.priority_reason}</>}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {p.on_kev && (
+                        <Badge
+                          variant="outline"
+                          className={
+                            p.ransomware
+                              ? 'bg-red-600/20 text-red-300 border-red-600/40 text-[10px]'
+                              : 'bg-red-500/15 text-red-400 border-red-500/30 text-[10px]'
+                          }
+                        >
+                          {p.ransomware ? 'KEV · Ransomware' : 'CISA KEV'}
+                        </Badge>
+                      )}
+                      {p.epss_percentile != null && (
+                        <Badge
+                          variant="outline"
+                          className="bg-purple-500/10 text-purple-300 border-purple-500/30 text-[10px]"
+                        >
+                          EPSS {(p.epss_percentile * 100).toFixed(0)}%
+                        </Badge>
+                      )}
+                      <Badge
+                        variant={
+                          p.priority === 'critical'
+                            ? 'critical'
+                            : p.priority === 'high'
+                            ? 'high'
+                            : p.priority === 'medium'
+                            ? 'medium'
+                            : 'low'
+                        }
+                        className="text-[10px]"
+                      >
+                        {p.priority}
+                      </Badge>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Remediation Efficiency & Vulnerability Exposure */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

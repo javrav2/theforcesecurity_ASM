@@ -19,6 +19,10 @@ import dns.exception
 import httpx
 
 from app.services.chaos_service import ChaosService, CHAOS_CONFIGURED
+from app.services.wildcard_filter_service import (
+    WildcardProfile,
+    filter_wildcards as _filter_wildcards,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +195,8 @@ class SubdomainService:
         timeout: float = 3.0,
         max_concurrent: int = 50,
         use_subfinder: bool = True,
-        use_chaos: bool = True
+        use_chaos: bool = True,
+        organization_id: Optional[int] = None,
     ):
         """
         Initialize subdomain service.
@@ -202,6 +207,9 @@ class SubdomainService:
             max_concurrent: Maximum concurrent DNS queries
             use_subfinder: Whether to use subfinder if available
             use_chaos: Whether to use Chaos if configured
+            organization_id: Optional org id. When set, Chaos (and other API-keyed
+                sources) use the API key rotator to pick the next healthy key
+                configured for this org.
         """
         self.resolver = dns.resolver.Resolver()
         self.resolver.timeout = timeout
@@ -215,8 +223,14 @@ class SubdomainService:
         self.max_concurrent = max_concurrent
         self.timeout = timeout
         self.use_subfinder = use_subfinder and SUBFINDER_AVAILABLE
-        self.use_chaos = use_chaos and CHAOS_CONFIGURED
-        self.chaos_service = ChaosService() if self.use_chaos else None
+        self.organization_id = organization_id
+        # With the rotator we can use Chaos if *either* env var is set or the
+        # org has at least one ``pdcp`` APIConfig row — we optimistically flip
+        # ``use_chaos`` on and let the rotator report "no healthy key" later.
+        self.use_chaos = use_chaos and (CHAOS_CONFIGURED or organization_id is not None)
+        self.chaos_service = (
+            ChaosService(organization_id=organization_id) if self.use_chaos else None
+        )
         
         if self.use_subfinder:
             logger.info("Subfinder is available and will be used for subdomain enumeration")
@@ -237,7 +251,9 @@ class SubdomainService:
         use_chaos: bool = True,
         use_extended_wordlist: bool = True,
         depth: int = 0,
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        filter_wildcards: bool = True,
+        wildcard_profile: Optional[WildcardProfile] = None,
     ) -> list[SubdomainResult]:
         """
         Enumerate subdomains using multiple techniques including subfinder and Chaos.
@@ -256,48 +272,56 @@ class SubdomainService:
             List of discovered subdomains
         """
         discovered = {}
-        
-        # 1. Query Chaos dataset first (fastest - pre-indexed database)
-        if use_chaos and self.use_chaos and self.chaos_service:
+
+        # Steps 1–3: run every passive source concurrently. Each source is
+        # independent — they hit different APIs — so running them serially
+        # wastes the full duration of the slowest on every scan.
+        async def _from_chaos() -> tuple[str, list[str]]:
+            if not (use_chaos and self.use_chaos and self.chaos_service):
+                return "chaos", []
             logger.info(f"[Depth {depth}] Querying Chaos dataset for {domain}")
-            chaos_results = await self.chaos_service.fetch_subdomains(domain)
-            for subdomain in chaos_results:
-                if subdomain not in discovered:
-                    discovered[subdomain] = SubdomainResult(
-                        subdomain=subdomain,
-                        ip_addresses=[],
-                        source="chaos",
-                        depth=depth
-                    )
-            logger.info(f"[Depth {depth}] Chaos found {len(chaos_results)} subdomains for {domain}")
-        
-        # 2. Run subfinder (if available) - uses 40+ passive sources
-        if use_subfinder and self.use_subfinder:
+            try:
+                return "chaos", await self.chaos_service.fetch_subdomains(domain)
+            except Exception as exc:
+                logger.warning(f"[Depth {depth}] Chaos failed for {domain}: {exc}")
+                return "chaos", []
+
+        async def _from_subfinder() -> tuple[str, list[str]]:
+            if not (use_subfinder and self.use_subfinder):
+                return "subfinder", []
             logger.info(f"[Depth {depth}] Running subfinder for {domain}")
-            subfinder_results = await self._run_subfinder(domain, recursive=(depth == 0))
-            for subdomain in subfinder_results:
-                if subdomain not in discovered:
-                    discovered[subdomain] = SubdomainResult(
-                        subdomain=subdomain,
-                        ip_addresses=[],
-                        source="subfinder",
-                        depth=depth
-                    )
-            logger.info(f"[Depth {depth}] Subfinder found {len(subfinder_results)} subdomains for {domain}")
-        
-        # 3. Query certificate transparency logs
-        if use_crtsh:
+            try:
+                return "subfinder", await self._run_subfinder(domain, recursive=(depth == 0))
+            except Exception as exc:
+                logger.warning(f"[Depth {depth}] Subfinder failed for {domain}: {exc}")
+                return "subfinder", []
+
+        async def _from_crtsh() -> tuple[str, list[str]]:
+            if not use_crtsh:
+                return "crt.sh", []
             logger.info(f"[Depth {depth}] Querying certificate transparency logs for {domain}")
-            ct_subdomains = await self._query_crtsh(domain)
-            for subdomain in ct_subdomains:
+            try:
+                return "crt.sh", await self._query_crtsh(domain)
+            except Exception as exc:
+                logger.warning(f"[Depth {depth}] crt.sh failed for {domain}: {exc}")
+                return "crt.sh", []
+
+        passive_results = await asyncio.gather(
+            _from_chaos(),
+            _from_subfinder(),
+            _from_crtsh(),
+        )
+
+        for source, hosts in passive_results:
+            for subdomain in hosts:
                 if subdomain not in discovered:
                     discovered[subdomain] = SubdomainResult(
                         subdomain=subdomain,
                         ip_addresses=[],
-                        source="crt.sh",
-                        depth=depth
+                        source=source,
+                        depth=depth,
                     )
-            logger.info(f"[Depth {depth}] crt.sh found {len(ct_subdomains)} subdomains for {domain}")
+            logger.info(f"[Depth {depth}] {source} found {len(hosts)} subdomains for {domain}")
         
         # 4. Brute-force subdomains with extended wordlist
         if wordlist:
@@ -349,7 +373,28 @@ class SubdomainService:
                 if isinstance(ips, list):
                     discovered[subdomain].ip_addresses = ips
                     discovered[subdomain].is_alive = len(ips) > 0
-        
+
+        if filter_wildcards and discovered:
+            try:
+                resolved_map = {
+                    sub: (set(res.ip_addresses or []), set())
+                    for sub, res in discovered.items()
+                }
+                kept, dropped, _profile = await _filter_wildcards(
+                    zone=domain,
+                    hostnames=list(discovered.keys()),
+                    resolved=resolved_map,
+                    profile=wildcard_profile,
+                )
+                if dropped:
+                    logger.info(
+                        f"[Depth {depth}] Wildcard filter removed {len(dropped)} subdomains for {domain}"
+                    )
+                    for host in dropped:
+                        discovered.pop(host, None)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(f"[Depth {depth}] Wildcard filter failed for {domain}: {exc}")
+
         logger.info(f"[Depth {depth}] Total subdomains discovered for {domain}: {len(discovered)}")
         return list(discovered.values())
     

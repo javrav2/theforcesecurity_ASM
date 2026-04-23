@@ -22,6 +22,10 @@ class AgentKnowledge(Base):
     title = Column(String(512), nullable=False)
     content = Column(Text, nullable=False)
     tags = Column(JSON, default=list)  # e.g. ["scope", "roe", "methodology"]
+    # Optional pre-computed embedding for semantic retrieval. ``None`` falls back
+    # to keyword search. Stored as a JSON list of floats so we can swap models.
+    embedding = Column(JSON, nullable=True)
+    embedding_model = Column(String(128), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

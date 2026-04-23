@@ -16,6 +16,12 @@
 # - Waybackurls (historical URL discovery)
 # - ParamSpider (parameter discovery)
 # - EyeWitness (screenshot capture)
+# - puredns (wildcard DNS filtering)
+# - subjack (subdomain takeover)
+# - jsluice (JS bundle analysis)
+# - uncover (multi-engine host search: Shodan/Censys/FOFA/...)
+# - trufflehog (deep secret scanner with active verification)
+# - graphql-cop (GraphQL security auditor)
 # =============================================================================
 
 FROM python:3.11-slim-bookworm AS builder
@@ -59,10 +65,25 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then PD_ARCH="arm64"; else PD_ARCH="amd64"; 
     curl -sL "https://github.com/tomnomnom/waybackurls/releases/download/v0.1.0/waybackurls-linux-${PD_ARCH}-0.1.0.tgz" -o waybackurls.tgz && \
     tar -xzf waybackurls.tgz -C /tools && rm waybackurls.tgz
 
-# Install Go tools (GAU)
-RUN apt-get update && apt-get install -y --no-install-recommends golang && rm -rf /var/lib/apt/lists/* && \
-    go install github.com/lc/gau/v2/cmd/gau@latest && \
-    cp /root/go/bin/gau /tools/
+# Install Go tools (GAU, puredns, subjack, jsluice, uncover) built with a recent toolchain
+# Debian bookworm ships Go 1.19 which is too old for some of these; use a pinned Go from golang.org
+ENV GOTOOLCHAIN=go1.22.6
+ENV GO_VERSION=1.22.6
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then GO_ARCH="arm64"; else GO_ARCH="amd64"; fi && \
+    curl -sSfL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tgz && \
+    rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+RUN go install github.com/lc/gau/v2/cmd/gau@latest && \
+    go install github.com/d3mondev/puredns/v2@latest && \
+    go install github.com/haccer/subjack@latest && \
+    go install github.com/BishopFox/jsluice/cmd/jsluice@latest && \
+    go install github.com/projectdiscovery/uncover/cmd/uncover@latest && \
+    cp /root/go/bin/gau /tools/ && \
+    cp /root/go/bin/puredns /tools/ && \
+    cp /root/go/bin/subjack /tools/ && \
+    cp /root/go/bin/jsluice /tools/ && \
+    cp /root/go/bin/uncover /tools/
 
 # Download Kiterunner (API endpoint brute-forcer)
 RUN ARCH=$(dpkg --print-architecture) && \
@@ -168,6 +189,18 @@ RUN pip install --no-cache-dir knockpy || echo "Knockpy installation skipped"
 # Install Schemathesis (API fuzzer for OpenAPI/GraphQL schemas)
 RUN pip install --no-cache-dir schemathesis || echo "Schemathesis installation skipped"
 
+# GraphQL security auditor - feeds the graphql_scanner_service
+RUN pip install --no-cache-dir graphql-cop || echo "graphql-cop installation skipped"
+
+# puredns needs a list of public resolvers for wildcard filtering; ship a copy
+RUN curl -sSfL https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt \
+        -o /opt/resolvers.txt || echo "" > /opt/resolvers.txt
+
+# Themis (Prowler) - cloud CSPM for AWS/Azure/GCP/Kubernetes.
+# Installed as a Python package so `prowler aws|azure|gcp|kubernetes` is on PATH.
+# Cloud credentials are provided at scan time via task role or config.env.
+RUN pip install --no-cache-dir prowler || echo "Prowler installation skipped"
+
 # Playwright for reliable screenshots in Docker (primary method; no display needed)
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers
 RUN playwright install chromium && playwright install-deps chromium || true
@@ -202,6 +235,12 @@ COPY --from=builder /tools/katana /usr/local/bin/
 COPY --from=builder /tools/waybackurls /usr/local/bin/
 COPY --from=builder /tools/gau /usr/local/bin/
 COPY --from=builder /tools/kr /usr/local/bin/kiterunner
+# Redamon-inspired additions: puredns (wildcard DNS filter), subjack (takeover),
+# jsluice (JS analysis), uncover (multi-engine search)
+COPY --from=builder /tools/puredns /usr/local/bin/puredns
+COPY --from=builder /tools/subjack /usr/local/bin/subjack
+COPY --from=builder /tools/jsluice /usr/local/bin/jsluice
+COPY --from=builder /tools/uncover /usr/local/bin/uncover
 
 # Aegis Vanguard operators (Atlas = pius, Argus = titus) built with Go 1.25
 COPY --from=praetorian-builder /praetorian-bin/pius /usr/local/bin/pius
@@ -222,7 +261,8 @@ RUN ln -sf /opt/zap/zap-baseline.py /usr/local/bin/zap-baseline.py && \
 RUN chmod +x /usr/local/bin/nuclei /usr/local/bin/subfinder /usr/local/bin/httpx \
     /usr/local/bin/naabu /usr/local/bin/dnsx /usr/local/bin/katana /usr/local/bin/waybackurls \
     /usr/local/bin/gau /usr/local/bin/kiterunner /usr/local/bin/pius /usr/local/bin/titus \
-    /usr/local/bin/trufflehog
+    /usr/local/bin/trufflehog /usr/local/bin/puredns /usr/local/bin/subjack \
+    /usr/local/bin/jsluice /usr/local/bin/uncover
 
 # Copy application code
 COPY . .

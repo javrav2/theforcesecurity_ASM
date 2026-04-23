@@ -156,6 +156,14 @@ class ASMToolsManager:
             "xsstrike_help": self.execute_mcp_tool,
             "gitleaks_help": self.execute_mcp_tool,
             "cmseek_help": self.execute_mcp_tool,
+            # Fireteam: scatter-gather specialists in parallel
+            "fireteam_dispatch": self.fireteam_dispatch,
+            # EvoGraph: cross-session memory lookup
+            "query_prior_sessions": self.query_prior_sessions,
+            # ProjectDiscovery Uncover: multi-engine search
+            "execute_uncover": self.execute_uncover,
+            # Knowledge base (RAG) search
+            "search_knowledge_base": self.search_knowledge_base,
         }
         # Optional: web search (RedAmon-style) when Tavily API key is set
         if getattr(settings, "TAVILY_API_KEY", None):
@@ -172,6 +180,37 @@ class ASMToolsManager:
     
     async def execute(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool with the given arguments."""
+        # -- Per-tool confirmation gate ---------------------------------------
+        # Consult the org's agent confirmation policy. Dangerous tools
+        # (execute_*, create_scan, ...) either pause for a human ``approve`` or
+        # are outright denied by policy. Read-only queries fast-path through.
+        try:
+            from app.services.agent.confirmation_service import gate as _gate_tool
+            _, org_id = get_tenant_context()
+            _sess = current_session_id.get()
+            gate_result = await _gate_tool(tool_name, tool_args or {}, org_id, _sess)
+            if gate_result.get("decision") == "deny":
+                return {
+                    "success": False,
+                    "output": gate_result.get("reason")
+                    or f"Tool '{tool_name}' is blocked by policy.",
+                    "error": "policy_denied",
+                }
+            if gate_result.get("decision") == "confirm":
+                return {
+                    "success": False,
+                    "requires_confirmation": True,
+                    "output": (
+                        f"Tool '{tool_name}' requires operator approval. "
+                        f"Send the token below to POST /agent/confirmations/{{token}}/decide "
+                        f"with {{\"approved\": true|false}}."
+                    ),
+                    "error": "pending_confirmation",
+                    "confirmation": gate_result,
+                }
+        except Exception as _gate_err:  # fail-open on gate internal error
+            logger.warning(f"Confirmation gate error (fail-open): {_gate_err}")
+
         # Route MCP tools: execute_* and *_help (dynamic CLI + help)
         if tool_name.startswith("execute_") or tool_name.endswith("_help"):
             try:
@@ -196,16 +235,26 @@ class ASMToolsManager:
                     tool_args = {"args": " ".join(parts)} if parts else {"args": ""}
                     logger.info(f"Normalized MCP args for {tool_name}: {tool_args}")
                 result = await mcp.call_tool(tool_name, tool_args)
-                
+
                 max_chars = _tool_output_max_chars()
+                augur_block = result.get("augur")  # Augur reading: kept/dropped/next_steps/signals
                 if result.get("success"):
                     output = result.get("output", "")
+                    if augur_block:
+                        # Augur already capped to max_chars and appended next-step
+                        # pivots to the text. Preserve the structured block too.
+                        return {
+                            "success": True,
+                            "output": output or "Command completed.",
+                            "error": None,
+                            "augur": augur_block,
+                        }
                     if len(output) > max_chars:
                         output = output[:max_chars] + f"\n\n... (truncated, total {len(result.get('output', ''))} chars)"
                     return {
                         "success": True,
                         "output": output or "Command completed.",
-                        "error": None
+                        "error": None,
                     }
                 else:
                     err = result.get("error", "Unknown error")
@@ -996,7 +1045,7 @@ class ASMToolsManager:
                        paramspider, http_probe, technology, screenshot,
                        login_portal, subdomain_enum, dns_resolution, discovery,
                        full, geo_enrich, tldfinder, whatweb, atlas_discovery,
-                       argus_secrets, hermes_secrets, janus_dast
+                       argus_secrets, hermes_secrets, janus_dast, themis_cspm
             targets: List of hostnames, domains, or IPs to scan. If omitted,
                      scans all org domains/assets automatically.
             name: Optional scan name (auto-generated if omitted).
@@ -1033,6 +1082,7 @@ class ASMToolsManager:
             "argus_secrets": ST.ARGUS_SECRETS,
             "hermes_secrets": ST.HERMES_SECRETS,
             "janus_dast": ST.JANUS_DAST,
+            "themis_cspm": ST.THEMIS_CSPM,
         }
         st = type_map.get(scan_type.lower().strip())
         if not st:
@@ -1535,3 +1585,175 @@ class ASMToolsManager:
             if out and out.strip():
                 return f"Error: {err}\nStdout:\n{out[:err_max]}" + ("\n... (truncated)" if len(out) > err_max else "")
             return f"Error: {err}"
+
+    async def execute_uncover(
+        self,
+        query: str,
+        engines: Optional[List[str]] = None,
+        limit: int = 100,
+        timeout: int = 120,
+        persist: bool = False,
+    ) -> str:
+        """ProjectDiscovery Uncover - search Shodan/Censys/FOFA/Hunter/Quake in one go.
+
+        Args:
+            query: Engine-specific search DSL (e.g. ``"apache" country:"US"``).
+            engines: List of engines to hit. Defaults to ["shodan","censys","fofa"].
+            limit: Max results per engine.
+            timeout: Command timeout in seconds.
+            persist: If True, materialize discovered hosts as Assets in the DB.
+        """
+        from app.services.uncover_service import run_uncover, persist_uncover_assets
+        if not query or not query.strip():
+            return "Error: query is required."
+
+        result = await run_uncover(
+            query=query,
+            engines=engines,
+            limit=limit,
+            timeout=timeout,
+        )
+
+        persisted = 0
+        if persist:
+            _, org_id = get_tenant_context()
+            if org_id:
+                db = SessionLocal()
+                try:
+                    persisted = persist_uncover_assets(db, org_id, result)
+                finally:
+                    db.close()
+
+        payload = {
+            "query": result.query,
+            "engines": result.engines,
+            "used_binary": result.used_binary,
+            "duration_seconds": result.duration_seconds,
+            "hit_count": len(result.hits),
+            "errors": result.errors,
+            "persisted_assets": persisted,
+            "hits": [
+                {
+                    "host": h.host,
+                    "port": h.port,
+                    "engine": h.engine,
+                }
+                for h in result.hits[:200]
+            ],
+        }
+        return json.dumps(payload, indent=2)[:_tool_output_max_chars()]
+
+    async def search_knowledge_base(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> str:
+        """Hybrid (keyword + embedding) search over the org's knowledge base.
+
+        Returns structured JSON with the best scoped docs so the agent can cite
+        or expand them. Respects the active tenant context.
+        """
+        from app.services.agent.knowledge import search_knowledge
+        _, org_id = get_tenant_context()
+        if not org_id:
+            return json.dumps({"error": "no tenant context"}, indent=2)
+        if not query or not query.strip():
+            return json.dumps({"error": "query is required"}, indent=2)
+        rows = search_knowledge(org_id, query, limit=max(1, min(limit, 10)))
+        return json.dumps(
+            {"query": query, "count": len(rows), "results": rows},
+            indent=2,
+        )[:_tool_output_max_chars()]
+
+    async def query_prior_sessions(
+        self,
+        max_chains: int = 5,
+        max_findings: int = 15,
+        max_failures: int = 10,
+    ) -> str:
+        """Return a markdown digest of prior sessions, findings and lessons learned
+        for the current organization, pulled from the EvoGraph cross-session memory
+        (Neo4j). Returns an empty string if Neo4j is unavailable or empty.
+        """
+        from app.services.agent import evograph
+        _user_id, org_id = get_tenant_context()
+        session_id = current_session_id.get() or ""
+        if not org_id:
+            return ""
+        return evograph.get_prior_chain_context(
+            organization_id=org_id,
+            current_session_id=session_id,
+            max_chains=max_chains,
+            max_findings=max_findings,
+            max_failures=max_failures,
+        ) or ""
+
+    async def fireteam_dispatch(
+        self,
+        mission: str,
+        targets: Optional[List[str]] = None,
+        specialists: Optional[List[str]] = None,
+        max_parallel: int = 4,
+    ) -> str:
+        """Scatter-gather: spawn N parallel specialist sub-agents on the same mission.
+
+        Args:
+            mission: Plain-English task description.
+            targets: Hostnames / URLs the specialists should focus on.
+            specialists: Names from fireteam_service.DEFAULT_SPECIALISTS. Defaults
+                to ["web_recon", "vuln_triage", "secrets_hunter"].
+            max_parallel: How many specialists to run concurrently.
+        """
+        from app.services.agent.fireteam_service import run_fireteam, DEFAULT_SPECIALISTS
+
+        if not mission or not mission.strip():
+            return "Error: mission is required."
+
+        chosen = specialists or ["web_recon", "vuln_triage", "secrets_hunter"]
+
+        # Lazy-build a cheap LLM instance. Reuse the orchestrator factory if available.
+        try:
+            from app.services.agent.orchestrator import AgentOrchestrator
+            llm = AgentOrchestrator()._build_llm() if hasattr(AgentOrchestrator, "_build_llm") else None
+        except Exception:
+            llm = None
+
+        if llm is None:
+            try:
+                from langchain_anthropic import ChatAnthropic
+                llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", temperature=0)
+            except Exception:
+                from langchain_openai import ChatOpenAI
+                llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+        result = await run_fireteam(
+            mission=mission,
+            targets=targets or [],
+            specialists=chosen,
+            llm=llm,
+            tools_manager=self,
+            max_parallel=max_parallel,
+        )
+        out = {
+            "mission": result.mission,
+            "specialists_run": result.specialists_run,
+            "total_tool_calls": result.total_tool_calls,
+            "duration_seconds": result.duration_seconds,
+            "merged_summary": result.merged_summary,
+            "reports": [
+                {
+                    "specialist": r.specialist,
+                    "role": r.role,
+                    "summary": r.summary,
+                    "key_findings": r.key_findings,
+                    "tool_calls": [
+                        {"tool": t.tool, "success": t.success, "summary": t.summary[:500]}
+                        for t in r.tool_calls
+                    ],
+                    "duration_seconds": r.duration_seconds,
+                    "error": r.error,
+                }
+                for r in result.reports
+            ],
+        }
+        return json.dumps(out, indent=2)[:_tool_output_max_chars()]

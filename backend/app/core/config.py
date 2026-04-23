@@ -40,12 +40,11 @@ class Settings(BaseSettings):
         "http://localhost:80",
         "http://localhost:3000",
         "http://localhost:8080",
-        "http://3.88.188.178",
-        "http://3.88.188.178:80",
-        "http://3.88.188.178:3000",
-        "http://54.175.202.243",
-        "http://54.175.202.243:80",
-        "http://54.175.202.243:3000",
+        "http://44.211.198.211",
+        "http://44.211.198.211:80",
+        "http://44.211.198.211:3000",
+        "http://44.211.198.211:8000",
+        "https://aegis.theforcesecurity.io",
     ]
     
     # Pagination
@@ -80,6 +79,22 @@ class Settings(BaseSettings):
     AGENT_REST_MAX_ITERATIONS: int = 15  # Cap per REST request to avoid proxy timeouts
     AGENT_REQUEST_TIMEOUT_SECONDS: int = 660  # Hard timeout for a single agent REST call (11 min, covers Nuclei 10-min max + LLM overhead)
 
+    # ---- Aegis Lictor / Censor / Augur (deterministic guard layer) ----
+    # Lictor pre/post tool-execution hooks. Disabling skips ALL guards (not recommended).
+    AGENT_LICTOR_ENABLED: bool = True
+    # Restrict tool targets to assets in the calling org. Off by default to keep
+    # ad-hoc recon usable; flip on for production multi-tenant deployments.
+    AGENT_ENFORCE_ORG_SCOPE: bool = False
+    # Per-(org, tool) token-bucket rate limit.
+    AGENT_TOOL_RATE_CAPACITY: int = 30      # burst size
+    AGENT_TOOL_RATE_PER_MINUTE: int = 30    # sustained refill
+    # Censor input-validation gate (rejects malformed args before subprocess spawn).
+    AGENT_CENSOR_ENABLED: bool = True
+    # Augur output interpreter (smart nuclei/nmap/ffuf/etc filtering + next-step pivots).
+    AGENT_AUGUR_ENABLED: bool = True
+    # Verbose mode keeps the raw scanner output in addition to Augur's reading.
+    AGENT_AUGUR_VERBOSE: bool = False
+
     # Optional: Tavily API for agent web search (CVE/exploit research). Get key at tavily.com
     TAVILY_API_KEY: Optional[str] = None
     
@@ -94,6 +109,11 @@ class Settings(BaseSettings):
     
     # MITRE ATT&CK Enrichment
     MITRE_ENRICHMENT_ENABLED: bool = True
+
+    # Delphi (CISA KEV + FIRST EPSS) Enrichment
+    DELPHI_ENRICHMENT_ENABLED: bool = True
+    DELPHI_REFRESH_HOURS: int = 24  # Re-fetch KEV + EPSS after this many hours
+    DELPHI_AUTO_ENRICH_ON_INGEST: bool = True  # Enrich CVEs during ingestion pipeline
     
     class Config:
         env_file = ".env"

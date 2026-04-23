@@ -25,6 +25,22 @@ from agent.tools import ToolDef, ToolRegistry
 from agent.guardrails import GuardrailEngine
 from agent.tracing import Tracer, TokenUsage
 
+# Aegis Praetorium — shared guard layer (Lictor / Censor / Augur). Imported
+# lazily-tolerantly so a missing install does not break the agent on dev
+# machines that haven't pip-installed the package.
+try:
+    from aegis_praetorium import (
+        HookContext as LictorHookContext,
+        PostHookContext as LictorPostHookContext,
+        get_augur,
+        get_censor,
+        get_config as get_praetorium_config,
+        get_lictor,
+    )
+    _AEGIS_AVAILABLE = True
+except Exception as _aegis_err:  # noqa: F841
+    _AEGIS_AVAILABLE = False
+
 logger = logging.getLogger("agent.core")
 
 
@@ -282,7 +298,7 @@ class AgentRunner:
     def _execute_tool(
         self, agent: Agent, tool_name: str, arguments: dict, tool_use_id: str,
     ) -> str:
-        """Execute a tool call with guardrails and tracing."""
+        """Execute a tool call with guardrails (legacy + Aegis Praetorium) and tracing."""
 
         if tool_name.startswith("handoff_to_"):
             return json.dumps({"status": "handoff_initiated", "target": tool_name})
@@ -291,6 +307,8 @@ class AgentRunner:
         if not tool_def:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
+        # Legacy guardrail engine (kept as defense in depth; covers reverse-shell
+        # and base64-encoded payload patterns that Aegis Lictor doesn't model).
         violation = self.guardrails.check_tool_call(
             tool_name, arguments, tool_def.risk_level,
         )
@@ -302,6 +320,41 @@ class AgentRunner:
                 "rule": violation.rule,
                 "description": violation.description,
             })
+
+        # ── Aegis Praetorium: Censor (input validation) ────────────────────
+        org_id_env = os.environ.get("ASM_ORGANIZATION_ID")
+        org_id = int(org_id_env) if (org_id_env or "").isdigit() else None
+        if _AEGIS_AVAILABLE and get_praetorium_config().censor_enabled:
+            verdict = get_censor().validate(tool_name, arguments)
+            if not verdict.ok:
+                self.tracer.record_guardrail_block("aegis_censor", tool_name)
+                logger.warning(f"AEGIS CENSOR BLOCK: {verdict.error}")
+                return json.dumps({
+                    "error": "blocked_by_aegis_censor",
+                    "description": verdict.error,
+                })
+
+        # ── Aegis Praetorium: Lictor pre-hooks (SSRF, scope, rate limit, …) ─
+        if _AEGIS_AVAILABLE and get_praetorium_config().lictor_enabled:
+            string_values = [str(v) for v in arguments.values() if isinstance(v, str)]
+            ctx = LictorHookContext(
+                tool_name=tool_name,
+                args="",
+                parsed_args=string_values,
+                command=[tool_name, *string_values],
+                inspectable_text=json.dumps(arguments, default=str),
+                org_id=org_id,
+                user_id=None,
+                session_id=os.environ.get("ASM_AGENT_ID"),
+            )
+            pre = get_lictor().run_pre(ctx)
+            if not pre.allowed:
+                self.tracer.record_guardrail_block("aegis_lictor", tool_name)
+                logger.warning(f"AEGIS LICTOR BLOCK: {pre.reason}")
+                return json.dumps({
+                    "error": "blocked_by_aegis_lictor",
+                    "description": pre.reason,
+                })
 
         with self.tracer.span(
             tool_name, "tool_call",
@@ -318,6 +371,49 @@ class AgentRunner:
                 span.attributes["duration_sec"] = round(elapsed, 1)
                 span.attributes["result_length"] = len(result)
             logger.info(f"[{agent.name}] {tool_name} completed in {elapsed:.1f}s ({len(result)} chars)")
+
+        # ── Aegis Praetorium: Lictor post-hooks (audit log, hard-cap clip) ──
+        if _AEGIS_AVAILABLE and get_praetorium_config().lictor_enabled:
+            post_ctx = LictorPostHookContext(
+                tool_name=tool_name,
+                args="",
+                command=[tool_name],
+                result={"success": True, "output": result, "error": None, "exit_code": 0},
+                duration_ms=elapsed * 1000.0,
+                org_id=org_id,
+                session_id=os.environ.get("ASM_AGENT_ID"),
+            )
+            post = get_lictor().run_post(post_ctx)
+            if post.modified_result is not None:
+                result = post.modified_result.get("output", result)
+
+        # ── Aegis Praetorium: Augur (semantic output filter + next-step pivots) ─
+        if _AEGIS_AVAILABLE and get_praetorium_config().augur_enabled and result:
+            try:
+                cap = get_praetorium_config().tool_output_max_chars
+                reading = get_augur().interpret(tool_name, result, max_chars=cap)
+            except Exception as e:
+                logger.warning(f"Augur interpret failed for {tool_name}: {e}")
+                reading = None
+            if reading is not None:
+                next_steps = [ns.to_dict() for ns in reading.next_steps]
+                if next_steps:
+                    logger.info(
+                        "Augur produced %d next-step pivot(s) for %s: %s",
+                        len(next_steps), tool_name,
+                        ", ".join(ns["tool_name"] for ns in next_steps),
+                    )
+                augur_payload = {
+                    "summary": reading.summary,
+                    "kept": reading.kept,
+                    "dropped": reading.dropped,
+                    "actionable_signals": reading.actionable_signals,
+                    "next_steps": next_steps,
+                    "filtered_output": reading.to_text(),
+                }
+                # Return a JSON envelope so the LLM sees both the filtered text
+                # AND the structured next_steps it can choose to follow up on.
+                return json.dumps({"output": reading.to_text(), "augur": augur_payload})
 
         if len(result) > 50_000:
             result = result[:50_000] + "\n...[truncated]"

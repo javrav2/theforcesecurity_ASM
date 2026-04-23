@@ -16,8 +16,32 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 from app.core.config import settings
+from aegis_praetorium import (
+    HookContext as LictorHookContext,
+    PostHookContext as LictorPostHookContext,
+    get_augur,
+    get_censor,
+    get_lictor,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _current_tenant_context() -> tuple:
+    """Pull (user_id, org_id, session_id) from agent ContextVars without circular imports."""
+    try:
+        from app.services.agent.tools import (
+            current_user_id,
+            current_organization_id,
+            current_session_id,
+        )
+        return (
+            current_user_id.get(),
+            current_organization_id.get(),
+            current_session_id.get(),
+        )
+    except Exception:
+        return (None, None, None)
 
 # Help commands should return quickly; use short timeout so missing binaries fail fast
 MCP_HELP_TIMEOUT = 15
@@ -383,6 +407,39 @@ class MCPServer:
             required_params=[],
             phase="informational",
             handler=self._janus_help,
+        ))
+
+        # Themis (Aegis Vanguard) - cloud CSPM (wraps Prowler)
+        self.registry.register(MCPTool(
+            name="execute_themis",
+            description=(
+                "Themis — Aegis Vanguard's cloud compliance & posture oracle (wraps Prowler). "
+                "Audits AWS, Azure, GCP, and Kubernetes against CIS, NIST, PCI-DSS, "
+                "ISO 27001, HIPAA, SOC 2, MITRE ATT&CK, FedRAMP, GDPR — read-only, "
+                "uses the machine's existing cloud credentials. "
+                "Examples: 'aws --output-formats json-ocsf --compliance cis_1.5_aws', "
+                "'kubernetes --output-formats json-ocsf --services apiserver', "
+                "'gcp --output-formats json-ocsf --services iam,storage'."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": "Prowler CLI arguments, starting with provider (aws|azure|gcp|kubernetes)."
+                }
+            },
+            required_params=["args"],
+            phase="informational",
+            handler=self._execute_themis,
+        ))
+        self.registry.register(MCPTool(
+            name="themis_help",
+            description="Get Themis (Prowler) command usage and provider list.",
+            tool_type=ToolType.QUERY,
+            parameters={},
+            required_params=[],
+            phase="informational",
+            handler=self._themis_help,
         ))
 
         # TLDFinder (ProjectDiscovery) - TLD/domain discovery
@@ -1205,17 +1262,8 @@ class MCPServer:
     ]
 
     async def _execute_curl(self, args: str) -> Dict[str, Any]:
-        # SSRF prevention: block access to metadata endpoints and internal services
-        args_lower = args.lower()
-        for pattern in self._BLOCKED_CURL_PATTERNS:
-            if pattern.lower() in args_lower:
-                return {
-                    "success": False,
-                    "output": "",
-                    "error": f"Blocked: curl access to '{pattern}' is not allowed (SSRF prevention). "
-                             f"Only external targets within your organization's scope are permitted.",
-                    "exit_code": -1,
-                }
+        # SSRF prevention is enforced centrally by Lictor.block_ssrf_targets.
+        # Per-handler max-time still applies as a transport safety lid.
         cmd = ["curl", "--max-time", "30"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=60)
     
@@ -1277,6 +1325,13 @@ class MCPServer:
 
     async def _janus_help(self) -> Dict[str, Any]:
         return await self._run_command(["zap-baseline.py", "--help"], timeout=MCP_HELP_TIMEOUT)
+
+    async def _execute_themis(self, args: str) -> Dict[str, Any]:
+        cmd = ["prowler"] + self._parse_args(args)
+        return await self._run_command(cmd, timeout=1800)
+
+    async def _themis_help(self) -> Dict[str, Any]:
+        return await self._run_command(["prowler", "--help"], timeout=MCP_HELP_TIMEOUT)
     
     async def _execute_waybackurls(self, args: str) -> Dict[str, Any]:
         cmd = ["waybackurls"] + self._parse_args(args)
@@ -1533,48 +1588,173 @@ class MCPServer:
     async def _cmseek_help(self) -> Dict[str, Any]:
         return await self._run_command(["cmseek", "-h"], timeout=MCP_HELP_TIMEOUT)
     
+    # ------------------------------------------------------------------
+    # Aegis chokepoint: Censor → Lictor pre → handler → Lictor post → Augur
+    # ------------------------------------------------------------------
+
+    # Map MCP tool name → primary CLI binary, used so Lictor can build a
+    # synthetic command vector for SSRF / destructive-flag / safe-default checks.
+    # Tools without an entry use tool_name itself; for in-process tools the
+    # checks still run against the args string.
+    _HANDLER_BINARY: Dict[str, str] = {
+        "execute_nuclei": "nuclei", "execute_naabu": "naabu",
+        "execute_httpx": "httpx", "execute_subfinder": "subfinder",
+        "execute_dnsx": "dnsx", "execute_katana": "katana",
+        "execute_curl": "curl", "execute_nmap": "nmap",
+        "execute_masscan": "masscan", "execute_ffuf": "ffuf",
+        "execute_amass": "amass", "execute_whatweb": "whatweb",
+        "execute_knockpy": "knockpy", "execute_gau": "gau",
+        "execute_kiterunner": "kr", "execute_arjun": "arjun",
+        "execute_xsstrike": "xsstrike", "execute_sqlmap": "sqlmap",
+        "execute_gitleaks": "gitleaks", "execute_cmseek": "cmseek",
+        "execute_testssl": "testssl", "execute_sslyze": "sslyze",
+        "execute_nikto": "nikto", "execute_wafw00f": "wafw00f",
+        "execute_wpscan": "wpscan", "execute_schemathesis": "schemathesis",
+        "execute_tldfinder": "tldfinder", "execute_waybackurls": "waybackurls",
+        "execute_hermes": "trufflehog", "execute_themis": "prowler",
+        "execute_atlas": "pius", "execute_argus": "titus",
+    }
+
+    @staticmethod
+    def _diff_tokens(original: List[str], modified: List[str]) -> List[str]:
+        """Return tokens added by Lictor's modified_command (suffix-diff)."""
+        if len(modified) <= len(original):
+            return []
+        return modified[len(original):]
+
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Call a registered tool.
-        
-        Args:
-            name: Tool name
-            arguments: Tool arguments
-        
-        Returns:
-            Tool execution result
+        Aegis chokepoint for every tool invocation.
+
+        Order of operations:
+          1. Resolve tool + required-parameter check (existing behavior).
+          2. Censor validates argument shape (rejects malformed inputs early
+             with structured, agent-friendly error messages).
+          3. Lictor pre-hooks run against a synthetic command vector
+             (block_ssrf_targets, block_destructive_flags, inject_safe_defaults,
+              enforce_org_scope, rate_limit). Hooks may rewrite the args.
+          4. Handler executes (with possibly rewritten args).
+          5. Lictor post-hooks run (audit_log, clip_output).
+          6. Augur interprets the output (smart per-tool filter; appends
+             next-step pivots like wpscan-on-WordPress, ffuf-on-/admin,
+             curl-on-/.git so the agent can chain deterministically).
         """
         tool = self.registry.get(name)
-        
         if not tool:
-            return {
-                "success": False,
-                "error": f"Tool '{name}' not found",
-            }
-        
+            return {"success": False, "error": f"Tool '{name}' not found"}
         if not tool.handler:
-            return {
-                "success": False,
-                "error": f"Tool '{name}' has no handler",
-            }
-        
-        # Validate required parameters
+            return {"success": False, "error": f"Tool '{name}' has no handler"}
+
+        # 1. Required-parameter check
         for param in tool.required_params:
             if param not in arguments:
                 return {
                     "success": False,
                     "error": f"Missing required parameter: {param}",
                 }
-        
+
+        # 2. Censor — input validation
+        if getattr(settings, "AGENT_CENSOR_ENABLED", True):
+            verdict = get_censor().validate(name, arguments)
+            if not verdict.ok:
+                logger.info("censor rejected %s: %s", name, verdict.error)
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": verdict.error,
+                    "exit_code": -1,
+                    "censor_blocked": True,
+                }
+            arguments = verdict.normalized
+
+        # 3. Lictor pre-hooks
+        lictor = get_lictor()
+        user_id, org_id, session_id = _current_tenant_context()
+        raw_args = arguments.get("args", "") if isinstance(arguments.get("args"), str) else ""
+        try:
+            parsed = self._parse_args(raw_args) if raw_args else []
+        except Exception:
+            parsed = []
+        binary = self._HANDLER_BINARY.get(name, name.replace("execute_", ""))
+        pre_command = [binary] + parsed
+
+        if getattr(settings, "AGENT_LICTOR_ENABLED", True):
+            pre_ctx = LictorHookContext(
+                tool_name=name,
+                args=raw_args,
+                parsed_args=parsed,
+                command=pre_command,
+                org_id=org_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            pre_result = lictor.run_pre(pre_ctx)
+            if not pre_result.allowed:
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": pre_result.reason or "Lictor blocked execution",
+                    "exit_code": -1,
+                    "lictor_blocked": True,
+                }
+            # If Lictor injected/changed tokens, rewrite arguments["args"] so
+            # the handler's own command construction picks them up.
+            if pre_result.modified_command and pre_result.modified_command != pre_command:
+                added = self._diff_tokens(pre_command, pre_result.modified_command)
+                if added:
+                    addendum = " ".join(shlex.quote(t) for t in added)
+                    arguments["args"] = (raw_args + " " + addendum).strip()
+                    pre_command = pre_result.modified_command
+            lictor_metadata = pre_result.metadata
+        else:
+            lictor_metadata = {}
+
+        # 4. Handler
+        start = time.monotonic()
         try:
             result = await tool.handler(**arguments)
-            return result
         except Exception as e:
-            logger.error(f"Tool execution error: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+            logger.error("Tool execution error %s: %s", name, e)
+            result = {"success": False, "output": "", "error": str(e), "exit_code": -1}
+        duration_ms = (time.monotonic() - start) * 1000.0
+        if not isinstance(result, dict):
+            result = {"success": True, "output": str(result), "error": None, "exit_code": 0}
+
+        # 5. Lictor post-hooks
+        if getattr(settings, "AGENT_LICTOR_ENABLED", True):
+            post_ctx = LictorPostHookContext(
+                tool_name=name,
+                args=arguments.get("args", "") if isinstance(arguments.get("args"), str) else "",
+                command=pre_command,
+                result=result,
+                duration_ms=duration_ms,
+                org_id=org_id,
+                user_id=user_id,
+                session_id=session_id,
+                metadata=lictor_metadata,
+            )
+            post_result = lictor.run_post(post_ctx)
+            if post_result.modified_result is not None:
+                result = post_result.modified_result
+
+        # 6. Augur — smart output interpretation + next-step pivots
+        if getattr(settings, "AGENT_AUGUR_ENABLED", True) and result.get("output"):
+            max_chars = getattr(settings, "AGENT_TOOL_OUTPUT_MAX_CHARS", 20000)
+            reading = get_augur().interpret(name, result["output"], max_chars=max_chars)
+            if reading is not None:
+                augur_block = {
+                    "kept": reading.kept,
+                    "dropped": reading.dropped,
+                    "actionable_signals": reading.actionable_signals,
+                    "next_steps": [ns.to_dict() for ns in reading.next_steps],
+                    "raw_truncated": reading.raw_truncated,
+                }
+                if getattr(settings, "AGENT_AUGUR_VERBOSE", False):
+                    result["raw_output"] = result["output"]
+                result["output"] = reading.to_text()
+                result["augur"] = augur_block
+
+        return result
     
     def get_tools(self) -> List[Dict[str, Any]]:
         """Get list of available tools."""

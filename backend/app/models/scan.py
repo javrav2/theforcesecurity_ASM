@@ -38,6 +38,11 @@ class ScanType(str, enum.Enum):
     ARGUS_SECRETS = "argus_secrets"      # Argus (Praetorian titus) - secrets scan of filesystem/repo path
     HERMES_SECRETS = "hermes_secrets"    # Hermes (TruffleHog v3) - remote secrets (GitHub/S3/Docker/...)
     JANUS_DAST = "janus_dast"            # Janus (OWASP ZAP) - DAST: baseline (passive) or full (active)
+    THEMIS_CSPM = "themis_cspm"          # Themis (Prowler) - cloud CSPM for AWS/Azure/GCP/Kubernetes
+    SUBDOMAIN_TAKEOVER = "subdomain_takeover"  # CNAME-fingerprint + Nuclei takeover templates + optional Subjack
+    GRAPHQL_SCAN = "graphql_scan"        # GraphQL endpoint discovery + introspection/misconfig audit
+    JS_RECON = "js_recon"                # JS secret scan + source maps + dep-confusion + DOM sinks
+    TRUFFLEHOG_SCAN = "trufflehog_scan"  # TruffleHog deep secret scanner with active verification
 
 
 class ScanStatus(str, enum.Enum):

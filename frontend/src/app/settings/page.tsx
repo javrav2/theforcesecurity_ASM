@@ -30,6 +30,10 @@ import {
   Building2,
   Mail,
   Globe,
+  Sparkles,
+  Flame,
+  TrendingUp,
+  RefreshCw,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -99,6 +103,12 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [apiUsers, setApiUsers] = useState<Record<string, string>>({});
+  // Delphi enrichment status
+  const [delphiStatus, setDelphiStatus] = useState<any>(null);
+  const [delphiLoading, setDelphiLoading] = useState(false);
+  const [delphiRefreshing, setDelphiRefreshing] = useState(false);
+  const [delphiBatchRunning, setDelphiBatchRunning] = useState(false);
+  const [delphiBatchResult, setDelphiBatchResult] = useState<any>(null);
   
   // Organization names for WhoisXML
   const [orgNames, setOrgNames] = useState<string[]>([]);
@@ -147,7 +157,61 @@ export default function SettingsPage() {
 
   useEffect(() => {
     fetchData();
+    fetchDelphiStatus();
   }, []);
+
+  const fetchDelphiStatus = async () => {
+    setDelphiLoading(true);
+    try {
+      const data = await api.getDelphiStatus();
+      setDelphiStatus(data);
+    } catch (error) {
+      console.error('Failed to fetch Delphi status:', error);
+    } finally {
+      setDelphiLoading(false);
+    }
+  };
+
+  const handleDelphiRefresh = async () => {
+    setDelphiRefreshing(true);
+    try {
+      const data = await api.refreshDelphi();
+      setDelphiStatus(data);
+      toast({
+        title: 'Delphi feeds refreshed',
+        description: `KEV: ${data.kev_entries.toLocaleString()} · EPSS: ${data.epss_entries.toLocaleString()}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Refresh failed',
+        description: error?.response?.data?.detail || 'Could not refresh KEV / EPSS feeds',
+        variant: 'destructive',
+      });
+    } finally {
+      setDelphiRefreshing(false);
+    }
+  };
+
+  const handleDelphiBatchEnrich = async () => {
+    setDelphiBatchRunning(true);
+    setDelphiBatchResult(null);
+    try {
+      const data = await api.batchEnrichDelphi();
+      setDelphiBatchResult(data);
+      toast({
+        title: 'Batch enrichment complete',
+        description: `${data.kev_hits} KEV hits, ${data.epss_hits} EPSS scored across ${data.total} CVEs`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Batch enrichment failed',
+        description: error?.response?.data?.detail || 'Could not enrich findings',
+        variant: 'destructive',
+      });
+    } finally {
+      setDelphiBatchRunning(false);
+    }
+  };
 
   useEffect(() => {
     if (selectedOrg) {
@@ -585,6 +649,114 @@ export default function SettingsPage() {
               </div>
               <Switch />
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Delphi Enrichment (CISA KEV + FIRST EPSS) */}
+        <Card className="border-purple-500/20">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-400" />
+              Delphi Enrichment
+            </CardTitle>
+            <CardDescription>
+              CISA KEV (Known Exploited Vulnerabilities) + FIRST EPSS (Exploit Prediction Scoring System).
+              Both feeds are public — no API keys required. New CVE findings are auto-enriched at ingestion.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {delphiLoading ? (
+              <div className="flex items-center justify-center py-6 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin mr-2" /> Loading Delphi status…
+              </div>
+            ) : delphiStatus ? (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Flame className="h-4 w-4 text-red-400" />
+                      <span className="text-sm text-muted-foreground">CISA KEV</span>
+                    </div>
+                    <p className="text-2xl font-bold">{(delphiStatus.kev_entries || 0).toLocaleString()}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {delphiStatus.kev_catalog_version
+                        ? `v${delphiStatus.kev_catalog_version}`
+                        : delphiStatus.kev_date_released
+                        ? `Released ${delphiStatus.kev_date_released}`
+                        : 'entries'}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <div className="flex items-center gap-2 mb-1">
+                      <TrendingUp className="h-4 w-4 text-purple-400" />
+                      <span className="text-sm text-muted-foreground">FIRST EPSS</span>
+                    </div>
+                    <p className="text-2xl font-bold">{(delphiStatus.epss_entries || 0).toLocaleString()}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {delphiStatus.epss_score_date ? `Scored ${delphiStatus.epss_score_date}` : 'CVEs scored'}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <div className="flex items-center gap-2 mb-1">
+                      <RefreshCw className="h-4 w-4 text-cyan-400" />
+                      <span className="text-sm text-muted-foreground">Refresh window</span>
+                    </div>
+                    <p className="text-2xl font-bold">{delphiStatus.refresh_hours}h</p>
+                    <p className="text-xs text-muted-foreground">Auto-refetch interval</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-muted/50">
+                    <div className="flex items-center gap-2 mb-1">
+                      <CheckCircle
+                        className={`h-4 w-4 ${delphiStatus.enabled ? 'text-green-400' : 'text-muted-foreground'}`}
+                      />
+                      <span className="text-sm text-muted-foreground">Status</span>
+                    </div>
+                    <Badge
+                      variant={delphiStatus.enabled ? 'default' : 'secondary'}
+                      className={delphiStatus.enabled ? 'bg-green-600' : ''}
+                    >
+                      {delphiStatus.enabled ? 'Enabled' : 'Disabled'}
+                    </Badge>
+                    {delphiStatus.last_loaded && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Loaded {new Date(delphiStatus.last_loaded).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
+                  <Button onClick={handleDelphiRefresh} disabled={delphiRefreshing} variant="outline">
+                    {delphiRefreshing ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                    )}
+                    Refresh KEV + EPSS now
+                  </Button>
+                  <Button onClick={handleDelphiBatchEnrich} disabled={delphiBatchRunning}>
+                    {delphiBatchRunning ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4 mr-2" />
+                    )}
+                    Re-enrich all findings
+                  </Button>
+                  {delphiBatchResult && (
+                    <span className="text-xs text-muted-foreground ml-auto">
+                      Last batch: {delphiBatchResult.total} CVEs · {delphiBatchResult.kev_hits} KEV ·{' '}
+                      {delphiBatchResult.epss_hits} EPSS
+                      {delphiBatchResult.errors > 0 && ` · ${delphiBatchResult.errors} errors`}
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center gap-2 text-muted-foreground text-sm py-2">
+                <AlertCircle className="h-4 w-4" />
+                Could not load Delphi status. Check the backend logs.
+              </div>
+            )}
           </CardContent>
         </Card>
 

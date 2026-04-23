@@ -382,56 +382,58 @@ class DiscoveryService:
                 for probe in probe_results:
                     urls_to_scan.append(probe.url)
                 
-                # Scan each URL for technologies
-                for url in urls_to_scan[:50]:  # Limit to first 50 URLs
-                    try:
-                        technologies = await self.wappalyzer.analyze_url(url)
-                        
-                        # Extract domain/subdomain from URL and find that asset
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(url)
-                        hostname = parsed_url.netloc.split(':')[0]  # Remove port if present
-                        
-                        # Find the domain/subdomain asset (not a separate URL asset)
-                        url_asset = self.db.query(Asset).filter(
-                            Asset.organization_id == organization_id,
-                            Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
-                            Asset.value == hostname
-                        ).first()
-                        
-                        if url_asset:
-                            for tech in technologies:
-                                # Get or create technology record
-                                db_tech = self._get_or_create_technology(tech)
+                # Fan-out: analyse up to 50 URLs concurrently instead of
+                # one-after-another. Wappalyzer is network-bound so this is
+                # straight wall-clock speedup.
+                from urllib.parse import urlparse
+                wappalyzer_semaphore = asyncio.Semaphore(10)
 
-                                # Associate technology + ensure corresponding Label (`tech:<slug>`)
-                                # Attach to URL asset and its parent (subdomain/domain).
-                                before_count = len(url_asset.technologies or [])
-                                add_tech_to_asset(
-                                    self.db,
-                                    organization_id=organization_id,
-                                    asset=url_asset,
-                                    tech=db_tech,
-                                    also_tag_asset=True,
-                                    tag_parent=True,
-                                )
-                                after_count = len(url_asset.technologies or [])
-                                if after_count > before_count:
-                                    progress.technologies_found += 1
-                                
-                                result.technologies.append({
-                                    "url": url,
-                                    "technology": tech.name,
-                                    "version": tech.version,
-                                    "confidence": tech.confidence,
-                                    "categories": tech.categories
-                                })
-                                
-                                # NOTE: Tagging is now handled by add_tech_to_asset() using `tech:<slug>`
-                    
-                    except Exception as e:
-                        logger.warning(f"Technology scan failed for {url}: {e}")
-                        progress.errors.append(f"Tech scan failed for {url}: {str(e)}")
+                async def _scan_url(url: str):
+                    async with wappalyzer_semaphore:
+                        try:
+                            return url, await self.wappalyzer.analyze_url(url), None
+                        except Exception as exc:
+                            return url, [], str(exc)
+
+                scan_results = await asyncio.gather(
+                    *[_scan_url(u) for u in urls_to_scan[:50]]
+                )
+
+                for url, technologies, err in scan_results:
+                    if err is not None:
+                        logger.warning(f"Technology scan failed for {url}: {err}")
+                        progress.errors.append(f"Tech scan failed for {url}: {err}")
+                        continue
+                    parsed_url = urlparse(url)
+                    hostname = parsed_url.netloc.split(':')[0]
+                    url_asset = self.db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                        Asset.value == hostname,
+                    ).first()
+                    if not url_asset:
+                        continue
+                    for tech in technologies:
+                        db_tech = self._get_or_create_technology(tech)
+                        before_count = len(url_asset.technologies or [])
+                        add_tech_to_asset(
+                            self.db,
+                            organization_id=organization_id,
+                            asset=url_asset,
+                            tech=db_tech,
+                            also_tag_asset=True,
+                            tag_parent=True,
+                        )
+                        after_count = len(url_asset.technologies or [])
+                        if after_count > before_count:
+                            progress.technologies_found += 1
+                        result.technologies.append({
+                            "url": url,
+                            "technology": tech.name,
+                            "version": tech.version,
+                            "confidence": tech.confidence,
+                            "categories": tech.categories,
+                        })
                 
                 self.db.commit()
                 progress.completed_steps += 1

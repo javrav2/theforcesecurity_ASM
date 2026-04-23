@@ -109,11 +109,13 @@ RUN mkdir -p /usr/share/wordlists/dirb && \
     https://raw.githubusercontent.com/v0re/dirb/master/wordlists/common.txt
 
 # ── Python dependencies for the bridge ──────────────────────────────
-# Build from monorepo root so shared asm_scanner_core is available:
+# Build from monorepo root so shared packages are available:
 #   docker build -f nanoclaw-agent/Dockerfile .
 WORKDIR /agent
 COPY backend/packages/asm_scanner_core /packages/asm_scanner_core
-RUN python3 -m pip install --break-system-packages -e /packages/asm_scanner_core
+COPY backend/packages/aegis_praetorium /packages/aegis_praetorium
+RUN python3 -m pip install --break-system-packages -e /packages/asm_scanner_core \
+    && python3 -m pip install --break-system-packages -e /packages/aegis_praetorium
 COPY nanoclaw-agent/requirements.txt ./
 RUN python3 -m pip install --break-system-packages -r requirements.txt
 
@@ -134,6 +136,16 @@ ENV ANTHROPIC_API_KEY=""
 ENV AEGIS_MODEL="claude-sonnet-4-20250514"
 ENV AEGIS_GUARDRAILS="true"
 ENV AEGIS_TRACING="true"
+# Aegis Praetorium guard layer (Lictor / Censor / Augur) — shared with the
+# platform agent. See backend/packages/aegis_praetorium/README.md.
+ENV AEGIS_LICTOR_ENABLED="true"
+ENV AEGIS_CENSOR_ENABLED="true"
+ENV AEGIS_AUGUR_ENABLED="true"
+ENV AEGIS_AUGUR_VERBOSE="false"
+ENV AEGIS_ENFORCE_SCOPE="true"
+ENV AEGIS_RATE_CAPACITY="30"
+ENV AEGIS_RATE_PER_MINUTE="30"
+ENV AEGIS_TOOL_OUTPUT_MAX_CHARS="20000"
 
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
     CMD python3 /agent/healthcheck.py --quick || exit 1

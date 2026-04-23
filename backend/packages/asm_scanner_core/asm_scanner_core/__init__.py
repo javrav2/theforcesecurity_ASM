@@ -8,6 +8,7 @@ from asm_scanner_core.scanners.argus import run_argus, ArgusResult
 from asm_scanner_core.scanners.atlas import run_atlas, AtlasResult
 from asm_scanner_core.scanners.hermes import run_hermes, HermesResult
 from asm_scanner_core.scanners.janus import run_janus, JanusResult
+from asm_scanner_core.scanners.themis import run_themis, ThemisResult
 
 __all__ = [
     "Finding",
@@ -22,4 +23,6 @@ __all__ = [
     "HermesResult",
     "run_janus",
     "JanusResult",
+    "run_themis",
+    "ThemisResult",
 ]

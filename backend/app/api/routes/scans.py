@@ -79,6 +79,15 @@ def send_scan_to_sqs(scan: Scan) -> bool:
         ScanType.TLDFINDER: 'TLDFINDER',
         ScanType.CLEANUP: 'CLEANUP',
         ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
+        ScanType.ATLAS_DISCOVERY: 'ATLAS_DISCOVERY',
+        ScanType.ARGUS_SECRETS: 'ARGUS_SECRETS',
+        ScanType.HERMES_SECRETS: 'HERMES_SECRETS',
+        ScanType.JANUS_DAST: 'JANUS_DAST',
+        ScanType.THEMIS_CSPM: 'THEMIS_CSPM',
+        ScanType.SUBDOMAIN_TAKEOVER: 'SUBDOMAIN_TAKEOVER',
+        ScanType.GRAPHQL_SCAN: 'GRAPHQL_SCAN',
+        ScanType.JS_RECON: 'JS_RECON',
+        ScanType.TRUFFLEHOG_SCAN: 'TRUFFLEHOG_SCAN',
     }
     
     job_type = job_type_map.get(scan.scan_type, 'NUCLEI_SCAN')
@@ -291,6 +300,38 @@ def create_scan(
         scan_dict['config']['match_all_labels'] = match_all_labels
         scan_dict['config']['assets_from_labels'] = len(assets)
     
+    # -- Rules of Engagement guardrail ---------------------------------------
+    # If the org has RoE enabled, reject the whole scan when any target or the
+    # scan type itself violates the accepted document. This is the hard gate
+    # that prevents the platform (or the agent) from ever touching out-of-scope
+    # hosts.
+    try:
+        from app.services import roe_service
+        scan_type_value = (
+            scan_dict.get('scan_type').value
+            if hasattr(scan_dict.get('scan_type'), 'value')
+            else scan_dict.get('scan_type')
+        )
+        ok, reason, rejected = roe_service.check_targets(
+            db,
+            scan_data.organization_id,
+            scan_dict.get('targets') or [],
+            scan_type=scan_type_value,
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "Rules of Engagement violation",
+                    "reason": reason,
+                    "rejected_targets": rejected,
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:  # don't block if RoE module itself is misconfigured
+        logger.warning(f"RoE check skipped due to error: {exc}")
+
     new_scan = Scan(
         **scan_dict,
         started_by=current_user.username

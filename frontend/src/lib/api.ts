@@ -1142,6 +1142,48 @@ class ApiClient {
     return response.data;
   }
 
+  // ==================== DELPHI (CISA KEV + FIRST EPSS) ====================
+
+  /** Catalog stats for KEV + EPSS enrichment. */
+  async getDelphiStatus() {
+    const response = await this.client.get('/delphi/status');
+    return response.data;
+  }
+
+  /** Force an immediate refresh of the KEV + EPSS feeds. */
+  async refreshDelphi() {
+    const response = await this.client.post('/delphi/refresh');
+    return response.data;
+  }
+
+  /** Look up CISA KEV + EPSS signals for a single CVE. */
+  async lookupCveDelphi(cveId: string) {
+    const response = await this.client.get(`/delphi/lookup/${encodeURIComponent(cveId)}`);
+    return response.data;
+  }
+
+  /** Enrich a single vulnerability by id. */
+  async enrichVulnerabilityDelphi(vulnerabilityId: number) {
+    const response = await this.client.post(`/delphi/enrich/${vulnerabilityId}`);
+    return response.data;
+  }
+
+  /** Batch-enrich every CVE-bearing finding for the caller's org. */
+  async batchEnrichDelphi(limit?: number) {
+    const response = await this.client.post('/delphi/batch-enrich', null, {
+      params: limit ? { limit } : undefined,
+    });
+    return response.data;
+  }
+
+  /** Top N open findings ranked by Delphi priority (KEV → EPSS). */
+  async getDelphiPriorities(limit: number = 50, includeResolved: boolean = false) {
+    const response = await this.client.get('/delphi/priorities', {
+      params: { limit, include_resolved: includeResolved },
+    });
+    return response.data;
+  }
+
   // ==================== EXCEPTIONS ====================
 
   async getExceptions(params?: {
