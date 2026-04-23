@@ -66,9 +66,10 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then PD_ARCH="arm64"; else PD_ARCH="amd64"; 
     tar -xzf waybackurls.tgz -C /tools && rm waybackurls.tgz
 
 # Install Go tools (GAU, puredns, subjack, jsluice, uncover) built with a recent toolchain
-# Debian bookworm ships Go 1.19 which is too old for some of these; use a pinned Go from golang.org
-ENV GOTOOLCHAIN=go1.22.6
-ENV GO_VERSION=1.22.6
+# Debian bookworm ships Go 1.19 which is too old; use a pinned Go from golang.org.
+# Note: bumped to 1.25.1 because haccer/subjack@latest now requires go>=1.25.1.
+ENV GOTOOLCHAIN=go1.25.1
+ENV GO_VERSION=1.25.1
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "arm64" ]; then GO_ARCH="arm64"; else GO_ARCH="amd64"; fi && \
     curl -sSfL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tgz && \
