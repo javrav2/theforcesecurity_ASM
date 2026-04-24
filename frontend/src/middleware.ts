@@ -1,34 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export function middleware(request: NextRequest) {
-  const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
-
-  const cspHeader = `
-    default-src 'self';
-    script-src 'self' 'nonce-${nonce}' 'strict-dynamic';
-    style-src 'self' 'unsafe-inline';
-    img-src 'self' data: blob: https:;
-    font-src 'self' data:;
-    connect-src 'self';
-    frame-ancestors 'self';
-    base-uri 'self';
-    form-action 'self';
-    object-src 'none';
-    upgrade-insecure-requests;
-  `
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set('x-nonce', nonce);
-  requestHeaders.set('Content-Security-Policy', cspHeader);
-
-  const response = NextResponse.next({
-    request: { headers: requestHeaders },
-  });
-  response.headers.set('Content-Security-Policy', cspHeader);
-
-  return response;
+// CSP is currently provided by the nginx layer in front of the app.
+// We previously also emitted a strict nonce-based CSP from middleware, but
+// because the App Router never wired the nonce through to layout/<Script>,
+// browsers intersected the two CSP headers and blocked Next.js's own
+// hydration scripts — which broke the login form (and every interactive
+// element on the page). Until the nonce is plumbed through layout.tsx,
+// keep this middleware as a passthrough so the nginx CSP is the single
+// source of truth.
+export function middleware(_request: NextRequest) {
+  return NextResponse.next();
 }
 
 export const config = {
