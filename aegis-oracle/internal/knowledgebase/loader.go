@@ -138,6 +138,21 @@ func (kb *KB) Validate() error {
 	return nil
 }
 
+// CWEProfile returns a single CWEProfile by ID (e.g. "CWE-22") and whether it exists.
+func (kb *KB) CWEProfile(id string) (schema.CWEProfile, bool) {
+	l, ok := kb.CWEProfiles[id]
+	return l.Record, ok
+}
+
+// AllPatterns returns all loaded DevPattern records in unspecified order.
+func (kb *KB) AllPatterns() []schema.DevPattern {
+	out := make([]schema.DevPattern, 0, len(kb.DevPatterns))
+	for _, l := range kb.DevPatterns {
+		out = append(out, l.Record)
+	}
+	return out
+}
+
 // Stats returns counts useful for health checks and admin commands.
 func (kb *KB) Stats() Stats {
 	ecosystems := make(map[string]struct{})

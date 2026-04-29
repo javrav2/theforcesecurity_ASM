@@ -40,6 +40,8 @@ import (
 	"github.com/your-org/aegis-oracle/internal/modules/reasoners/intrinsic"
 	"github.com/your-org/aegis-oracle/internal/modules/reasoners/priority/opes"
 	"github.com/your-org/aegis-oracle/internal/pipeline"
+	"github.com/your-org/aegis-oracle/internal/react"
+	reacttools "github.com/your-org/aegis-oracle/internal/react/tools"
 	"github.com/your-org/aegis-oracle/internal/store/pg"
 	"github.com/your-org/aegis-oracle/pkg/schema"
 )
@@ -120,6 +122,19 @@ func main() {
 	// Pipeline runner.
 	runner := pipeline.New(store, reasoner, cfg.OPES)
 
+	// ReAct loop — wires Oracle tools to the LLM for iterative reasoning.
+	toolRegistry := reacttools.BuildRegistry(reacttools.Deps{
+		Store:  store,
+		Runner: runner,
+		KB:     kb,
+	})
+	reactLoop := react.New(react.Config{
+		LLM:           provider,
+		Tools:         toolRegistry,
+		MaxIterations: 10,
+		MaxTokens:     2048,
+	})
+
 	// HTTP API.
 	addr := cfg.Addr
 	if addr == "" {
@@ -127,7 +142,7 @@ func main() {
 	}
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      buildMux(runner, store, kb),
+		Handler:      buildMux(runner, store, kb, reactLoop),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 180 * time.Second,
 	}
@@ -148,8 +163,43 @@ func main() {
 
 // ─────────────────────────── HTTP handlers ──────────────────────────────
 
-func buildMux(runner *pipeline.Runner, store *pg.Store, kb *knowledgebase.KB) http.Handler {
+func buildMux(runner *pipeline.Runner, store *pg.Store, kb *knowledgebase.KB, loop *react.Loop) http.Handler {
 	mux := http.NewServeMux()
+
+	// POST /chat  body: {"question":"..."}
+	//
+	// Runs the ReAct loop: the LLM iteratively selects tools (lookup_cve,
+	// get_asset, check_epss_kev, search_exploit_evidence, lookup_kb_pattern,
+	// get_open_findings, run_analysis) until it produces a final answer.
+	// This is the natural-language entry point — use /analyze for direct calls.
+	mux.HandleFunc("POST /chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Question string `json:"question"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+			return
+		}
+		if req.Question == "" {
+			writeError(w, http.StatusBadRequest, "question is required")
+			return
+		}
+
+		result, err := loop.Run(r.Context(), req.Question)
+		if err != nil {
+			slog.Error("react loop failed", "error", err)
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"answer":     result.Answer,
+			"finding":    result.Finding,
+			"iterations": result.Iterations,
+			"elapsed_ms": result.ElapsedMS,
+			"trace":      result.Trace,
+		})
+	})
 
 	// POST /analyze  body: {"cve_id":"...","asset_id":"..."}
 	mux.HandleFunc("POST /analyze", func(w http.ResponseWriter, r *http.Request) {

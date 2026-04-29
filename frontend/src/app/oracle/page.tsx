@@ -83,12 +83,23 @@ interface OracleFinding {
   verification_tasks?: VerificationTask[];
 }
 
+interface TraceStep {
+  iteration: number;
+  thought: string;
+  tool_name?: string;
+  tool_args?: Record<string, unknown>;
+  observation?: string;
+  elapsed_ms?: number;
+}
+
 interface ChatMessage {
   id: string;
   role: 'user' | 'oracle';
   content: string;
   finding?: OracleFinding;
   loading?: boolean;
+  iterations?: number;
+  trace?: TraceStep[];
 }
 
 // ─────────────────────────── Helpers ──────────────────────────────────
@@ -262,10 +273,51 @@ function OracleMessage({ msg }: { msg: ChatMessage }) {
       )}>
         {msg.loading ? (
           <span className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Oracle is analyzing…
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Oracle is reasoning…
           </span>
         ) : (
-          <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+          <>
+            <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+            {msg.iterations !== undefined && (
+              <p className="text-[10px] text-muted-foreground mt-1">
+                {msg.iterations} iteration{msg.iterations !== 1 ? 's' : ''}
+              </p>
+            )}
+          </>
+        )}
+
+        {/* ReAct execution trace */}
+        {msg.trace && msg.trace.length > 0 && (
+          <details className="mt-2 text-xs">
+            <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">
+              Reasoning trace ({msg.trace.length} steps)
+            </summary>
+            <div className="mt-2 space-y-2 border-l-2 border-muted pl-3">
+              {msg.trace.map((step, i) => (
+                <div key={i} className="space-y-0.5">
+                  <p className="font-medium text-foreground/80">
+                    <span className="text-muted-foreground">Step {step.iteration + 1} · </span>
+                    {step.thought}
+                  </p>
+                  {step.tool_name && (
+                    <p className="text-blue-400">
+                      → <code>{step.tool_name}</code>
+                      {step.tool_args && Object.keys(step.tool_args).length > 0 && (
+                        <span className="text-muted-foreground ml-1">
+                          ({Object.entries(step.tool_args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')})
+                        </span>
+                      )}
+                    </p>
+                  )}
+                  {step.observation && (
+                    <pre className="text-[10px] bg-muted/50 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap max-h-[120px] overflow-y-auto">
+                      {step.observation.slice(0, 800)}{step.observation.length > 800 ? '…' : ''}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
         )}
 
         {/* Inline OPES summary card */}
@@ -421,6 +473,8 @@ export default function OraclePage() {
         role: 'oracle',
         content: resp.answer,
         finding: resp.finding ?? undefined,
+        iterations: resp.iterations ?? undefined,
+        trace: resp.trace ?? undefined,
       };
       setMessages((prev) => prev.map((m) => m.id === placeholderId ? oracleMsg : m));
       if (resp.finding) {

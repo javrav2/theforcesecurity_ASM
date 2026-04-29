@@ -57,57 +57,28 @@ async def oracle_chat(
     """
     cve_id, asset_id = _parse_cve_asset(body.question)
 
-    if cve_id and asset_id:
-        # Direct analyze path — most useful question form.
-        async with _oracle_client() as client:
-            try:
-                resp = await client.post("/analyze", json={"cve_id": cve_id, "asset_id": asset_id})
-                resp.raise_for_status()
-                data = resp.json()
-                finding = data.get("finding")
-                return {
-                    "answer": _finding_to_prose(finding) if finding else "Analysis complete — no finding produced.",
-                    "finding": finding,
-                }
-            except httpx.HTTPStatusError as e:
-                detail = _safe_error(e)
-                raise HTTPException(status_code=502, detail=f"Oracle error: {detail}")
-            except httpx.RequestError as e:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Aegis Oracle service is unreachable. Make sure the aegis-oracle container is running.",
-                )
-
-    # Non-analyze queries: list findings, explain, etc.
-    if "list" in body.question.lower() or "findings" in body.question.lower() or "open" in body.question.lower():
-        async with _oracle_client() as client:
-            try:
-                cat_filter = _parse_category_filter(body.question)
-                params = {"category": cat_filter} if cat_filter else {}
-                resp = await client.get("/findings", params=params)
-                resp.raise_for_status()
-                data = resp.json()
-                findings = data.get("findings", [])
-                count = data.get("count", len(findings))
-                if not findings:
-                    return {"answer": "No open findings in Oracle yet. Analyze a CVE + asset pair to get started.", "finding": None}
-                summary = _findings_summary(findings)
-                return {"answer": f"Found {count} open finding(s):\n\n{summary}", "finding": None}
-            except httpx.RequestError:
-                raise HTTPException(status_code=503, detail="Aegis Oracle service is unreachable.")
-
-    # Generic fallback — explain what Oracle can do.
-    return {
-        "answer": (
-            "I can analyze a specific CVE + asset pair and tell you the practical exploitability.\n\n"
-            "Try:\n"
-            "• \"Analyze CVE-2025-55130 on asset ftds-tenant-prod-7421\"\n"
-            "• \"List open P0 findings\"\n"
-            "• \"What are the open findings for CVE-2024-3094?\"\n\n"
-            "I need both a CVE ID and an asset ID to produce a scored analysis."
-        ),
-        "finding": None,
-    }
+    # Route everything through Oracle's ReAct /chat endpoint.
+    # The Go ReAct loop handles all question types: CVE+asset analysis,
+    # findings listing, KB lookups, and fallback explanations.
+    async with _oracle_client() as client:
+        try:
+            resp = await client.post("/chat", json={"question": body.question})
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "answer": data.get("answer", ""),
+                "finding": data.get("finding"),
+                "iterations": data.get("iterations"),
+                "trace": data.get("trace"),
+            }
+        except httpx.HTTPStatusError as e:
+            detail = _safe_error(e)
+            raise HTTPException(status_code=502, detail=f"Oracle error: {detail}")
+        except httpx.RequestError:
+            raise HTTPException(
+                status_code=503,
+                detail="Aegis Oracle service is unreachable. Make sure the aegis-oracle container is running.",
+            )
 
 
 @router.post("/analyze")
