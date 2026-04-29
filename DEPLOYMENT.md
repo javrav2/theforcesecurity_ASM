@@ -467,40 +467,113 @@ db.close()
 
 ## 🔒 SSL/HTTPS Setup
 
-### Option 1: Let's Encrypt (Free)
+The repo ships with a bundled **nginx + Let's Encrypt** setup that terminates
+TLS on `:443`, redirects HTTP → HTTPS, and proxies `/api/*` to the backend
+and everything else to the Next.js frontend. Auto-renewal is built in.
+
+### Option 1: Bundled nginx + Let's Encrypt (Recommended)
+
+#### Prerequisites
+
+1. A real **domain name** with a DNS **A record** pointing at this EC2's
+   public IP. Let's Encrypt cannot issue certificates for raw IPs.
+2. Security group must allow **inbound 80** and **inbound 443** from
+   `0.0.0.0/0`.
+3. Nothing else listening on host ports 80/443 (the frontend container is
+   no longer published on `:80` once nginx is enabled).
+
+#### Steps
 
 ```bash
-# Install Certbot
-sudo apt update
-sudo apt install -y certbot
-
-# Stop services temporarily
 cd /opt/asm
-sudo docker compose down
 
-# Get certificate (replace with your domain)
-sudo certbot certonly --standalone -d your-domain.com
+# 1. Add domain + email to .env
+cat >> .env << 'EOF'
+DOMAIN=your.domain.com
+LETSENCRYPT_EMAIL=you@example.com
+LETSENCRYPT_STAGING=0
+NEXT_PUBLIC_API_URL=
+CORS_ORIGINS=["https://your.domain.com"]
+EOF
 
-# Create SSL directory
-mkdir -p /opt/asm/ssl
+# 2. Pull the latest code (which includes the nginx service + bootstrap script)
+git pull origin main
 
-# Copy certificates
-sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem /opt/asm/ssl/
-sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem /opt/asm/ssl/
-sudo chown $USER:$USER /opt/asm/ssl/*.pem
+# 3. Rebuild the frontend so it bakes in the empty NEXT_PUBLIC_API_URL
+#    (forces it to use window.location.origin in the browser)
+sudo docker compose build frontend
 
-# Restart services
-sudo docker compose up -d
+# 4. Run the one-shot bootstrap. This:
+#    - issues a dummy self-signed cert so nginx can start
+#    - starts nginx, backend, frontend
+#    - swaps the dummy cert for a real Let's Encrypt cert
+#    - reloads nginx
+sudo bash scripts/init-letsencrypt.sh
 ```
+
+When it finishes you should be able to hit `https://your.domain.com` and
+see a green padlock in Chrome.
+
+> 💡 **Testing tip:** Let's Encrypt's production endpoint has strict rate
+> limits (5 failures per hour per domain). While iterating, set
+> `LETSENCRYPT_STAGING=1` in `.env` and run
+> `sudo bash scripts/init-letsencrypt.sh --force`. The cert won't be
+> trusted by browsers, but you can confirm the dance works. Then flip back
+> to `0` and re-run with `--force` for the real cert.
+
+#### What the bundled setup does
+
+| Component | Role |
+|-----------|------|
+| `nginx` (in `docker-compose.yml`) | Terminates TLS on `:443`, redirects HTTP → HTTPS, proxies `/api/*` and `/health` / `/docs` to backend, everything else to frontend. Auto-reloads every 6h to pick up renewed certs. |
+| `certbot` (in `docker-compose.yml`) | Long-running container that runs `certbot renew` every 12h. |
+| `nginx/templates/app.conf.template` | Templated nginx config; `${DOMAIN}` is substituted at container start via envsubst. |
+| `scripts/init-letsencrypt.sh` | One-shot bootstrap — handles the chicken-and-egg problem of needing a cert before nginx can start. |
+| Volumes `letsencrypt_certs`, `letsencrypt_www` | Shared cert storage and ACME HTTP-01 webroot. |
+
+#### Common issues
+
+- **`Connection refused` on :443** — the security group is still missing
+  port 443. Open it.
+- **`DNS problem: NXDOMAIN looking up A for your.domain.com`** — DNS isn't
+  pointed at this server yet. Wait for propagation
+  (`dig +short your.domain.com` should return the EC2's public IP).
+- **Browser still says "Not Secure"** — you're hitting `http://` or the
+  raw IP. Always use `https://your.domain.com`. Hard-refresh
+  (`Cmd+Shift+R`) to drop any cached HSTS preload from earlier sessions.
+- **Backend calls 404 / CORS error** — `NEXT_PUBLIC_API_URL` was set
+  to a non-empty value when the frontend was built. Set it to empty in
+  `.env`, then `sudo docker compose build frontend && sudo docker compose up -d frontend`.
 
 ### Option 2: AWS Certificate Manager + ALB
 
-For production deployments with custom domains:
+For production deployments where you want AWS-managed certs (no renewal
+on the box) and a real load balancer in front:
 
-1. Request a certificate in **ACM**
-2. Create an **Application Load Balancer**
-3. Attach the ACM certificate to the ALB
-4. Point the ALB to your EC2 instance
+1. Request a public certificate in **ACM** (us-east-1 if you also want
+   CloudFront).
+2. Create an **Application Load Balancer** with an HTTPS:443 listener
+   using that ACM cert.
+3. Two target groups against your EC2 instance:
+   - `/*` → port `80` (frontend) — but only if you re-enable the
+     frontend port publish in `docker-compose.yml`. Easier path: keep
+     the bundled nginx and target port 80 → nginx → frontend.
+   - Alternatively, drop the bundled nginx entirely and target port
+     `3000` (frontend) and `8000` (backend) directly with path-based
+     routing on the ALB.
+4. Tighten the EC2 security group so only the ALB SG can reach
+   `:80` / `:3000` / `:8000`.
+5. Point your DNS at the ALB's DNS name (CNAME or Route 53 A-ALIAS).
+
+### Option 3: CloudFront in front of HTTP origin
+
+Cheapest if traffic is low — also gets you a CDN for free.
+
+1. Request an ACM cert in **us-east-1** for your domain.
+2. Create a CloudFront distribution with that cert; origin = your EC2's
+   public DNS, origin protocol = HTTP, origin port = 80.
+3. Forward all headers / cookies / query strings (this app is dynamic).
+4. Point your DNS at the CloudFront domain.
 
 ---
 

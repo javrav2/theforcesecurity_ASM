@@ -1,0 +1,124 @@
+# =============================================================================
+# nginx reverse proxy for ASM platform
+# - Terminates TLS on :443 with Let's Encrypt certs
+# - Redirects HTTP -> HTTPS (except ACME challenges)
+# - Routes /api/  -> backend (FastAPI)
+# - Routes /health -> backend
+# - Routes everything else -> frontend (Next.js)
+#
+# This file is a template. Variables (${DOMAIN}) are substituted by the
+# nginx:alpine entrypoint at container start (envsubst).
+# =============================================================================
+
+upstream asm_backend {
+    server backend:8000;
+    keepalive 32;
+}
+
+upstream asm_frontend {
+    server frontend:3000;
+    keepalive 32;
+}
+
+# -----------------------------------------------------------------------------
+# HTTP :80 - serve ACME challenges, redirect everything else to HTTPS
+# -----------------------------------------------------------------------------
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name ${DOMAIN};
+
+    # Let's Encrypt HTTP-01 webroot challenge
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# HTTPS :443 - main app
+# -----------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${DOMAIN};
+
+    # TLS
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # Modern cipher suite (Mozilla intermediate, ~2024)
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
+
+    # OCSP stapling (Let's Encrypt supports it)
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    resolver 1.1.1.1 8.8.8.8 valid=300s;
+    resolver_timeout 5s;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Allow large scan result uploads / screenshots
+    client_max_body_size 100M;
+
+    # ----- Backend API (FastAPI) -----
+    # Backend mounts everything under /api/v1, plus /health, /docs, /openapi.json
+    location /api/ {
+        proxy_pass http://asm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # Long timeouts: AI agent calls + LLM tool loops can take minutes
+        # (matches DEPLOYMENT.md "504 Gateway Timeout (Agent)" guidance)
+        proxy_read_timeout    600s;
+        proxy_send_timeout    600s;
+        proxy_connect_timeout  60s;
+
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    # Backend health, OpenAPI docs, raw schema
+    location ~ ^/(health|docs|redoc|openapi\.json)$ {
+        proxy_pass http://asm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # ----- Frontend (Next.js) -----
+    location / {
+        proxy_pass http://asm_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Next.js HMR + WebSocket upgrades (also covers any future ws:// from app)
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 90s;
+    }
+}

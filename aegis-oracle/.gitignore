@@ -1,0 +1,40 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.local
+*.local.yaml
+*.local.yml
+
+# Secrets — never commit
+secrets/
+*.key
+*.pem
+
+# Build cache
+/.cache/
+/tmp/
+
+# Generated
+/sqlc/

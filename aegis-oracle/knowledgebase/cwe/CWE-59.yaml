@@ -1,0 +1,61 @@
+cwe_id: CWE-59
+name: "Improper Link Resolution Before File Access ('Link Following')"
+abstraction: base
+parent_cwes:
+  - CWE-706
+
+exploit_archetypes:
+  - archetype_id: symlink-toctou
+    name: Symlink TOCTOU (Time-of-Check Time-of-Use)
+    summary: >
+      Application checks a file's properties (path, ownership), then
+      opens it. Between check and use, attacker swaps the path for a
+      symlink pointing elsewhere.
+    typical_preconditions:
+      - "Application performs a check-then-open sequence on a path"
+      - "Attacker can write to the parent directory of the target path"
+    typical_attacker_capability: local_user
+
+  - archetype_id: planted-symlink-escape
+    name: Planted symlink escape from sandbox
+    summary: >
+      Attacker plants a symlink inside an allowed root pointing outside.
+      Application's path-allowlist check resolves before open(), but the
+      open() follows the symlink to an unintended target.
+    typical_preconditions:
+      - "Attacker has write capability inside the allowed root"
+      - "Application's path check does not call realpath() AFTER open and verify the result"
+    typical_attacker_capability: code_execution_required
+    common_misconceptions:
+      - "Network-attackable (most planted-symlink escapes require existing write/exec capability)"
+
+ecosystem_notes:
+  nodejs:
+    summary: >
+      Node.js fs APIs follow symlinks by default. The experimental
+      permission model (--experimental-permissions / --allow-fs-*) does
+      not protect against symlink chains constructed inside an allowed
+      directory; this is the CVE-2025-55130 class.
+    common_patterns:
+      - "fs.readFileSync(allowedPath) where allowedPath contains an attacker-planted symlink"
+      - "Tar/zip extraction creating symlinks under the extraction root"
+    common_mitigations:
+      - "Use fs.realpath() after resolution and verify it is within the intended root"
+      - "Open with O_NOFOLLOW (fs.open with `lstat`-based pre-check)"
+
+detection_signals:
+  - "Process logs showing fs.readFileSync / fs.writeFileSync resolving outside expected roots"
+  - "lstat/readlink syscalls returning paths outside the application's allowed directories"
+
+curator_notes: >
+  CWE-59 frequently co-occurs with CWE-22; analysts should classify
+  exploits requiring symlink creation under both. When the CVE is
+  primarily about the permission model failing to detect symlinks, lead
+  with CWE-59 — the path-traversal aspect is a downstream effect.
+
+source_refs:
+  - "https://cwe.mitre.org/data/definitions/59.html"
+  - "https://capec.mitre.org/data/definitions/132.html"
+
+reviewed_by: aegis-oracle-bootstrap
+last_reviewed_at: 2026-04-29T00:00:00Z

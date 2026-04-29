@@ -1,0 +1,59 @@
+# Aegis Oracle daemon configuration
+# Copy this to config.local.yaml (gitignored) and fill in secrets.
+# Environment variables override any value: ORACLE_<SECTION>_<KEY>
+# e.g. ORACLE_LLM_ANTHROPIC_API_KEY overrides llm.anthropic.api_key
+
+# ── Database ──────────────────────────────────────────────────────────
+db:
+  # Same Postgres DSN your ASM platform uses.
+  # The oracle schema will be created inside this database.
+  dsn: "postgres://oracle:changeme@localhost:5432/asm?sslmode=disable"
+
+  # Name of the schema prefix for oracle-owned tables.
+  oracle_schema: "oracle"
+
+  # Table/view in the ASM DB that exposes asset records in the expected
+  # column format. See internal/store/pg/store.go scanAsset for columns.
+  asset_table: "assets"
+
+# ── LLM ──────────────────────────────────────────────────────────────
+llm:
+  # "anthropic" | "openai" | "auto" (prefers anthropic when both keys set)
+  provider: "auto"
+
+  anthropic:
+    api_key: ""            # or set ANTHROPIC_API_KEY env var
+    model: "claude-sonnet-4-5"
+
+  openai:
+    api_key: ""            # or set OPENAI_API_KEY env var
+    model: "gpt-4o"
+
+# ── Knowledge base ────────────────────────────────────────────────────
+knowledgebase:
+  # Path to the knowledgebase/ directory (relative or absolute).
+  root: "./knowledgebase"
+
+# ── OPES scoring ──────────────────────────────────────────────────────
+opes:
+  weights:
+    X: 0.25   # active exploitation evidence
+    P: 0.20   # precondition satisfaction
+    R: 0.15   # reachability
+    E: 0.15   # exploit difficulty (applied as 10-E)
+    C: 0.15   # asset criticality
+    T: 0.10   # time pressure
+  dampeners:
+    unknown_blocker_cap: 5.5
+    kev_floor_threshold: 9.0
+    kev_floor_score: 8.5
+  bucketing:
+    P0: 8.5
+    P1: 7.0
+    P2: 5.0
+    P3: 3.0
+
+# ── Logging ──────────────────────────────────────────────────────────
+log:
+  level: "info"    # debug | info | warn | error
+  format: "json"   # json | text

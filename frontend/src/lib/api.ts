@@ -1551,6 +1551,33 @@ class ApiClient {
     const response = await this.client.get(`/reports/assets/${assetId}/findings/count`);
     return response.data;
   }
+
+  // ── Aegis Oracle ────────────────────────────────────────────────────
+  // All Oracle calls go through the ASM backend proxy at /api/v1/oracle/
+  // which forwards to the aegis-oracle service on :8742.
+
+  async oracleChat(question: string): Promise<{ answer: string; finding?: any }> {
+    const response = await this.client.post('/oracle/chat', { question });
+    return response.data;
+  }
+
+  async oracleAnalyze(cveId: string, assetId: string): Promise<any> {
+    const response = await this.client.post('/oracle/analyze', { cve_id: cveId, asset_id: assetId });
+    return response.data;
+  }
+
+  async oracleGetFindings(cveId?: string, assetId?: string): Promise<{ findings: any[]; count: number }> {
+    const params: Record<string, string> = {};
+    if (cveId) params.cve_id = cveId;
+    if (assetId) params.asset_id = assetId;
+    const response = await this.client.get('/oracle/findings', { params });
+    return response.data;
+  }
+
+  async oracleHealth(): Promise<{ status: string }> {
+    const response = await this.client.get('/oracle/health');
+    return response.data;
+  }
 }
 
 export const api = new ApiClient();

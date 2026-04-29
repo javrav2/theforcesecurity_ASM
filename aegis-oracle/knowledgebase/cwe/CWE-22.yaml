@@ -1,0 +1,167 @@
+cwe_id: CWE-22
+name: "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+abstraction: base
+parent_cwes:
+  - CWE-706
+
+# How CWE-22 actually becomes exploitable in production code.
+# Each archetype represents a distinct exploit shape — the LLM uses these
+# as priors when extracting preconditions for new CWE-22 CVEs.
+exploit_archetypes:
+  - archetype_id: classic-dotdot-in-http-param
+    name: Classic ../ traversal in HTTP parameter
+    summary: >
+      User-controlled input (query string, path parameter, form field)
+      is concatenated into a filesystem path without normalization,
+      letting an attacker reach files outside the intended root with
+      ../ sequences.
+    typical_preconditions:
+      - "Endpoint reads a filename or path from request input"
+      - "Application opens that path against the local filesystem without realpath() / normalize() / chroot"
+      - "No allowlist of permitted basenames"
+    typical_attacker_capability: unauthenticated_network
+    common_misconceptions:
+      - "Stripping `../` once is sufficient (attackers double-encode or use `....//`)"
+      - "Running in a container is mitigation (the container's filesystem is still readable)"
+
+  - archetype_id: archive-extraction-zipslip
+    name: Archive extraction (Zip-Slip / Tar-Slip)
+    summary: >
+      Server extracts attacker-supplied archive entries to disk, using
+      entry names verbatim. An entry named `../../etc/cron.d/payload`
+      writes outside the extraction root.
+    typical_preconditions:
+      - "Application accepts user-uploaded archives (zip, tar, gz, jar, war, npm tarballs)"
+      - "Extraction code joins archive entry name to base path without rejecting traversal"
+    typical_attacker_capability: authenticated_low_priv
+    common_misconceptions:
+      - "Library X handles this safely (many do not by default; check version)"
+
+  - archetype_id: symlink-race-or-chain
+    name: Symlink race / symlink-chain escape
+    summary: >
+      Application enforces a path allowlist by string check, then opens
+      the path. Attacker (or a co-tenant) creates a symlink inside the
+      allowed root pointing outside; subsequent open() escapes the
+      sandbox. Frequently combined with TOCTOU.
+    typical_preconditions:
+      - "Application has filesystem-write or symlink-create capability inside the 'safe' root"
+      - "Path-allowlist check is done by string prefix, not realpath() after open"
+      - "Attacker has some way to plant the symlink (co-tenancy, in-process JS, prior write primitive)"
+    typical_attacker_capability: code_execution_required
+    common_misconceptions:
+      - "AV:N (network) — most symlink-chain escapes require an existing foothold to plant the link"
+      - "Sandbox flag is enough — many sandboxes resolve paths before the allowlist check, not after"
+
+  - archetype_id: template-or-include-traversal
+    name: Template-include / require() / readFileSync traversal
+    summary: >
+      Server-side template engine, dynamic require, or readFileSync()
+      uses user input as part of the resolved path. Attacker reaches
+      arbitrary local files, often as a stepping stone to RCE.
+    typical_preconditions:
+      - "User input flows into a template-resolve / require / fs read call"
+      - "No allowlist of permitted module/template names"
+    typical_attacker_capability: unauthenticated_network
+
+ecosystem_notes:
+  nodejs:
+    summary: >
+      Node.js path-traversal manifests through `path.join` / `path.resolve`
+      misuse, dynamic `require()`, `fs.readFileSync(req.params.x)`, and —
+      since Node 20 — bypasses of the experimental permission model via
+      symlink chains.
+    common_patterns:
+      - "Express static middleware over user-controlled root"
+      - "API endpoints that pass req.query.file directly to fs.readFileSync"
+      - "express-fileupload / multer extracting archives without per-entry path validation"
+      - "Permission-model symlink escape (--allow-fs-read with attacker-planted symlinks)"
+    common_mitigations:
+      - "Always call `path.resolve(root, userInput)` then verify the result is still within `root`"
+      - "Use `realpath()` after open to detect symlink escape"
+      - "Prefer allowlists of basenames over path normalization"
+      - "Don't rely on --experimental-permissions flags as a security boundary if the process runs untrusted JS"
+
+  python:
+    summary: >
+      Python path traversal through `os.path.join` (which discards the
+      base when the second arg is absolute), Flask `send_from_directory`
+      misuse, and zip extraction via `zipfile.extractall`.
+    common_patterns:
+      - "open(user_supplied_path) without resolution"
+      - "Flask send_file(user_supplied) instead of send_from_directory"
+      - "zipfile.extractall() prior to PEP 706 hardening"
+    common_mitigations:
+      - "Use pathlib.Path.resolve() and is_relative_to() check"
+      - "Use Flask send_from_directory with strict directory"
+      - "Use zipfile.Path / safe_extract or upgrade to Python 3.12+"
+
+  java:
+    summary: >
+      Java traversal via File constructors, ZipEntry extraction, and
+      ServletContext.getRealPath() abuse.
+    common_patterns:
+      - "new File(baseDir, userInput) without canonical-path check"
+      - "ZipInputStream extraction without entry-name validation"
+    common_mitigations:
+      - "File.getCanonicalPath().startsWith(baseDir.getCanonicalPath())"
+      - "Use commons-compress with strict-mode extraction"
+
+  go:
+    summary: >
+      Go traversal via filepath.Join (does not constrain to base) and
+      archive/tar / archive/zip extraction.
+    common_patterns:
+      - "filepath.Join(base, userInput) followed by os.Open without prefix check"
+      - "archive/tar Reader writing to disk without ValidatePath"
+    common_mitigations:
+      - "filepath.Clean + filepath.Rel + check no leading `..`"
+      - "Use securejoin.SecureJoin from cyphar/filepath-securejoin"
+
+framework_notes:
+  express:
+    summary: >
+      Express applications most often hit CWE-22 via static-file middleware
+      misconfigurations, custom file-serving routes, or template engines
+      that resolve user-supplied template names.
+    common_patterns:
+      - "express.static(rootBasedOnRequest)"
+      - "Custom routes calling fs.readFileSync(path.join(root, req.params[0]))"
+      - "Template engines (pug, ejs) with user-controlled template names"
+    common_mitigations:
+      - "Use express.static(constantRoot) only"
+      - "Validate req.params with a strict allowlist before any fs call"
+
+  django:
+    summary: >
+      Django path traversal usually appears in custom views that serve
+      files based on URL parameters, or in static-file misconfigurations.
+    common_patterns:
+      - "FileResponse(open(request.GET['file']))"
+    common_mitigations:
+      - "Use django.views.static.serve only with a constant document_root and validate the path"
+
+# Indicators that exploitation is in progress (for SIEM correlation).
+detection_signals:
+  - "HTTP requests containing `../`, `..%2f`, `..%252f`, or `....//` in path or query"
+  - "File-read syscalls returning paths outside the application's working directory"
+  - "Audit-log entries showing chroot/jail boundary violations"
+  - "Symlink-creation events inside known sandbox roots"
+
+curator_notes: >
+  CWE-22 is one of the most over-classified weaknesses in NVD. Many
+  reported CVEs blur the line between path traversal (CWE-22) and link
+  resolution (CWE-59) or unintended-data-exposure (CWE-200). When
+  triaging a CWE-22 CVE, always check whether the documented attack
+  actually requires symlink creation (→ also CWE-59) or in-process code
+  execution (→ AV:L not AV:N). NVD's AV:N rating on symlink-chain
+  escapes is a recurring error; trust vendor and HackerOne vectors when
+  they downgrade.
+
+source_refs:
+  - "https://cwe.mitre.org/data/definitions/22.html"
+  - "https://owasp.org/www-community/attacks/Path_Traversal"
+  - "https://capec.mitre.org/data/definitions/126.html"
+
+reviewed_by: aegis-oracle-bootstrap
+last_reviewed_at: 2026-04-29T00:00:00Z

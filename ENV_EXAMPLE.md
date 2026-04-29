@@ -19,12 +19,33 @@ SECRET_KEY=GENERATE_WITH_openssl_rand_hex_32
 DEBUG=false
 
 # Frontend
-# For AWS: Set to your public IP, e.g., http://1.2.3.4:8000
-NEXT_PUBLIC_API_URL=http://YOUR_PUBLIC_IP:8000
+# When running behind the bundled nginx + Let's Encrypt (recommended), leave
+# NEXT_PUBLIC_API_URL EMPTY. The frontend will use window.location.origin in
+# the browser and nginx will proxy /api/ to the backend.
+# Only set this if you bypass nginx (e.g. http://YOUR_PUBLIC_IP:8000).
+NEXT_PUBLIC_API_URL=
+# FRONTEND_PORT is unused when nginx is running (nginx owns 80/443). Kept
+# for backward compatibility if you re-enable the direct port publish in
+# docker-compose.yml.
 FRONTEND_PORT=80
 
-# CORS Origins - IMPORTANT: Include your public IP!
-CORS_ORIGINS=["http://localhost","http://YOUR_PUBLIC_IP","http://YOUR_PUBLIC_IP:8000"]
+# CORS Origins - IMPORTANT:
+#   - With nginx + HTTPS: include https://YOUR_DOMAIN
+#   - Without nginx: include http://YOUR_PUBLIC_IP and http://YOUR_PUBLIC_IP:8000
+CORS_ORIGINS=["https://YOUR_DOMAIN","http://localhost"]
+
+# =============================================================================
+# HTTPS / Let's Encrypt (used by scripts/init-letsencrypt.sh and the nginx
+# service in docker-compose.yml). DOMAIN must have an A record pointing at
+# this server's public IP, and ports 80 + 443 must be open in the security
+# group BEFORE running the bootstrap script.
+# =============================================================================
+DOMAIN=your.domain.com
+LETSENCRYPT_EMAIL=you@example.com
+# Set to 1 to use Let's Encrypt's STAGING server while testing (avoids hitting
+# the strict production rate limits). Switch back to 0 and re-run the script
+# with --force when you're ready for a real cert.
+LETSENCRYPT_STAGING=0
 
 # Redis
 REDIS_PORT=6379

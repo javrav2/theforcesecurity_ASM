@@ -1,0 +1,97 @@
+pattern_id: nodejs.permissions-symlink-escape
+cwe_ids:
+  - CWE-22
+  - CWE-59
+ecosystem: nodejs
+framework: ""
+library: ""
+pattern_name: Node.js permission model symlink escape
+summary: >
+  When the Node.js experimental permission model is enabled (with
+  --experimental-permissions or --permissions) along with --allow-fs-read
+  / --allow-fs-write restrictions, attackers who have arbitrary
+  JavaScript execution inside the process can craft symlink chains
+  under the allowed roots that resolve outside them. The permission
+  model's path check happens before symlink resolution, so subsequent
+  fs.readFileSync / fs.writeFileSync calls escape the sandbox.
+
+# Structured preconditions — these are the exact gating facts the
+# intrinsic reasoner reuses so that Phase B can match them against
+# asset signals consistently across every related CVE.
+exploit_preconditions:
+  - id: node-permissions-active
+    description: "Node.js process started with --experimental-permissions (or --permissions) and --allow-fs-read/--allow-fs-write flags."
+    verification_signal: runtime_flags.node
+    match_kind: regex
+    match_value: "(--experimental-permissions|--permissions).*--allow-fs-(read|write)"
+    verification_method: "Inspect container startup args: docker inspect <container> | jq '.[0].Args' (or systemd unit ExecStart)."
+    severity: blocker
+
+  - id: in-process-js-execution
+    description: "Attacker can execute arbitrary JavaScript inside the target Node.js process."
+    verification_signal: tenant.runs_user_code
+    match_kind: equals
+    match_value: "true"
+    verification_method: "Determine if the workload exposes a JS sandbox, accepts uploaded user scripts, or has a known RCE foothold."
+    severity: blocker
+
+# Static / runtime indicators that this pattern is in play. Used by
+# fingerprinters and SIEM rules.
+code_indicators:
+  - "process.permission"
+  - "fs.readFileSync"
+  - "fs.writeFileSync"
+
+config_indicators:
+  - "NODE_OPTIONS"
+
+runtime_indicators:
+  - "--experimental-permissions"
+  - "--permissions"
+  - "--allow-fs-read"
+  - "--allow-fs-write"
+
+attacker_capability: code_execution_required
+remote_triggerability: "no"
+
+vulnerable_example: |
+  // Container started with:
+  //   node --experimental-permissions \
+  //        --allow-fs-read=/workspace/tenant \
+  //        server.js
+  //
+  // If a tenant can execute JS inside this process:
+  const fs = require('fs');
+  // Attacker pre-creates `/workspace/tenant/escape -> /etc`
+  fs.readFileSync('/workspace/tenant/escape/passwd');  // reads /etc/passwd
+
+secure_example: |
+  // Validate resolved path AFTER opening, not before:
+  const fs = require('fs');
+  const path = require('path');
+
+  function safeRead(root, requested) {
+    const resolved = fs.realpathSync(path.resolve(root, requested));
+    if (!resolved.startsWith(path.resolve(root) + path.sep)) {
+      throw new Error('path escapes root');
+    }
+    return fs.readFileSync(resolved);
+  }
+
+remediation_summary: >
+  Upgrade to a Node.js version that resolves symlinks before applying
+  the permission model check. If the permission model is not actively
+  used as a security boundary, no emergency action is required — the
+  finding can be deprioritized to standard patch-cycle urgency. Do not
+  treat --allow-fs-* as a sandbox boundary if the process can execute
+  attacker-controlled JavaScript.
+
+references:
+  - "https://nodejs.org/api/permissions.html"
+  - "https://hackerone.com/reports/example-node-permissions-bypass"
+
+related_cves:
+  - CVE-2025-55130
+
+curator: aegis-oracle-bootstrap
+reviewed_at: 2026-04-29T00:00:00Z
