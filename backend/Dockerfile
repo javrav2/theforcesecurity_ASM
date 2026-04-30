@@ -59,7 +59,11 @@ RUN ARCH=$(dpkg --print-architecture) && \
     # TLSX
     wget -q "https://github.com/projectdiscovery/tlsx/releases/download/v1.1.7/tlsx_1.1.7_linux_${PD_ARCH}.zip" && \
     unzip -o -q "tlsx_1.1.7_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "tlsx_1.1.7_linux_${PD_ARCH}.zip"
+    rm "tlsx_1.1.7_linux_${PD_ARCH}.zip" && \
+    # vulnx (successor to cvemap — requires Go 1.24 so use pre-built release)
+    wget -q "https://github.com/projectdiscovery/vulnx/releases/download/v2.0.1/vulnx_2.0.1_linux_${PD_ARCH}.zip" && \
+    unzip -o -q "vulnx_2.0.1_linux_${PD_ARCH}.zip" -d /tools && \
+    rm "vulnx_2.0.1_linux_${PD_ARCH}.zip"
 
 # Other Go tools (pre-built releases)
 RUN ARCH=$(dpkg --print-architecture) && \
@@ -95,7 +99,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends golang \
     && go install github.com/tomnomnom/waybackurls@latest \
     && go install github.com/tomnomnom/assetfinder@latest \
     && go install github.com/lc/gau/v2/cmd/gau@latest \
-    && go install github.com/projectdiscovery/vulnx/v2/cmd/vulnx@latest \
     && cp /root/go/bin/* /tools/
 
 # Download Gitleaks (secret scanner - Go binary)
