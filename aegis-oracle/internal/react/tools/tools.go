@@ -5,13 +5,20 @@
 // to surface structured data to the LLM and return it as JSON text.
 //
 // Tool contract for the LLM:
-//   - lookup_cve    — fetch CVE metadata + description from the store
-//   - get_asset     — fetch an asset record and its signals from inventory
-//   - check_epss_kev — fetch EPSS score and CISA/VulnCheck KEV status
+//   - lookup_cve              — fetch CVE metadata + description from the store
+//   - get_asset               — fetch an asset record and its signals from inventory
+//   - check_epss_kev          — fetch EPSS score and CISA/VulnCheck KEV status
 //   - search_exploit_evidence — search for public PoCs, Exploit-DB, GHSA
-//   - lookup_kb_pattern — query the KB for matching CWE / dev patterns
-//   - get_open_findings — list Oracle findings, optionally filtered
-//   - run_analysis  — execute the full Phase A → Phase B → OPES pipeline
+//   - lookup_kb_pattern       — query the KB for matching CWE / dev patterns
+//   - get_open_findings       — list Oracle findings, optionally filtered
+//   - run_analysis            — execute the full Phase A → Phase B → OPES pipeline
+//   - check_breach_context    — VCDB breach records + ENISA EUVD + Google P0
+//   - check_attackerkb        — AttackerKB community practitioner scoring
+//   - check_weaponization     — Metasploit exploit modules + Nuclei templates
+//   - check_cisa_vulnrichment — CISA Vulnrichment CVSS 4.0 + SSVC triage decision
+//   - check_regional_nvds     — JVN iPedia (JP) + BDU FSTEC (RU) national DB coverage
+//   - check_attack_mappings   — MITRE ATT&CK + Mappings Explorer CVE→TTP techniques
+//   - map_owasp               — static CWE→OWASP Top 10 2021 category mapping
 package tools
 
 import (
@@ -27,6 +34,7 @@ import (
 	"time"
 
 	"github.com/your-org/aegis-oracle/internal/knowledgebase"
+	"github.com/your-org/aegis-oracle/internal/modules/enrichers"
 	"github.com/your-org/aegis-oracle/internal/pipeline"
 	"github.com/your-org/aegis-oracle/internal/react"
 	"github.com/your-org/aegis-oracle/pkg/schema"
@@ -65,6 +73,13 @@ func BuildRegistry(d Deps) *react.Registry {
 	reg.Register(&lookupKBPatternTool{kb: d.KB})
 	reg.Register(&getOpenFindingsTool{store: d.Store})
 	reg.Register(&runAnalysisTool{runner: d.Runner})
+	reg.Register(&checkBreachContextTool{})               // VCDB + ENISA EUVD + Google P0
+	reg.Register(&checkAttackerKBTool{})                  // community practitioner scoring
+	reg.Register(&checkWeaponizationTool{})               // Metasploit modules + Nuclei templates
+	reg.Register(&checkCISAVulnrichmentTool{})            // CVSS 4.0 + SSVC from CISA
+	reg.Register(&checkRegionalNVDsTool{})                // JVN iPedia (JP) + BDU FSTEC (RU)
+	reg.Register(&checkATTACKMappingsTool{})              // MITRE ATT&CK CVE→TTP mappings
+	reg.Register(&mapOWASPTool{})                         // CWE → OWASP Top 10 (static)
 	return reg
 }
 
@@ -893,6 +908,351 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// ─────────────────────────── check_breach_context ───────────────────────────
+
+// checkBreachContextTool aggregates three free breach/exploitation sources:
+//   - VCDB  (Verizon DBIR incident database)
+//   - ENISA EUVD (EU-confirmed exploitation)
+//   - Google Project Zero (pre-patch zero-day)
+//
+// Use this when you want evidence that a CVE caused actual harm — beyond
+// theoretical exploitability or KEV listing.
+type checkBreachContextTool struct{}
+
+func (t *checkBreachContextTool) Name() string { return "check_breach_context" }
+func (t *checkBreachContextTool) Description() string {
+	return "Fetch real-world breach and exploitation confirmation for a CVE from three sources: " +
+		"(1) VCDB — Verizon DBIR incident database: appears here means the CVE caused a confirmed breach; " +
+		"(2) ENISA EUVD — EU Vulnerability Database, exploitedSince field confirms EU-verified exploitation; " +
+		"(3) Google Project Zero — '0day In The Wild' tracker, confirms exploitation before a patch existed. " +
+		"Use this alongside check_epss_kev to distinguish 'theoretically exploitable' from 'caused real losses'."
+}
+func (t *checkBreachContextTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkBreachContextTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+
+	// Run all three concurrently with a shared 20 s deadline.
+	fetchCtx, cancel := context.WithTimeout(ctx, 22*time.Second)
+	defer cancel()
+
+	vcdb := enrichers.FetchVCDB(fetchCtx, cveID)
+	enisa := enrichers.FetchENISAEUVD(fetchCtx, cveID)
+	gp0 := enrichers.FetchGoogleP0(fetchCtx, cveID)
+
+	// Derive a plain-English summary.
+	signals := []string{}
+	if vcdb.Found {
+		signals = append(signals, fmt.Sprintf("VCDB: %d breach record(s) confirmed", vcdb.IncidentCount))
+	}
+	if enisa.ExploitConfirmed {
+		signals = append(signals, fmt.Sprintf("ENISA EUVD: exploitation confirmed since %s", enisa.ExploitedSince))
+	} else if enisa.Found {
+		signals = append(signals, fmt.Sprintf("ENISA EUVD: catalogued as %s (no exploitation date)", enisa.EUVDID))
+	}
+	if gp0.ZeroDayConfirmed {
+		signals = append(signals, "Google P0: confirmed exploited before patch (0day ITW)")
+	}
+
+	summary := "No breach or pre-patch exploitation evidence found in VCDB, ENISA EUVD, or Google P0."
+	if len(signals) > 0 {
+		summary = "Breach/exploitation evidence: " + strings.Join(signals, "; ")
+	}
+
+	result := map[string]any{
+		"cve_id":  strings.ToUpper(cveID),
+		"summary": summary,
+		"vcdb":    vcdb,
+		"enisa":   enisa,
+		"gp0":     gp0,
+	}
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_attackerkb ───────────────────────────────
+
+// checkAttackerKBTool queries the AttackerKB community scoring API.
+// AttackerKB aggregates practitioner assessments of how useful and exploitable
+// a CVE is. Scores are on a 0–5 scale; ≥4 is strong attacker interest.
+type checkAttackerKBTool struct{}
+
+func (t *checkAttackerKBTool) Name() string { return "check_attackerkb" }
+func (t *checkAttackerKBTool) Description() string {
+	return "Query AttackerKB for community practitioner scoring of a CVE. Returns: " +
+		"attacker_value (0–5: how useful to an attacker?), " +
+		"exploitability (0–5: how reliably can it be exploited?), " +
+		"common_score (weighted average). " +
+		"Scores ≥ 4 represent strong practitioner consensus. " +
+		"Useful as a complement to CVSS/EPSS — these are real practitioner votes, not algorithmic estimates."
+}
+func (t *checkAttackerKBTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkAttackerKBTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	result := enrichers.FetchAttackerKB(fetchCtx, cveID)
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_weaponization ────────────────────────────
+
+type checkWeaponizationTool struct{}
+
+func (t *checkWeaponizationTool) Name() string { return "check_weaponization" }
+func (t *checkWeaponizationTool) Description() string {
+	return "Check whether a weaponized exploit module exists for a CVE in Metasploit " +
+		"(rapid7/metasploit-framework) and whether a Nuclei template exists for automated " +
+		"scanning/detection (projectdiscovery/nuclei-templates). " +
+		"A Metasploit module is one of the strongest OPES weaponization signals — it means " +
+		"a reliable, GUI-accessible exploit exists. A Nuclei template means automated detection " +
+		"is trivially achievable. Both signals significantly raise practical exploitability."
+}
+func (t *checkWeaponizationTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkWeaponizationTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	type result struct {
+		Metasploit enrichers.MetasploitResult `json:"metasploit"`
+		Nuclei     enrichers.NucleiResult     `json:"nuclei"`
+		Summary    string                     `json:"summary"`
+	}
+	msf := enrichers.FetchMetasploit(fetchCtx, cveID)
+	nuc := enrichers.FetchNucleiTemplate(fetchCtx, cveID)
+
+	summaryParts := []string{}
+	if msf.Found {
+		summaryParts = append(summaryParts, fmt.Sprintf("%d Metasploit module(s)", msf.ModuleCount))
+	} else {
+		summaryParts = append(summaryParts, "no Metasploit module")
+	}
+	if nuc.Found {
+		summaryParts = append(summaryParts, fmt.Sprintf("%d Nuclei template(s)", nuc.TemplateCount))
+	} else {
+		summaryParts = append(summaryParts, "no Nuclei template")
+	}
+
+	r := result{
+		Metasploit: msf,
+		Nuclei:     nuc,
+		Summary:    strings.Join(summaryParts, "; "),
+	}
+	b, _ := json.MarshalIndent(r, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_cisa_vulnrichment ─────────────────────────
+
+type checkCISAVulnrichmentTool struct{}
+
+func (t *checkCISAVulnrichmentTool) Name() string { return "check_cisa_vulnrichment" }
+func (t *checkCISAVulnrichmentTool) Description() string {
+	return "Fetch CISA Vulnrichment data for a CVE from the cisagov/vulnrichment GitHub repository. " +
+		"CISA enriches CVEs with CVSS 4.0 scores, SSVC (Stakeholder-Specific Vulnerability " +
+		"Categorization) triage decisions, and CPE product annotations — often before NVD does. " +
+		"SSVC decisions: 'Immediate' = patch ASAP (equivalent to KEV risk), 'Out-of-Cycle' = next " +
+		"patch window, 'Scheduled' = routine cycle, 'Defer' = deprioritize. " +
+		"Use this when NVD CVSS data is missing or when you need an official triage signal."
+}
+func (t *checkCISAVulnrichmentTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2024-3094",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkCISAVulnrichmentTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	result := enrichers.FetchVulnrichment(fetchCtx, cveID)
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_regional_nvds ─────────────────────────────
+
+type checkRegionalNVDsTool struct{}
+
+func (t *checkRegionalNVDsTool) Name() string { return "check_regional_nvds" }
+func (t *checkRegionalNVDsTool) Description() string {
+	return "Check national/regional vulnerability databases for a CVE: " +
+		"JVN iPedia (Japan's IPA/JPCERT national DB — covers Japanese-vendor software often " +
+		"before NVD), and BDU FSTEC (Russia's national DB — bdu.fstec.ru is geo-blocked but " +
+		"accessed via public GitHub mirror). Useful for confirming whether a CVE in Japan- or " +
+		"Russia-origin software has been independently catalogued by those authorities. " +
+		"A hit in JVN often means the Japanese vendor has published their own advisory."
+}
+func (t *checkRegionalNVDsTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2023-12345",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkRegionalNVDsTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	type combined struct {
+		JVN enrichers.JVNResult `json:"jvn_ipedia"`
+		BDU enrichers.BDUResult `json:"bdu_fstec"`
+	}
+
+	var (
+		jvn enrichers.JVNResult
+		bdu enrichers.BDUResult
+	)
+	done := make(chan struct{}, 2)
+	go func() { jvn = enrichers.FetchJVNiPedia(fetchCtx, cveID); done <- struct{}{} }()
+	go func() { bdu = enrichers.FetchBDUFSTEC(fetchCtx, cveID); done <- struct{}{} }()
+	<-done
+	<-done
+
+	b, _ := json.MarshalIndent(combined{JVN: jvn, BDU: bdu}, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_attack_mappings ───────────────────────────
+
+type checkATTACKMappingsTool struct{}
+
+func (t *checkATTACKMappingsTool) Name() string { return "check_attack_mappings" }
+func (t *checkATTACKMappingsTool) Description() string {
+	return "Look up MITRE ATT&CK technique mappings for a CVE using the Center for " +
+		"Threat-Informed Defense (CTID) Mappings Explorer dataset and the mitre-attack/attack-stix-data " +
+		"repository. Returns the ATT&CK technique IDs (T#### format) and their associated tactics " +
+		"(e.g. Initial Access, Execution, Privilege Escalation). Use this to understand the adversary " +
+		"kill-chain step where the vulnerability is used and to inform detection engineering."
+}
+func (t *checkATTACKMappingsTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkATTACKMappingsTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	result := enrichers.FetchATTACKMappings(fetchCtx, cveID)
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── map_owasp ───────────────────────────────────────
+
+type mapOWASPTool struct{}
+
+func (t *mapOWASPTool) Name() string { return "map_owasp" }
+func (t *mapOWASPTool) Description() string {
+	return "Map CWE identifiers to OWASP Top 10 2021 categories. This is a deterministic " +
+		"static mapping (no network call). Provide a list of CWE IDs (e.g. [\"CWE-79\", \"CWE-89\"]) " +
+		"and receive the corresponding OWASP Top 10 categories (e.g. A03:2021 Injection). " +
+		"Use this for classification, reporting, and understanding which OWASP Top 10 risk " +
+		"category the vulnerability falls under."
+}
+func (t *mapOWASPTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cwe_ids": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "List of CWE identifiers, e.g. [\"CWE-79\", \"89\", \"CWE-22\"]",
+			},
+		},
+		"required": []string{"cwe_ids"},
+	}
+}
+func (t *mapOWASPTool) Run(_ context.Context, args map[string]any) (string, error) {
+	rawList, ok := args["cwe_ids"].([]interface{})
+	if !ok || len(rawList) == 0 {
+		return "", fmt.Errorf("cwe_ids must be a non-empty array")
+	}
+	cweIDs := make([]string, 0, len(rawList))
+	for _, v := range rawList {
+		if s, ok := v.(string); ok && s != "" {
+			cweIDs = append(cweIDs, s)
+		}
+	}
+	result := enrichers.MapOWASP(cweIDs)
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b), nil
 }
 
 // ─────────────────────────── exec helpers ───────────────────────────────────

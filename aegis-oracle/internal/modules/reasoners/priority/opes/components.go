@@ -147,31 +147,98 @@ func preconditionScore(set schema.PreconditionEvalSet) float64 {
 
 // exploitation (X) — is this CVE being exploited in the wild right now?
 //
-// CISA KEV is the strongest signal (≥9.5), VulnCheck KEV close behind.
-// Observation feeds (inthewild.io) push to ≥8.0. Recent PoC publication
-// alone is a weaker (≤3.0) signal.
+// Scoring hierarchy (highest wins, applied independently then max taken):
+//
+//	CISA KEV or ransomware-associated       → 9.5  (KEV-floor P0 trigger)
+//	VulnCheck KEV or ENISA EUVD KEV         → 9.0
+//	VCDB breach confirmation                → 9.0  (real financial loss)
+//	Observation feeds (inthewild.io, etc.)  → 8.0
+//	Google Project Zero pre-patch 0day      → 8.5
+//	AttackerKB attacker_value = 5           → 7.5
+//	AttackerKB attacker_value = 4           → 7.0
+//	AttackerKB attacker_value = 3           → 5.5
+//	Recent PoC (≤30 days)                  → 3.0
 //
 // X ≥ KEVFloorThreshold (default 9.0) triggers the KEV floor override:
 // the finding lands at P0 regardless of other components.
 func exploitation(e schema.ExploitationEvidence) float64 {
 	score := 0.0
+
+	// KEV source signals.
 	for _, src := range e.InKEVSources {
 		switch src {
 		case "cisa_kev":
 			score = max(score, 9.5)
 		case "vulncheck_kev":
 			score = max(score, 9.0)
+		case "enisa_euvd_kev":
+			score = max(score, 9.0)
 		}
 	}
-	if len(e.ObservationSources) > 0 {
-		score = max(score, 8.0)
-	}
+
+	// Ransomware association — treat equivalent to CISA KEV.
 	if e.RansomwareAssociated {
 		score = max(score, 9.5)
 	}
+
+	// VCDB breach confirmation — CVE caused a real, documented breach.
+	if e.BreachConfirmed {
+		score = max(score, 9.0)
+	}
+
+	// ENISA EUVD direct exploitation flag (also sets InKEVSources above,
+	// but guard here in case Apply wasn't called).
+	if e.ENISAExploited {
+		score = max(score, 9.0)
+	}
+
+	// In-the-wild observation feeds.
+	if len(e.ObservationSources) > 0 {
+		score = max(score, 8.0)
+	}
+
+	// Google Project Zero — exploited before a patch existed.
+	if e.ZeroDayConfirmed {
+		score = max(score, 8.5)
+	}
+
+	// AttackerKB community practitioner value (0–5 scale).
+	switch {
+	case e.AttackerKBValue >= 5:
+		score = max(score, 7.5)
+	case e.AttackerKBValue >= 4:
+		score = max(score, 7.0)
+	case e.AttackerKBValue >= 3:
+		score = max(score, 5.5)
+	}
+
+	// Metasploit exploit module — reliable, GUI-accessible weaponized exploit.
+	// This is a stronger signal than a raw PoC; Metasploit lowers the skill
+	// bar for attackers to near-zero. Score above AttackerKB.
+	if e.MetasploitAvailable {
+		modBoost := 8.0
+		if e.MetasploitModCount >= 2 {
+			modBoost = 8.5 // multiple modules = several attack surfaces weaponized
+		}
+		score = max(score, modBoost)
+	}
+
+	// CISA SSVC "Immediate" means CISA independently assessed the issue as
+	// requiring emergency patching — treat equivalently to KEV-adjacent.
+	switch e.CISASSVCDecision {
+	case "Immediate":
+		score = max(score, 9.0)
+	case "Out-of-Cycle":
+		score = max(score, 7.0)
+	case "Scheduled":
+		score = max(score, 3.5)
+	}
+
+	// Recent public PoC — weakest standalone signal.
 	if e.RecentPOCDays > 0 && e.RecentPOCDays <= 30 {
 		score = max(score, 3.0)
 	}
+
 	return clamp(score, 0, 10)
 }
 
