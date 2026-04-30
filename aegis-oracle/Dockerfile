@@ -7,7 +7,9 @@ RUN go install github.com/projectdiscovery/vulnx/v2/cmd/vulnx@latest
 
 WORKDIR /build
 COPY go.mod go.sum ./
-RUN go mod download
+# go mod tidy regenerates go.sum from scratch if it is stale/incomplete,
+# then downloads all verified modules into the module cache.
+RUN go mod tidy
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \

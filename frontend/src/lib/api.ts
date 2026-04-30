@@ -1556,7 +1556,19 @@ class ApiClient {
   // All Oracle calls go through the ASM backend proxy at /api/v1/oracle/
   // which forwards to the aegis-oracle service on :8742.
 
-  async oracleChat(question: string): Promise<{ answer: string; finding?: any }> {
+  async oracleChat(question: string): Promise<{
+    answer: string;
+    finding?: any;
+    iterations?: number;
+    trace?: Array<{
+      iteration: number;
+      thought: string;
+      tool_name: string;
+      tool_args: Record<string, any>;
+      observation: string;
+      elapsed_ms: number;
+    }>;
+  }> {
     const response = await this.client.post('/oracle/chat', { question });
     return response.data;
   }
