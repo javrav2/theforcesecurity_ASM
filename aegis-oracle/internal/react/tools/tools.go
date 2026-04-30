@@ -15,11 +15,14 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -36,6 +39,7 @@ type Deps struct {
 	Store   ToolStore
 	Runner  *pipeline.Runner
 	KB      *knowledgebase.KB
+	PDCPKey string // ProjectDiscovery Cloud Platform API key (optional; higher rate limits)
 }
 
 // ToolStore is the minimal persistence surface tools need.
@@ -54,8 +58,10 @@ func BuildRegistry(d Deps) *react.Registry {
 	reg := react.NewRegistry()
 	reg.Register(&lookupCVETool{store: d.Store})
 	reg.Register(&getAssetTool{store: d.Store})
-	reg.Register(&checkEPSSKEVTool{})
-	reg.Register(&searchExploitEvidenceTool{})
+	reg.Register(&searchVulnxTool{pdcpKey: d.PDCPKey})    // single CVE deep-dive (ID lookup)
+	reg.Register(&vulnxSearchTool{pdcpKey: d.PDCPKey})    // CVE discovery by technology/query
+	reg.Register(&checkEPSSKEVTool{})                     // EPSS + KEV (no API key needed)
+	reg.Register(&searchExploitEvidenceTool{})            // cvelistV5 + GHSA advisory text
 	reg.Register(&lookupKBPatternTool{kb: d.KB})
 	reg.Register(&getOpenFindingsTool{store: d.Store})
 	reg.Register(&runAnalysisTool{runner: d.Runner})
@@ -97,6 +103,375 @@ func (t *lookupCVETool) Run(ctx context.Context, args map[string]any) (string, e
 	}
 	b, _ := json.MarshalIndent(cve, "", "  ")
 	return string(b), nil
+}
+
+// ─────────────────────────── search_vulnx ───────────────────────────────────
+
+// searchVulnxTool calls the ProjectDiscovery vulnx API
+// (https://api.projectdiscovery.io/v2/vulnerability/{id}) and returns a
+// structured snapshot combining CVSS, EPSS, CISA KEV, VulnCheck KEV, PoC
+// tracking, HackerOne stats, Nuclei template coverage, Shodan/Fofa exposure,
+// affected products, requirements (preconditions), and remediation guidance.
+//
+// This is the richest single-call CVE data source available and should be
+// preferred over the separate check_epss_kev + search_exploit_evidence calls
+// when a PDCP key is available. Works unauthenticated with stricter rate limits.
+type searchVulnxTool struct{ pdcpKey string }
+
+func (t *searchVulnxTool) Name() string { return "search_vulnx" }
+func (t *searchVulnxTool) Description() string {
+	return "Query the ProjectDiscovery vulnx API for rich CVE intelligence in one call: " +
+		"CVSS, EPSS, CISA KEV, VulnCheck KEV, PoC URLs, HackerOne report count, " +
+		"Nuclei template name, internet exposure (Shodan/Fofa), affected products, " +
+		"requirements/preconditions, and remediation guidance. " +
+		"Prefer this over check_epss_kev and search_exploit_evidence when available."
+}
+func (t *searchVulnxTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *searchVulnxTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	cveID = strings.ToUpper(strings.TrimSpace(cveID))
+
+	url := fmt.Sprintf("https://api.projectdiscovery.io/v2/vulnerability/%s", cveID)
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+	if t.pdcpKey != "" {
+		req.Header.Set("X-PDCP-Key", t.pdcpKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("vulnx API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return fmt.Sprintf(`{"found":false,"cve_id":%q,"note":"CVE not in ProjectDiscovery database."}`, cveID), nil
+	case http.StatusTooManyRequests:
+		return fmt.Sprintf(`{"rate_limited":true,"cve_id":%q,"note":"vulnx rate limit hit. Set PDCP_API_KEY for higher limits."}`, cveID), nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("vulnx HTTP %d for %s", resp.StatusCode, cveID)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	// Parse top-level envelope {"data": {...}}
+	var envelope struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Data == nil {
+		// Return raw JSON if parsing fails — LLM can still read it
+		return string(body), nil
+	}
+	d := envelope.Data
+
+	// Re-serialise as pretty-printed JSON so the LLM can read it clearly.
+	// Filter to the fields most useful for exploitability reasoning.
+	useful := map[string]any{
+		"cve_id":           cveID,
+		"severity":         d["severity"],
+		"cvss_score":       d["cvss_score"],
+		"cvss_metrics":     d["cvss_metrics"],
+		"epss_score":       d["epss_score"],
+		"epss_percentile":  d["epss_percentile"],
+		"is_kev":           d["is_kev"],
+		"is_vkev":          d["is_vkev"],
+		"kev":              d["kev"],
+		"is_poc":           d["is_poc"],
+		"poc_count":        d["poc_count"],
+		"pocs":             d["pocs"],
+		"h1":               d["h1"],
+		"is_template":      d["is_template"],
+		"filename":         d["filename"],
+		"tags":             d["tags"],
+		"requirements":     d["requirements"],
+		"requirement_type": d["requirement_type"],
+		"exposure":         d["exposure"],
+		"affected_products": limitSlice(d["affected_products"], 5),
+		"description":      truncStr(d["description"], 600),
+		"remediation":      truncStr(d["remediation"], 400),
+		"cwe":              d["cwe"],
+		"is_remote":        d["is_remote"],
+		"is_auth":          d["is_auth"],
+		"is_patch_available": d["is_patch_available"],
+		"vuln_status":      d["vuln_status"],
+	}
+	out, _ := json.MarshalIndent(useful, "", "  ")
+	return string(out), nil
+}
+
+// ─────────────────────────── vulnx_search ───────────────────────────────────
+
+// vulnxSearchTool uses the ProjectDiscovery PDCP search API to find CVEs
+// matching a rich query string — technology, severity, exploit status, date
+// ranges — and returns a summary list. This is distinct from search_vulnx
+// (which fetches a single CVE by ID): vulnx_search is for DISCOVERY (e.g.
+// "what high-severity remotely-exploitable CVEs affect Node.js 24?") while
+// search_vulnx is for ENRICHMENT (deep intel on a known CVE ID).
+//
+// If vulnx binary is installed, it is exec'd with --json --silent for the
+// richest output. Falls back to the PDCP HTTP search API otherwise.
+type vulnxSearchTool struct{ pdcpKey string }
+
+func (t *vulnxSearchTool) Name() string { return "vulnx_search" }
+func (t *vulnxSearchTool) Description() string {
+	return "Search the ProjectDiscovery vulnerability database using a rich query string. " +
+		"Use this to DISCOVER CVEs relevant to a technology stack or asset profile — e.g. " +
+		"'nodejs && severity:high && is_remote:true', " +
+		"'apache && is_kev:true', " +
+		"'severity:critical && is_poc:true && age_in_days:<30'. " +
+		"Supports boolean logic (&&, ||, NOT), field filters (severity:, cvss_score:>, epss_score:>, is_kev:, is_poc:, " +
+		"is_template:, is_remote:, affected_products.vendor:, affected_products.product:, age_in_days:), " +
+		"and date ranges (cve_created_at:>=2024). Returns a ranked list of matching CVEs. " +
+		"Distinct from search_vulnx (single CVE deep-dive) — use this when you don't have a specific CVE yet."
+}
+func (t *vulnxSearchTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{
+				"type":        "string",
+				"description": "vulnx query string, e.g. 'nodejs && severity:high && is_remote:true'",
+			},
+			"limit": map[string]any{
+				"type":        "integer",
+				"description": "Max results to return (default 10, max 25)",
+			},
+			"sort": map[string]any{
+				"type":        "string",
+				"description": "Field to sort descending by: cvss_score, epss_score, cve_created_at (default: cvss_score)",
+			},
+		},
+		"required": []string{"query"},
+	}
+}
+
+func (t *vulnxSearchTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+	limit := 10
+	if l, ok := args["limit"].(float64); ok && l > 0 {
+		limit = int(l)
+	}
+	if limit > 25 {
+		limit = 25
+	}
+	sortField := "cvss_score"
+	if s, ok := args["sort"].(string); ok && s != "" {
+		sortField = s
+	}
+
+	// Prefer binary exec if available.
+	if result, err := t.runViaBinary(ctx, query, limit, sortField); err == nil {
+		return result, nil
+	}
+
+	// Fall back to HTTP API.
+	return t.runViaAPI(ctx, query, limit, sortField)
+}
+
+func (t *vulnxSearchTool) runViaBinary(ctx context.Context, query string, limit int, sort string) (string, error) {
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmdArgs := []string{
+		"search", query,
+		"--json", "--silent", "--disable-update-check",
+		"--limit", fmt.Sprintf("%d", limit),
+		"--sort-desc", sort,
+	}
+	out, err := runCommand(execCtx, "vulnx", cmdArgs, map[string]string{
+		"PDCP_API_KEY": t.pdcpKey,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func (t *vulnxSearchTool) runViaAPI(ctx context.Context, query string, limit int, sort string) (string, error) {
+	// PDCP search API: GET /v2/vulnerability?q=QUERY&limit=N&sort-desc=FIELD
+	apiURL := fmt.Sprintf(
+		"https://api.projectdiscovery.io/v2/vulnerability?q=%s&limit=%d&sort-desc=%s",
+		urlEncodeQuery(query), limit, sort,
+	)
+
+	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+	if t.pdcpKey != "" {
+		req.Header.Set("X-PDCP-Key", t.pdcpKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("vulnx search API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		return fmt.Sprintf(`{"rate_limited":true,"note":"vulnx rate limit. Set PDCP_API_KEY for higher limits.","query":%q}`, query), nil
+	case http.StatusUnauthorized:
+		return fmt.Sprintf(`{"error":"unauthorized","note":"PDCP_API_KEY invalid or missing.","query":%q}`, query), nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("vulnx search HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	// The response is {"data": {"vulnerabilities": [...], "count": N}} or similar.
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return string(body), nil
+	}
+
+	// Normalise to a clean summary list for the LLM.
+	data, _ := envelope["data"].(map[string]any)
+	if data == nil {
+		// Try flat array response.
+		return summariseVulnList(body, query), nil
+	}
+	vulnsAny := data["vulnerabilities"]
+	if vulnsAny == nil {
+		vulnsAny = data["data"]
+	}
+	if vulnsAny == nil {
+		return string(body), nil
+	}
+	vulnBytes, _ := json.Marshal(vulnsAny)
+	return summariseVulnList(vulnBytes, query), nil
+}
+
+// summariseVulnList renders a list of vulnerability objects as a compact
+// summary the LLM can scan quickly without hitting token limits.
+func summariseVulnList(raw []byte, query string) string {
+	var vulns []map[string]any
+	if err := json.Unmarshal(raw, &vulns); err != nil {
+		return string(raw)
+	}
+	if len(vulns) == 0 {
+		return fmt.Sprintf(`{"query":%q,"count":0,"note":"No CVEs matched the query."}`, query)
+	}
+	type row struct {
+		CVEID    string  `json:"cve_id"`
+		Severity string  `json:"severity"`
+		CVSS     float64 `json:"cvss_score"`
+		EPSS     float64 `json:"epss_score"`
+		IsKEV    bool    `json:"is_kev"`
+		IsPOC    bool    `json:"is_poc"`
+		IsRemote bool    `json:"is_remote"`
+		Template bool    `json:"is_template"`
+		Age      any     `json:"age_in_days"`
+		Desc     string  `json:"description"`
+	}
+	var rows []row
+	for _, v := range vulns {
+		r := row{}
+		r.CVEID, _ = v["cve_id"].(string)
+		r.Severity, _ = v["severity"].(string)
+		r.CVSS, _ = v["cvss_score"].(float64)
+		r.EPSS, _ = v["epss_score"].(float64)
+		r.IsKEV, _ = v["is_kev"].(bool)
+		r.IsPOC, _ = v["is_poc"].(bool)
+		r.IsRemote, _ = v["is_remote"].(bool)
+		r.Template, _ = v["is_template"].(bool)
+		r.Age = v["age_in_days"]
+		desc, _ := v["description"].(string)
+		if len(desc) > 150 {
+			desc = desc[:150] + "…"
+		}
+		r.Desc = desc
+		rows = append(rows, r)
+	}
+	out := map[string]any{
+		"query":           query,
+		"count":           len(rows),
+		"vulnerabilities": rows,
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b)
+}
+
+func urlEncodeQuery(q string) string {
+	// Manual percent-encoding of the query string without importing net/url
+	// (which is already imported via the http package).
+	var sb strings.Builder
+	for _, c := range q {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			sb.WriteRune(c)
+		case c == '-', c == '_', c == '.', c == '~':
+			sb.WriteRune(c)
+		default:
+			sb.WriteString(fmt.Sprintf("%%%02X", c))
+		}
+	}
+	return sb.String()
+}
+
+// runCommand execs a binary with args and env overrides.
+// Returns stdout bytes on success.
+func runCommand(ctx context.Context, name string, args []string, env map[string]string) ([]byte, error) {
+	import_exec := execLookup(name)
+	if import_exec == "" {
+		return nil, fmt.Errorf("%q not found in PATH", name)
+	}
+	return execRun(ctx, import_exec, args, env)
+}
+
+func limitSlice(v any, n int) any {
+	if v == nil {
+		return nil
+	}
+	s, ok := v.([]any)
+	if !ok || len(s) <= n {
+		return v
+	}
+	return s[:n]
+}
+
+func truncStr(v any, max int) any {
+	s, ok := v.(string)
+	if !ok || len(s) <= max {
+		return v
+	}
+	return s[:max] + "…"
 }
 
 // ─────────────────────────── get_asset ──────────────────────────────────────
@@ -518,5 +893,36 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// ─────────────────────────── exec helpers ───────────────────────────────────
+
+// execLookup returns the full path to a binary or "" if not found.
+func execLookup(name string) string {
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+// execRun runs a binary with the given args and additional env vars.
+// Returns combined stdout/stderr on success, error on non-zero exit.
+func execRun(ctx context.Context, path string, args []string, extraEnv map[string]string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, path, args...)
+	// Inherit current env and add overrides.
+	cmd.Env = os.Environ()
+	for k, v := range extraEnv {
+		if v != "" {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("exec %s: %w (stderr: %s)", path, err, stderr.String())
+	}
+	return stdout.Bytes(), nil
 }
 

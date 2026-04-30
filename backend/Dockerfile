@@ -95,6 +95,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends golang \
     && go install github.com/tomnomnom/waybackurls@latest \
     && go install github.com/tomnomnom/assetfinder@latest \
     && go install github.com/lc/gau/v2/cmd/gau@latest \
+    && go install github.com/projectdiscovery/vulnx/v2/cmd/vulnx@latest \
     && cp /root/go/bin/* /tools/
 
 # Download Gitleaks (secret scanner - Go binary)

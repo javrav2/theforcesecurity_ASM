@@ -2,6 +2,9 @@ FROM golang:1.23-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
+# Install vulnx CLI for enrichment tool exec fallback
+RUN go install github.com/projectdiscovery/vulnx/v2/cmd/vulnx@latest
+
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -19,10 +22,14 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 WORKDIR /app
 
-COPY --from=builder /build/aegis-oracle     ./aegis-oracle
-COPY --from=builder /build/aegis-oracle-cli ./aegis-oracle-cli
-COPY knowledgebase/                          ./knowledgebase/
-COPY cmd/aegis-oracle/config.yaml           ./config.yaml
+COPY --from=builder /build/aegis-oracle          ./aegis-oracle
+COPY --from=builder /build/aegis-oracle-cli      ./aegis-oracle-cli
+COPY --from=builder /root/go/bin/vulnx           ./vulnx
+COPY knowledgebase/                              ./knowledgebase/
+COPY cmd/aegis-oracle/config.yaml               ./config.yaml
+
+# Put vulnx on PATH so the react tool can exec it
+ENV PATH="/app:${PATH}"
 
 USER oracle
 

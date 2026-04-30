@@ -46,6 +46,53 @@ def get_tenant_context() -> tuple:
     return current_user_id.get(), current_organization_id.get()
 
 
+def _format_vulnx_search_output(raw_json: str, query: str) -> str:
+    """Format vulnx search JSON output into a compact analyst-readable summary."""
+    import json as _json
+    try:
+        vulns = _json.loads(raw_json)
+        # Handle vulnx CLI output envelope: {"vulnerabilities": [...]} or flat list
+        if isinstance(vulns, dict):
+            vulns = (
+                vulns.get("vulnerabilities")
+                or vulns.get("data")
+                or vulns.get("results")
+                or []
+            )
+        if not isinstance(vulns, list):
+            return raw_json
+        if not vulns:
+            return f"No CVEs matched the query: '{query}'"
+        lines = [f"# vulnx search — `{query}`  ({len(vulns)} results)\n"]
+        for v in vulns[:20]:
+            cve_id = v.get("cve_id") or v.get("CVE") or "?"
+            severity = (v.get("severity") or "?").upper()
+            cvss = v.get("cvss_score") or 0
+            epss = v.get("epss_score") or 0
+            flags = []
+            if v.get("is_kev"):
+                flags.append("KEV⚠️")
+            if v.get("is_poc"):
+                flags.append(f"PoC({v.get('poc_count',1)})")
+            if v.get("is_template"):
+                flags.append("nuclei")
+            if v.get("is_remote"):
+                flags.append("remote")
+            if v.get("h1", {}).get("reports"):
+                flags.append(f"h1({v['h1']['reports']})")
+            desc = (v.get("description") or "")[:120]
+            flag_str = "  [" + ", ".join(flags) + "]" if flags else ""
+            lines.append(
+                f"- **{cve_id}** {severity} CVSS:{cvss:.1f} EPSS:{epss:.3f}{flag_str}\n"
+                f"  {desc}"
+            )
+        if len(vulns) > 20:
+            lines.append(f"\n…and {len(vulns) - 20} more results")
+        return "\n".join(lines)
+    except Exception:
+        return raw_json
+
+
 class ASMToolsManager:
     """Manager for ASM platform tools accessible by the AI agent."""
     
@@ -168,6 +215,10 @@ class ASMToolsManager:
         # Optional: web search (RedAmon-style) when Tavily API key is set
         if getattr(settings, "TAVILY_API_KEY", None):
             tools["web_search"] = self.web_search
+        # vulnx: ProjectDiscovery vulnerability intelligence API (CVE ID lookup + search)
+        # Available with or without PDCP_API_KEY (unauthenticated has rate limits)
+        tools["search_vulnx"] = self.search_vulnx       # single CVE deep-dive by ID
+        tools["vulnx_query"] = self.vulnx_query         # search CVEs by technology/query
         return tools
 
     def get_tool(self, name: str) -> Optional[callable]:
@@ -877,6 +928,252 @@ class ASMToolsManager:
             content = (hit.get("content") or "")[:_tool_output_max_chars() // max_results]
             out.append(f"## {i}. {title}\nURL: {url}\n{content}\n")
         return "\n".join(out)
+
+    async def search_vulnx(self, cve_id: str) -> str:
+        """
+        Query the ProjectDiscovery vulnx API for rich CVE intelligence.
+
+        Returns a comprehensive snapshot including:
+          - CVSS score & vector, EPSS score & percentile
+          - CISA KEV and VulnCheck KEV membership
+          - Public PoC count and URLs (source, added date)
+          - HackerOne disclosed report count and rank
+          - Nuclei template name and raw YAML (when available)
+          - Affected products with CPEs and deployment models
+          - Internet exposure estimates (Shodan/Fofa min–max hosts)
+          - Requirements / preconditions (structured attacker prerequisites)
+          - Remediation guidance
+
+        Uses PDCP_API_KEY when set (higher rate limits); works unauthenticated
+        with stricter limits. Key is the same one used by other PD tools.
+
+        Args:
+            cve_id: CVE identifier, e.g. CVE-2021-44228
+        """
+        import re as _re
+        cve_id = cve_id.strip().upper()
+        if not _re.match(r"^CVE-\d{4}-\d+$", cve_id):
+            return f"Invalid CVE ID format: {cve_id}. Expected CVE-YYYY-NNNNN."
+
+        base_url = "https://api.projectdiscovery.io"
+        headers = {"User-Agent": "aegis-vanguard/1.0"}
+        api_key = getattr(settings, "PDCP_API_KEY", None)
+        if api_key:
+            headers["X-PDCP-Key"] = api_key
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.get(
+                    f"{base_url}/v2/vulnerability/{cve_id}",
+                    headers=headers,
+                )
+                if r.status_code == 404:
+                    return f"{cve_id} not found in the ProjectDiscovery vulnerability database."
+                if r.status_code == 429:
+                    return (
+                        f"vulnx API rate limit hit for {cve_id}. "
+                        "Set PDCP_API_KEY in .env for higher limits (free at cloud.projectdiscovery.io)."
+                    )
+                r.raise_for_status()
+                data = r.json().get("data") or {}
+        except httpx.HTTPStatusError as e:
+            return f"vulnx API error for {cve_id}: HTTP {e.response.status_code}"
+        except Exception as e:
+            return f"vulnx lookup failed for {cve_id}: {e}"
+
+        if not data:
+            return f"No data returned for {cve_id}."
+
+        lines = [f"# vulnx — {cve_id}\n"]
+
+        # Core severity
+        lines.append(f"**Severity**: {data.get('severity', 'N/A').upper()}")
+        lines.append(f"**CVSS Score**: {data.get('cvss_score', 'N/A')}  ({data.get('cvss_metrics', '')})")
+        lines.append(f"**EPSS Score**: {data.get('epss_score', 'N/A')}  (percentile: {data.get('epss_percentile', 'N/A')})")
+        lines.append(f"**Status**: {data.get('vuln_status', 'N/A')}")
+        lines.append("")
+
+        # Exploitation signals
+        kev_entries = data.get("kev") or []
+        is_kev = data.get("is_kev", False)
+        is_vkev = data.get("is_vkev", False)
+        lines.append(f"**CISA KEV**: {'YES ⚠️' if is_kev else 'No'}")
+        lines.append(f"**VulnCheck KEV**: {'YES ⚠️' if is_vkev else 'No'}")
+        if kev_entries:
+            for k in kev_entries:
+                added = k.get("added_date", "")[:10] if k.get("added_date") else ""
+                ransomware = " (ransomware)" if k.get("known_ransomware_campaign_use") else ""
+                lines.append(f"  - KEV source: {k.get('source', '?')}  added: {added}{ransomware}")
+
+        poc_count = data.get("poc_count", 0)
+        is_poc = data.get("is_poc", False)
+        lines.append(f"**Public PoC**: {'YES' if is_poc else 'No'}  ({poc_count} PoC(s))")
+        pocs = data.get("pocs") or []
+        for p in pocs[:5]:
+            added = p.get("added_at", "")[:10] if p.get("added_at") else ""
+            lines.append(f"  - [{p.get('source','?')}] {p.get('url','')}  (added {added})")
+        lines.append("")
+
+        # HackerOne
+        h1 = data.get("h1") or {}
+        if h1:
+            lines.append(f"**HackerOne**: {h1.get('reports', 0)} reports  rank #{h1.get('rank', '?')}  (Δ reports: {h1.get('delta_reports', 0)})")
+            lines.append("")
+
+        # Nuclei template
+        is_template = data.get("is_template", False)
+        lines.append(f"**Nuclei Template**: {'YES — ' + data.get('filename','') if is_template else 'No'}")
+        if is_template and data.get("tags"):
+            lines.append(f"  Tags: {', '.join(data.get('tags', []))}")
+        lines.append("")
+
+        # Requirements / preconditions
+        reqs = data.get("requirements", "")
+        req_type = data.get("requirement_type", "")
+        if reqs:
+            lines.append(f"**Requirements (preconditions)**:")
+            lines.append(f"  Type: {req_type}")
+            lines.append(f"  {reqs}")
+            lines.append("")
+
+        # Internet exposure
+        exposure = data.get("exposure") or {}
+        exp_values = exposure.get("values") or []
+        if exp_values:
+            total_min = sum(v.get("min_hosts", 0) for v in exp_values)
+            total_max = sum(v.get("max_hosts", 0) for v in exp_values)
+            lines.append(f"**Internet Exposure**: ~{total_min:,}–{total_max:,} hosts (Shodan/Fofa)")
+            lines.append("")
+
+        # Affected products
+        products = data.get("affected_products") or []
+        if products:
+            lines.append(f"**Affected Products** ({len(products)} total, showing first 5):")
+            for p in products[:5]:
+                vendor = p.get("vendor", "")
+                product = p.get("product", "")
+                deploy = p.get("deployment_model", "")
+                cpes = ", ".join((p.get("cpe") or [])[:2])
+                lines.append(f"  - {vendor} / {product}  [{deploy}]  CPE: {cpes}")
+            lines.append("")
+
+        # Description + remediation
+        desc = data.get("description", "")
+        if desc:
+            lines.append(f"**Description**: {desc[:500]}{'...' if len(desc) > 500 else ''}")
+        remediation = data.get("remediation", "")
+        if remediation:
+            lines.append(f"**Remediation**: {remediation[:400]}{'...' if len(remediation) > 400 else ''}")
+
+        # CWEs
+        cwes = data.get("cwe") or []
+        if cwes:
+            lines.append(f"**CWEs**: {', '.join(cwes)}")
+
+        return "\n".join(lines)
+
+    async def vulnx_query(self, query: str, limit: int = 10, sort_by: str = "cvss_score") -> str:
+        """
+        Search the ProjectDiscovery vulnerability database using a rich query string.
+
+        Use this to DISCOVER CVEs relevant to a technology stack — for example when
+        you've identified that a target runs Apache Tomcat 9.x and want to find all
+        recent high-severity exploitable CVEs for it.
+
+        Query syntax supports:
+          - Boolean:  apache && severity:high && is_remote:true
+          - Field:    affected_products.product:tomcat, cvss_score:>8.0, epss_score:>0.7
+          - KEV/PoC:  is_kev:true, is_poc:true, is_template:true
+          - Date:     cve_created_at:>=2024, age_in_days:<30
+          - Vendor:   affected_products.vendor:microsoft
+
+        Examples:
+          - 'nodejs && severity:high && is_remote:true'
+          - 'apache && is_kev:true'
+          - 'severity:critical && is_poc:true && age_in_days:<30'
+          - 'affected_products.product:spring && cvss_score:>8.0'
+
+        Args:
+            query:   vulnx query string (see syntax above)
+            limit:   max results (default 10, max 25)
+            sort_by: field to sort descending by (cvss_score, epss_score, cve_created_at)
+        """
+        import re as _re
+        import subprocess
+        import shutil
+
+        if not query.strip():
+            return "query is required"
+        if limit > 25:
+            limit = 25
+
+        base_url = "https://api.projectdiscovery.io"
+        headers = {"User-Agent": "aegis-vanguard/1.0"}
+        api_key = getattr(settings, "PDCP_API_KEY", None)
+        if api_key:
+            headers["X-PDCP-Key"] = api_key
+
+        # ── Try vulnx binary first (richest output) ──────────────────────────
+        vulnx_path = shutil.which("vulnx")
+        if vulnx_path:
+            try:
+                cmd = [
+                    vulnx_path, "search", query,
+                    "--json", "--silent", "--disable-update-check",
+                    "--limit", str(limit),
+                    "--sort-desc", sort_by,
+                ]
+                env = {**dict(__import__("os").environ)}
+                if api_key:
+                    env["PDCP_API_KEY"] = api_key
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30, env=env
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return _format_vulnx_search_output(result.stdout, query)
+            except Exception:
+                pass  # fall through to HTTP API
+
+        # ── Fall back to PDCP HTTP search API ────────────────────────────────
+        from urllib.parse import quote
+        search_url = (
+            f"{base_url}/v2/vulnerability"
+            f"?q={quote(query)}&limit={limit}&sort-desc={sort_by}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.get(search_url, headers=headers)
+                if r.status_code == 429:
+                    return (
+                        f"vulnx search rate limit hit for query '{query}'. "
+                        "Set PDCP_API_KEY in .env for higher limits."
+                    )
+                if r.status_code == 401:
+                    return "vulnx: unauthorized — PDCP_API_KEY may be invalid."
+                r.raise_for_status()
+                data = r.json()
+        except httpx.HTTPStatusError as e:
+            return f"vulnx search API error: HTTP {e.response.status_code}"
+        except Exception as e:
+            return f"vulnx search failed: {e}"
+
+        # Normalise response envelope
+        vulns = []
+        if isinstance(data, dict):
+            inner = data.get("data") or data
+            if isinstance(inner, dict):
+                vulns = inner.get("vulnerabilities") or inner.get("data") or []
+            elif isinstance(inner, list):
+                vulns = inner
+        elif isinstance(data, list):
+            vulns = data
+
+        if not vulns:
+            return f"No CVEs matched the query: '{query}'"
+
+        return _format_vulnx_search_output(
+            __import__("json").dumps(vulns), query
+        )
 
     def _resolve_asset_type(self, value: str) -> AssetType:
         """Infer AssetType from a raw value string."""

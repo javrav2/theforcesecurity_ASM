@@ -52,8 +52,9 @@ type Config struct {
 	Knowledgebase struct {
 		Root string `yaml:"root"`
 	} `yaml:"knowledgebase"`
-	OPES opes.Config `yaml:"opes"`
-	Log  struct {
+	OPES    opes.Config `yaml:"opes"`
+	PDCPKey string      `yaml:"pdcp_api_key"` // ProjectDiscovery Cloud Platform key (optional)
+	Log     struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
 	} `yaml:"log"`
@@ -124,9 +125,10 @@ func main() {
 
 	// ReAct loop — wires Oracle tools to the LLM for iterative reasoning.
 	toolRegistry := reacttools.BuildRegistry(reacttools.Deps{
-		Store:  store,
-		Runner: runner,
-		KB:     kb,
+		Store:   store,
+		Runner:  runner,
+		KB:      kb,
+		PDCPKey: os.Getenv("PDCP_API_KEY"), // optional; higher vulnx rate limits
 	})
 	reactLoop := react.New(react.Config{
 		LLM:           provider,
@@ -276,6 +278,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		cfg.LLM.OpenAI.APIKey = v
+	}
+	if v := os.Getenv("PDCP_API_KEY"); v != "" {
+		cfg.PDCPKey = v
 	}
 	return cfg, nil
 }

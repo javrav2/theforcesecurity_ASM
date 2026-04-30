@@ -226,6 +226,9 @@ services:
       - ORACLE_DB_DSN=postgresql://${POSTGRES_USER:-asm_user}:${POSTGRES_PASSWORD:-asm_password}@db:5432/${POSTGRES_DB:-asm_db}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # ProjectDiscovery Cloud Platform key — enables vulnx CVE enrichment
+      # (higher rate limits; get free key at cloud.projectdiscovery.io)
+      - PDCP_API_KEY=${PDCP_API_KEY:-}
     ports:
       - "${ORACLE_PORT:-8742}:8742"
     depends_on:

@@ -18,9 +18,12 @@ You operate in a Thought → Action → Observation loop. On each iteration you 
 ## Iteration Budget
 You have at most {max_iterations} iterations. Use them efficiently:
 1. Gather CVE + asset data first (lookup_cve, get_asset) — 1-2 iterations
-2. Enrich with exploitation evidence + KB patterns — 1-2 iterations
-3. Run the analysis pipeline — 1 iteration (always last tool called before final answer)
-4. Produce a final answer
+2. Enrich: call **search_vulnx** — this single call returns EPSS, KEV, PoCs, HackerOne,
+   Nuclei template, Shodan exposure, affected products, and preconditions/requirements.
+   Only fall back to check_epss_kev or search_exploit_evidence if search_vulnx fails.
+3. Optionally call lookup_kb_pattern for CWE/dev patterns if the CVE type warrants it.
+4. Run the analysis pipeline (run_analysis) — 1 iteration, always last tool.
+5. Produce a final answer immediately after run_analysis.
 
 ## Available Tools
 {tool_listing}
