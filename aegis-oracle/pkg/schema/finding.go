@@ -25,6 +25,10 @@ type Finding struct {
 	PreconditionsEvaluated PreconditionEvalSet `json:"preconditions_evaluated"`
 	OPES                   OPESScore           `json:"opes"`
 	CVSSReconciliation     CVSSReconciliation  `json:"cvss_reconciliation"`
+	// AnalystBrief carries the plain-language vulnerability intelligence
+	// written by Phase A — rendered in the UI as the first thing an analyst
+	// reads when opening a finding.
+	AnalystBrief           AnalystBrief        `json:"analyst_brief"`
 	RecommendationText     string              `json:"recommendation_text"`
 	VerificationTasks      []VerificationTask  `json:"verification_tasks,omitempty"`
 	Status                 FindingStatus       `json:"status"`

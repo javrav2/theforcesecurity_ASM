@@ -18,14 +18,24 @@ import {
 } from '@/components/ui/dialog';
 import {
   Send, Loader2, Eye, ShieldAlert, CheckCircle2, HelpCircle,
-  XCircle, AlertTriangle, Flame, TrendingUp, RefreshCw, ChevronDown,
-  ChevronUp, BookOpen,
+  XCircle, AlertTriangle, Flame, TrendingUp, RefreshCw, BookOpen,
+  Crosshair, Globe, BarChart2, Code2, ShieldCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
 // ─────────────────────────── Types ──────────────────────────────────────
+
+interface AnalystBrief {
+  title?: string;
+  what_is_it: string;
+  attack_scenario: string;
+  attack_vector_summary: string;
+  real_world_likelihood: string;
+  affected_if: string;
+  not_affected_if?: string;
+}
 
 interface OPESComponents { E: number; R: number; P: number; X: number; C: number; T: number; }
 
@@ -72,6 +82,7 @@ interface OracleFinding {
   asset_id: string;
   evaluated_at: string;
   opes: OPESScore;
+  analyst_brief?: AnalystBrief;
   preconditions_evaluated: PreconditionEval[];
   cvss_reconciliation: {
     correct_vector: string;
@@ -131,6 +142,82 @@ function ConfidenceBadge({ c }: { c: string }) {
   return <span className={cn('text-xs font-medium', col)}>{c} confidence</span>;
 }
 
+// ─────────────────────────── Analyst Brief panel ───────────────────────
+
+const BRIEF_SECTIONS: { key: keyof Omit<AnalystBrief, 'title'>; label: string; icon: React.ReactNode; accent: string }[] = [
+  {
+    key: 'what_is_it',
+    label: 'What is this vulnerability?',
+    icon: <BookOpen className="h-4 w-4" />,
+    accent: 'border-blue-500/30 bg-blue-500/5',
+  },
+  {
+    key: 'attack_vector_summary',
+    label: 'Attack vector',
+    icon: <Globe className="h-4 w-4" />,
+    accent: 'border-orange-500/30 bg-orange-500/5',
+  },
+  {
+    key: 'attack_scenario',
+    label: 'How would an attacker exploit this?',
+    icon: <Crosshair className="h-4 w-4" />,
+    accent: 'border-red-500/30 bg-red-500/5',
+  },
+  {
+    key: 'real_world_likelihood',
+    label: 'Real-world exploitation likelihood',
+    icon: <BarChart2 className="h-4 w-4" />,
+    accent: 'border-purple-500/30 bg-purple-500/5',
+  },
+  {
+    key: 'affected_if',
+    label: 'You are affected if…',
+    icon: <Code2 className="h-4 w-4" />,
+    accent: 'border-yellow-500/30 bg-yellow-500/5',
+  },
+  {
+    key: 'not_affected_if',
+    label: 'You are NOT affected if…',
+    icon: <ShieldCheck className="h-4 w-4" />,
+    accent: 'border-green-500/30 bg-green-500/5',
+  },
+];
+
+function AnalystBriefPanel({ brief }: { brief: AnalystBrief }) {
+  return (
+    <section>
+      <div className="mb-3 space-y-1">
+        <h4 className="text-sm font-semibold flex items-center gap-2">
+          <BookOpen className="h-4 w-4 text-primary" />
+          Vulnerability Intelligence
+          <span className="text-[10px] font-normal text-muted-foreground ml-1">AI-generated · verify before citing</span>
+        </h4>
+        {/* Human-readable title — the most scannable summary */}
+        {brief.title && (
+          <p className="text-base font-semibold text-foreground leading-snug pl-6">
+            {brief.title}
+          </p>
+        )}
+      </div>
+      <div className="space-y-2">
+        {BRIEF_SECTIONS.map(({ key, label, icon, accent }) => {
+          const value = brief[key as keyof AnalystBrief];
+          if (!value) return null;
+          return (
+            <div key={key} className={cn('rounded-lg border p-3 space-y-1', accent)}>
+              <p className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
+                {icon}
+                {label}
+              </p>
+              <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">{value as string}</p>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 // ─────────────────────────── Finding detail ────────────────────────────
 
 function FindingDetail({ f }: { f: OracleFinding }) {
@@ -158,6 +245,11 @@ function FindingDetail({ f }: { f: OracleFinding }) {
           </DialogHeader>
 
           <div className="space-y-5 pt-2">
+            {/* Analyst Brief — shown first so an analyst understands the vuln before diving into scores */}
+            {f.analyst_brief && f.analyst_brief.what_is_it && (
+              <AnalystBriefPanel brief={f.analyst_brief} />
+            )}
+
             {/* OPES Components */}
             <section>
               <h4 className="text-sm font-semibold mb-2">OPES Components</h4>
@@ -322,7 +414,7 @@ function OracleMessage({ msg }: { msg: ChatMessage }) {
 
         {/* Inline OPES summary card */}
         {msg.finding && (
-          <div className="mt-3 rounded-lg border bg-card p-3 text-xs space-y-1">
+          <div className="mt-3 rounded-lg border bg-card p-3 text-xs space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
               <CategoryBadge cat={msg.finding.opes.category} />
               <span className="font-medium">{msg.finding.opes.label}</span>
@@ -333,6 +425,22 @@ function OracleMessage({ msg }: { msg: ChatMessage }) {
               <p className="text-yellow-400 flex items-center gap-1">
                 <AlertTriangle className="h-3 w-3" />
                 {msg.finding.opes.dampener}
+              </p>
+            )}
+            {/* Condensed brief — title + attack vector inline before opening full dialog */}
+            {msg.finding.analyst_brief?.title && (
+              <p className="font-medium text-foreground/90 text-xs">
+                {msg.finding.analyst_brief.title}
+              </p>
+            )}
+            {msg.finding.analyst_brief?.attack_vector_summary && (
+              <p className="text-muted-foreground border-l-2 border-orange-500/40 pl-2 leading-relaxed">
+                {msg.finding.analyst_brief.attack_vector_summary}
+              </p>
+            )}
+            {msg.finding.analyst_brief?.real_world_likelihood && (
+              <p className="text-muted-foreground border-l-2 border-purple-500/40 pl-2 leading-relaxed">
+                {msg.finding.analyst_brief.real_world_likelihood}
               </p>
             )}
             <FindingDetail f={msg.finding} />

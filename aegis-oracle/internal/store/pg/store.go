@@ -332,6 +332,7 @@ func (s *Store) UpsertFinding(ctx context.Context, f *schema.Finding) error {
 	compsJSON, _ := json.Marshal(f.OPES.Components)
 	contribsJSON, _ := json.Marshal(f.OPES.TopContributors)
 	reconcileJSON, _ := json.Marshal(f.CVSSReconciliation)
+	briefJSON, _ := json.Marshal(f.AnalystBrief)
 
 	insertQ := fmt.Sprintf(`INSERT INTO %s.findings
 		(finding_id, cve_id, asset_id,
@@ -340,8 +341,9 @@ func (s *Store) UpsertFinding(ctx context.Context, f *schema.Finding) error {
 		 opes_score, opes_category, opes_label, opes_components,
 		 opes_top_contributors, opes_dampener, opes_override,
 		 confidence, priority_rationale, recommendation_text,
+		 cvss_reconciliation, analyst_brief,
 		 status, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now(),now())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now(),now())
 		ON CONFLICT (cve_id, asset_id, intrinsic_input_hash, asset_signals_hash, evaluator_version)
 		DO NOTHING`, s.cfg.OracleSchema)
 
@@ -352,6 +354,7 @@ func (s *Store) UpsertFinding(ctx context.Context, f *schema.Finding) error {
 		f.OPES.Value, string(f.OPES.Category), f.OPES.Label, compsJSON,
 		contribsJSON, f.OPES.Dampener, f.OPES.Override,
 		string(f.OPES.Confidence), "", f.RecommendationText,
+		reconcileJSON, briefJSON,
 		string(schema.StatusOpen),
 	)
 	if err != nil {

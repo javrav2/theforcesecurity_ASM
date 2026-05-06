@@ -65,6 +65,8 @@ type GP0Result struct {
 	ZeroDayConfirmed bool   `json:"zero_day_confirmed"`
 	Product          string `json:"product,omitempty"`
 	Notes            string `json:"notes,omitempty"`
+	// Note carries fetch/parse error messages for diagnostic purposes.
+	Note string `json:"note,omitempty"`
 }
 
 // AttackerKBResult holds community exploitation scoring from AttackerKB.

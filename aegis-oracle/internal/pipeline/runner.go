@@ -179,6 +179,7 @@ func buildFinding(
 		PreconditionsEvaluated: preconditions,
 		OPES:                   score,
 		CVSSReconciliation:     analysis.CVSSReconciliation,
+		AnalystBrief:           analysis.AnalystBrief,
 		RecommendationText:     buildRecommendation(cve, analysis, score, preconditions),
 		Status:                 schema.StatusOpen,
 		CreatedAt:              time.Now().UTC(),
