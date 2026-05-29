@@ -7,9 +7,10 @@ RUN go install github.com/projectdiscovery/vulnx/v2/cmd/vulnx@latest
 
 WORKDIR /build
 COPY go.mod go.sum ./
-# go mod tidy regenerates go.sum from scratch if it is stale/incomplete,
-# then downloads all verified modules into the module cache.
-RUN go mod tidy
+# Download all modules declared in go.mod (verified against go.sum).
+# We do NOT run go mod tidy here — tidy strips entries for packages it
+# can't see yet (source hasn't been copied), which breaks the build.
+RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
@@ -26,7 +27,7 @@ WORKDIR /app
 
 COPY --from=builder /build/aegis-oracle          ./aegis-oracle
 COPY --from=builder /build/aegis-oracle-cli      ./aegis-oracle-cli
-COPY --from=builder /root/go/bin/vulnx           ./vulnx
+COPY --from=builder /go/bin/vulnx              ./vulnx
 COPY knowledgebase/                              ./knowledgebase/
 COPY cmd/aegis-oracle/config.yaml               ./config.yaml
 
