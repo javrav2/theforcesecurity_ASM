@@ -16,6 +16,101 @@ const (
 	ConfidenceLow    Confidence = "low"
 )
 
+// AttackPathClass describes the MITRE ATT&CK initial access technique category
+// that best describes how an attacker reaches the vulnerable component. Used by
+// OPES reachability to weight initial-access difficulty correctly — a
+// phishing-delivered exploit (UI:R) behaves very differently in practice from
+// a direct exploit against an internet-facing service.
+type AttackPathClass string
+
+const (
+	// AttackPathExploitPublicFacing — T1190. Attacker directly exploits a
+	// network-reachable service (web app, API, VPN gateway). No user
+	// interaction required; automatable via scanner or Nuclei template.
+	AttackPathExploitPublicFacing AttackPathClass = "exploit_public_facing"
+
+	// AttackPathPhishingDelivery — T1566. Exploit is delivered via email
+	// attachment, link, or document. Requires a human victim to trigger.
+	// Maps to CVSS UI:R. Reduces automated-scan risk but very common in
+	// targeted campaigns.
+	AttackPathPhishingDelivery AttackPathClass = "phishing_delivery"
+
+	// AttackPathLateralMovementRequired — T1021/T1550/T1570 family. Exploit
+	// can only be reached from inside the network — attacker needs an
+	// existing foothold on a different host. Most dangerous when the
+	// vulnerable service is a high-value internal target (AD, secrets store).
+	AttackPathLateralMovementRequired AttackPathClass = "lateral_movement_required"
+
+	// AttackPathValidCredentials — T1078. Exploit requires stolen or guessed
+	// credentials. Attack complexity depends entirely on credential hygiene
+	// and MFA posture of the target.
+	AttackPathValidCredentials AttackPathClass = "valid_credentials_required"
+
+	// AttackPathSupplyChain — T1195. Vulnerability is introduced through a
+	// compromised dependency, build system, or update mechanism. Victim
+	// unknowingly installs the malicious component.
+	AttackPathSupplyChain AttackPathClass = "supply_chain"
+
+	// AttackPathUnknown — insufficient information to classify.
+	AttackPathUnknown AttackPathClass = "unknown"
+)
+
+// LateralMovementPotential describes what an attacker gains in terms of
+// lateral movement capability after exploiting this CVE. High potential means
+// that compromising this asset gives an attacker keys to move through the
+// network — credential theft, pivot access, or control of auth infrastructure.
+type LateralMovementPotential string
+
+const (
+	// LateralMovementHigh — exploitation directly enables significant pivot:
+	// credential theft (pass-the-hash, token forgery), domain controller
+	// compromise, secrets manager access, or multi-homed gateway takeover.
+	LateralMovementHigh LateralMovementPotential = "high"
+
+	// LateralMovementMedium — some pivot capability, but limited in scope:
+	// access to one adjacent segment, internal service enumeration, or
+	// partial credential access.
+	LateralMovementMedium LateralMovementPotential = "medium"
+
+	// LateralMovementLow — exploitation gives access to a single isolated
+	// service or data set. No meaningful path to other hosts or credentials.
+	LateralMovementLow LateralMovementPotential = "low"
+)
+
+// Label returns analyst-facing prose for the attack path. Used in
+// recommendation narratives and UI; keep in sync with reachabilityVerdict
+// in internal/pipeline.
+func (c AttackPathClass) Label() string {
+	switch c {
+	case AttackPathExploitPublicFacing:
+		return "Direct exploitation of internet-facing service"
+	case AttackPathPhishingDelivery:
+		return "Phishing-delivered (requires user interaction)"
+	case AttackPathLateralMovementRequired:
+		return "Reachable only after attacker has internal foothold"
+	case AttackPathValidCredentials:
+		return "Requires valid credentials"
+	case AttackPathSupplyChain:
+		return "Supply-chain compromise"
+	default:
+		return "Attack path not classified"
+	}
+}
+
+// Label returns analyst-facing prose for lateral-movement impact after exploit.
+func (l LateralMovementPotential) Label() string {
+	switch l {
+	case LateralMovementHigh:
+		return "High — exploitation enables credential theft or pivot to other hosts"
+	case LateralMovementMedium:
+		return "Medium — limited pivot to adjacent services"
+	case LateralMovementLow:
+		return "Low — contained to this asset"
+	default:
+		return ""
+	}
+}
+
 // AttackerCapability captures the minimum capability an attacker must already
 // possess to mount the exploit. Used by OPES difficulty and reachability.
 type AttackerCapability string
@@ -105,6 +200,24 @@ type AnalystBrief struct {
 	// 6.15 has the patch applied". Empty if there are no known mitigations
 	// short of patching.
 	NotAffectedIf string `json:"not_affected_if,omitempty"`
+
+	// ExploitabilityScore is a 1.0–5.0 practical exploitability rating that
+	// answers "how easy is it for a real attacker to exploit this against a
+	// typical deployment, right now?" It is NOT the same as CVSS severity —
+	// it factors in attacker skill required, public tooling availability,
+	// prevalence of the vulnerable pattern in real codebases, and active
+	// exploitation evidence.
+	//
+	// 5 Push-Button  — Zero skill required; Metasploit/single-command exploit exists
+	// 4 Opportunistic — Script-kiddie to mid-level; PoC + widespread pattern
+	// 3 Moderate      — Experienced attacker; specific conditions required
+	// 2 Targeted      — Specialist knowledge or local/adjacent-only access
+	// 1 Theoretical   — Research-grade; no public exploit, complex preconditions
+	ExploitabilityScore float64 `json:"exploitability_score"`
+
+	// ExploitabilityTier is the named tier for ExploitabilityScore.
+	// One of: "push_button" | "opportunistic" | "moderate" | "targeted" | "theoretical"
+	ExploitabilityTier string `json:"exploitability_tier"`
 }
 
 // IntrinsicAnalysis is the Phase A reasoner's structured output.
@@ -115,16 +228,27 @@ type IntrinsicAnalysis struct {
 	RemoteTriggerability RemoteTriggerability `json:"remote_triggerability"`
 	ExploitComplexity    ExploitComplexity    `json:"exploit_complexity"`
 	AttackerCapability   AttackerCapability   `json:"attacker_capability"`
-	Preconditions        []Precondition       `json:"preconditions"`
-	CVSSReconciliation   CVSSReconciliation   `json:"cvss_reconciliation"`
-	AttackChainSummary   string               `json:"attack_chain_summary"`
+	// AttackPathClass classifies the MITRE ATT&CK initial access technique
+	// (T1190 direct exploit vs T1566 phishing vs lateral movement required
+	// etc.). Consumed by OPES reachability to correctly weight the real-world
+	// attack surface — a phishing-delivered exploit is not automatable the
+	// same way a scanner-reachable service exploit is.
+	AttackPathClass          AttackPathClass          `json:"attack_path_class"`
+	// LateralMovementPotential describes what an attacker gains in terms of
+	// pivot / lateral movement capability after successful exploitation.
+	// High potential (credential stores, AD, pivot gateways) materially
+	// increases the OPES criticality score above the asset's base value.
+	LateralMovementPotential LateralMovementPotential `json:"lateral_movement_potential"`
+	Preconditions            []Precondition           `json:"preconditions"`
+	CVSSReconciliation       CVSSReconciliation       `json:"cvss_reconciliation"`
+	AttackChainSummary       string                   `json:"attack_chain_summary"`
 	// AnalystBrief is the human-readable vulnerability intelligence writeup
 	// rendered in the UI to help analysts and developers understand the
 	// vulnerability, attack vector, and real-world exploitation likelihood.
-	AnalystBrief         AnalystBrief         `json:"analyst_brief"`
-	DetectionSignals     []string             `json:"detection_signals,omitempty"`
-	Rationale            string               `json:"rationale"`
-	Confidence           Confidence           `json:"confidence"`
+	AnalystBrief             AnalystBrief             `json:"analyst_brief"`
+	DetectionSignals         []string                 `json:"detection_signals,omitempty"`
+	Rationale                string                   `json:"rationale"`
+	Confidence               Confidence               `json:"confidence"`
 
 	PromptVersion string `json:"prompt_version,omitempty"`
 	LLMModel      string `json:"llm_model,omitempty"`

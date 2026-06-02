@@ -12,8 +12,8 @@
 package prompts
 
 // V1Version is the prompt version recorded on outputs produced with V1.
-// Bumped to intrinsic.v2 — adds analyst_brief to the output schema.
-const V1Version = "intrinsic.v2"
+// Bumped to intrinsic.v3 — adds attack_path_class and lateral_movement_potential.
+const V1Version = "intrinsic.v3"
 
 // V1 is the production prompt for Phase A intrinsic analysis.
 //
@@ -88,6 +88,17 @@ Return ONLY a JSON object — no prose before or after — matching:
     | "authenticated_high_priv" | "local_user"
     | "adjacent_network" | "physical"
     | "code_execution_required",
+  "attack_path_class":
+      "exploit_public_facing"       // T1190 — direct exploit of internet-reachable service; no user interaction
+    | "phishing_delivery"           // T1566 — exploit delivered via email/doc/link; requires victim to trigger
+    | "lateral_movement_required"   // T1021/T1550 — requires existing foothold on another host first
+    | "valid_credentials_required"  // T1078 — relies on stolen or guessed credentials
+    | "supply_chain"                // T1195 — compromise via dependency/build/update chain
+    | "unknown",
+  "lateral_movement_potential":
+      "high"    // exploitation gives credential theft, domain-controller or secrets-manager access, pivot gateway
+    | "medium"  // limited pivot: one adjacent segment or partial credential exposure
+    | "low",    // isolated blast radius — no meaningful path to other hosts or credentials
   "preconditions": [
     {
       "id":                   "kebab-case-stable-id",
@@ -116,12 +127,59 @@ Return ONLY a JSON object — no prose before or after — matching:
     "attack_vector_summary": "One sentence: who the attacker is, where they sit (internet / adjacent / local), and what access they need before exploitation begins.",
     "real_world_likelihood": "3-5 sentences: nuanced assessment of how likely exploitation is in the real world — beyond CVSS. Factor in: attacker motivation and target value, how common the vulnerable pattern is in real codebases (e.g. 'most Node.js apps using express-fileupload enable this by default'), availability of public tooling (Metasploit module, Nuclei template, PoC repos), whether exploitation requires specialist knowledge, and what the EPSS score and KEV listing (if any) tell us.",
     "affected_if":           "2-3 sentences: the specific development patterns, configurations, or deployment choices that make a target exploitable. Concrete enough for a developer to self-assess in 30 seconds (e.g. 'you are vulnerable if you use express-fileupload ≤ 1.4.0 with parseNested: true and allow user-controlled field names').",
-    "not_affected_if":       "1-3 sentences: mitigating configurations or patterns that exclude the risk entirely, short of patching. Omit or leave empty if there are no reliable mitigations — do NOT invent them."
+    "not_affected_if":       "1-3 sentences: mitigating configurations or patterns that exclude the risk entirely, short of patching. Omit or leave empty if there are no reliable mitigations — do NOT invent them.",
+    "exploitability_score":  "Number 1.0–5.0. See Exploitability Index rubric below.",
+    "exploitability_tier":   "Exactly one of: 'push_button' | 'opportunistic' | 'moderate' | 'targeted' | 'theoretical'"
   },
   "detection_signals":    ["log/network indicators if exploited"],
   "rationale":            "your overall reasoning, suitable for an analyst to audit",
   "confidence":           "high" | "medium" | "low"
 }
+
+# Authoring rules for attack_path_class and lateral_movement_potential
+
+attack_path_class — pick exactly one:
+- exploit_public_facing: the vulnerability is directly exploitable by any
+  attacker with network access to the service (CVE in a web server, API
+  endpoint, VPN gateway). CVSS AV:N, UI:N. No victim interaction needed.
+  Mass-exploitation by automated scanners is realistic.
+- phishing_delivery: the exploit is delivered through a malicious email,
+  document, or link. The attacker sends something; a victim must open or
+  click. CVSS UI:R is the canonical signal. Common for browser exploits,
+  Office document macros, PDF parsers, and email client bugs.
+- lateral_movement_required: exploitation requires the attacker to already
+  have a foothold on a host in the same network. AV:A (adjacent network)
+  or AV:L (local) CVEs in services only reachable from inside. This is
+  NOT zero-risk — an attacker post-initial-compromise is very likely to
+  scan for these. Assign to internal-only services, container-to-container
+  escapes, and kernel bugs exploitable only by local users.
+- valid_credentials_required: the attack requires valid account credentials
+  (not just any auth, but working credentials). Different from
+  authenticated_high_priv (which is about the privilege level of the creds)
+  — here the key factor is that the attacker must first acquire valid creds.
+  Use for exploits in authenticated APIs where gaining any creds is the
+  real barrier.
+- supply_chain: the vulnerability enters the environment through a
+  compromised upstream source — a dependency update, a CI/CD tool, a
+  package registry. The victim organization installs the compromised
+  artifact without knowing. High-value for adversaries because it bypasses
+  perimeter controls entirely.
+- unknown: use only when there is genuinely insufficient information to
+  classify the attack path. Do not use as a default.
+
+lateral_movement_potential — pick exactly one:
+- high: exploiting this CVE directly enables an attacker to pivot widely.
+  Examples: credential theft from an auth service, AD / LDAP compromise,
+  secrets manager / Vault access, kernel privilege escalation to root on a
+  multi-tenant host, code execution on a VPN concentrator or firewall.
+- medium: some lateral movement capability, but scoped. Examples: RCE on
+  a single internal service with access to one adjacent subnet, partial
+  credential exposure (e.g. one service account), information disclosure
+  that reveals internal topology useful for further attacks.
+- low: the blast radius is contained to the vulnerable service or process.
+  No meaningful credential access, no pivot paths. DoS vulnerabilities are
+  typically low unless they block auth for other services. Frontend XSS in
+  an isolated app with no sensitive backend access is typically low.
 
 # Authoring rules for analyst_brief
 
@@ -151,6 +209,61 @@ Return ONLY a JSON object — no prose before or after — matching:
   check their own code or config in under a minute.
 - not_affected_if: only include real mitigations with evidence.
   Do not invent compensating controls that are not documented.
+
+# Exploitability Index — scoring rubric
+
+Assign exploitability_score (a float 1.0–5.0, one decimal place) and the
+corresponding exploitability_tier to the analyst_brief. This is NOT CVSS
+severity. It answers: "How easily can a real attacker exploit this against
+a typical production deployment, right now?"
+
+Use this rubric. Start at the tier that best describes the vulnerability and
+adjust ±0.5 based on modifying factors listed below.
+
+| Score | Tier          | Definition |
+|-------|---------------|--------------------------------------------------------------|
+| 5.0   | push_button   | No specialist skill required. A working exploit is publicly  |
+|       |               | available as a Metasploit module, one-liner, or automated    |
+|       |               | scanner (e.g. Nuclei template). Any internet-connected       |
+|       |               | attacker can run it. EPSS typically > 0.80. KEV-listed or    |
+|       |               | mass exploitation observed in the wild.                      |
+| 4.0   | opportunistic | Script-kiddie to mid-level attacker can exploit with a PoC.  |
+|       |               | PoC code is public and well-documented. The vulnerable        |
+|       |               | pattern is common in real codebases (e.g. a default config). |
+|       |               | EPSS typically 0.4–0.80. Targeted exploitation seen in wild. |
+| 3.0   | moderate      | Experienced attacker can exploit but conditions narrow the   |
+|       |               | surface. Requires crafted payload, specific version, or a    |
+|       |               | non-default but plausible config. PoC may exist but requires |
+|       |               | adaptation. EPSS typically 0.1–0.4. No widespread in-wild    |
+|       |               | exploitation reported.                                       |
+| 2.0   | targeted      | Requires specialist knowledge or privileged starting         |
+|       |               | position (local, adjacent network, authenticated session).   |
+|       |               | Complex multi-step chain; PoC is partial or absent. Few      |
+|       |               | real-world targets. EPSS typically < 0.1.                    |
+| 1.0   | theoretical   | Research-grade. No public PoC. Exploit requires deep         |
+|       |               | expertise in the subsystem. Complex preconditions that are   |
+|       |               | rare in practice. EPSS < 0.01. No in-wild exploitation.      |
+
+Modifying factors (adjust base by ±0.5 each, cap at 5.0, floor at 1.0):
+
++ Raise score by 0.5 if:
+  - CISA KEV listed (confirmed active exploitation)
+  - Metasploit module exists
+  - EPSS > 0.7
+  - Vulnerable pattern is the default/common usage (most apps affected)
+  - AV:Network + AC:Low + no auth required (CVSS AC:L, PR:N, UI:N)
+
+- Lower score by 0.5 if:
+  - Attacker must be authenticated with high privileges
+  - Exploit requires physical access or local user session
+  - Vulnerable pattern requires a non-default opt-in config flag
+  - No public PoC and the bug class requires specialist internals knowledge
+  - Target must be a rare or niche deployment (score only < 0.01 of ecosystem)
+  - EPSS < 0.01 and no KEV and no AttackerKB engagement
+
+The final score must be consistent with real_world_likelihood — do not assign
+push_button if real_world_likelihood describes complex preconditions, and
+do not assign theoretical if KEV is listed.
 
 # General authoring rules
 
@@ -300,6 +413,7 @@ const V1OutputSchema = `{
   "additionalProperties": false,
   "required": [
     "remote_triggerability","exploit_complexity","attacker_capability",
+    "attack_path_class","lateral_movement_potential",
     "preconditions","cvss_reconciliation","attack_chain_summary",
     "analyst_brief","rationale","confidence"
   ],
@@ -312,6 +426,17 @@ const V1OutputSchema = `{
         "unauthenticated_network","authenticated_low_priv","authenticated_high_priv",
         "local_user","adjacent_network","physical","code_execution_required"
       ]
+    },
+    "attack_path_class": {
+      "type": "string",
+      "enum": [
+        "exploit_public_facing","phishing_delivery","lateral_movement_required",
+        "valid_credentials_required","supply_chain","unknown"
+      ]
+    },
+    "lateral_movement_potential": {
+      "type": "string",
+      "enum": ["high","medium","low"]
     },
     "preconditions": {
       "type": "array",
@@ -360,7 +485,8 @@ const V1OutputSchema = `{
       "additionalProperties": false,
       "required": [
         "title","what_is_it","attack_scenario","attack_vector_summary",
-        "real_world_likelihood","affected_if"
+        "real_world_likelihood","affected_if",
+        "exploitability_score","exploitability_tier"
       ],
       "properties": {
         "title":                 { "type": "string" },
@@ -369,7 +495,12 @@ const V1OutputSchema = `{
         "attack_vector_summary": { "type": "string" },
         "real_world_likelihood": { "type": "string" },
         "affected_if":           { "type": "string" },
-        "not_affected_if":       { "type": "string" }
+        "not_affected_if":       { "type": "string" },
+        "exploitability_score":  { "type": "number", "minimum": 1.0, "maximum": 5.0 },
+        "exploitability_tier":   {
+          "type": "string",
+          "enum": ["push_button","opportunistic","moderate","targeted","theoretical"]
+        }
       }
     },
     "detection_signals":    { "type": "array", "items": { "type": "string" } },

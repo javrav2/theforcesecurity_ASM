@@ -362,7 +362,8 @@ def _is_api(f: Dict[str, Any]) -> bool:
 
 def _api_next(f: Dict[str, Any]) -> Optional[NextStep]:
     matched = _matched_at_host(f)
-    if "graphql" in matched.lower() or "graphiql" in matched.lower():
+    matched_lower = matched.lower()
+    if "graphql" in matched_lower or "graphiql" in matched_lower:
         return NextStep(
             tool_name="execute_schemathesis",
             args=f"run {matched} --checks all --hypothesis-deadline=5000",
@@ -374,18 +375,21 @@ def _api_next(f: Dict[str, Any]) -> Optional[NextStep]:
             priority=3,
             category="api_followup",
         )
-    if any(s in matched.lower() for s in ("/openapi", "/swagger", "/api-docs")):
+    if any(s in matched_lower for s in ("/openapi", "/swagger", "/api-docs", "/swagger-ui", "/redoc")):
+        base = _root_url(matched)
         return NextStep(
-            tool_name="execute_schemathesis",
-            args=f"run {matched} --checks all --hypothesis-deadline=5000",
+            tool_name="discover_swagger_spec",
+            args=f"target_url={base}",
             rationale=(
-                f"Augur: OpenAPI spec at {matched}. Run Schemathesis to fuzz "
-                "every documented endpoint."
+                f"Augur: Swagger/OpenAPI surface detected at {matched}. "
+                "Run discover_swagger_spec to enumerate all documented endpoints, "
+                "then test_swagger_api to check for unauthenticated access, "
+                "PII leakage, and exposed secrets (AutoSwagger-style)."
             ),
-            priority=3,
+            priority=2,
             category="api_followup",
         )
-    if "/actuator" in matched.lower():
+    if "/actuator" in matched_lower:
         base = _root_url(matched)
         return NextStep(
             tool_name="execute_nuclei",
@@ -396,6 +400,20 @@ def _api_next(f: Dict[str, Any]) -> Optional[NextStep]:
                 "actuator endpoint (env, heapdump, beans)."
             ),
             priority=2,
+            category="api_followup",
+        )
+    # Generic API hint — try swagger discovery against the base origin
+    base = _root_url(matched)
+    if base:
+        return NextStep(
+            tool_name="discover_swagger_spec",
+            args=f"target_url={base}",
+            rationale=(
+                f"Augur: API-tagged signal at {matched}. Run discover_swagger_spec "
+                "to check if the target exposes an OpenAPI/Swagger spec; if found, "
+                "follow with test_swagger_api for unauthenticated endpoint testing."
+            ),
+            priority=4,
             category="api_followup",
         )
     return None
@@ -741,6 +759,113 @@ def filter_subdomain_list(raw: str, max_chars: int = 20000, source: str = "subfi
     return AugurReading(summary=body, kept=len(domains))
 
 
+def filter_autoswagger(raw: str, max_chars: int = 20000) -> AugurReading:
+    """Parse autoswagger JSON output and emit next-step pivots for flagged endpoints."""
+    if not raw or not raw.strip():
+        return AugurReading(summary="(autoswagger: no output)")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Plain-text fallback — pass through trimmed
+        body = f"AUTOSWAGGER OUTPUT\n{raw[:max_chars]}"
+        return AugurReading(summary=body, kept=1)
+
+    specs_found = data.get("specs_found", data.get("spec_count", 0))
+    specs = data.get("specs", [])
+    endpoint_count = data.get("endpoint_count", data.get("endpoints_documented", 0))
+    tested_count = data.get("endpoints_tested", 0)
+    flagged = data.get("flagged_endpoints", [])
+    tool_used = data.get("tool", "autoswagger")
+    target = data.get("target", "")
+
+    lines: List[str] = [
+        f"AUTOSWAGGER — {tool_used}",
+        f"Target: {target}",
+        f"Specs discovered: {specs_found}",
+        f"Endpoints documented: {endpoint_count}  |  Tested: {tested_count}  |  Flagged: {len(flagged)}",
+    ]
+
+    if specs:
+        lines.append("\nDiscovered specs:")
+        for s in specs:
+            lines.append(
+                f"  [{s.get('phase','?')}] {s.get('url','')}  "
+                f"(v{s.get('version','?')}, {s.get('endpoint_count',0)} endpoints)"
+            )
+
+    next_steps: List[NextStep] = []
+    seen_pivot: set = set()
+
+    if flagged:
+        lines.append("\nFlagged endpoints (PII / secrets / large responses):")
+        for ep in flagged[:30]:
+            url = ep.get("url", "")
+            method = ep.get("method", "GET")
+            status = ep.get("status", "?")
+            pii = ep.get("pii", {})
+            secrets = ep.get("secrets", {})
+            large = ep.get("large_response", False)
+            flags = []
+            if pii:
+                flags.append(f"PII:{list(pii.keys())}")
+            if secrets:
+                flags.append(f"SECRETS:{list(secrets.keys())}")
+            if large:
+                flags.append("LARGE_RESPONSE")
+            lines.append(f"  {method} {url} [{status}] → {', '.join(flags)}")
+
+            # Recommend sqlmap for GET endpoints with parameters that returned data
+            if method == "GET" and "?" in url and pii:
+                key = ("execute_sqlmap", url)
+                if key not in seen_pivot:
+                    seen_pivot.add(key)
+                    next_steps.append(NextStep(
+                        tool_name="execute_sqlmap",
+                        args=f"-u \"{url}\" --batch --level=2 --risk=1",
+                        rationale=(
+                            f"Augur: unauthenticated {method} {url} returned PII — "
+                            "test for SQL injection to confirm data extraction path."
+                        ),
+                        priority=2,
+                        category="api_exploit",
+                    ))
+            # Recommend manual review note for secret leakage
+            if secrets:
+                key = ("save_note", url)
+                if key not in seen_pivot:
+                    seen_pivot.add(key)
+                    next_steps.append(NextStep(
+                        tool_name="save_note",
+                        args=(
+                            f"category=secret_exposure content=Secret patterns detected in "
+                            f"API response: {method} {url} — {list(secrets.keys())}"
+                        ),
+                        rationale=(
+                            "Augur: autoswagger found secret-pattern matches in an API "
+                            "response — log for manual triage and reporter."
+                        ),
+                        priority=1,
+                        category="credential_followup",
+                    ))
+
+    if specs_found and not flagged:
+        lines.append("\nSpec discovered but no flagged endpoints — all endpoints auth-gated or clean.")
+
+    if not specs_found:
+        lines.append("\nNo OpenAPI/Swagger spec found at the target.")
+
+    body = "\n".join(lines)
+    if len(body) > max_chars:
+        body = body[:max_chars] + "\n... (augur: clipped)"
+
+    return AugurReading(
+        summary=body,
+        kept=len(flagged),
+        dropped=max(0, tested_count - len(flagged)),
+        next_steps=next_steps,
+    )
+
+
 def filter_prowler(raw: str, max_chars: int = 20000) -> AugurReading:
     """Themis/Prowler OCSF JSON: keep only failed checks (status=FAIL)."""
     if not raw:
@@ -793,6 +918,9 @@ _FILTERS = {
     "tldfinder": lambda r, m=20000: filter_subdomain_list(r, m, "tldfinder"),
     "themis": filter_prowler,
     "prowler": filter_prowler,
+    "autoswagger": filter_autoswagger,
+    "swagger_spec_discovery": filter_autoswagger,
+    "autoswagger_native": filter_autoswagger,
 }
 
 

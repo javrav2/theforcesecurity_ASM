@@ -43,6 +43,22 @@ def _check_subfinder_available() -> bool:
 SUBFINDER_AVAILABLE = _check_subfinder_available()
 
 
+def _check_subcat_available() -> bool:
+    """Check if subcat is installed (pip install subcat)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["subcat", "-h"],
+            capture_output=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+SUBCAT_AVAILABLE = _check_subcat_available()
+
+
 # Base subdomain wordlist
 COMMON_SUBDOMAINS = [
     "www", "mail", "ftp", "localhost", "webmail", "smtp", "pop", "ns1", "ns2",
@@ -223,6 +239,7 @@ class SubdomainService:
         self.max_concurrent = max_concurrent
         self.timeout = timeout
         self.use_subfinder = use_subfinder and SUBFINDER_AVAILABLE
+        self.use_subcat = SUBCAT_AVAILABLE
         self.organization_id = organization_id
         # With the rotator we can use Chaos if *either* env var is set or the
         # org has at least one ``pdcp`` APIConfig row — we optimistically flip
@@ -236,7 +253,12 @@ class SubdomainService:
             logger.info("Subfinder is available and will be used for subdomain enumeration")
         else:
             logger.info("Subfinder not available")
-        
+
+        if self.use_subcat:
+            logger.info("Subcat is available and will be used for passive subdomain enumeration")
+        else:
+            logger.info("Subcat not available (pip install subcat to enable)")
+
         if self.use_chaos:
             logger.info("Chaos is configured and will be used for passive subdomain lookup")
         else:
@@ -306,10 +328,21 @@ class SubdomainService:
                 logger.warning(f"[Depth {depth}] crt.sh failed for {domain}: {exc}")
                 return "crt.sh", []
 
+        async def _from_subcat() -> tuple[str, list[str]]:
+            if not self.use_subcat:
+                return "subcat", []
+            logger.info(f"[Depth {depth}] Running subcat for {domain}")
+            try:
+                return "subcat", await self._run_subcat(domain)
+            except Exception as exc:
+                logger.warning(f"[Depth {depth}] Subcat failed for {domain}: {exc}")
+                return "subcat", []
+
         passive_results = await asyncio.gather(
             _from_chaos(),
             _from_subfinder(),
             _from_crtsh(),
+            _from_subcat(),
         )
 
         for source, hosts in passive_results:
@@ -645,7 +678,69 @@ class SubdomainService:
                     pass
         
         return list(set(subdomains))  # Remove duplicates
-    
+
+    async def _run_subcat(self, domain: str, timeout: int = 120) -> list[str]:
+        """
+        Run subcat for passive subdomain enumeration.
+
+        Subcat aggregates data from 19 passive sources including dnsdumpster,
+        hackertarget, anubis, crt.sh, wayback, virustotal, securitytrails, shodan,
+        and more. Free-tier modules work without API keys; paid modules activate when
+        ~/.subcat/config.yaml is populated.
+
+        Reference: https://github.com/duty1g/subcat
+        """
+        subdomains = []
+
+        try:
+            cmd = [
+                "subcat",
+                "-d", domain,
+                "-silent",
+            ]
+            logger.info(f"Executing: {' '.join(cmd)}")
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout + 30,
+            )
+
+            if stderr:
+                stderr_text = stderr.decode()[:500]
+                if "error" in stderr_text.lower():
+                    logger.warning(f"Subcat stderr: {stderr_text}")
+                else:
+                    logger.debug(f"Subcat output: {stderr_text}")
+
+            for line in stdout.decode().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # Strip URL scheme if present (subcat can output full URLs in some modes)
+                for prefix in ("https://", "http://"):
+                    if line.startswith(prefix):
+                        line = line[len(prefix):]
+                        break
+                # Strip path/port if present
+                line = line.split("/")[0].split(":")[0].lower()
+                if "." in line and line.endswith(f".{domain}") or line == domain:
+                    subdomains.append(line)
+
+            logger.info(f"Subcat found {len(subdomains)} subdomains for {domain}")
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Subcat timed out for {domain} after {timeout}s")
+        except Exception as e:
+            logger.error(f"Subcat failed for {domain}: {e}")
+
+        return list(set(subdomains))
+
     async def _query_crtsh(self, domain: str) -> list[str]:
         """Query crt.sh certificate transparency logs."""
         subdomains = set()

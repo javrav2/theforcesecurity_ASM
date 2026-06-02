@@ -12,13 +12,25 @@ directly to Oracle's JSON API through the ASM auth layer.
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_active_user, get_current_user
+from app.db.database import get_db
+from app.models.user import User
+from app.models.vulnerability import Vulnerability
+from app.services.oracle_enrichment_service import (
+    ENRICH_TTL_HOURS,
+    OracleInputError,
+    OracleUnavailable,
+    enrich_many,
+    enrich_vulnerability,
+    open_vulnerabilities_to_enrich,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +143,173 @@ async def oracle_health(current_user=Depends(get_current_user)) -> Dict[str, Any
             return {"status": "ok", "oracle": resp.json()}
         except Exception:
             return {"status": "unavailable", "oracle": None}
+
+
+# ─────────────────────────── CVE lookup (Phase A only) ─────────────────────
+
+
+@router.get("/cve/{cve_id}")
+async def oracle_cve_lookup(
+    cve_id: str,
+    current_user=Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Phase-A-only CVE intelligence — no asset required.
+
+    Returns the analyst brief, attack path class, preconditions, CVSS
+    reconciliation, and observed exploitation evidence (KEV, VulnCheck XDB,
+    Metasploit, etc.). Intended for ad-hoc CVE questions where an analyst
+    needs Oracle's view of a CVE *before* deciding which assets to scope.
+    Results are cached on Oracle's side by (cve_id, prompt_version).
+    """
+    cve_id = (cve_id or "").strip().upper()
+    if not cve_id.startswith("CVE-"):
+        raise HTTPException(status_code=400, detail="cve_id must be of the form CVE-YYYY-NNNN")
+
+    async with _oracle_client() as client:
+        try:
+            resp = await client.get(f"/cve/{cve_id}")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=_safe_error(e))
+        except httpx.RequestError:
+            raise HTTPException(status_code=503, detail="Aegis Oracle service is unreachable.")
+
+
+# ─────────────────────────── ASM enrichment ────────────────────────────────
+
+
+class EnrichBatchRequest(BaseModel):
+    """Batch-enrichment request body."""
+
+    limit: int = 200
+    force: bool = False
+    organization_id: Optional[int] = None  # superuser-only override
+
+
+class EnrichResponse(BaseModel):
+    """Per-vulnerability enrichment result returned by the single-vuln route."""
+
+    vulnerability_id: int
+    cve_id: Optional[str] = None
+    mode: str
+    enriched_at: Optional[str] = None
+    opes_score: Optional[float] = None
+    opes_category: Optional[str] = None
+    opes_label: Optional[str] = None
+    attack_path_class: Optional[str] = None
+    analysis_status: Optional[str] = None
+    analysis_error: Optional[str] = None
+
+
+@router.post("/enrich/{vuln_id}", response_model=EnrichResponse)
+def oracle_enrich_one(
+    vuln_id: int,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> EnrichResponse:
+    """Run Oracle enrichment for a single ASM vulnerability.
+
+    Picks the strongest path automatically:
+      • If the linked asset has an Oracle asset id → full /analyze
+      • Else → /cve/{id} Phase-A analysis
+
+    The result is persisted to `Vulnerability.metadata_["oracle"]` and
+    returned as a summary. Pass `force=true` to bypass the
+    {ttl}h freshness window.
+    """.format(ttl=ENRICH_TTL_HOURS)
+    vuln = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
+    if not vuln:
+        raise HTTPException(status_code=404, detail="vulnerability not found")
+
+    # Scope check — non-superusers may only enrich their own org's vulns.
+    if not current_user.is_superuser:
+        asset = vuln.asset
+        if not asset or asset.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="not authorised for this vulnerability")
+
+    try:
+        payload = enrich_vulnerability(db, vuln, force=force)
+    except OracleInputError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OracleUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    return EnrichResponse(
+        vulnerability_id=vuln.id,
+        cve_id=vuln.cve_id,
+        mode=payload.get("mode", ""),
+        enriched_at=payload.get("enriched_at"),
+        opes_score=payload.get("opes_score"),
+        opes_category=payload.get("opes_category"),
+        opes_label=payload.get("opes_label"),
+        attack_path_class=payload.get("attack_path_class"),
+        analysis_status=payload.get("analysis_status"),
+        analysis_error=payload.get("analysis_error"),
+    )
+
+
+@router.post("/enrich/batch")
+def oracle_enrich_batch(
+    body: EnrichBatchRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Enrich up to `limit` open vulnerabilities with Oracle analysis.
+
+    Runs synchronously for small batches (≤ 25) so the caller gets a result
+    in the response; queues a BackgroundTask for larger batches so the API
+    call doesn't hold a worker for minutes. Either way, results are visible
+    on the vulnerability records via `metadata_["oracle"]` as they finish.
+    """
+    org_id: Optional[int]
+    if current_user.is_superuser:
+        org_id = body.organization_id  # may be None → "all orgs"
+    else:
+        org_id = current_user.organization_id
+        if body.organization_id and body.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="cannot target a different organisation")
+
+    vulns = open_vulnerabilities_to_enrich(db, organization_id=org_id, limit=body.limit)
+    if not vulns:
+        return {"queued": False, "selected": 0, "message": "no open vulnerabilities matched"}
+
+    if len(vulns) <= 25:
+        counts = enrich_many(db, vulns, force=body.force)
+        return {"queued": False, "selected": len(vulns), **counts}
+
+    # Large batch → background. Pull primary keys so the background task
+    # opens a fresh session and re-fetches the rows (Session objects don't
+    # cross tasks safely).
+    vuln_ids: List[int] = [v.id for v in vulns]
+    background.add_task(_run_batch_in_background, vuln_ids, body.force)
+    return {"queued": True, "selected": len(vuln_ids), "message": "batch running in background"}
+
+
+def _run_batch_in_background(vuln_ids: List[int], force: bool) -> None:
+    """Worker entry point for batch enrichment.
+
+    Opens its own DB session and processes each vulnerability via the
+    enrichment service so failures don't poison the caller's session.
+    """
+    from app.db.database import SessionLocal  # local import keeps cyclic risk away
+    session = SessionLocal()
+    try:
+        vulns = (
+            session.query(Vulnerability)
+            .filter(Vulnerability.id.in_(vuln_ids))
+            .all()
+        )
+        counts = enrich_many(session, vulns, force=force)
+        logger.info("oracle batch enrichment finished: %s", counts)
+    except OracleUnavailable as e:
+        logger.warning("oracle batch aborted (transient): %s", e)
+    except Exception:  # noqa: BLE001
+        logger.exception("oracle batch enrichment crashed")
+    finally:
+        session.close()
 
 
 # ─────────────────────────── Helpers ────────────────────────────────────

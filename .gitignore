@@ -97,3 +97,7 @@ data/sni-downloads/*.txt
 .secrets
 .env.backup
 .secrets
+
+# Website build artifacts
+website/.next/
+website/node_modules/

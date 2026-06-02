@@ -1590,6 +1590,67 @@ class ApiClient {
     const response = await this.client.get('/oracle/health');
     return response.data;
   }
+
+  // CVE-only Phase-A lookup — no asset required. Returns the canonical CVE
+  // record, intrinsic analysis (analyst brief, attack path, preconditions,
+  // CVSS reconciliation), and observed exploitation evidence.
+  async oracleCveLookup(cveId: string): Promise<{
+    cve: any;
+    analysis: any;
+    exploitation: any;
+  }> {
+    // First-time lookups can trigger upstream CVE ingest (vulnx/NVD) + a
+    // fresh Phase A LLM call. Allow 3 minutes; cached subsequent calls
+    // return in <1s.
+    const response = await this.client.get(`/oracle/cve/${encodeURIComponent(cveId)}`, {
+      timeout: 180000,
+    });
+    return response.data;
+  }
+
+  // Trigger Oracle enrichment for a single ASM vulnerability. Picks the
+  // strongest path automatically (full /analyze when the vulnerability
+  // has an asset, /cve/{id} intrinsic otherwise).
+  async oracleEnrichVulnerability(vulnId: number, force = false): Promise<{
+    vulnerability_id: number;
+    cve_id?: string;
+    mode: string;
+    enriched_at?: string;
+    opes_score?: number;
+    opes_category?: string;
+    opes_label?: string;
+    attack_path_class?: string;
+    analysis_status?: string;
+    analysis_error?: string;
+  }> {
+    const response = await this.client.post(
+      `/oracle/enrich/${vulnId}`,
+      null,
+      { params: { force }, timeout: 180000 },
+    );
+    return response.data;
+  }
+
+  // Kick off a bulk-enrich pass over open vulnerabilities. Returns counts
+  // synchronously for small batches; queues a background task for large ones.
+  async oracleEnrichBatch(limit = 200, force = false, organizationId?: number): Promise<{
+    queued: boolean;
+    selected: number;
+    enriched?: number;
+    enriched_generic?: number;
+    skipped_cached?: number;
+    errors?: number;
+    message?: string;
+  }> {
+    // Synchronous batches can take a while; backend caps the sync size and
+    // hands larger batches to a background task. 5 minutes is plenty.
+    const response = await this.client.post('/oracle/enrich/batch', {
+      limit,
+      force,
+      organization_id: organizationId,
+    }, { timeout: 300000 });
+    return response.data;
+  }
 }
 
 export const api = new ApiClient();

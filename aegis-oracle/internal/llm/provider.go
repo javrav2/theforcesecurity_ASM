@@ -20,27 +20,48 @@ import (
 	"github.com/your-org/aegis-oracle/pkg/module"
 )
 
+// disabledProvider is an LLMProvider used when no API keys are configured.
+// The HTTP server still listens so /health succeeds and operators get a clear
+// signal; analysis endpoints return the wrapped error from CompleteJSON.
+type disabledProvider struct{ err error }
+
+// Disabled returns a provider that always fails CompleteJSON with err.
+// Callers should wrap err with context before passing.
+func Disabled(err error) module.LLMProvider {
+	if err == nil {
+		err = fmt.Errorf("no API key configured")
+	}
+	return disabledProvider{err: err}
+}
+
+func (d disabledProvider) CompleteJSON(ctx context.Context, req module.JSONRequest) (module.JSONResponse, error) {
+	_ = ctx
+	_ = req
+	return module.JSONResponse{}, fmt.Errorf("llm: %w", d.err)
+}
+
 // Config selects and configures the active provider(s).
 type Config struct {
-	Provider   string `yaml:"provider"`    // "anthropic" | "openai" | "auto"
-	Anthropic  AnthropicConfig `yaml:"anthropic"`
-	OpenAI     OpenAIConfig    `yaml:"openai"`
+	Provider  string          `yaml:"provider"` // "anthropic" | "openai" | "auto"
+	Anthropic AnthropicConfig `yaml:"anthropic"`
+	OpenAI    OpenAIConfig    `yaml:"openai"`
 }
 
 type AnthropicConfig struct {
-	APIKey  string `yaml:"api_key"`   // or set ANTHROPIC_API_KEY
-	Model   string `yaml:"model"`     // default: "claude-sonnet-4-5"
-	BaseURL string `yaml:"base_url"`  // override for testing
+	APIKey  string `yaml:"api_key"`  // or set ANTHROPIC_API_KEY
+	Model   string `yaml:"model"`    // default: "claude-sonnet-4-5"
+	BaseURL string `yaml:"base_url"` // override for testing
 }
 
 type OpenAIConfig struct {
-	APIKey  string `yaml:"api_key"`   // or set OPENAI_API_KEY
-	Model   string `yaml:"model"`     // default: "gpt-4o"
+	APIKey  string `yaml:"api_key"` // or set OPENAI_API_KEY
+	Model   string `yaml:"model"`   // default: "gpt-4o"
 	BaseURL string `yaml:"base_url"`
 }
 
-// New returns a provider from config. If provider == "auto" it prefers
-// Anthropic when both keys are available.
+// New returns a provider from config. If provider == "auto" it builds a
+// request-scoped fallback chain in preference order, rather than permanently
+// selecting one provider at startup.
 func New(cfg Config) (module.LLMProvider, error) {
 	switch strings.ToLower(cfg.Provider) {
 	case "anthropic":
@@ -48,15 +69,87 @@ func New(cfg Config) (module.LLMProvider, error) {
 	case "openai":
 		return newOpenAI(cfg.OpenAI)
 	case "auto", "":
+		var providers []namedProvider
 		if cfg.Anthropic.APIKey != "" {
-			return newAnthropic(cfg.Anthropic)
+			p, err := newAnthropic(cfg.Anthropic)
+			if err != nil {
+				return nil, err
+			}
+			providers = append(providers, namedProvider{name: "anthropic", provider: p})
 		}
 		if cfg.OpenAI.APIKey != "" {
-			return newOpenAI(cfg.OpenAI)
+			p, err := newOpenAI(cfg.OpenAI)
+			if err != nil {
+				return nil, err
+			}
+			providers = append(providers, namedProvider{name: "openai", provider: p})
 		}
-		return nil, fmt.Errorf("llm: no API key configured (set anthropic.api_key or openai.api_key)")
+		switch len(providers) {
+		case 0:
+			return nil, fmt.Errorf("llm: no API key configured (set anthropic.api_key or openai.api_key)")
+		case 1:
+			return providers[0].provider, nil
+		default:
+			return &fallbackProvider{providers: providers}, nil
+		}
 	default:
 		return nil, fmt.Errorf("llm: unknown provider %q", cfg.Provider)
+	}
+}
+
+type namedProvider struct {
+	name     string
+	provider module.LLMProvider
+}
+
+type fallbackProvider struct {
+	providers []namedProvider
+}
+
+func (f *fallbackProvider) CompleteJSON(ctx context.Context, req module.JSONRequest) (module.JSONResponse, error) {
+	var errs []string
+	for _, p := range f.providers {
+		resp, err := p.provider.CompleteJSON(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", p.name, err))
+		if !shouldTryNextProvider(err) {
+			break
+		}
+	}
+	return module.JSONResponse{}, fmt.Errorf(
+		"LLM analysis could not be completed: all configured providers failed. Check Anthropic/OpenAI credentials or billing. Details: %s",
+		strings.Join(errs, " | "),
+	)
+}
+
+func shouldTryNextProvider(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "credit balance"),
+		strings.Contains(s, "insufficient_quota"),
+		strings.Contains(s, "billing"),
+		strings.Contains(s, "quota"),
+		strings.Contains(s, "rate limit"),
+		strings.Contains(s, "rate_limit"),
+		strings.Contains(s, "overloaded"),
+		strings.Contains(s, "temporarily"),
+		strings.Contains(s, "timeout"),
+		strings.Contains(s, "http 400"),
+		strings.Contains(s, "http 401"),
+		strings.Contains(s, "http 403"),
+		strings.Contains(s, "http 429"),
+		strings.Contains(s, "http 500"),
+		strings.Contains(s, "http 502"),
+		strings.Contains(s, "http 503"),
+		strings.Contains(s, "http 504"):
+		return true
+	default:
+		return false
 	}
 }
 
@@ -106,8 +199,8 @@ func (a *anthropicProvider) CompleteJSON(ctx context.Context, req module.JSONReq
 	// By asking the model to call "produce_analysis", the response is
 	// always structured JSON — no prose escapes.
 	tool := map[string]any{
-		"name":        "produce_analysis",
-		"description": "Produce the structured analysis as defined by the input_schema.",
+		"name":         "produce_analysis",
+		"description":  "Produce the structured analysis as defined by the input_schema.",
 		"input_schema": req.Schema,
 	}
 

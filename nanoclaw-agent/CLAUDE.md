@@ -80,7 +80,7 @@ python3 run_pentest.py --target https://example.com --no-guardrails
 ### Reconnaissance
 | Tool | Function | Risk |
 |------|----------|------|
-| `scan_subdomains` | subfinder passive enum | safe |
+| `scan_subdomains` | subfinder + subcat passive enum (19 sources) | safe |
 | `resolve_dns` | dnsx resolution | safe |
 | `probe_http` | httpx live host detection | safe |
 | `scan_ports` | naabu fast port scan | low |
@@ -88,9 +88,11 @@ python3 run_pentest.py --target https://example.com --no-guardrails
 | `fingerprint_tech` | whatweb tech detection | safe |
 | `detect_waf` | wafw00f WAF detection | safe |
 | `detect_cms` | CMSeeK CMS detection | safe |
+| `fingerprint_gitlab` | GitLab /help stylesheet hash fingerprinting and optional version correlation | safe |
 | `crawl_urls` | katana web crawling | safe |
 | `scan_js_urls_for_secrets` | fetch JS URLs + gitleaks + regex hints | safe |
 | `discover_historical_urls` | waybackurls + gau | safe |
+| `reverse_whois_search` | WhoisXML reverse WHOIS OSINT pivot for related domains (preview by default) | low |
 | `fuzz_directories` | ffuf directory fuzzing | low |
 | `discover_parameters` | arjun parameter discovery | low |
 
@@ -105,13 +107,22 @@ python3 run_pentest.py --target https://example.com --no-guardrails
 | `analyze_mail_security` | SPF/DKIM/DMARC mapping | safe |
 | `detect_third_party_vendors` | vendor detection | safe |
 
+### Browser / Playwright
+| Tool | Function | Risk |
+|------|----------|------|
+| `crawl_urls_authenticated` | Chromium crawl — SPAs, auth flows, client-side routes | low |
+| `discover_api_surface` | Vespasian-style blackbox API inventory from browser traffic, scripts, JSON, GraphQL, WebSocket hints | low |
+| `test_dom_xss` | DOM XSS via real browser execution (catches what XSStrike misses) | high |
+
 ### Exploit Validation
 | Tool | Function | Risk |
 |------|----------|------|
 | `sql_injection_test` | sqlmap batch validation | high |
 | `xss_test` | XSStrike detection | high |
+| `test_dom_xss` | Playwright DOM XSS (fragment, param, sink injection) | high |
 | `wordpress_scan` | wpscan vuln scan | medium |
 | `deep_tls_test` | testssl.sh deep test | medium |
+| `confirm_vulnerability_poc` | Attach PoC evidence + auto-escalate severity | high |
 
 ### Reporting
 | Tool | Function | Risk |
@@ -164,13 +175,15 @@ Configure via `AEGIS_TRACING=true/false` (legacy `NANOCLAW_TRACING` still honore
 | `ASM_API_URL` | The Force Security platform API URL |
 | `ASM_API_KEY` | Agent API key (starts with tfasm_) |
 | `ASM_AGENT_ID` | Unique agent identifier |
+| `WHOISXML_API_KEY` | Optional. Enables reverse_whois_search for WhoisXML reverse WHOIS pivots |
+| `GITLAB_HASH_DB_PATH` | Optional. JSON database mapping GitLab stylesheet SHA-256 hashes to versions |
 
 ## How the Agent Should Reason
 
 When operating autonomously, follow this decision-making pattern:
 
 1. **Start broad, then narrow**: Begin with fingerprinting and subdomain enum, then focus on interesting findings
-2. **Adapt to discoveries**: WordPress found? Run wpscan. API endpoints? Fuzz parameters. WAF detected? Note for vuln agent
+2. **Adapt to discoveries**: WordPress found? Run wpscan. GitLab found? Run fingerprint_gitlab before any validation. API-heavy app? Run discover_api_surface, then fuzz parameters. Brand/org pivot needed? Use reverse_whois_search preview first. WAF detected? Note for vuln agent
 3. **Chain findings**: Use recon output to inform vuln scanning targets. Use vuln findings to guide exploit validation
 4. **Validate before reporting**: Only report vulnerabilities with evidence. Nuclei template match + sqlmap confirmation = high confidence
 5. **Know when to stop**: Don't scan endlessly. When the attack surface is mapped and vulns validated, generate the report
@@ -182,3 +195,6 @@ When operating autonomously, follow this decision-making pattern:
 3. **No data exfiltration.** Even if injection confirmed, don't dump data.
 4. **Rate limit scans.** Don't overwhelm targets.
 5. **Report everything.** Submit all findings to the ASM platform.
+6. **GitLab RCE validation requires explicit authorization.** `fingerprint_gitlab`
+   is detection-only; do not run CVE-2021-22205 exploit payloads or OOB command
+   callbacks unless the engagement explicitly approves active exploitation.

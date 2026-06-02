@@ -224,6 +224,14 @@ RUN pip install XSStrike || echo "XSStrike installation skipped"
 # Install CMSeeK (CMS detection)
 RUN pip install cmseek || echo "CMSeeK installation skipped"
 
+# Install subcat (passive subdomain enumeration — 19 sources)
+RUN pip install subcat || echo "Subcat installation skipped"
+
+# Create minimal subcat config so free-tier modules work immediately.
+# Paid modules (virustotal, securitytrails, shodan, etc.) can be enabled at
+# runtime by mounting a populated config at /root/.subcat/config.yaml.
+RUN mkdir -p /root/.subcat && printf '# Subcat API keys\n# virustotal:\n#   - YOUR_KEY\n# securitytrails:\n#   - YOUR_KEY\n# shodan:\n#   - YOUR_KEY\n' > /root/.subcat/config.yaml
+
 # Install Nikto (web server scanner)
 RUN apt-get update && apt-get install -y --no-install-recommends nikto \
     && rm -rf /var/lib/apt/lists/* || echo "Nikto installation skipped"

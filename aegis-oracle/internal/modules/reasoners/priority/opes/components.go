@@ -9,9 +9,9 @@ import (
 
 // difficulty (E) — how hard is the exploit in the abstract? Higher = harder.
 //
-// Inputs: reconciled CVSS AC, attacker capability, # of blocker
+// Inputs: reconciled CVSS AC + UI, attacker capability, # of blocker
 // preconditions, exploit complexity, presence of nuclei template, PoC
-// availability.
+// availability, attack path class.
 //
 // E contributes inversely (10-E) to the OPES sum, so harder exploits
 // reduce the score.
@@ -29,6 +29,13 @@ func difficulty(in Input) float64 {
 		base = 7.0
 	}
 
+	// User interaction (UI) from CVSS — phishing-delivered exploits require
+	// a human victim to trigger. This materially increases difficulty vs. an
+	// automatable direct-service exploit.
+	if parseUI(in.Intrinsic.CVSSReconciliation.CorrectVector) == "R" {
+		base += 1.5
+	}
+
 	switch in.Intrinsic.AttackerCapability {
 	case schema.AttackerUnauthenticatedNetwork:
 		base -= 2.0
@@ -42,6 +49,22 @@ func difficulty(in Input) float64 {
 		base += 3.0
 	case schema.AttackerPhysical:
 		base += 4.0
+	}
+
+	// Attack path class adjustments. Phishing delivery gets partially captured
+	// by UI:R above, but the path itself is also harder — email delivery,
+	// victim selection, and AV/sandbox evasion all add operational complexity.
+	// lateral_movement_required means the attacker needs an existing foothold
+	// first, which is a meaningful prerequisite.
+	switch in.Intrinsic.AttackPathClass {
+	case schema.AttackPathPhishingDelivery:
+		base += 1.0 // victim must open/click — not automatable at scanner scale
+	case schema.AttackPathLateralMovementRequired:
+		base += 1.5 // foothold required — attacker must have already breached the perimeter
+	case schema.AttackPathValidCredentials:
+		base += 2.0 // credential dependency is a high bar unless creds are widely compromised
+	case schema.AttackPathExploitPublicFacing:
+		base -= 0.5 // direct, automatable — easiest initial access class
 	}
 
 	blockers := 0
@@ -71,7 +94,8 @@ func difficulty(in Input) float64 {
 
 // reachability (R) — can the relevant attacker class even reach this asset?
 //
-// Inputs: reconciled CVSS AV, asset exposure, auth required, WAF.
+// Inputs: reconciled CVSS AV, asset exposure, attack path class, auth, WAF,
+// network position signals.
 //
 // R == 0 short-circuits to "not exploitable" via the override in combine.go.
 func reachability(in Input, _ Config) float64 {
@@ -93,6 +117,47 @@ func reachability(in Input, _ Config) float64 {
 
 	if in.Asset.Exposure == schema.ExposureInternal && av == "N" {
 		base = 6.0
+	}
+
+	// Attack path class refines the base reachability:
+	//
+	// exploit_public_facing + internet-facing asset is the highest-risk
+	// combination — attacker is one network hop away with no prerequisite.
+	//
+	// phishing_delivery reduces R because the attack is not directly
+	// reachable from the internet — an attacker must go through a human
+	// intermediary. However, once a phishing victim is on the network,
+	// reachability to internal targets can be high.
+	//
+	// lateral_movement_required: the asset is only reachable after an
+	// attacker has already compromised another host. R is NOT zero — an
+	// attacker with a foothold can reach internal services — but we reduce
+	// it to reflect the prerequisite foothold. Edge nodes and pivot points
+	// partially restore R because they are frequently used as stepping stones.
+	if in.Intrinsic != nil {
+		switch in.Intrinsic.AttackPathClass {
+		case schema.AttackPathExploitPublicFacing:
+			if in.Asset.Exposure == schema.ExposureInternet {
+				base = min(base+1.5, 10.0) // direct, automatable — highest-risk combination
+			}
+		case schema.AttackPathPhishingDelivery:
+			base *= 0.75 // victim-mediated; not directly automatable at scanner scale
+		case schema.AttackPathLateralMovementRequired:
+			if in.Asset.Exposure == schema.ExposureInternet {
+				// An internet-facing asset that requires lateral movement is
+				// unusual; treat as internal for scoring purposes.
+				base = 6.0
+			}
+			// Edge/pivot assets are natural lateral movement targets — partially
+			// restore reachability for assets explicitly in that role.
+			if in.Asset.Signals.NetworkPosition != nil {
+				if in.Asset.Signals.NetworkPosition.IsPivotPoint != nil && *in.Asset.Signals.NetworkPosition.IsPivotPoint {
+					base = min(base+1.5, 10.0)
+				} else if in.Asset.Signals.NetworkPosition.IsEdgeNode != nil && *in.Asset.Signals.NetworkPosition.IsEdgeNode {
+					base = min(base+1.0, 10.0)
+				}
+			}
+		}
 	}
 
 	// Auth penalty applies only when the attacker is supposed to come in
@@ -152,6 +217,8 @@ func preconditionScore(set schema.PreconditionEvalSet) float64 {
 //	CISA KEV or ransomware-associated       → 9.5  (KEV-floor P0 trigger)
 //	VulnCheck KEV or ENISA EUVD KEV         → 9.0
 //	VCDB breach confirmation                → 9.0  (real financial loss)
+//	VulnCheck reported exploited            → 8.5
+//	VulnCheck weaponized exploit            → 8.0
 //	Observation feeds (inthewild.io, etc.)  → 8.0
 //	Google Project Zero pre-patch 0day      → 8.5
 //	AttackerKB attacker_value = 5           → 7.5
@@ -195,6 +262,32 @@ func exploitation(e schema.ExploitationEvidence) float64 {
 	// In-the-wild observation feeds.
 	if len(e.ObservationSources) > 0 {
 		score = max(score, 8.0)
+	}
+
+	// VulnCheck exploit intelligence: observed exploitation and validated
+	// weaponization evidence should carry more weight than probability-only
+	// signals such as EPSS.
+	if e.VulnCheckReportedExploited {
+		score = max(score, 8.5)
+	}
+	if e.VulnCheckWeaponized {
+		boost := 8.0
+		for _, typ := range e.VulnCheckExploitTypes {
+			if typ == "initial-access" || typ == "initial access" {
+				boost = 8.5
+				break
+			}
+		}
+		score = max(score, boost)
+	}
+	if e.VulnCheckThreatActorCount > 0 {
+		score = max(score, 8.0)
+	}
+	if e.VulnCheckRansomwareCount > 0 || e.VulnCheckBotnetCount > 0 {
+		score = max(score, 9.0)
+	}
+	if e.VulnCheckPublicExploit && e.VulnCheckExploitCount > 0 {
+		score = max(score, 4.0)
 	}
 
 	// Google Project Zero — exploited before a patch existed.
@@ -244,25 +337,56 @@ func exploitation(e schema.ExploitationEvidence) float64 {
 
 // criticality (C) — blast radius if compromised.
 //
-// Sourced from the asset's Criticality classification. Adapters can
-// extend this to factor in data sensitivity / lateral-movement potential
-// once those signals are available.
-func criticality(a *schema.Asset) float64 {
+// Base score sourced from the asset's Criticality classification, then
+// boosted by:
+//   - LateralMovementPotential from the intrinsic analysis (what does
+//     exploiting this CVE enable an attacker to do next?)
+//   - NetworkPosition signals (is this a credential store / pivot point
+//     that amplifies the blast radius beyond its own classification?)
+func criticality(a *schema.Asset, intrinsic *schema.IntrinsicAnalysis) float64 {
 	if a == nil {
 		return 5.0
 	}
-	switch a.Criticality {
-	case schema.CriticalityCritical:
-		return 9.5
-	case schema.CriticalityHigh:
-		return 7.5
-	case schema.CriticalityMedium:
-		return 5.0
-	case schema.CriticalityLow:
-		return 2.5
-	default:
-		return 5.0
+	base := map[schema.Criticality]float64{
+		schema.CriticalityCritical: 9.5,
+		schema.CriticalityHigh:     7.5,
+		schema.CriticalityMedium:   5.0,
+		schema.CriticalityLow:      2.5,
 	}
+	score, ok := base[a.Criticality]
+	if !ok {
+		score = 5.0
+	}
+
+	// Lateral movement potential from the CVE's intrinsic analysis.
+	// High potential means exploiting this vulnerability hands the attacker
+	// keys to move through the network — credential theft, domain controller
+	// access, secrets manager — materially increasing the actual blast radius.
+	if intrinsic != nil {
+		switch intrinsic.LateralMovementPotential {
+		case schema.LateralMovementHigh:
+			score = min(score+2.0, 10.0)
+		case schema.LateralMovementMedium:
+			score = min(score+0.75, 10.0)
+		}
+	}
+
+	// Network position signals from the asset. A credential store or pivot
+	// point is worth more to an attacker than its Criticality label alone
+	// implies — compromising it unlocks access to other assets.
+	if np := a.Signals.NetworkPosition; np != nil {
+		if np.IsCredentialStore != nil && *np.IsCredentialStore {
+			score = min(score+2.5, 10.0) // keys to the kingdom
+		}
+		if np.IsPivotPoint != nil && *np.IsPivotPoint {
+			score = min(score+1.5, 10.0) // gateway to otherwise-isolated segments
+		}
+		if np.IsEdgeNode != nil && *np.IsEdgeNode {
+			score = min(score+0.75, 10.0) // perimeter position amplifies initial access value
+		}
+	}
+
+	return clamp(score, 0, 10)
 }
 
 // timePressure (T) — how urgent is action, given disclosure age?
@@ -302,6 +426,28 @@ func parseAVAC(vector string) (av, ac string) {
 		}
 	}
 	return
+}
+
+// parseUI returns the UI (User Interaction) field from a CVSS vector string.
+// Returns "N" (none) or "R" (required). Empty string if not present.
+func parseUI(vector string) string {
+	for _, p := range strings.Split(vector, "/") {
+		k, v, ok := strings.Cut(p, ":")
+		if !ok {
+			continue
+		}
+		if k == "UI" {
+			return v
+		}
+	}
+	return ""
+}
+
+func min(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func intrinsicVector(in Input) string {

@@ -1,0 +1,104 @@
+---
+title: "Attack Surface Management vs. Traditional Vulnerability Management: What's the Difference?"
+excerpt: "Organizations spend millions on vulnerability scanners but still get breached through assets they didn't know they had. Here's why ASM is a fundamentally different discipline and why you need both."
+date: "2026-05-08"
+author: "Drew Vravick"
+authorRole: "Founder, The Force Security"
+category: "Research"
+tags: ["asm", "vulnerability-management", "strategy", "external-attack-surface"]
+readTime: 8
+featured: true
+---
+
+## The Problem with Traditional Vulnerability Management
+
+Traditional VM tools like Qualys, Rapid7, and Tenable are excellent at what they do: **scan known assets for known vulnerabilities**. You give them a list of IP ranges, they scan them, they report CVEs with CVSS scores.
+
+But this approach has a fundamental blind spot: **you can only manage what you know about.**
+
+In 2026, the average enterprise has:
+
+- Thousands of forgotten S3 buckets with public ACLs
+- Dozens of dev/staging environments exposed to the internet
+- Shadow IT apps deployed outside of IT's control  
+- M&A assets from acquired companies never properly inventoried
+- Cloud-native services spun up by developers that bypass traditional change management
+
+These are the assets that attackers find first — and they're invisible to traditional VM tools.
+
+## What ASM Actually Means
+
+Attack Surface Management is the **continuous discovery, inventory, and risk assessment of all internet-facing assets** from an attacker's perspective.
+
+The key phrase is *from an attacker's perspective*. You start with what an adversary can see — domain names, IP ranges, certificate transparency logs, BGP announcements — and work inward to build your asset inventory.
+
+### The ASM Workflow
+
+```
+External Discovery
+    │
+    ├── DNS enumeration (subfinder, amass)
+    ├── Certificate transparency (crt.sh, certstream)
+    ├── BGP/IP intelligence (RIPE, Team Cymru)
+    ├── Web crawling (gau, waybackurls)
+    └── Cloud asset enumeration
+    │
+    ▼
+Asset Attribution
+    │
+    ├── Confirm ownership
+    ├── Identify technology stack
+    └── Map to business unit/application
+    │
+    ▼
+Continuous Monitoring
+    │
+    ├── Change detection
+    ├── New asset alerts
+    └── Service fingerprinting
+    │
+    ▼
+Risk Assessment
+    │
+    ├── Vulnerability scanning (Nuclei)
+    ├── Exposure scoring
+    └── Prioritization
+```
+
+## Where They Complement Each Other
+
+ASM and VM are not competing disciplines — they're **complementary layers of a defense-in-depth strategy**:
+
+| Dimension | Traditional VM | ASM |
+|-----------|---------------|-----|
+| Asset input | Provided by you | Discovered autonomously |
+| Perspective | Inside-out | Outside-in (attacker's view) |
+| Cadence | Periodic (weekly/monthly) | Continuous |
+| Primary focus | Known CVEs | Unknown/forgotten assets |
+| Ideal for | Compliance, known infrastructure | Cloud-native, M&A, shadow IT |
+
+## The 2026 Threat Landscape Makes ASM Non-Negotiable
+
+Three trends have made ASM essential:
+
+**1. Cloud expansion.** The average enterprise uses 4+ cloud providers. Ephemeral resources appear and disappear constantly.
+
+**2. M&A velocity.** When you acquire a company, you acquire their attack surface — including the parts they didn't know about.
+
+**3. AI-powered recon.** Attackers are using LLMs to automate reconnaissance at scale. The window between asset exposure and exploitation is shrinking.
+
+## Getting Started with ASM
+
+You don't need a $500K enterprise platform to get started:
+
+1. **Start with your own domains** — run `subfinder -d yourdomain.com` and be prepared to be surprised
+2. **Check certificate transparency** — `curl "https://crt.sh/?q=%.yourdomain.com&output=json" | jq`
+3. **Audit your cloud storage** — look for public S3 buckets, Azure blobs, GCS buckets
+4. **Run httpx on your discovered assets** — identify what's actually running
+5. **Scan with Nuclei** — find the low-hanging fruit before attackers do
+
+## Our Approach at The Force Security
+
+Our ASM platform runs these discovery workflows continuously and feeds findings into our prioritization engine (Aegis Oracle) which scores exploitability in context — not just CVSS. A critical CVE on a dev server that's not routable from the internet gets a different priority than the same CVE on your public-facing authentication endpoint.
+
+The goal isn't to find every vulnerability — it's to find and fix the right ones before attackers exploit them.

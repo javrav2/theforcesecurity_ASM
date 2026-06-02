@@ -53,6 +53,11 @@ type AssetSignals struct {
 	TechStack []TechComponent `json:"tech_stack,omitempty"`
 
 	Auth *AuthSignals `json:"auth,omitempty"`
+	// NetworkPosition captures the asset's role in the network topology —
+	// specifically whether it is a high-value pivot target or credential store.
+	// OPES criticality uses this to boost blast-radius scoring beyond the
+	// flat Criticality enum when lateral movement risk is elevated.
+	NetworkPosition *NetworkPositionSignals `json:"network_position,omitempty"`
 
 	RuntimeFlags map[string]string `json:"runtime_flags,omitempty"`
 	Container    *ContainerSignals `json:"container,omitempty"`
@@ -101,6 +106,33 @@ type TenantSignals struct {
 
 type FSSignals struct {
 	WritablePaths []string `json:"writable_paths,omitempty"`
+}
+
+// NetworkPositionSignals describes where an asset sits in the network topology
+// and what lateral movement value it represents to an attacker. Populated by
+// the ASM adapter from inventory/CMDB data.
+type NetworkPositionSignals struct {
+	// IsCredentialStore indicates this asset holds credentials, secrets, or
+	// authentication material for other services — e.g. Active Directory,
+	// LDAP, Vault, AWS IAM, a secrets manager, or an SSO provider. Compromising
+	// it gives an attacker credentials usable across the environment.
+	IsCredentialStore *bool `json:"is_credential_store,omitempty"`
+
+	// IsPivotPoint indicates this asset has network access to multiple segments
+	// or is multi-homed (e.g. a bastion, jump host, VPN concentrator, or
+	// internal gateway). Compromising it gives an attacker a foothold from
+	// which to reach otherwise-isolated subnets.
+	IsPivotPoint *bool `json:"is_pivot_point,omitempty"`
+
+	// AdjacentSegments lists the network segments or VLANs reachable directly
+	// from this asset — populated from CMDB, firewall rules, or ASM network
+	// graph. Used by the contextual evaluator to assess lateral movement radius.
+	AdjacentSegments []string `json:"adjacent_segments,omitempty"`
+
+	// IsEdgeNode indicates this asset is on the internet-facing perimeter
+	// (e.g. a load balancer, API gateway, or edge proxy). Compromising it
+	// often provides a foothold for internal reconnaissance.
+	IsEdgeNode *bool `json:"is_edge_node,omitempty"`
 }
 
 // Lookup resolves a dotted signal path against the asset signals.
@@ -168,6 +200,14 @@ func (s AssetSignals) Lookup(path string) (string, bool) {
 			if s.Network.InternetFacing != nil {
 				return strconv.FormatBool(*s.Network.InternetFacing), true
 			}
+		case "open_ports":
+			if len(s.Network.OpenPorts) > 0 {
+				parts := make([]string, 0, len(s.Network.OpenPorts))
+				for _, p := range s.Network.OpenPorts {
+					parts = append(parts, strconv.Itoa(p))
+				}
+				return strings.Join(parts, ","), true
+			}
 		case "waf":
 			if s.Network.WAF != "" {
 				return s.Network.WAF, true
@@ -206,6 +246,28 @@ func (s AssetSignals) Lookup(path string) (string, bool) {
 				if t.Version != "" {
 					return t.Version, true
 				}
+			}
+		}
+	case "network_position":
+		if s.NetworkPosition == nil {
+			return "", false
+		}
+		switch tail {
+		case "is_credential_store":
+			if s.NetworkPosition.IsCredentialStore != nil {
+				return strconv.FormatBool(*s.NetworkPosition.IsCredentialStore), true
+			}
+		case "is_pivot_point":
+			if s.NetworkPosition.IsPivotPoint != nil {
+				return strconv.FormatBool(*s.NetworkPosition.IsPivotPoint), true
+			}
+		case "is_edge_node":
+			if s.NetworkPosition.IsEdgeNode != nil {
+				return strconv.FormatBool(*s.NetworkPosition.IsEdgeNode), true
+			}
+		case "adjacent_segments":
+			if len(s.NetworkPosition.AdjacentSegments) > 0 {
+				return strings.Join(s.NetworkPosition.AdjacentSegments, ","), true
 			}
 		}
 	case "extra":

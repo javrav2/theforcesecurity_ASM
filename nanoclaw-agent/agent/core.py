@@ -15,11 +15,21 @@ specialized sub-agent, passing accumulated context.
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
-import anthropic
+try:
+    import anthropic
+except Exception:  # pragma: no cover - optional when running LiteLLM-only
+    anthropic = None
+
+try:
+    import litellm
+except Exception:  # pragma: no cover - optional until Phase 2 deps installed
+    litellm = None
 
 from agent.tools import ToolDef, ToolRegistry
 from agent.guardrails import GuardrailEngine
@@ -88,10 +98,21 @@ class AgentRunner:
         self.default_model = default_model or os.environ.get(
             "AEGIS_MODEL", os.environ.get("NANOCLAW_MODEL", "claude-sonnet-4-20250514")
         )
+        self.llm_backend = os.environ.get("AEGIS_LLM_BACKEND", "auto").lower()
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
+        if not api_key and self.llm_backend in ("auto", "anthropic"):
             logger.warning("ANTHROPIC_API_KEY not set - agent loop will fail")
-        self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
+        self.client = (
+            anthropic.Anthropic(api_key=api_key)
+            if anthropic is not None and api_key else None
+        )
+        if litellm is not None:
+            # Keep retries in the framework loop where traces/guardrails are visible.
+            litellm.drop_params = True
+
+        # Circuit breaker: 5 consecutive WAF/rate-limit blocks → 60s backoff.
+        self._consecutive_blocks: int = 0
+        self._circuit_backoff_sec: float = 60.0
 
     def run(
         self,
@@ -108,11 +129,10 @@ class AgentRunner:
             context: Shared context dict (findings, state, etc.)
             messages: Pre-existing message history (for handoffs)
         """
-        if not self.client:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        self._ensure_model_available(agent)
 
         ctx = context or {}
-        model = agent.model or self.default_model
+        model = self._resolve_model(agent)
 
         if messages is None:
             messages = [{"role": "user", "content": task}]
@@ -122,23 +142,27 @@ class AgentRunner:
 
         total_tool_calls = 0
         final_text = ""
+        backend = self._backend_for_model(model)
 
         for turn in range(agent.max_turns):
             with self.tracer.span(
-                f"turn_{turn}", "agent_turn", agent_name=agent.name, turn=turn,
+                f"turn_{turn}", "agent_turn", agent_name=agent.name,
+                turn=turn, model=model, llm_backend=backend,
             ):
-                logger.info(f"[{agent.name}] Turn {turn + 1}/{agent.max_turns}")
+                logger.info(
+                    "[%s] Turn %d/%d model=%s backend=%s",
+                    agent.name, turn + 1, agent.max_turns, model, backend,
+                )
 
                 try:
-                    response = self.client.messages.create(
+                    response = self._call_model(
                         model=model,
-                        max_tokens=8192,
-                        temperature=agent.temperature,
-                        system=system_prompt,
-                        tools=tools_schemas,
+                        agent=agent,
+                        system_prompt=system_prompt,
+                        tools_schemas=tools_schemas,
                         messages=messages,
                     )
-                except anthropic.APIError as e:
+                except Exception as e:
                     logger.error(f"API error: {e}")
                     break
 
@@ -248,11 +272,36 @@ class AgentRunner:
         parts = [agent.instructions]
 
         if context:
-            ctx_summary = json.dumps(
-                {k: v for k, v in context.items()
-                 if not isinstance(v, (list, dict)) or len(str(v)) < 2000},
-                indent=2, default=str,
-            )
+            # Build a context snapshot that's always serialisable.
+            # Large lists/dicts are truncated rather than silently dropped so
+            # agents like the validator can always see findings metadata.
+            _MAX_VALUE_CHARS = 4000
+            ctx_snap: dict = {}
+            for k, v in context.items():
+                raw = json.dumps(v, default=str)
+                if len(raw) <= _MAX_VALUE_CHARS:
+                    ctx_snap[k] = v
+                elif isinstance(v, list):
+                    ctx_snap[k] = {
+                        "_type": "truncated_list",
+                        "_total_items": len(v),
+                        "_first_10": v[:10],
+                        "_note": (
+                            f"List has {len(v)} items; first 10 shown. "
+                            "Full list is also inlined in the task message."
+                        ),
+                    }
+                elif isinstance(v, dict):
+                    ctx_snap[k] = {
+                        "_type": "truncated_dict",
+                        "_keys": list(v.keys()),
+                        "_note": "Dict too large for system prompt; key list shown.",
+                    }
+                elif isinstance(v, str):
+                    ctx_snap[k] = v[:_MAX_VALUE_CHARS] + "… [truncated]"
+                else:
+                    ctx_snap[k] = str(v)[:_MAX_VALUE_CHARS]
+            ctx_summary = json.dumps(ctx_snap, indent=2, default=str)
             parts.append(f"\n\n## Current Context\n```json\n{ctx_summary}\n```")
 
         if agent.handoffs:
@@ -294,6 +343,227 @@ class AgentRunner:
             })
 
         return schemas
+
+    # ───────────────────────── model routing / LLM adapters ──────────────────
+
+    def _resolve_model(self, agent: Agent) -> str:
+        """Resolve a model for this agent.
+
+        Priority:
+          1. Exact env var: AEGIS_MODEL_<AGENT_NAME> (e.g. AEGIS_MODEL_RECON_AGENT)
+          2. Category env vars: AEGIS_MODEL_RECON / VULN / EXPLOIT / REPORT / HUNTER
+          3. Agent.model from code
+          4. AEGIS_MODEL / NANOCLAW_MODEL default
+
+        This keeps the ReAct prompts/analysis intact while allowing cost-aware
+        routing: e.g. cheap model for recon/report, Opus/GPT-5.5 for exploit
+        validation or the OWASP hunters.
+        """
+        exact = os.environ.get(f"AEGIS_MODEL_{self._env_key(agent.name)}")
+        if exact:
+            return exact
+
+        category = self._model_category(agent)
+        if category:
+            routed = os.environ.get(f"AEGIS_MODEL_{category}")
+            if routed:
+                return routed
+
+        return agent.model or self.default_model
+
+    @staticmethod
+    def _env_key(name: str) -> str:
+        return re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
+
+    @staticmethod
+    def _model_category(agent: Agent) -> str:
+        name = agent.name.lower()
+        if name.endswith("_hunter"):
+            # Exact category lets you put GPT-5.5 on injection/authz but cheaper
+            # models on lower-risk hunters if desired.
+            exact = name.replace("_hunter", "").upper()
+            if os.environ.get(f"AEGIS_MODEL_{exact}"):
+                return exact
+            return "HUNTER"
+        for prefix, category in (
+            ("orchestrator", "ORCHESTRATOR"),
+            ("recon", "RECON"),
+            ("vuln", "VULN"),
+            ("exploit", "EXPLOIT"),
+            ("report", "REPORT"),
+        ):
+            if name.startswith(prefix):
+                return category
+        return ""
+
+    def _backend_for_model(self, model: str) -> str:
+        if self.llm_backend in ("anthropic", "litellm"):
+            return self.llm_backend
+        # Auto mode: preserve the native Anthropic path for existing Claude
+        # deployments unless the model is clearly routed through another
+        # provider (e.g. openai/gpt-5.5, gemini/gemini-2.5-pro, bedrock/...).
+        if model.startswith("claude-") and self.client is not None:
+            return "anthropic"
+        return "litellm"
+
+    def _ensure_model_available(self, agent: Agent):
+        model = self._resolve_model(agent)
+        backend = self._backend_for_model(model)
+        if backend == "anthropic":
+            if self.client is None:
+                raise RuntimeError(
+                    "ANTHROPIC_API_KEY not set or anthropic package unavailable"
+                )
+            return
+        if litellm is None:
+            raise RuntimeError(
+                "LiteLLM backend requested but litellm is not installed. "
+                "Run: pip install -r requirements.txt"
+            )
+
+    def _call_model(
+        self,
+        *,
+        model: str,
+        agent: Agent,
+        system_prompt: str,
+        tools_schemas: List[dict],
+        messages: List[dict],
+    ):
+        backend = self._backend_for_model(model)
+        if backend == "anthropic":
+            return self.client.messages.create(
+                model=model,
+                max_tokens=8192,
+                temperature=agent.temperature,
+                system=system_prompt,
+                tools=tools_schemas,
+                messages=messages,
+            )
+
+        return self._call_litellm(
+            model=model,
+            agent=agent,
+            system_prompt=system_prompt,
+            tools_schemas=tools_schemas,
+            messages=messages,
+        )
+
+    def _call_litellm(
+        self,
+        *,
+        model: str,
+        agent: Agent,
+        system_prompt: str,
+        tools_schemas: List[dict],
+        messages: List[dict],
+    ):
+        """Call any LiteLLM-supported provider and normalize to Anthropic-like blocks."""
+        llm_messages = self._to_litellm_messages(system_prompt, messages)
+        llm_tools = self._to_litellm_tools(tools_schemas)
+
+        response = litellm.completion(
+            model=model,
+            messages=llm_messages,
+            tools=llm_tools or None,
+            max_tokens=8192,
+            temperature=agent.temperature,
+        )
+
+        choice = response.choices[0]
+        message = choice.message
+        content_blocks = []
+        if getattr(message, "content", None):
+            content_blocks.append(
+                SimpleNamespace(type="text", text=message.content)
+            )
+
+        for call in getattr(message, "tool_calls", None) or []:
+            function = call.function
+            try:
+                args = json.loads(function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            content_blocks.append(
+                SimpleNamespace(
+                    type="tool_use",
+                    id=call.id,
+                    name=function.name,
+                    input=args,
+                )
+            )
+
+        usage = getattr(response, "usage", None) or SimpleNamespace()
+        return SimpleNamespace(
+            content=content_blocks,
+            stop_reason=getattr(choice, "finish_reason", ""),
+            usage=SimpleNamespace(
+                input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                cache_read_input_tokens=0,
+            ),
+        )
+
+    @staticmethod
+    def _to_litellm_tools(tools_schemas: List[dict]) -> List[dict]:
+        """Convert Anthropic-style tool schemas to OpenAI/LiteLLM schemas."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {"type": "object"}),
+                },
+            }
+            for tool in tools_schemas
+        ]
+
+    def _to_litellm_messages(
+        self, system_prompt: str, messages: List[dict],
+    ) -> List[dict]:
+        """Convert internal Anthropic-style history to LiteLLM chat history."""
+        out = [{"role": "system", "content": system_prompt}]
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+
+            if role == "assistant" and isinstance(content, list):
+                text_parts = []
+                tool_calls = []
+                for block in content:
+                    btype = getattr(block, "type", None)
+                    if btype == "text":
+                        text_parts.append(getattr(block, "text", ""))
+                    elif btype == "tool_use":
+                        tool_calls.append({
+                            "id": getattr(block, "id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": getattr(block, "name", ""),
+                                "arguments": json.dumps(
+                                    getattr(block, "input", {}) or {}
+                                ),
+                            },
+                        })
+                item = {"role": "assistant", "content": "\n".join(text_parts) or None}
+                if tool_calls:
+                    item["tool_calls"] = tool_calls
+                out.append(item)
+                continue
+
+            if role == "user" and isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        out.append({
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id", ""),
+                            "content": block.get("content", ""),
+                        })
+                continue
+
+            out.append({"role": role, "content": content})
+        return out
 
     def _execute_tool(
         self, agent: Agent, tool_name: str, arguments: dict, tool_use_id: str,
@@ -418,4 +688,39 @@ class AgentRunner:
         if len(result) > 50_000:
             result = result[:50_000] + "\n...[truncated]"
 
+        # ── Circuit breaker: back off after 5 consecutive WAF/rate-limit blocks ─
+        if self._is_blocked_response(result):
+            self._consecutive_blocks += 1
+            if self._consecutive_blocks >= 5:
+                logger.warning(
+                    "Circuit breaker OPEN after %d consecutive blocks — "
+                    "backing off %.0fs before next tool call",
+                    self._consecutive_blocks,
+                    self._circuit_backoff_sec,
+                )
+                time.sleep(self._circuit_backoff_sec)
+                self._consecutive_blocks = 0
+        else:
+            self._consecutive_blocks = 0
+
         return result
+
+    @staticmethod
+    def _is_blocked_response(result: str) -> bool:
+        """Return True if the tool result looks like a WAF or rate-limit rejection."""
+        if not result:
+            return False
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return False
+        status = data.get("status") or data.get("status_code")
+        if isinstance(status, int) and status in (403, 429, 503):
+            return True
+        lowered = result.lower()
+        return any(
+            token in lowered
+            for token in ("403 forbidden", "429 too many", "rate limit", "rate-limit",
+                          "blocked by waf", "access denied", "cloudflare ray id",
+                          "waf block", "security check")
+        )

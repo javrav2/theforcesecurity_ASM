@@ -231,6 +231,118 @@ func scanCVE(row pgx.Row) (*schema.CVE, error) {
 	return &c, nil
 }
 
+// UpsertCVE writes a canonical CVE record into the oracle.cves table. Used by
+// the on-demand ingest path: when an analyst pastes a CVE id we haven't seen
+// before, the daemon fetches it from upstream (vulnx, NVD, etc.), normalises
+// to schema.CVE, and persists with this function. Subsequent calls hit the
+// row by GetCVE without re-fetching upstream.
+//
+// We never lose ingested data: an existing row is updated in-place with the
+// fields we have. NULLs on epss/kev_added_on are preserved by treating the
+// zero value of EPSS as "no score" and the zero KEVAddedOn as NULL.
+//
+// References (URL list) live alongside the canonical row in
+// oracle.cves.reference_urls; the rendered text caches are written to
+// oracle.reference_content by the reference-fetcher when the LLM needs them.
+func (s *Store) UpsertCVE(ctx context.Context, c *schema.CVE) error {
+	if c == nil || c.ID == "" {
+		return fmt.Errorf("upsert cve: missing id")
+	}
+
+	cpesJSON, err := json.Marshal(c.CPEs)
+	if err != nil {
+		return fmt.Errorf("marshal cpes: %w", err)
+	}
+	vectorsJSON, err := json.Marshal(c.CVSSVectors)
+	if err != nil {
+		return fmt.Errorf("marshal cvss_vectors: %w", err)
+	}
+
+	refURLs := make([]string, 0, len(c.References))
+	for _, ref := range c.References {
+		if ref.URL != "" {
+			refURLs = append(refURLs, ref.URL)
+		}
+	}
+	cwes := c.CWEs
+	if cwes == nil {
+		cwes = []string{}
+	}
+
+	var (
+		epssScore *float64
+		epssPerc  *float64
+	)
+	if c.EPSS != nil {
+		// Treat zeroed EPSS as "no signal" so we don't blow away an earlier
+		// non-zero value with a placeholder.
+		if c.EPSS.Score > 0 || c.EPSS.Percentile > 0 {
+			s := c.EPSS.Score
+			p := c.EPSS.Percentile
+			epssScore = &s
+			epssPerc = &p
+		}
+	}
+
+	var kevAdded *time.Time
+	if c.KEVAddedOn != nil && !c.KEVAddedOn.IsZero() {
+		kevAdded = c.KEVAddedOn
+	}
+
+	primarySource := c.PrimarySource
+	if primarySource == "" {
+		primarySource = "vulnx"
+	}
+
+	q := fmt.Sprintf(`INSERT INTO %s.cves
+		(cve_id, published_at, modified_at, description,
+		 cwes, cpes, cvss_vectors, reference_urls,
+		 epss_score, epss_percentile, in_kev, kev_added_on,
+		 nuclei_template, poc_count, primary_source, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
+		ON CONFLICT (cve_id) DO UPDATE SET
+		  published_at    = EXCLUDED.published_at,
+		  modified_at     = EXCLUDED.modified_at,
+		  description     = EXCLUDED.description,
+		  cwes            = EXCLUDED.cwes,
+		  cpes            = EXCLUDED.cpes,
+		  cvss_vectors    = EXCLUDED.cvss_vectors,
+		  reference_urls  = EXCLUDED.reference_urls,
+		  epss_score      = COALESCE(EXCLUDED.epss_score, %s.cves.epss_score),
+		  epss_percentile = COALESCE(EXCLUDED.epss_percentile, %s.cves.epss_percentile),
+		  in_kev          = EXCLUDED.in_kev OR %s.cves.in_kev,
+		  kev_added_on    = COALESCE(EXCLUDED.kev_added_on, %s.cves.kev_added_on),
+		  nuclei_template = COALESCE(NULLIF(EXCLUDED.nuclei_template, ''), %s.cves.nuclei_template),
+		  poc_count       = GREATEST(EXCLUDED.poc_count, %s.cves.poc_count),
+		  primary_source  = EXCLUDED.primary_source,
+		  updated_at      = now()`,
+		s.cfg.OracleSchema,
+		s.cfg.OracleSchema, s.cfg.OracleSchema, s.cfg.OracleSchema,
+		s.cfg.OracleSchema, s.cfg.OracleSchema, s.cfg.OracleSchema,
+	)
+
+	_, err = s.pool.Exec(ctx, q,
+		c.ID, c.PublishedAt, c.ModifiedAt, c.Description,
+		cwes, cpesJSON, vectorsJSON, refURLs,
+		epssScore, epssPerc, c.InKEV, kevAdded,
+		nullableText(c.NucleiTemplate), c.POCCount, primarySource,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert cve %s: %w", c.ID, err)
+	}
+	return nil
+}
+
+// nullableText returns nil for an empty string so pgx writes SQL NULL instead
+// of an empty string — needed for optional text columns where downstream
+// readers distinguish "absent" from "empty".
+func nullableText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // ─────────────────────────── Intrinsic analysis ─────────────────────────
 
 // GetIntrinsicAnalysis returns the latest cached intrinsic analysis for a

@@ -90,8 +90,23 @@ RUN git clone --depth 1 https://github.com/urbanadventurer/WhatWeb.git /opt/what
 # ── wafw00f ──────────────────────────────────────────────────────────
 RUN python3 -m pip install --break-system-packages wafw00f
 
+# ── subcat (passive subdomain enumeration — 19 sources) ──────────────
+RUN python3 -m pip install --break-system-packages subcat \
+    && mkdir -p /root/.subcat \
+    && printf '# Subcat API keys\n# virustotal:\n#   - YOUR_KEY\n# securitytrails:\n#   - YOUR_KEY\n# shodan:\n#   - YOUR_KEY\n' > /root/.subcat/config.yaml
+
 # ── sslyze ───────────────────────────────────────────────────────────
 RUN python3 -m pip install --break-system-packages sslyze
+
+# ── AutoSwagger (intruder-io) ────────────────────────────────────────
+# Discover, parse, and test OpenAPI/Swagger endpoints; PII + secret detection
+RUN git clone --depth 1 https://github.com/intruder-io/autoswagger.git /opt/autoswagger \
+    && python3 -m pip install --break-system-packages \
+        -r /opt/autoswagger/requirements.txt \
+        presidio-analyzer presidio-anonymizer \
+    && python3 -m spacy download en_core_web_lg 2>/dev/null || \
+       python3 -m spacy download en_core_web_sm || true \
+    && ln -sf /opt/autoswagger/autoswagger.py /usr/local/bin/autoswagger.py
 
 # ── sqlmap ───────────────────────────────────────────────────────────
 RUN git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git /opt/sqlmap \
@@ -106,7 +121,7 @@ RUN nuclei -update-templates 2>/dev/null || true
 # ── Wordlists for fuzzing ───────────────────────────────────────────
 RUN mkdir -p /usr/share/wordlists/dirb && \
     curl -fsSL -o /usr/share/wordlists/dirb/common.txt \
-    https://raw.githubusercontent.com/v0re/dirb/master/wordlists/common.txt
+    https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt
 
 # ── Python dependencies for the bridge ──────────────────────────────
 # Build from monorepo root so shared packages are available:

@@ -178,9 +178,11 @@ func buildFinding(
 		EvaluatorVersion:       opes.Version,
 		PreconditionsEvaluated: preconditions,
 		OPES:                   score,
-		CVSSReconciliation:     analysis.CVSSReconciliation,
-		AnalystBrief:           analysis.AnalystBrief,
-		RecommendationText:     buildRecommendation(cve, analysis, score, preconditions),
+		CVSSReconciliation:       analysis.CVSSReconciliation,
+		AnalystBrief:             analysis.AnalystBrief,
+		AttackPathClass:          analysis.AttackPathClass,
+		LateralMovementPotential: analysis.LateralMovementPotential,
+		RecommendationText:       buildRecommendation(cve, asset, analysis, score, preconditions, exploitation),
 		Status:                 schema.StatusOpen,
 		CreatedAt:              time.Now().UTC(),
 		UpdatedAt:              time.Now().UTC(),
@@ -213,40 +215,318 @@ func buildFinding(
 	return f
 }
 
+// buildRecommendation produces the analyst-facing narrative attached to every
+// finding. It is intentionally section-headed prose rather than terse one-liners
+// so a CISO/analyst opening a single finding can answer:
+//
+//  1. How bad is this on this asset, right now?  (headline)
+//  2. How would an attacker actually exploit it?  (attack path + brief)
+//  3. Could it happen here?                       (reachability + preconditions)
+//  4. Is it being exploited elsewhere?            (evidence summary)
+//  5. What do we do next?                         (verification + patch)
+//
+// All inputs are already structured on the Finding; this function just renders
+// them. Persisted into findings.recommendation_text and read by the UI.
 func buildRecommendation(
 	cve *schema.CVE,
+	asset *schema.Asset,
 	analysis *schema.IntrinsicAnalysis,
 	score schema.OPESScore,
 	preconditions schema.PreconditionEvalSet,
+	exploitation schema.ExploitationEvidence,
 ) string {
+	_ = cve // reserved for future per-CVE annotations (e.g. vendor priors)
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "OPES %.1f / %s — %s (confidence: %s).\n",
-		score.Value, score.Category, score.Label, score.Confidence)
 
-	if score.Override == "blocker_unsatisfied" {
-		sb.WriteString("A blocker precondition is confirmed unsatisfied — exploit is not possible on this asset. Finding can be suppressed.\n")
-	} else if score.Override == "unreachable" {
-		sb.WriteString("Asset is isolated or unreachable by the required attacker class. Finding can be suppressed.\n")
-	} else if score.Override == "kev_floor" {
-		sb.WriteString("CISA/VulnCheck KEV: this CVE is confirmed exploited in the wild. Treat as P0 regardless of precondition status — verify and patch urgently.\n")
-	} else if score.Dampener != "" {
-		fmt.Fprintf(&sb, "%s\n", score.Dampener)
+	// ── Headline ─────────────────────────────────────────────────────────
+	fmt.Fprintf(&sb, "[%s] %s — OPES %.1f (confidence: %s)\n",
+		score.Category, score.Label, score.Value, score.Confidence)
+
+	switch score.Override {
+	case "blocker_unsatisfied":
+		sb.WriteString("Verdict: Not exploitable on this asset — a blocker precondition is confirmed unsatisfied. Safe to suppress.\n")
+	case "unreachable":
+		sb.WriteString("Verdict: Asset is isolated or unreachable by the required attacker class. Safe to suppress.\n")
+	case "kev_floor":
+		sb.WriteString("Verdict: CISA/VulnCheck KEV — confirmed exploited in the wild. Treat as P0 and patch on emergency cadence.\n")
+	default:
+		if score.Dampener != "" {
+			fmt.Fprintf(&sb, "Verdict: %s\n", score.Dampener)
+		}
 	}
 
+	// ── Attack path ─────────────────────────────────────────────────────
+	if analysis.AttackPathClass != "" {
+		sb.WriteString("\nATTACK PATH\n")
+		fmt.Fprintf(&sb, "  %s\n", analysis.AttackPathClass.Label())
+		if v := reachabilityVerdict(asset, analysis, score.Components.R); v != "" {
+			fmt.Fprintf(&sb, "  Reachability: %s\n", v)
+		}
+		if l := analysis.LateralMovementPotential.Label(); l != "" {
+			fmt.Fprintf(&sb, "  Lateral movement: %s\n", l)
+		}
+	}
+
+	// ── Analyst brief quotes ────────────────────────────────────────────
+	brief := analysis.AnalystBrief
+	if v := strings.TrimSpace(brief.AttackVectorSummary); v != "" {
+		sb.WriteString("\nWHAT AN ATTACKER WOULD DO\n  ")
+		sb.WriteString(v)
+		sb.WriteString("\n")
+	}
+	if v := strings.TrimSpace(brief.RealWorldLikelihood); v != "" {
+		sb.WriteString("\nREAL-WORLD LIKELIHOOD\n  ")
+		sb.WriteString(truncateSentences(v, 3))
+		sb.WriteString("\n")
+	}
+	if v := strings.TrimSpace(brief.AffectedIf); v != "" {
+		sb.WriteString("\nAFFECTED IF\n  ")
+		sb.WriteString(v)
+		sb.WriteString("\n")
+	}
+	if v := strings.TrimSpace(brief.NotAffectedIf); v != "" {
+		sb.WriteString("\nNOT AFFECTED IF\n  ")
+		sb.WriteString(v)
+		sb.WriteString("\n")
+	}
+
+	// ── Exploitation evidence summary ────────────────────────────────────
+	if lines := summarizeExploitationEvidence(exploitation); len(lines) > 0 {
+		sb.WriteString("\nEXPLOITATION EVIDENCE\n")
+		for _, l := range lines {
+			fmt.Fprintf(&sb, "  • %s\n", l)
+		}
+	}
+
+	// ── Preconditions ────────────────────────────────────────────────────
+	if len(preconditions) > 0 {
+		sb.WriteString("\nPRECONDITIONS\n")
+		for _, e := range preconditions {
+			marker := preconditionMarker(e.Status)
+			sevTag := ""
+			if e.Precondition.Severity == schema.PreconditionBlocker {
+				sevTag = " [blocker]"
+			}
+			fmt.Fprintf(&sb, "  %s %s%s — %s\n",
+				marker, e.Precondition.ID, sevTag, e.Precondition.Description)
+			if e.Status == schema.PreconditionUnknown && e.Precondition.VerificationMethod != "" {
+				fmt.Fprintf(&sb, "      verify: %s\n", e.Precondition.VerificationMethod)
+			}
+		}
+	}
+
+	// ── CVSS reconciliation, only when sources disagreed ────────────────
 	if len(analysis.CVSSReconciliation.Disagreements) > 0 {
-		fmt.Fprintf(&sb, "CVSS reconciled to %.1f (%s); NVD/other source disagreement: %s\n",
+		sb.WriteString("\nCVSS RECONCILIATION\n")
+		fmt.Fprintf(&sb, "  Reconciled to %.1f (%s).\n",
 			analysis.CVSSReconciliation.CorrectScore,
 			analysis.CVSSReconciliation.CorrectVector,
-			analysis.CVSSReconciliation.Rationale,
 		)
+		if analysis.CVSSReconciliation.Rationale != "" {
+			fmt.Fprintf(&sb, "  Rationale: %s\n", analysis.CVSSReconciliation.Rationale)
+		}
+		for _, d := range analysis.CVSSReconciliation.Disagreements {
+			fmt.Fprintf(&sb, "  • %s disagrees (%s): %s\n",
+				d.Source, d.TheirVector, d.Disagreement)
+		}
 	}
 
-	unknown := preconditions.CountBlockers(schema.PreconditionUnknown)
-	if unknown > 0 {
-		fmt.Fprintf(&sb, "%d blocker precondition(s) cannot be verified from external signals — open verification tasks are attached.\n", unknown)
+	// ── Phishing/UI:R control context — only relevant for human-mediated ─
+	// CVEs where the real-world risk is bounded by environmental controls
+	// rather than the bug itself. Surfacing this prevents overstating risk
+	// for orgs with strong email security and understating it for orgs
+	// without.
+	if analysis.AttackPathClass == schema.AttackPathPhishingDelivery ||
+		strings.Contains(analysis.CVSSReconciliation.CorrectVector, "UI:R") {
+		sb.WriteString("\nCONTROL CONTEXT (USER-INTERACTION REQUIRED)\n")
+		sb.WriteString("  This attack requires user interaction. Real-world risk is bounded by\n")
+		sb.WriteString("  phishing controls (email sandboxing, attachment stripping, link rewriting),\n")
+		sb.WriteString("  endpoint isolation (browser site isolation, app sandboxing, EDR), and user\n")
+		sb.WriteString("  awareness. Treat as High where those controls are weak; Medium where mature.\n")
+	}
+
+	// ── Next steps ───────────────────────────────────────────────────────
+	if next := nextSteps(score, preconditions); len(next) > 0 {
+		sb.WriteString("\nNEXT STEPS\n")
+		for _, n := range next {
+			fmt.Fprintf(&sb, "  • %s\n", n)
+		}
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// reachabilityVerdict explains the R component in plain English. Returns ""
+// when there is nothing meaningful to say (e.g. asset missing).
+func reachabilityVerdict(asset *schema.Asset, analysis *schema.IntrinsicAnalysis, r float64) string {
+	if asset == nil {
+		return ""
+	}
+	if asset.Exposure == schema.ExposureIsolated {
+		return "Asset is isolated — not reachable by any external attacker."
+	}
+	switch analysis.AttackPathClass {
+	case schema.AttackPathExploitPublicFacing:
+		if asset.Exposure == schema.ExposureInternet {
+			return "Asset is internet-exposed and the vulnerable surface is directly reachable from the internet."
+		}
+		return "Vulnerable service is reachable on the internal network."
+	case schema.AttackPathPhishingDelivery:
+		return "Not directly reachable by scanners — exploit must be delivered to a human user via email, link, or document."
+	case schema.AttackPathLateralMovementRequired:
+		return "Reachable only after an attacker has compromised another host. Risk depends on adjacent-asset hygiene."
+	case schema.AttackPathValidCredentials:
+		return "Reachable, but exploitation requires valid credentials. Risk depends on credential hygiene and MFA posture."
+	case schema.AttackPathSupplyChain:
+		return "Reachability is determined by the compromised dependency or build pipeline, not by network position."
+	}
+	switch {
+	case r >= 8:
+		return "Highly reachable for the required attacker class."
+	case r >= 5:
+		return "Moderately reachable — some controls in place but not blocking."
+	case r > 0:
+		return "Limited reachability — significant controls or distance reduce exposure."
+	}
+	return ""
+}
+
+// summarizeExploitationEvidence converts the structured ExploitationEvidence
+// into bullet lines that read like an incident-response briefing rather than
+// a flag dump. Highest-signal items first.
+func summarizeExploitationEvidence(e schema.ExploitationEvidence) []string {
+	var out []string
+
+	for _, src := range e.InKEVSources {
+		switch src {
+		case "cisa_kev":
+			out = append(out, "CISA KEV — confirmed exploited; due-date applies to federal agencies")
+		case "vulncheck_kev":
+			out = append(out, "VulnCheck KEV — confirmed exploited (independent of CISA)")
+		case "enisa_euvd_kev":
+			out = append(out, "ENISA EUVD — EU-confirmed exploitation")
+		}
+	}
+	if e.RansomwareAssociated || e.VulnCheckRansomwareCount > 0 {
+		out = append(out, "Ransomware-associated — used by ransomware operators in observed incidents")
+	}
+	if e.VulnCheckBotnetCount > 0 {
+		out = append(out, "Botnet-associated — used by automated mass-exploitation operators")
+	}
+	if e.BreachConfirmed {
+		out = append(out, fmt.Sprintf("VCDB breach confirmation — caused %d documented breach(es)", e.BreachIncidentCount))
+	}
+	if e.ZeroDayConfirmed {
+		out = append(out, "Google Project Zero — exploited as a 0day before a patch existed")
+	}
+	if e.VulnCheckReportedExploited {
+		out = append(out, "VulnCheck — exploitation reported in the wild")
+	}
+	if e.VulnCheckThreatActorCount > 0 {
+		out = append(out, fmt.Sprintf("Linked to %d known threat actor group(s)", e.VulnCheckThreatActorCount))
+	}
+	if e.VulnCheckWeaponized {
+		out = append(out, "VulnCheck — validated weaponized exploit available")
+	}
+	if e.MetasploitAvailable {
+		switch {
+		case e.MetasploitModCount > 1:
+			out = append(out, fmt.Sprintf("Metasploit — %d weaponized modules available (push-button)", e.MetasploitModCount))
+		default:
+			out = append(out, "Metasploit module available (push-button exploit)")
+		}
+	}
+	if e.VulnCheckPublicExploit && e.VulnCheckExploitCount > 0 {
+		out = append(out, fmt.Sprintf("VulnCheck — %d public exploit artifact(s) catalogued", e.VulnCheckExploitCount))
+	}
+	switch e.CISASSVCDecision {
+	case "Immediate":
+		out = append(out, "CISA SSVC: Immediate — patch on emergency cadence")
+	case "Out-of-Cycle":
+		out = append(out, "CISA SSVC: Out-of-Cycle — patch outside normal maintenance window")
+	}
+	if e.AttackerKBValue >= 4 {
+		out = append(out, fmt.Sprintf("AttackerKB attacker_value %d/5 — practitioner community rates this highly valuable", e.AttackerKBValue))
+	}
+	if e.RecentPOCDays > 0 && e.RecentPOCDays <= 30 {
+		out = append(out, fmt.Sprintf("Recent public PoC (≤%d days)", e.RecentPOCDays))
+	}
+	return out
+}
+
+// preconditionMarker returns a single-character status indicator. Avoids
+// emoji to keep the output safe for consoles, tickets, and email clients.
+func preconditionMarker(s schema.PreconditionStatus) string {
+	switch s {
+	case schema.PreconditionSatisfied:
+		return "[+]"
+	case schema.PreconditionUnsatisfied:
+		return "[-]"
+	case schema.PreconditionUnknown:
+		return "[?]"
+	default:
+		return "[ ]"
+	}
+}
+
+// nextSteps assembles concrete, asset-specific actions. Order: any open
+// verification tasks first (analyst can act now), then patch/upgrade
+// guidance.
+func nextSteps(score schema.OPESScore, set schema.PreconditionEvalSet) []string {
+	var steps []string
+	for _, e := range set {
+		if e.Status != schema.PreconditionUnknown {
+			continue
+		}
+		if e.Precondition.VerificationMethod != "" {
+			steps = append(steps, fmt.Sprintf(
+				"Verify %s: %s",
+				e.Precondition.ID, e.Precondition.VerificationMethod,
+			))
+		} else {
+			steps = append(steps, fmt.Sprintf(
+				"Manually verify precondition: %s",
+				e.Precondition.Description,
+			))
+		}
+	}
+	switch score.Category {
+	case schema.PriorityP0:
+		steps = append(steps, "Patch on emergency cadence; if no patch, apply vendor mitigations and isolate the asset until patched.")
+	case schema.PriorityP1:
+		steps = append(steps, "Patch in the next change window; deploy compensating controls (WAF rule, network ACL) in the interim.")
+	case schema.PriorityP2:
+		steps = append(steps, "Patch in routine maintenance; verify preconditions to confirm the conditional risk is real.")
+	case schema.PriorityP3:
+		steps = append(steps, "Verify outstanding preconditions before re-prioritizing; patch in routine cycle once verified.")
+	case schema.PriorityP4:
+		steps = append(steps, "No urgent action; track for awareness and handle on routine patching cadence.")
+	}
+	return steps
+}
+
+// truncateSentences keeps the first n sentences of a string, preserving
+// the original whitespace shape. Splits on '.', '!', '?' so it won't
+// over-aggressively cut at decimal points or version numbers in the
+// rare cases the LLM uses them mid-sentence — we accept that edge.
+func truncateSentences(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	count := 0
+	for i, r := range s {
+		if r == '.' || r == '!' || r == '?' {
+			count++
+			if count >= n {
+				end := i + 1
+				if end < len(s) {
+					return strings.TrimSpace(s[:end])
+				}
+				return s
+			}
+		}
+	}
+	return s
 }
 
 func hashSignals(s schema.AssetSignals) string {

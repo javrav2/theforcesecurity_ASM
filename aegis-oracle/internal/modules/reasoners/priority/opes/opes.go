@@ -51,7 +51,7 @@ func Compute(in Input, cfg Config) schema.OPESScore {
 		R: reachability(in, cfg),
 		P: preconditionScore(in.Preconditions),
 		X: exploitation(in.Exploitation),
-		C: criticality(in.Asset),
+		C: criticality(in.Asset, in.Intrinsic),
 		T: timePressure(in, in.Now),
 	}
 

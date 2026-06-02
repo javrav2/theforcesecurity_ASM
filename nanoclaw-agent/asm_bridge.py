@@ -40,6 +40,29 @@ except ImportError:
 
 logger = logging.getLogger("asm_bridge")
 
+# Severity escalation map: (vuln_type, current_severity) -> escalated_severity.
+# Applied when PoC confirmation promotes a detected finding to a confirmed one.
+_SEVERITY_ESCALATION: Dict[tuple, str] = {
+    ("sqli",  "info"):    "high",
+    ("sqli",  "low"):     "high",
+    ("sqli",  "medium"):  "critical",
+    ("sqli",  "high"):    "critical",
+    ("xss",   "info"):    "medium",
+    ("xss",   "low"):     "medium",
+    ("xss",   "medium"):  "high",
+    ("ssrf",  "low"):     "medium",
+    ("ssrf",  "medium"):  "high",
+    ("rce",   "low"):     "critical",
+    ("rce",   "medium"):  "critical",
+    ("idor",  "low"):     "medium",
+    ("idor",  "medium"):  "high",
+    ("lfi",   "low"):     "medium",
+    ("lfi",   "medium"):  "high",
+    ("ssti",  "medium"):  "critical",
+    ("xxe",   "medium"):  "high",
+}
+
+
 try:
     from asm_scanner_core.findings import Finding  # shared with platform worker / OpenClaw
 except ImportError:
@@ -96,6 +119,27 @@ except ImportError:
             d = {k: v for k, v in asdict(self).items() if v is not None}
             d["timestamp"] = datetime.now(timezone.utc).isoformat()
             return d
+
+
+@dataclass
+class PoCEvidence:
+    """Proof-of-concept evidence attached to a confirmed vulnerability finding.
+
+    Populated by exploit validation tools (sqlmap, playwright, xsstrike, etc.)
+    and attached to the finding record via ASMBridge.confirm_finding().
+    """
+    vuln_type: str          # sqli, xss, dom-xss, ssrf, rce, idor, lfi, ssti, xxe …
+    endpoint: str           # exact URL / route where the vuln was confirmed
+    payload: str            # the payload that triggered the vulnerability
+    request_raw: str = ""   # raw HTTP request (method + headers + body)
+    response_snippet: str = ""  # relevant portion of the HTTP response
+    screenshot_b64: str = ""    # base64 PNG (optional, for browser-confirmed findings)
+    execution_evidence: str = ""  # e.g. "window.__vanguard_xss=https://target/admin"
+    tool: str = ""          # sqlmap, playwright, xsstrike, manual …
+    confirmed: bool = True
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in asdict(self).items() if v not in (None, "", False)}
 
 
 class ASMBridge:
@@ -246,6 +290,58 @@ class ASMBridge:
         """Submit an arbitrary finding."""
         self._add(finding)
 
+    def confirm_finding(
+        self,
+        host: str,
+        title: str,
+        vuln_type: str,
+        poc: "PoCEvidence",
+        current_severity: str = "medium",
+        source: str = "aegis-vanguard-poc",
+    ) -> str:
+        """Confirm a vulnerability with PoC evidence, escalating severity as warranted.
+
+        Submits a new '[CONFIRMED]' finding record linked to the original detection.
+        Returns the final (possibly escalated) severity string.
+        """
+        key = (vuln_type.lower(), current_severity.lower())
+        escalated = _SEVERITY_ESCALATION.get(key, current_severity)
+        did_escalate = escalated != current_severity
+
+        if did_escalate:
+            logger.info(
+                f"PoC confirmed — severity escalated: {title} "
+                f"[{current_severity} → {escalated}] via {poc.tool or vuln_type}"
+            )
+            self._stats["escalated"] = self._stats.get("escalated", 0) + 1
+
+        tags = ["confirmed", "poc", vuln_type.lower()]
+        if did_escalate:
+            tags.append(f"escalated_from:{current_severity}")
+
+        self._add(Finding(
+            type="vulnerability",
+            source=source,
+            target=host,
+            host=host,
+            title=f"[CONFIRMED] {title}",
+            severity=escalated,
+            confidence="confirmed",
+            description=(
+                f"PoC confirmed via {poc.tool or vuln_type}. "
+                f"Endpoint: {poc.endpoint}. "
+                f"Payload: {poc.payload[:300]}"
+                + (f". Evidence: {poc.execution_evidence}" if poc.execution_evidence else "")
+            ),
+            tags=tags,
+            raw_data={
+                "poc": poc.to_dict(),
+                "original_severity": current_severity,
+                "escalated": did_escalate,
+            },
+        ))
+        return escalated
+
     # =====================================================================
     # Buffer Management
     # =====================================================================
@@ -302,6 +398,7 @@ class ASMBridge:
                 "subdomain_enum", "port_scan", "vuln_scan", "web_crawl",
                 "takeover_detection", "tls_analysis", "security_headers",
                 "mail_intel", "vendor_intel",
+                "browser_crawl", "dom_xss", "poc_confirmation",
             ],
         }
         return self._post("/api/v1/ingest/heartbeat", payload)

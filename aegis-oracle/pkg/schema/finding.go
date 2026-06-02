@@ -28,8 +28,15 @@ type Finding struct {
 	// AnalystBrief carries the plain-language vulnerability intelligence
 	// written by Phase A — rendered in the UI as the first thing an analyst
 	// reads when opening a finding.
-	AnalystBrief           AnalystBrief        `json:"analyst_brief"`
-	RecommendationText     string              `json:"recommendation_text"`
+	AnalystBrief             AnalystBrief             `json:"analyst_brief"`
+	// AttackPathClass is the MITRE ATT&CK initial access technique category
+	// for this finding — propagated from IntrinsicAnalysis for display and
+	// filtering without requiring a separate intrinsic lookup.
+	AttackPathClass          AttackPathClass          `json:"attack_path_class,omitempty"`
+	// LateralMovementPotential describes the pivot/lateral movement value an
+	// attacker gains from exploiting this finding. Propagated from Phase A.
+	LateralMovementPotential LateralMovementPotential `json:"lateral_movement_potential,omitempty"`
+	RecommendationText       string                   `json:"recommendation_text"`
 	VerificationTasks      []VerificationTask  `json:"verification_tasks,omitempty"`
 	Status                 FindingStatus       `json:"status"`
 	CreatedAt              time.Time           `json:"created_at"`

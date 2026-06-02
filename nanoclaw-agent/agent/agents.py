@@ -39,14 +39,16 @@ def _get_bridge() -> ASMBridge:
 
 @security_tool(category="recon", risk="safe")
 def scan_subdomains(domain: str, timeout: int = 300) -> str:
-    """Enumerate subdomains for a domain using subfinder passive sources.
+    """Enumerate subdomains for a domain using subfinder and subcat passive sources.
 
     Args:
         domain: Root domain to enumerate (e.g. example.com)
-        timeout: Max seconds to run
+        timeout: Max seconds to run per tool
     """
     import scanners
-    results = scanners.run_subfinder(domain, _get_bridge(), timeout=timeout)
+    results_subfinder = scanners.run_subfinder(domain, _get_bridge(), timeout=timeout)
+    results_subcat = scanners.run_subcat(domain, _get_bridge(), timeout=min(timeout, 180))
+    results = list(set(results_subfinder + results_subcat))
     return json.dumps({"subdomains": results, "count": len(results)})
 
 
@@ -146,6 +148,30 @@ def detect_cms(target_url: str, timeout: int = 300) -> str:
 
 
 @security_tool(category="recon", risk="safe")
+def fingerprint_gitlab(target_url: str, hash_db_path: str = "", timeout: int = 30) -> str:
+    """Fingerprint GitLab instances by hashing /help stylesheet assets.
+
+    Non-destructive version-correlation technique inspired by Praetorian-style
+    GitLab assessments. It fetches /help, hashes linked CSS assets, and compares
+    them against an optional local hash database. It does NOT execute exploits
+    or send out-of-band RCE payloads.
+
+    Args:
+        target_url: GitLab base URL or candidate URL
+        hash_db_path: Optional JSON hash database path; defaults to GITLAB_HASH_DB_PATH
+        timeout: HTTP timeout per request
+    """
+    import scanners
+    result = scanners.run_gitlab_fingerprint(
+        target_url=target_url,
+        bridge=_get_bridge(),
+        hash_db_path=hash_db_path,
+        timeout=timeout,
+    )
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="recon", risk="safe")
 def crawl_urls(target_url: str, depth: int = 5, timeout: int = 600) -> str:
     """Crawl a web application to discover URLs and endpoints using katana.
 
@@ -220,7 +246,68 @@ def discover_parameters(target_url: str, timeout: int = 300) -> str:
     return json.dumps({"parameters": results, "count": len(results)})
 
 
+@security_tool(category="recon", risk="low")
+def discover_api_surface(target_url: str, timeout: int = 120, max_pages: int = 20) -> str:
+    """Discover API endpoints from browser traffic, page links, scripts, and JSON responses.
+
+    Blackbox-safe Vespasian-style inventory pass. Use it after initial crawling,
+    especially for SPAs, API-heavy applications, GraphQL apps, or targets where
+    katana finds few URLs. It observes traffic and extracts endpoint structure;
+    it does not mutate data or attempt authorization bypasses.
+
+    Args:
+        target_url: Starting URL to observe and crawl
+        timeout: Max seconds to run
+        max_pages: Maximum pages to visit while observing traffic
+    """
+    import scanners
+    results = scanners.run_api_surface_discovery(
+        target_url, _get_bridge(), timeout=timeout, max_pages=max_pages
+    )
+    return json.dumps(results, default=str)
+
+
 # --- Vulnerability Analysis Tools ---
+
+@security_tool(category="recon", risk="low")
+def reverse_whois_search(
+    terms: str,
+    search_type: str = "current",
+    mode: str = "preview",
+    exclude: str = "",
+    max_terms: int = 10,
+    max_domains: int = 500,
+    timeout: int = 60,
+) -> str:
+    """Search WhoisXML reverse WHOIS for related domains by brand, org, email, or domain term.
+
+    Blackbox-safe OSINT pivot inspired by haltman-io/reverse-whois. Defaults to
+    preview mode, which returns counts only, to avoid unexpectedly spending API
+    credits on full domain-list retrieval. Use mode="purchase" only when the
+    engagement authorizes retrieving domain lists from WhoisXML.
+
+    Args:
+        terms: Newline- or comma-separated search terms (brand, org, email, domain)
+        search_type: current or historic
+        mode: preview for counts only, purchase for matching domains
+        exclude: Optional newline- or comma-separated exclusion terms (max 4)
+        max_terms: Maximum terms to query
+        max_domains: Maximum returned domains to keep
+        timeout: HTTP timeout per API request
+    """
+    import scanners
+    result = scanners.run_reverse_whois_search(
+        terms=terms,
+        bridge=_get_bridge(),
+        search_type=search_type,
+        mode=mode,
+        exclude=exclude,
+        max_terms=max_terms,
+        max_domains=max_domains,
+        timeout=timeout,
+    )
+    return json.dumps(result, default=str)
+
 
 @security_tool(category="recon", risk="safe")
 def atlas_map_attack_surface(
@@ -253,6 +340,81 @@ def atlas_map_attack_surface(
         timeout=timeout,
     )
     return json.dumps(summary, default=str)
+
+
+# --- Swagger / OpenAPI Discovery & Testing ---
+
+@security_tool(category="recon", risk="safe")
+def discover_swagger_spec(target_url: str, timeout: int = 60) -> str:
+    """Discover exposed Swagger/OpenAPI spec files using multi-phase discovery.
+
+    Runs three phases (AutoSwagger-style):
+    1. Direct spec check — if target_url ends in .json/.yaml, parse it directly.
+    2. Swagger UI scraping — probe known UI paths (/swagger-ui, /docs, /redoc)
+       and extract the embedded spec URL from the HTML/JS initializer.
+    3. Common-path bruteforce — probe 30+ standard spec paths on the origin
+       (/swagger.json, /openapi.json, /api-docs, /v2/api-docs, etc.).
+
+    When a spec is found, returns all documented endpoints (method, path, operationId,
+    summary, tags) so the agent can prioritize which to test. Also submits the exposed
+    spec as an informational finding to the ASM platform.
+
+    Use this whenever an API surface or Swagger-like interface is suspected. Follow
+    with test_swagger_api to exercise the discovered endpoints for data exposure.
+
+    Args:
+        target_url: Base URL or direct spec URL (e.g. https://api.example.com)
+        timeout:    Max seconds to run
+    """
+    import scanners
+    result = scanners.run_swagger_spec_discovery(target_url, _get_bridge(), timeout=timeout)
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="vuln_analysis", risk="low")
+def test_swagger_api(
+    target_url: str,
+    risk_mode: bool = False,
+    brute_params: bool = False,
+    rate: int = 20,
+    timeout: int = 300,
+) -> str:
+    """Test all documented API endpoints for unauthenticated access, PII exposure, and secret leakage.
+
+    Implements AutoSwagger-style endpoint testing:
+    1. Discovers the OpenAPI/Swagger spec automatically (same phases as discover_swagger_spec).
+    2. Exercises every documented endpoint — GET only by default; set risk_mode=True to also
+       test POST/PUT/PATCH/DELETE (requires explicit engagement authorization).
+    3. Scans each response for PII — emails, phone numbers, SSNs, credit cards — using
+       contextual regex patterns (Presidio-inspired, reduces false positives).
+    4. Scans responses for leaked secrets using TruffleHog-style patterns — AWS keys,
+       GitHub tokens, JWTs, database URLs, Stripe keys, generic API keys, private keys.
+    5. Flags large JSON responses (>5 KB) that may represent unintended bulk data exposure.
+
+    Uses the autoswagger CLI (intruder-io/autoswagger) if installed; otherwise falls back
+    to a native httpx-based tester. All flagged findings are submitted to the ASM platform.
+
+    Typical workflow:
+      1. discover_swagger_spec → shows documented endpoints and spec location
+      2. test_swagger_api → confirms which are unauthenticated and what data leaks
+
+    Args:
+        target_url:   Base URL or spec URL of the target API
+        risk_mode:    Include non-GET methods (POST/PUT/PATCH/DELETE) — only when authorized
+        brute_params: Exhaustively fuzz parameter values to bypass naive validations
+        rate:         Max requests per second (default 20; 0 = no limit)
+        timeout:      Max seconds to run
+    """
+    import scanners
+    result = scanners.run_autoswagger(
+        target_url=target_url,
+        bridge=_get_bridge(),
+        risk=risk_mode,
+        brute=brute_params,
+        rate=rate,
+        timeout=timeout,
+    )
+    return json.dumps(result, default=str)
 
 
 @security_tool(category="vuln_analysis", risk="safe")
@@ -526,6 +688,124 @@ def deep_tls_test(target: str, timeout: int = 600) -> str:
     return json.dumps({"issues": results, "count": len(results)}, default=str)
 
 
+# --- Browser / Playwright Tools ---
+
+@security_tool(category="recon", risk="low")
+def crawl_urls_authenticated(
+    target_url: str,
+    username: str = "",
+    password: str = "",
+    timeout: int = 120,
+) -> str:
+    """Crawl a web application using a real Chromium browser (Playwright), handling JS-rendered SPAs and optional authentication.
+
+    Prefer over crawl_urls when: the target is a React/Angular/Vue SPA, authentication
+    is required to access deeper routes, or katana misses routes that only appear after
+    user interaction or client-side routing.
+
+    Args:
+        target_url: Starting URL to crawl
+        username: Optional login username — attempts to fill a login form if provided
+        password: Optional login password
+        timeout: Max seconds to run
+    """
+    import scanners
+    results = scanners.run_playwright_crawl_authenticated(
+        target_url, _get_bridge(), username=username, password=password, timeout=timeout
+    )
+    return json.dumps({"urls": results[:500], "total_count": len(results)})
+
+
+@security_tool(category="exploit", risk="high")
+def test_dom_xss(
+    target_url: str,
+    params: str = "",
+    timeout: int = 60,
+) -> str:
+    """Test for DOM-based XSS using a real Chromium browser (Playwright).
+
+    Detects payloads that execute in the JavaScript context but produce no reflection
+    in HTTP responses — a class of vulnerability entirely missed by XSStrike and nuclei.
+    Tests URL fragment (#), query parameter, and common sink injections.
+
+    Use after xss_test when: XSStrike finds nothing but the target has heavy
+    client-side JS, hash-based routing, or postMessage/eval sinks.
+
+    Args:
+        target_url: URL to test (parameters optional — pass via params arg)
+        params: Comma-separated parameter names to inject (e.g. "q,search,redirect")
+        timeout: Max seconds to run
+    """
+    import scanners
+    results = scanners.run_dom_xss_test(
+        target_url, _get_bridge(), params=params, timeout=timeout
+    )
+    return json.dumps({
+        "findings": results,
+        "count": len(results),
+        "confirmed": len(results) > 0,
+    })
+
+
+@security_tool(category="exploit", risk="high")
+def confirm_vulnerability_poc(
+    host: str,
+    finding_title: str,
+    vuln_type: str,
+    endpoint: str,
+    payload: str,
+    request_raw: str = "",
+    response_snippet: str = "",
+    current_severity: str = "medium",
+    tool: str = "",
+) -> str:
+    """Confirm a vulnerability with PoC evidence and submit to the platform with escalated severity.
+
+    Call this after ANY tool (sqlmap, xss_test, test_dom_xss, nuclei) produces a
+    positive finding. Attaches the request/response proof to the finding record and
+    automatically escalates severity based on confirmation
+    (e.g. medium SQLi → critical, medium XSS → high).
+
+    Args:
+        host: Hostname of the target (e.g. api.example.com)
+        finding_title: Short description of the finding (e.g. "SQL Injection in /login")
+        vuln_type: Vulnerability class: sqli, xss, dom-xss, ssrf, rce, idor, lfi, ssti, xxe
+        endpoint: The exact URL or endpoint where the vuln was confirmed
+        payload: The payload that triggered the vulnerability
+        request_raw: Raw HTTP request (method + headers + body) used in the PoC
+        response_snippet: Relevant portion of the HTTP response proving exploitation
+        current_severity: Severity from the original detection (info/low/medium/high/critical)
+        tool: Tool that produced the confirmation (sqlmap, playwright, xsstrike, nuclei, manual)
+    """
+    from asm_bridge import PoCEvidence
+    poc = PoCEvidence(
+        vuln_type=vuln_type,
+        endpoint=endpoint,
+        payload=payload,
+        request_raw=request_raw,
+        response_snippet=response_snippet,
+        tool=tool or vuln_type,
+    )
+    bridge = _get_bridge()
+    escalated = bridge.confirm_finding(
+        host=host,
+        title=finding_title,
+        vuln_type=vuln_type,
+        poc=poc,
+        current_severity=current_severity,
+    )
+    bridge.flush()
+    return json.dumps({
+        "confirmed": True,
+        "finding": finding_title,
+        "host": host,
+        "original_severity": current_severity,
+        "escalated_severity": escalated,
+        "escalated": escalated != current_severity,
+        "poc_endpoint": endpoint,
+    })
+
+
 # --- Reporting Tools ---
 
 @security_tool(category="report", risk="safe")
@@ -577,30 +857,566 @@ def submit_findings_to_platform() -> str:
 
 
 # =========================================================================
+# Manual Probing Tools (new — enables CSRF, OAuth, open redirect, race testing)
+# =========================================================================
+
+@security_tool(category="exploit", risk="medium")
+def send_http_request(
+    method: str,
+    url: str,
+    headers_json: str = "{}",
+    body: str = "",
+    follow_redirects: bool = True,
+) -> str:
+    """Send a single HTTP request with custom method, headers, and body.
+
+    Use for: manual CSRF probes, OAuth redirect_uri tests, open redirect confirmation,
+    custom header injection tests, and any case where a specific raw request is needed.
+
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
+        url: Full URL (must be in-scope — out-of-scope URLs are blocked by guardrails)
+        headers_json: JSON object of request headers (e.g. '{"Origin": "https://evil.com"}')
+        body: Request body string (plain text, JSON, or form-encoded)
+        follow_redirects: Whether to follow HTTP redirects (default True)
+    """
+    import scanners
+    result = scanners.run_send_http_request(
+        method=method,
+        url=url,
+        headers_json=headers_json,
+        body=body,
+        follow_redirects=follow_redirects,
+        bridge=_get_bridge(),
+    )
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="vuln_analysis", risk="low")
+def test_cors_policy(target_url: str, timeout: int = 60) -> str:
+    """Test CORS policy by probing with attacker-controlled Origin headers.
+
+    Detects: wildcard ACAO, reflected origins (mirrors Origin back), null-origin
+    allowance, and credentialed cross-origin access (ACAC: true).
+
+    Args:
+        target_url: URL to test CORS on
+        timeout: Max seconds to run
+    """
+    import scanners
+    result = scanners.run_cors_test(target_url, _get_bridge(), timeout=timeout)
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="exploit", risk="medium")
+def test_race_condition(
+    url: str,
+    method: str = "POST",
+    body_json: str = "{}",
+    num_concurrent: int = 10,
+    timeout: int = 30,
+) -> str:
+    """Send N concurrent requests to detect race conditions.
+
+    Use on: coupon/promo redemption, payment endpoints, like/vote/reaction endpoints,
+    account credit/balance operations, inventory operations, referral bonus claims.
+
+    Args:
+        url: Endpoint to race
+        method: HTTP method (default POST)
+        body_json: JSON body to send with each request
+        num_concurrent: Number of simultaneous requests (max 20, default 10)
+        timeout: Per-request timeout in seconds
+    """
+    import scanners
+    result = scanners.run_race_condition_test(
+        url=url,
+        method=method,
+        body_json=body_json,
+        num_concurrent=num_concurrent,
+        bridge=_get_bridge(),
+        timeout=timeout,
+    )
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="exploit", risk="medium")
+def test_file_upload(upload_url: str, timeout: int = 120) -> str:
+    """Test a file upload endpoint with extension bypass, MIME mismatch, and polyglot payloads.
+
+    Tests: double extension (.php.jpg), null byte (.php\\x00.jpg), MIME confusion
+    (PHP file with image/jpeg content-type), SVG XSS, path traversal in filename,
+    and polyglot file (valid image header + PHP code).
+
+    Args:
+        upload_url: The form POST endpoint that receives file uploads
+        timeout: Max seconds to run
+    """
+    import scanners
+    result = scanners.run_file_upload_test(
+        upload_url=upload_url,
+        bridge=_get_bridge(),
+        timeout=timeout,
+    )
+    return json.dumps(result, default=str)
+
+
+# =========================================================================
+# Brain Tools — persistent cross-run engagement memory
+# =========================================================================
+
+@security_tool(category="recon", risk="safe")
+def brain_query(topic: str) -> str:
+    """Query the engagement brain for prior knowledge about a topic.
+
+    Returns effective payloads, exhausted techniques, confirmed vulns, and WAF
+    profile data relevant to the topic. Call this before testing a surface to
+    avoid repeating exhausted techniques and to start with proven payloads.
+
+    Args:
+        topic: Keyword to search (e.g. "sqli", "ssrf", "/api/v1/users", "xss")
+    """
+    from agent.brain import get_brain
+    brain = get_brain()
+    if brain is None:
+        return json.dumps({"status": "brain not initialized (no prior runs)"})
+    return json.dumps(brain.query(topic), default=str)
+
+
+@security_tool(category="recon", risk="safe")
+def brain_mark_exhausted(endpoint: str, category: str, technique: str) -> str:
+    """Record that a technique has already been tried on an endpoint (no findings).
+
+    Call this when a test produces no results so subsequent runs and the next
+    re-run of the agent skip it automatically.
+
+    Args:
+        endpoint: URL or path tested (e.g. "/api/v1/users?id=1")
+        category: Vuln category (e.g. "sqli", "xss", "ssrf")
+        technique: Technique name (e.g. "union_sqli", "polyglot_xss", "level3_bypass")
+    """
+    from agent.brain import get_brain
+    brain = get_brain()
+    if brain is None:
+        return json.dumps({"status": "brain not initialized"})
+    brain.mark_exhausted(endpoint, category, technique)
+    brain.save()
+    return json.dumps({"recorded": True, "endpoint": endpoint, "technique": technique})
+
+
+@security_tool(category="recon", risk="safe")
+def brain_add_payload(category: str, payload: str) -> str:
+    """Save a payload that successfully bypassed a WAF or triggered a vuln.
+
+    These payloads are surfaced first in future runs for the same category.
+
+    Args:
+        category: Vuln category (e.g. "sqli", "xss")
+        payload: The exact payload string that worked
+    """
+    from agent.brain import get_brain
+    brain = get_brain()
+    if brain is None:
+        return json.dumps({"status": "brain not initialized"})
+    brain.add_effective_payload(category, payload)
+    brain.save()
+    return json.dumps({"recorded": True, "category": category})
+
+
+@security_tool(category="recon", risk="safe")
+def brain_add_note(note: str) -> str:
+    """Record a free-form observation to the engagement brain.
+
+    Use for: WAF behaviour observations, interesting app behaviour, test account
+    creds discovered, custom headers needed, unusual rate limits, etc.
+
+    Args:
+        note: Observation text (max 2000 chars)
+    """
+    from agent.brain import get_brain
+    brain = get_brain()
+    if brain is None:
+        return json.dumps({"status": "brain not initialized"})
+    brain.add_note(note)
+    brain.save()
+    return json.dumps({"recorded": True})
+
+
+@security_tool(category="recon", risk="safe")
+def brain_update_waf(
+    detected: str = "",
+    bypass_ok: str = "",
+    bypass_fail: str = "",
+) -> str:
+    """Update the WAF profile in the engagement brain.
+
+    Args:
+        detected: WAF vendor name if detected (e.g. "Cloudflare", "ModSecurity")
+        bypass_ok: Comma-separated bypass levels that worked (e.g. "url_encode,double_encode")
+        bypass_fail: Comma-separated bypass levels that failed
+    """
+    from agent.brain import get_brain
+    brain = get_brain()
+    if brain is None:
+        return json.dumps({"status": "brain not initialized"})
+    brain.update_waf(
+        detected=detected or None,
+        bypass_ok=[x.strip() for x in bypass_ok.split(",") if x.strip()],
+        bypass_fail=[x.strip() for x in bypass_fail.split(",") if x.strip()],
+    )
+    brain.save()
+    return json.dumps({"updated": True})
+
+
+# =========================================================================
+# Prior Art Tools — knowledge base search
+# =========================================================================
+
+@security_tool(category="recon", risk="safe")
+def search_prior_art(query: str, category: str = "", top_k: int = 6) -> str:
+    """Search the technique knowledge base for proven payloads and patterns.
+
+    Call this BEFORE testing a new surface or vulnerability class to get
+    curated attack patterns, known-good payloads, bypass notes, and
+    success indicators from the prior-art library.
+
+    Args:
+        query: Free-text search (e.g. "mongodb nosql injection login bypass")
+        category: Optional filter — one of: injection, xss, ssrf, auth, authz,
+                  csrf, cors, file_upload, open_redirect, race_condition,
+                  business_logic, oauth, llm_ai, sast
+        top_k: Max results to return (default 6)
+    """
+    from agent.prior_art import search, format_results
+    try:
+        k = int(top_k)
+    except (TypeError, ValueError):
+        k = 6
+    results = search(query, category=category, top_k=k)
+    return format_results(results)
+
+
+# =========================================================================
+# SAST Tools — static source code analysis
+# =========================================================================
+
+@security_tool(category="vuln_analysis", risk="safe")
+def sast_scan_secrets(source_dir: str, timeout: int = 300) -> str:
+    """Scan source code directory for hardcoded secrets, API keys, and credentials.
+
+    Uses Gitleaks (if installed) and regex pattern matching. Finds AWS keys,
+    API tokens, private keys, database passwords, and connection strings.
+
+    Args:
+        source_dir: Absolute path to source code directory
+        timeout: Max seconds to run
+    """
+    import scanners
+    result = scanners.run_sast_secrets(source_dir, bridge=_get_bridge(), timeout=timeout)
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="vuln_analysis", risk="safe")
+def sast_run_semgrep(source_dir: str, ruleset: str = "auto", timeout: int = 600) -> str:
+    """Run semgrep static analysis over source code.
+
+    Rulesets: 'auto' (language-appropriate), 'p/owasp-top-ten', 'p/taint',
+    'p/sql-injection', 'p/xss', 'p/python', 'p/java', 'p/javascript'.
+    Requires semgrep to be installed (pip install semgrep).
+
+    Args:
+        source_dir: Absolute path to source code directory
+        ruleset: Semgrep ruleset or registry path
+        timeout: Max seconds to run
+    """
+    import scanners
+    result = scanners.run_semgrep(source_dir, ruleset=ruleset, timeout=timeout)
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="vuln_analysis", risk="safe")
+def sast_grep_source(
+    pattern: str,
+    source_dir: str,
+    case_sensitive: bool = False,
+    max_results: int = 50,
+) -> str:
+    """Regex search across source code files for dangerous patterns.
+
+    Searches .py, .js, .ts, .go, .rb, .java, .php and config files.
+    Excludes node_modules, vendor, __pycache__, .git directories.
+
+    Args:
+        pattern: Python regex pattern (e.g. r"execute\\s*\\(" or "password\\s*=")
+        source_dir: Absolute path to source directory
+        case_sensitive: Whether search is case-sensitive (default False)
+        max_results: Max matches to return (default 50)
+    """
+    import scanners
+    result = scanners.grep_source(
+        pattern=pattern,
+        source_dir=source_dir,
+        case_sensitive=case_sensitive,
+        max_results=max_results,
+    )
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="vuln_analysis", risk="safe")
+def sast_read_file(path: str, start_line: int = 1, num_lines: int = 30, source_dir: str = "") -> str:
+    """Read lines from a source file with context around a finding.
+
+    Use after sast_grep_source or sast_run_semgrep to read the code
+    surrounding a match to confirm whether it's a real vulnerability.
+
+    Args:
+        path: File path (absolute, or relative to source_dir)
+        start_line: Line to start reading from (1-indexed)
+        num_lines: Number of lines to read (default 30)
+        source_dir: Optional root directory for relative path resolution
+    """
+    import scanners
+    result = scanners.read_source_file(
+        path=path,
+        start_line=start_line,
+        num_lines=num_lines,
+        source_dir=source_dir or None,
+    )
+    return json.dumps(result, default=str)
+
+
+# =========================================================================
 # Agent Definitions
 # =========================================================================
 
 RECON_TOOLS = [
     "scan_subdomains", "resolve_dns", "probe_http", "scan_ports",
     "scan_ports_nmap", "fingerprint_tech", "detect_waf", "detect_cms",
-    "crawl_urls", "discover_historical_urls", "scan_js_urls_for_secrets",
-    "fuzz_directories", "discover_parameters",
+    "fingerprint_gitlab", "crawl_urls", "crawl_urls_authenticated",
+    "discover_historical_urls", "discover_api_surface", "scan_js_urls_for_secrets",
+    "fuzz_directories", "discover_parameters", "reverse_whois_search",
+    "atlas_map_attack_surface",
+    # Swagger/OpenAPI discovery
+    "discover_swagger_spec",
 ]
 
 VULN_TOOLS = [
     "scan_nuclei", "scan_nikto", "analyze_security_headers", "analyze_tls",
     "check_subdomain_takeover", "analyze_mail_security", "detect_third_party_vendors",
-    "scan_js_urls_for_secrets",
+    "scan_js_urls_for_secrets", "discover_api_surface", "fingerprint_gitlab",
+    # Praetorium tools — now wired so LLM can invoke them
+    "janus_dast_baseline", "argus_scan_secrets", "hermes_scan_remote_secrets",
+    # Swagger/OpenAPI endpoint testing
+    "discover_swagger_spec", "test_swagger_api",
 ]
 
 EXPLOIT_TOOLS = [
-    "sql_injection_test", "xss_test", "wordpress_scan", "deep_tls_test",
-    "scan_nuclei",
+    "sql_injection_test", "xss_test", "test_dom_xss", "wordpress_scan",
+    "deep_tls_test", "scan_nuclei", "confirm_vulnerability_poc",
+    "janus_dast_full",
+    # Manual probing tools
+    "send_http_request", "test_cors_policy", "test_race_condition", "test_file_upload",
 ]
 
 REPORT_TOOLS = [
     "generate_report", "submit_findings_to_platform",
 ]
+
+
+APP_MAPPER_TOOLS = [
+    "crawl_urls",
+    "crawl_urls_authenticated",
+    "discover_api_surface",
+    "discover_swagger_spec",
+    "fingerprint_tech",
+    "detect_waf",
+    "detect_cms",
+    "discover_parameters",
+    "fuzz_directories",
+    "scan_js_urls_for_secrets",
+    "janus_dast_baseline",
+]
+
+VALIDATOR_TOOLS = [
+    "send_http_request",
+    "scan_nuclei",
+    "confirm_vulnerability_poc",
+    "submit_findings_to_platform",
+]
+
+CHAIN_TOOLS = [
+    "send_http_request",
+    "crawl_urls",
+    "discover_parameters",
+    "confirm_vulnerability_poc",
+    "submit_findings_to_platform",
+    "brain_add_note",
+]
+
+SAST_TOOLS = [
+    "sast_scan_secrets",
+    "sast_run_semgrep",
+    "sast_grep_source",
+    "sast_read_file",
+    "search_prior_art",
+    "confirm_vulnerability_poc",
+    "submit_findings_to_platform",
+    "brain_add_note",
+]
+
+# Tools available to all hunters for brain + prior-art access
+HUNTER_CORE_TOOLS = [
+    "search_prior_art",
+    "brain_query",
+    "brain_mark_exhausted",
+    "brain_add_payload",
+    "brain_add_note",
+]
+
+
+def create_app_mapper_agent() -> Agent:
+    """Maps application functionality before hunters run — gives hunters business context."""
+    return Agent(
+        name="app_mapper_agent",
+        instructions="""You are the **Application Mapper** for Aegis Vanguard.
+Your job is to understand WHAT the application does (not just what URLs exist)
+so the vulnerability hunters have business-logic context when they test.
+
+## Goal
+Produce a structured "App Profile" covering:
+1. **Application type** — e-commerce, SaaS, banking, social, API gateway, admin panel, etc.
+2. **Authentication model** — session cookies, JWT, OAuth, SAML, API keys, MFA?
+3. **Key features / workflows** — file uploads, payments, user invitations, data export,
+   webhooks, search, messaging, admin panel, API, integrations
+4. **API surface** — REST, GraphQL, WebSocket? Known endpoints, object types, operations
+5. **Tech stack** — frontend framework, backend language, CMS, cloud provider, CDN, WAF
+6. **Third-party integrations** — payment processors, auth providers, analytics, CDN, email
+7. **Interesting attack vectors** — anything that handles user-supplied data, file processing,
+   URL fetching, or privilege-sensitive operations
+
+## Steps
+1. fingerprint_tech on the target URL to get the tech stack.
+2. detect_waf to note WAF behavior for hunters.
+3. detect_cms to check for WordPress/Drupal/etc.
+4. crawl_urls to discover the URL structure — look at the URL patterns for clues about features.
+5. discover_api_surface to find the API inventory — REST routes, GraphQL schema hints, WebSocket.
+6. discover_swagger_spec on the target base URL — multi-phase OpenAPI/Swagger discovery (direct
+   spec check → Swagger UI scraping → 30+ common-path bruteforce). If a spec is found, the
+   returned endpoint list tells hunters exactly which routes exist and what they do.
+7. If it looks like a SPA, crawl_urls_authenticated for deeper route discovery.
+8. discover_parameters on 3-5 interesting endpoints to find hidden fields.
+9. fuzz_directories to find: /admin, /api, /upload, /import, /export, /webhook, /payment.
+10. scan_js_urls_for_secrets on JS bundles to find hardcoded secrets and internal endpoint names.
+11. janus_dast_baseline for a passive DAST pass (no active payloads — observes responses only).
+
+## Output format
+Produce a structured markdown App Profile:
+
+```
+## App Profile: [target]
+
+### Application Type
+[e.g., B2B SaaS project management tool]
+
+### Authentication
+[e.g., Session cookie + CSRF token; Google OAuth SSO; optional TOTP MFA]
+
+### Key Features & Attack Surface
+- File upload: POST /api/v1/attachments (multipart/form-data)
+- Payment: /checkout → Stripe integration
+- User invitation: POST /api/v1/invites (email-based)
+- Data export: GET /api/v1/reports/export?format=csv
+- Webhooks: /settings/webhooks (sends to user-configured URL)
+- Admin panel: /admin/* (separate auth flow)
+
+### API Surface
+- REST: /api/v1/* (JSON, Bearer token)
+- GraphQL: /graphql (introspection enabled?)
+- WebSocket: wss://app.com/ws/notifications
+
+### Tech Stack
+- Frontend: React SPA, webpack bundles
+- Backend: Rails 7.1 (X-Powered-By header)
+- DB: PostgreSQL (inferred from error messages)
+- CDN: Cloudflare (orange cloud)
+- Cloud: AWS (s3.amazonaws.com in JS)
+
+### Interesting Attack Vectors
+1. File upload endpoint accepts arbitrary MIME types (no server-side validation seen)
+2. Webhook URL is user-configurable — potential SSRF
+3. Report export with format parameter — potential injection sink
+4. Admin panel accessible at /admin without separate auth domain
+```
+
+This profile is passed directly to all 12 OWASP hunters as their attack-surface context.
+""",
+        tool_names=APP_MAPPER_TOOLS,
+        max_turns=30,
+        temperature=0.0,
+    )
+
+
+def create_validator_agent() -> Agent:
+    """7-Question Gate: validates findings before they flow to the ASM platform."""
+    return Agent(
+        name="validator_agent",
+        instructions="""You are the **Finding Validator** for Aegis Vanguard.
+Your job is to apply a 7-Question Gate to every finding before it reaches the ASM platform.
+A single NO kills the finding. Be strict — false positives waste everyone's time.
+
+## The 7-Question Gate (apply in order, first NO = KILL)
+
+**Q1: Can an attacker trigger this RIGHT NOW with a real HTTP request?**
+- Must have exact request + response proving the issue
+- "Nuclei template matched" alone → KILL Q1 (unless you can manually reproduce)
+- "Code review suggests..." → KILL Q1
+
+**Q2: Is the impact type meaningful?**
+- Does not return: "server version disclosed" → KILL Q2 (informational only)
+- Does not return: "missing header" alone without exploitability proof → KILL Q2
+
+**Q3: Is the asset in scope?**
+- Third-party service (CDN, support chat, analytics) → KILL Q3
+- Staging/dev endpoint outside engagement scope → KILL Q3
+
+**Q4: Does it work without privileges the attacker can't realistically obtain?**
+- "Admin can do X" → KILL Q4 (admins can admin)
+- Requires physical device access → KILL Q4
+
+**Q5: Is this not already known/documented?**
+- In changelogs or public CVE → KILL Q5 (unless unpatched in this instance)
+
+**Q6: Is impact demonstrated, not theoretical?**
+- XSS: need cookie in exfil, not just alert()
+- SSRF: need DNS/HTTP OOB callback, not just error message
+- IDOR: need another user's data in response, not just a 200 status code
+- SQLi: need time delay or error or data, not just a 500 error
+
+**Q7: Is the severity calibrated to achieved impact?**
+- Missing CSRF token + SameSite=Strict → KILL Q7 (SameSite prevents it)
+- XSS in admin-only panel with no user reachable → downgrade severity
+
+## Decision
+For each finding: PASS / KILL (Q#) / DOWNGRADE / NEEDS_MORE_EVIDENCE
+
+For PASS findings: call confirm_vulnerability_poc to lock in severity and submit.
+For NEEDS_MORE_EVIDENCE: use send_http_request or scan_nuclei to re-test before deciding.
+For KILL/DOWNGRADE: explain why in one sentence.
+
+## Never-submit list (instant KILL Q7 without chain)
+- Missing security headers alone (X-Frame-Options, X-Content-Type-Options, etc.)
+- GraphQL introspection alone (not exploitable as standalone finding)
+- Self-XSS (attacker can only attack themselves)
+- Open redirect alone without OAuth chain or SSRF chain
+- SSRF DNS-only without HTTP response (confirm with HTTP callback)
+- CORS wildcard without ACAC: true (credentials blocked by spec)
+- Missing cookie flags alone (report only if leads to concrete exploit)
+- SPAs exposing client_id (public by design)
+""",
+        tool_names=VALIDATOR_TOOLS,
+        max_turns=25,
+        temperature=0.0,
+    )
 
 
 def create_report_agent() -> Agent:
@@ -616,7 +1432,71 @@ When you receive findings from the Exploit Agent:
 3. Submit remaining findings to the platform
 4. Provide a brief executive summary to the user""",
         tool_names=REPORT_TOOLS,
-        max_turns=5,
+        max_turns=15,
+    )
+
+
+def create_exploit_chain_agent() -> Agent:
+    """Chains confirmed individual findings into compound multi-step attack paths."""
+    return Agent(
+        name="exploit_chain_agent",
+        instructions="""You are the **Exploit Chain Builder** for Aegis Vanguard.
+Your mission: take the list of confirmed findings and build multi-step attack
+chains that demonstrate compound, escalated impact. A chain of 3 medium findings
+can constitute a critical account takeover or full compromise.
+
+## Core chain patterns to evaluate
+
+### Account Takeover chains
+- Open Redirect + OAuth state abuse → steal auth code → account takeover
+- XSS + CSRF token extraction → bypass SameSite cookies → admin action as victim
+- Password reset + weak token + no rate limit → brute force takeover
+- IDOR + PII exposure → targeted phishing → credential takeover
+- Stored XSS in profile → admin views profile → admin account takeover
+
+### Privilege Escalation chains
+- IDOR (read another user) + mass assignment (role field) → become admin
+- SSRF (internal) + cloud metadata → IAM credentials → cloud admin
+- JWT algorithm confusion → forge admin token → full access
+- SQLi (read) + SQLi (write) → create admin account
+
+### Data Exfiltration chains
+- SSRF → internal Redis/MongoDB → dump all data
+- XXE → SSRF → cloud metadata → S3 access → dump bucket
+- SQL injection + LOAD_FILE → read /etc/passwd → further recon
+- Path traversal + LFI → read .env → extract DB credentials → dump DB
+
+### Remote Code Execution chains
+- SSTI + no output filtering → RCE
+- Deserialization + file upload → upload malicious payload → trigger deserialization
+- Open redirect + XSS → DOM-based RCE via eval() sink
+- SSRF → internal service (Jira/Jenkins RCE) → pivot
+
+## Workflow
+
+1. Review the findings list provided in your task message.
+2. Group findings by their chain potential using the patterns above.
+3. For each promising chain:
+   a. Map out the A→B→C steps with the exact endpoints and parameters.
+   b. Use send_http_request to verify each step is reachable in sequence.
+   c. Document the full request sequence as the PoC.
+   d. Estimate the compound severity: if any step in the chain yields critical
+      impact, the chain severity is critical.
+4. Confirm each chain via confirm_vulnerability_poc:
+   - vuln_type = "exploit_chain"
+   - payload = the step-by-step PoC
+   - impact = compound impact description
+5. Use brain_add_note to record any new observations about the app for future runs.
+6. If no chains are possible (all findings are isolated), say so explicitly.
+
+## Rules
+- Document chains, never execute them destructively.
+- Only test steps against the authorised scope.
+- A chain requires at least 2 confirmed findings; don't invent hypotheticals.
+""",
+        tool_names=CHAIN_TOOLS,
+        max_turns=30,
+        temperature=0.0,
     )
 
 
@@ -625,7 +1505,8 @@ def create_exploit_agent() -> Agent:
     return Agent(
         name="exploit_agent",
         instructions="""You are the Exploit Validation Agent. Your job is to confirm
-discovered vulnerabilities with targeted validation attempts.
+discovered vulnerabilities with targeted validation attempts and attach proof-of-concept
+evidence to every confirmed finding.
 
 RULES:
 - Only validate, never escalate or cause damage
@@ -634,12 +1515,19 @@ RULES:
 - Skip validation if no injectable endpoints were found
 
 Strategy:
-1. Review nuclei findings - re-validate any high/critical with targeted templates
-2. Test parameterized URLs for SQL injection
-3. Test parameterized URLs for XSS
+1. Review nuclei findings — re-validate any high/critical with targeted templates
+2. Test parameterized URLs for SQL injection (sql_injection_test)
+   → If sqlmap confirms: call confirm_vulnerability_poc with vuln_type="sqli"
+3. Test parameterized URLs for XSS (xss_test for reflected, test_dom_xss for DOM-based)
+   → If XSS confirmed: call confirm_vulnerability_poc with vuln_type="xss" or "dom-xss"
 4. If WordPress detected, run wpscan
+   → If wpscan finds critical vulns: call confirm_vulnerability_poc
 5. If TLS grades are D/F, run deep TLS testing
-6. When done, hand off to the Report Agent with a summary of validated findings""",
+6. ALWAYS call confirm_vulnerability_poc for any confirmed finding before handing off —
+   this escalates severity automatically (e.g. medium SQLi → critical) and attaches
+   the request/response evidence to the platform record
+7. When done, hand off to the Report Agent with a summary of confirmed findings
+   including their escalated severities""",
         tool_names=EXPLOIT_TOOLS,
         handoffs=[report_agent],
         max_turns=20,
@@ -655,16 +1543,24 @@ identify vulnerabilities across the discovered attack surface.
 
 Strategy:
 1. Run nuclei against all discovered live URLs (most important)
-2. Run scan_js_urls_for_secrets on high-value .js URLs from crawling (API bundles, clientlibs) — complements nuclei for leaked credentials in static assets
-3. Run nikto against the primary target
-4. Analyze security headers on all live hosts
-5. Analyze TLS certificates and grades
-6. Check all subdomains for takeover risk
-7. Analyze mail infrastructure for the root domain
-8. Detect third-party vendors
+2. If the Recon Agent found a Swagger/OpenAPI spec: run test_swagger_api against the
+   target base URL. This exercises every documented endpoint, checks for unauthenticated
+   access, and scans responses for PII (emails, phone numbers, SSNs) and leaked secrets
+   (AWS keys, JWTs, API tokens). This is the primary API vuln check — do not skip it.
+   - If endpoints return data without auth → high-severity finding
+   - If responses contain PII → medium/high
+   - If responses contain secret patterns → high/critical
+3. Run scan_js_urls_for_secrets on high-value .js URLs from crawling (API bundles, clientlibs) — complements nuclei for leaked credentials in static assets
+4. Run nikto against the primary target
+5. Analyze security headers on all live hosts
+6. Analyze TLS certificates and grades
+7. Check all subdomains for takeover risk
+8. Analyze mail infrastructure for the root domain
+9. Detect third-party vendors
 
 When you have a comprehensive picture, hand off to the Exploit Agent with:
 - List of nuclei high/critical findings
+- Results from test_swagger_api (flagged endpoints, PII/secret hits)
 - Any parameterized URLs that should be tested for injection
 - Whether WordPress or other CMS was detected
 - Which hosts have poor TLS grades""",
@@ -684,20 +1580,44 @@ complete attack surface of the target.
 Strategy (adapt based on what you find):
 1. Start with fingerprint_tech and detect_waf on the target URL
 2. Enumerate subdomains for the root domain
-3. Resolve DNS for all discovered hosts
-4. Probe for live HTTP services
-5. Port scan the primary target (nmap for service detection)
-6. Crawl the target for URLs and endpoints
-7. Discover historical URLs
-8. For discovered JavaScript bundles (e.g. .js under /static, /clientlibs), run scan_js_urls_for_secrets with those URLs to detect hardcoded keys/tokens
-9. Fuzz for hidden directories/API paths
-10. Discover parameters on interesting endpoints
+3. If a company or brand name is available, use reverse_whois_search in preview
+   mode to estimate related-domain exposure; use purchase mode only when API
+   credit usage is explicitly authorized
+4. If GitLab is detected or suspected, run fingerprint_gitlab to hash /help
+   stylesheet assets and correlate versions without exploitation
+5. Resolve DNS for all discovered hosts
+6. Probe for live HTTP services
+7. Port scan the primary target (nmap for service detection)
+8. Crawl the target for URLs and endpoints using crawl_urls (katana)
+9. Run discover_api_surface to build a blackbox API inventory from browser traffic,
+   page links, JavaScript bundles, JSON responses, GraphQL routes, and WebSocket hints
+10. Run discover_swagger_spec on the target base URL (and any live API subdomains).
+    This probes 30+ common spec paths (/swagger.json, /openapi.json, /api-docs, etc.)
+    and also scrapes Swagger UI pages for the embedded spec URL. If a spec is found,
+    note ALL documented endpoints and pass them to the Vulnerability Agent — this is
+    the highest-signal API surface artifact available.
+11. If the target appears to be a SPA (React/Angular/Vue), also run crawl_urls_authenticated
+    to capture routes that only render after JS execution
+12. Discover historical URLs
+13. For discovered JavaScript bundles (e.g. .js under /static, /clientlibs), run scan_js_urls_for_secrets with those URLs to detect hardcoded keys/tokens
+14. Fuzz for hidden directories/API paths
+15. Discover parameters on interesting endpoints
 
 ADAPT your approach:
 - If WAF detected, note it for the vuln agent to adjust strategy
 - If CMS detected (WordPress etc), flag for CMS-specific scanning
 - If many subdomains found, prioritize live ones
-- If interesting API endpoints found, discover their parameters
+- If reverse_whois_search returns related domains in purchase mode, treat them as
+  candidates requiring scope confirmation before active probing
+- If fingerprint_gitlab maps a vulnerable version, report the fingerprint and
+  recommend explicit authorization for any OOB validation; do not run RCE payloads
+- If discover_api_surface finds REST/GraphQL/WebSocket endpoints, summarize methods,
+  parameters, auth hints, sensitive-looking routes, and public admin/internal APIs
+- If discover_swagger_spec finds a spec: treat the endpoint list as the authoritative
+  API surface map; flag the spec URL as an informational finding; ensure the Vuln
+  Agent runs test_swagger_api against it (unauthenticated access + PII/secret testing)
+- If katana finds few URLs but the page has heavy JS (React/Angular/Vue fingerprinted),
+  use crawl_urls_authenticated to get the full authenticated surface
 
 When you have a comprehensive attack surface map, hand off to the
 Vulnerability Analysis Agent with your findings.""",
@@ -736,7 +1656,7 @@ def build_agent_chain() -> dict:
         instructions=create_exploit_agent().instructions,
         tool_names=EXPLOIT_TOOLS,
         handoffs=[report_agent],
-        max_turns=20,
+        max_turns=25,
     )
     vuln_agent = Agent(
         name="vuln_agent",
@@ -750,7 +1670,7 @@ def build_agent_chain() -> dict:
         instructions=create_recon_agent().instructions,
         tool_names=RECON_TOOLS,
         handoffs=[vuln_agent],
-        max_turns=30,
+        max_turns=35,
     )
     orchestrator = Agent(
         name="orchestrator",

@@ -15,6 +15,7 @@
 //   - check_breach_context    — VCDB breach records + ENISA EUVD + Google P0
 //   - check_attackerkb        — AttackerKB community practitioner scoring
 //   - check_weaponization     — Metasploit exploit modules + Nuclei templates
+//   - check_vulncheck_exploits — VulnCheck Exploit Intelligence/XDB evidence
 //   - check_cisa_vulnrichment — CISA Vulnrichment CVSS 4.0 + SSVC triage decision
 //   - check_regional_nvds     — JVN iPedia (JP) + BDU FSTEC (RU) national DB coverage
 //   - check_attack_mappings   — MITRE ATT&CK + Mappings Explorer CVE→TTP techniques
@@ -44,10 +45,11 @@ import (
 
 // Deps are the shared dependencies injected into every tool at build time.
 type Deps struct {
-	Store   ToolStore
-	Runner  *pipeline.Runner
-	KB      *knowledgebase.KB
-	PDCPKey string // ProjectDiscovery Cloud Platform API key (optional; higher rate limits)
+	Store          ToolStore
+	Runner         *pipeline.Runner
+	KB             *knowledgebase.KB
+	PDCPKey        string // ProjectDiscovery Cloud Platform API key (optional; higher rate limits)
+	VulnCheckToken string // VulnCheck API bearer token (optional; enables XDB/exploit intelligence)
 }
 
 // ToolStore is the minimal persistence surface tools need.
@@ -66,20 +68,21 @@ func BuildRegistry(d Deps) *react.Registry {
 	reg := react.NewRegistry()
 	reg.Register(&lookupCVETool{store: d.Store})
 	reg.Register(&getAssetTool{store: d.Store})
-	reg.Register(&searchVulnxTool{pdcpKey: d.PDCPKey})    // single CVE deep-dive (ID lookup)
-	reg.Register(&vulnxSearchTool{pdcpKey: d.PDCPKey})    // CVE discovery by technology/query
-	reg.Register(&checkEPSSKEVTool{})                     // EPSS + KEV (no API key needed)
-	reg.Register(&searchExploitEvidenceTool{})            // cvelistV5 + GHSA advisory text
+	reg.Register(&searchVulnxTool{pdcpKey: d.PDCPKey}) // single CVE deep-dive (ID lookup)
+	reg.Register(&vulnxSearchTool{pdcpKey: d.PDCPKey}) // CVE discovery by technology/query
+	reg.Register(&checkEPSSKEVTool{})                  // EPSS + KEV (no API key needed)
+	reg.Register(&searchExploitEvidenceTool{})         // cvelistV5 + GHSA advisory text
 	reg.Register(&lookupKBPatternTool{kb: d.KB})
 	reg.Register(&getOpenFindingsTool{store: d.Store})
-	reg.Register(&runAnalysisTool{runner: d.Runner})
-	reg.Register(&checkBreachContextTool{})               // VCDB + ENISA EUVD + Google P0
-	reg.Register(&checkAttackerKBTool{})                  // community practitioner scoring
-	reg.Register(&checkWeaponizationTool{})               // Metasploit modules + Nuclei templates
-	reg.Register(&checkCISAVulnrichmentTool{})            // CVSS 4.0 + SSVC from CISA
-	reg.Register(&checkRegionalNVDsTool{})                // JVN iPedia (JP) + BDU FSTEC (RU)
-	reg.Register(&checkATTACKMappingsTool{})              // MITRE ATT&CK CVE→TTP mappings
-	reg.Register(&mapOWASPTool{})                         // CWE → OWASP Top 10 (static)
+	reg.Register(&runAnalysisTool{runner: d.Runner, vulnCheckToken: d.VulnCheckToken})
+	reg.Register(&checkBreachContextTool{})                            // VCDB + ENISA EUVD + Google P0
+	reg.Register(&checkAttackerKBTool{})                               // community practitioner scoring
+	reg.Register(&checkWeaponizationTool{})                            // Metasploit modules + Nuclei templates
+	reg.Register(&checkVulnCheckExploitsTool{token: d.VulnCheckToken}) // VulnCheck XDB/exploit intelligence
+	reg.Register(&checkCISAVulnrichmentTool{})                         // CVSS 4.0 + SSVC from CISA
+	reg.Register(&checkRegionalNVDsTool{})                             // JVN iPedia (JP) + BDU FSTEC (RU)
+	reg.Register(&checkATTACKMappingsTool{})                           // MITRE ATT&CK CVE→TTP mappings
+	reg.Register(&mapOWASPTool{})                                      // CWE → OWASP Top 10 (static)
 	return reg
 }
 
@@ -207,33 +210,33 @@ func (t *searchVulnxTool) Run(ctx context.Context, args map[string]any) (string,
 	// Re-serialise as pretty-printed JSON so the LLM can read it clearly.
 	// Filter to the fields most useful for exploitability reasoning.
 	useful := map[string]any{
-		"cve_id":           cveID,
-		"severity":         d["severity"],
-		"cvss_score":       d["cvss_score"],
-		"cvss_metrics":     d["cvss_metrics"],
-		"epss_score":       d["epss_score"],
-		"epss_percentile":  d["epss_percentile"],
-		"is_kev":           d["is_kev"],
-		"is_vkev":          d["is_vkev"],
-		"kev":              d["kev"],
-		"is_poc":           d["is_poc"],
-		"poc_count":        d["poc_count"],
-		"pocs":             d["pocs"],
-		"h1":               d["h1"],
-		"is_template":      d["is_template"],
-		"filename":         d["filename"],
-		"tags":             d["tags"],
-		"requirements":     d["requirements"],
-		"requirement_type": d["requirement_type"],
-		"exposure":         d["exposure"],
-		"affected_products": limitSlice(d["affected_products"], 5),
-		"description":      truncStr(d["description"], 600),
-		"remediation":      truncStr(d["remediation"], 400),
-		"cwe":              d["cwe"],
-		"is_remote":        d["is_remote"],
-		"is_auth":          d["is_auth"],
+		"cve_id":             cveID,
+		"severity":           d["severity"],
+		"cvss_score":         d["cvss_score"],
+		"cvss_metrics":       d["cvss_metrics"],
+		"epss_score":         d["epss_score"],
+		"epss_percentile":    d["epss_percentile"],
+		"is_kev":             d["is_kev"],
+		"is_vkev":            d["is_vkev"],
+		"kev":                d["kev"],
+		"is_poc":             d["is_poc"],
+		"poc_count":          d["poc_count"],
+		"pocs":               d["pocs"],
+		"h1":                 d["h1"],
+		"is_template":        d["is_template"],
+		"filename":           d["filename"],
+		"tags":               d["tags"],
+		"requirements":       d["requirements"],
+		"requirement_type":   d["requirement_type"],
+		"exposure":           d["exposure"],
+		"affected_products":  limitSlice(d["affected_products"], 5),
+		"description":        truncStr(d["description"], 600),
+		"remediation":        truncStr(d["remediation"], 400),
+		"cwe":                d["cwe"],
+		"is_remote":          d["is_remote"],
+		"is_auth":            d["is_auth"],
 		"is_patch_available": d["is_patch_available"],
-		"vuln_status":      d["vuln_status"],
+		"vuln_status":        d["vuln_status"],
 	}
 	out, _ := json.MarshalIndent(useful, "", "  ")
 	return string(out), nil
@@ -587,7 +590,7 @@ func (t *checkEPSSKEVTool) Run(ctx context.Context, args map[string]any) (string
 	if err == nil {
 		var kev struct {
 			Vulnerabilities []struct {
-				CVEID    string `json:"cveID"`
+				CVEID     string `json:"cveID"`
 				DateAdded string `json:"dateAdded"`
 			} `json:"vulnerabilities"`
 		}
@@ -749,11 +752,11 @@ func (t *lookupKBPatternTool) Run(_ context.Context, args map[string]any) (strin
 
 	// Dev pattern search
 	for _, pattern := range t.kb.AllPatterns() {
-		name := strings.ToLower(pattern.Name + " " + pattern.Description)
+		name := strings.ToLower(pattern.PatternName + " " + pattern.Summary)
 		kw := strings.ToLower(keyword)
 		if (keyword != "" && strings.Contains(name, kw)) ||
-			(cweID != "" && containsString(pattern.CWEs, cweID)) {
-			matches = append(matches, kbMatch{Kind: "dev_pattern", ID: pattern.ID, Data: pattern})
+			(cweID != "" && containsString(pattern.CWEIDs, cweID)) {
+			matches = append(matches, kbMatch{Kind: "dev_pattern", ID: pattern.PatternID, Data: pattern})
 		}
 	}
 
@@ -803,9 +806,45 @@ func (t *getOpenFindingsTool) Run(ctx context.Context, args map[string]any) (str
 	return string(b), nil
 }
 
+// ─────────────────────────── check_vulncheck_exploits ───────────────────────
+
+type checkVulnCheckExploitsTool struct{ token string }
+
+func (t *checkVulnCheckExploitsTool) Name() string { return "check_vulncheck_exploits" }
+func (t *checkVulnCheckExploitsTool) Description() string {
+	return "Fetch VulnCheck Exploit Intelligence/XDB evidence for a CVE: public/commercial/" +
+		"weaponized exploit flags, exploit maturity/type, reported exploitation, CISA/VulnCheck KEV, " +
+		"ransomware/botnet/threat actor counts, timelines, and exploit URLs. This is observed evidence, " +
+		"not EPSS probability."
+}
+func (t *checkVulnCheckExploitsTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkVulnCheckExploitsTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	result := enrichers.FetchVulnCheckExploits(ctx, strings.ToUpper(cveID), t.token)
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b), nil
+}
+
 // ─────────────────────────── run_analysis ───────────────────────────────────
 
-type runAnalysisTool struct{ runner *pipeline.Runner }
+type runAnalysisTool struct {
+	runner         *pipeline.Runner
+	vulnCheckToken string
+}
 
 func (t *runAnalysisTool) Name() string { return "run_analysis" }
 func (t *runAnalysisTool) Description() string {
@@ -837,12 +876,16 @@ func (t *runAnalysisTool) Run(ctx context.Context, args map[string]any) (string,
 		return "", fmt.Errorf("both cve_id and asset_id are required")
 	}
 
+	exploitation := schema.ExploitationEvidence{}
+	ext := enrichers.FetchAllWithVulnCheck(ctx, cveID, t.vulnCheckToken)
+	enrichers.Apply(ext, &exploitation)
+
 	result, err := t.runner.Run(
 		ctx,
 		strings.ToUpper(cveID),
 		assetID,
 		nil,
-		schema.ExploitationEvidence{},
+		exploitation,
 	)
 	if err != nil {
 		return "", fmt.Errorf("pipeline: %w", err)
@@ -1285,4 +1328,3 @@ func execRun(ctx context.Context, path string, args []string, extraEnv map[strin
 	}
 	return stdout.Bytes(), nil
 }
-

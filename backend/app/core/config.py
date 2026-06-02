@@ -40,10 +40,10 @@ class Settings(BaseSettings):
         "http://localhost:80",
         "http://localhost:3000",
         "http://localhost:8080",
-        "http://44.211.198.211",
-        "http://44.211.198.211:80",
-        "http://44.211.198.211:3000",
-        "http://44.211.198.211:8000",
+        "http://3.88.137.29",
+        "http://3.88.137.29:80",
+        "http://3.88.137.29:3000",
+        "http://3.88.137.29:8000",
         "https://aegis.theforcesecurity.io",
     ]
     

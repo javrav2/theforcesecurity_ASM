@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,32 @@ type AttackerKBResult struct {
 	Note           string  `json:"note,omitempty"`
 }
 
+// VulnCheckExploitResult holds exploit intelligence from VulnCheck's
+// /v3/index/exploits API, including XDB-backed exploit records and reported
+// exploitation. These are observed/validated evidence signals, not probability
+// estimates like EPSS.
+type VulnCheckExploitResult struct {
+	Found                       bool     `json:"found"`
+	PublicExploitFound          bool     `json:"public_exploit_found,omitempty"`
+	CommercialExploitFound      bool     `json:"commercial_exploit_found,omitempty"`
+	WeaponizedExploitFound      bool     `json:"weaponized_exploit_found,omitempty"`
+	MaxExploitMaturity          string   `json:"max_exploit_maturity,omitempty"`
+	ReportedExploited          bool     `json:"reported_exploited,omitempty"`
+	ReportedExploitedByActors  bool     `json:"reported_exploited_by_threat_actors,omitempty"`
+	ReportedExploitedByRansom  bool     `json:"reported_exploited_by_ransomware,omitempty"`
+	ReportedExploitedByBotnets bool     `json:"reported_exploited_by_botnets,omitempty"`
+	InCISAKEV                   bool     `json:"in_cisa_kev,omitempty"`
+	InVulnCheckKEV              bool     `json:"in_vulncheck_kev,omitempty"`
+	ExploitCount                int      `json:"exploit_count,omitempty"`
+	ThreatActorCount            int      `json:"threat_actor_count,omitempty"`
+	RansomwareFamilyCount       int      `json:"ransomware_family_count,omitempty"`
+	BotnetCount                 int      `json:"botnet_count,omitempty"`
+	ExploitTypes                []string `json:"exploit_types,omitempty"`
+	ExploitURLs                 []string `json:"exploit_urls,omitempty"`
+	ReportedExploitationSources []string `json:"reported_exploitation_sources,omitempty"`
+	Note                        string   `json:"note,omitempty"`
+}
+
 // ExternalEnrichment bundles all enricher results for one CVE.
 // Fetch it with FetchAll, then call Apply to merge signals into ExploitationEvidence.
 type ExternalEnrichment struct {
@@ -89,8 +116,9 @@ type ExternalEnrichment struct {
 	AttackerKB AttackerKBResult `json:"attackerkb"`
 
 	// Weaponization
-	Metasploit MetasploitResult `json:"metasploit"`
-	Nuclei     NucleiResult     `json:"nuclei"`
+	Metasploit MetasploitResult        `json:"metasploit"`
+	Nuclei     NucleiResult            `json:"nuclei"`
+	VulnCheck  VulnCheckExploitResult  `json:"vulncheck"`
 
 	// Government / national database coverage
 	Vulnrichment VulnrichmentResult `json:"vulnrichment"`
@@ -112,6 +140,12 @@ type ExternalEnrichment struct {
 // OWASP mapping is populated later by ApplyWithCWEs, not here, because the
 // CWE list comes from the intrinsic analysis rather than a network call.
 func FetchAll(ctx context.Context, cveID string) ExternalEnrichment {
+	return FetchAllWithVulnCheck(ctx, cveID, "")
+}
+
+// FetchAllWithVulnCheck is FetchAll plus optional VulnCheck Exploit
+// Intelligence/XDB enrichment when a bearer token is configured.
+func FetchAllWithVulnCheck(ctx context.Context, cveID, vulnCheckToken string) ExternalEnrichment {
 	cveID = strings.ToUpper(strings.TrimSpace(cveID))
 	var (
 		wg     sync.WaitGroup
@@ -161,6 +195,12 @@ func FetchAll(ctx context.Context, cveID string) ExternalEnrichment {
 			r := FetchATTACKMappings(ctx, cveID)
 			mu.Lock(); result.ATTACK = r; mu.Unlock()
 		}},
+	}
+	if strings.TrimSpace(vulnCheckToken) != "" {
+		jobs = append(jobs, job{"vulncheck", func() {
+			r := FetchVulnCheckExploits(ctx, cveID, vulnCheckToken)
+			mu.Lock(); result.VulnCheck = r; mu.Unlock()
+		}})
 	}
 
 	wg.Add(len(jobs))
@@ -216,11 +256,164 @@ func Apply(ext ExternalEnrichment, ev *schema.ExploitationEvidence) {
 		ev.MetasploitAvailable = true
 		ev.MetasploitModCount = ext.Metasploit.ModuleCount
 	}
+	if ext.VulnCheck.Found {
+		applyVulnCheck(ext.VulnCheck, ev)
+	}
 
 	// CISA SSVC triage decision
 	if ext.Vulnrichment.Found && ext.Vulnrichment.SSVCDecision != "" {
 		ev.CISASSVCDecision = ext.Vulnrichment.SSVCDecision
 	}
+}
+
+func applyVulnCheck(vc VulnCheckExploitResult, ev *schema.ExploitationEvidence) {
+	ev.VulnCheckReportedExploited = vc.ReportedExploited
+	ev.VulnCheckWeaponized = vc.WeaponizedExploitFound
+	ev.VulnCheckPublicExploit = vc.PublicExploitFound
+	ev.VulnCheckCommercialExploit = vc.CommercialExploitFound
+	ev.VulnCheckMaxMaturity = vc.MaxExploitMaturity
+	ev.VulnCheckExploitTypes = appendUniqueAll(ev.VulnCheckExploitTypes, vc.ExploitTypes)
+	ev.VulnCheckExploitCount = vc.ExploitCount
+	ev.VulnCheckThreatActorCount = vc.ThreatActorCount
+	ev.VulnCheckRansomwareCount = vc.RansomwareFamilyCount
+	ev.VulnCheckBotnetCount = vc.BotnetCount
+	ev.VulnCheckExploitURLs = appendUniqueAll(ev.VulnCheckExploitURLs, vc.ExploitURLs)
+
+	if vc.InCISAKEV {
+		ev.InKEVSources = appendUnique(ev.InKEVSources, "cisa_kev")
+	}
+	if vc.InVulnCheckKEV {
+		ev.InKEVSources = appendUnique(ev.InKEVSources, "vulncheck_kev")
+	}
+	if vc.ReportedExploited {
+		ev.ObservationSources = appendUnique(ev.ObservationSources, "vulncheck_reported_exploitation")
+	}
+	if vc.ReportedExploitedByRansom || vc.RansomwareFamilyCount > 0 {
+		ev.RansomwareAssociated = true
+	}
+}
+
+// ─────────────────────────── VulnCheck Exploits/XDB ──────────────────────────
+
+// FetchVulnCheckExploits queries VulnCheck Exploit Intelligence. The response
+// includes XDB exploit records when available, plus exploitation timelines and
+// observed threat actor/ransomware/botnet evidence.
+func FetchVulnCheckExploits(ctx context.Context, cveID, token string) VulnCheckExploitResult {
+	cveID = strings.ToUpper(strings.TrimSpace(cveID))
+	token = strings.TrimSpace(token)
+	if cveID == "" {
+		return VulnCheckExploitResult{Note: "cve_id is required"}
+	}
+	if token == "" {
+		return VulnCheckExploitResult{Note: "VULNCHECK_API_TOKEN not configured"}
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	endpoint := fmt.Sprintf(
+		"https://api.vulncheck.com/v3/index/exploits?cve=%s",
+		url.QueryEscape(cveID),
+	)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return VulnCheckExploitResult{Note: "request build failed"}
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return VulnCheckExploitResult{Note: "fetch error: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return VulnCheckExploitResult{Note: "VulnCheck unauthorized; check VULNCHECK_API_TOKEN"}
+	case http.StatusPaymentRequired, http.StatusForbidden:
+		return VulnCheckExploitResult{Note: fmt.Sprintf("VulnCheck access denied HTTP %d", resp.StatusCode)}
+	case http.StatusTooManyRequests:
+		return VulnCheckExploitResult{Note: "VulnCheck rate limited"}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return VulnCheckExploitResult{Note: fmt.Sprintf("VulnCheck HTTP %d", resp.StatusCode)}
+	}
+
+	var payload struct {
+		Data []struct {
+			PublicExploitFound          bool   `json:"public_exploit_found"`
+			CommercialExploitFound      bool   `json:"commercial_exploit_found"`
+			WeaponizedExploitFound      bool   `json:"weaponized_exploit_found"`
+			MaxExploitMaturity          string `json:"max_exploit_maturity"`
+			ReportedExploited          bool   `json:"reported_exploited"`
+			ReportedExploitedByActors  bool   `json:"reported_exploited_by_threat_actors"`
+			ReportedExploitedByRansom  bool   `json:"reported_exploited_by_ransomware"`
+			ReportedExploitedByBotnets bool   `json:"reported_exploited_by_botnets"`
+			InCISAKEV                   bool   `json:"inKEV"`
+			InVulnCheckKEV              bool   `json:"inVCKEV"`
+			Counts                      struct {
+				Exploits             int `json:"exploits"`
+				ThreatActors         int `json:"threat_actors"`
+				Botnets              int `json:"botnets"`
+				RansomwareFamilies   int `json:"ransomware_families"`
+				RansomwareCampaigns  int `json:"ransomware"`
+			} `json:"counts"`
+			Exploits []struct {
+				URL             string `json:"url"`
+				ExploitType     string `json:"exploit_type"`
+				ExploitMaturity string `json:"exploit_maturity"`
+			} `json:"exploits"`
+			ReportedExploitation []struct {
+				Refsource string `json:"refsource"`
+			} `json:"reported_exploitation"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 512*1024)).Decode(&payload); err != nil {
+		return VulnCheckExploitResult{Note: "JSON decode failed"}
+	}
+	if len(payload.Data) == 0 {
+		return VulnCheckExploitResult{Found: false}
+	}
+
+	d := payload.Data[0]
+	out := VulnCheckExploitResult{
+		Found:                       true,
+		PublicExploitFound:          d.PublicExploitFound,
+		CommercialExploitFound:      d.CommercialExploitFound,
+		WeaponizedExploitFound:      d.WeaponizedExploitFound,
+		MaxExploitMaturity:          strings.ToLower(d.MaxExploitMaturity),
+		ReportedExploited:          d.ReportedExploited,
+		ReportedExploitedByActors:  d.ReportedExploitedByActors,
+		ReportedExploitedByRansom:  d.ReportedExploitedByRansom,
+		ReportedExploitedByBotnets: d.ReportedExploitedByBotnets,
+		InCISAKEV:                   d.InCISAKEV,
+		InVulnCheckKEV:              d.InVulnCheckKEV,
+		ExploitCount:                d.Counts.Exploits,
+		ThreatActorCount:            d.Counts.ThreatActors,
+		RansomwareFamilyCount:       maxInt(d.Counts.RansomwareFamilies, d.Counts.RansomwareCampaigns),
+		BotnetCount:                 d.Counts.Botnets,
+	}
+	for _, exploit := range d.Exploits {
+		if exploit.URL != "" && len(out.ExploitURLs) < 10 {
+			out.ExploitURLs = appendUnique(out.ExploitURLs, exploit.URL)
+		}
+		if exploit.ExploitType != "" {
+			out.ExploitTypes = appendUnique(out.ExploitTypes, strings.ToLower(exploit.ExploitType))
+		}
+	}
+	for _, reported := range d.ReportedExploitation {
+		if reported.Refsource != "" {
+			out.ReportedExploitationSources = appendUnique(out.ReportedExploitationSources, reported.Refsource)
+		}
+	}
+	out.Note = fmt.Sprintf(
+		"VulnCheck: maturity=%s public=%t weaponized=%t reported_exploited=%t exploits=%d actors=%d ransomware=%d",
+		out.MaxExploitMaturity, out.PublicExploitFound, out.WeaponizedExploitFound,
+		out.ReportedExploited, out.ExploitCount, out.ThreatActorCount, out.RansomwareFamilyCount,
+	)
+	return out
 }
 
 // ─────────────────────────── VCDB ────────────────────────────────────────────
@@ -494,4 +687,18 @@ func appendUnique(s []string, v string) []string {
 		}
 	}
 	return append(s, v)
+}
+
+func appendUniqueAll(dst []string, src []string) []string {
+	for _, v := range src {
+		dst = appendUnique(dst, v)
+	}
+	return dst
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

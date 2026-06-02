@@ -32,12 +32,16 @@ def build_vuln_response(vuln: Vulnerability) -> dict:
     d["name"] = vuln.title
     d["host"] = vuln.asset.value if vuln.asset else None
     d["matched_at"] = (vuln.evidence[:200] if vuln.evidence else None)
-    # Surface Delphi enrichment so the UI can show KEV / EPSS badges and sort
-    # by combined priority. Everything else in metadata_ stays internal.
+    # Surface Delphi (CISA KEV + EPSS) and Aegis Oracle enrichment so the UI
+    # can show KEV / EPSS / OPES badges and sort by combined priority.
+    # Everything else in metadata_ stays internal.
     if vuln.metadata_ and isinstance(vuln.metadata_, dict):
         delphi = vuln.metadata_.get("delphi")
         if delphi:
             d["delphi"] = delphi
+        oracle = vuln.metadata_.get("oracle")
+        if oracle:
+            d["oracle"] = oracle
     # Ensure list fields are never None (JSON columns can be NULL in DB)
     if d.get("references") is None:
         d["references"] = []

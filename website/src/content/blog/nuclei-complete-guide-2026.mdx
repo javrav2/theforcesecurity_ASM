@@ -1,0 +1,124 @@
+---
+title: "Nuclei in 2026: The Complete Guide to Template-Based Vulnerability Scanning"
+excerpt: "ProjectDiscovery's Nuclei has become the de facto standard for scalable vulnerability scanning. Here's everything you need to know — from installation to writing custom templates for your attack surface."
+date: "2026-05-20"
+author: "Drew Vravick"
+authorRole: "Founder, The Force Security"
+category: "Tool Review"
+tags: ["nuclei", "vulnerability-scanning", "penetration-testing", "open-source"]
+readTime: 12
+featured: true
+---
+
+## Why Nuclei Dominates in 2026
+
+When ProjectDiscovery released Nuclei back in 2020, the security community didn't fully anticipate how transformative a template-based scanning approach would be. Fast forward to 2026, and Nuclei's template library has grown to over **9,000 community-maintained templates**, covering everything from CVE detection to misconfiguration checks.
+
+The core insight is simple: **vulnerability detection logic should be separate from the engine that runs it.** This YAML-first design means anyone can contribute detection logic without writing Go code.
+
+```yaml
+id: apache-log4j-rce
+
+info:
+  name: Apache Log4j RCE
+  author: pdteam
+  severity: critical
+  tags: rce,log4j,cve
+
+requests:
+  - raw:
+      - |
+        GET / HTTP/1.1
+        Host: {{Hostname}}
+        X-Api-Version: ${jndi:ldap://{{interactsh-url}}/log4j}
+```
+
+## Installation
+
+```bash
+# Using Go
+go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+
+# Using Homebrew
+brew install nuclei
+
+# Docker
+docker pull projectdiscovery/nuclei:latest
+```
+
+## Running Your First Scan
+
+A basic scan against a target:
+
+```bash
+# Scan with all templates
+nuclei -u https://example.com
+
+# Scan with specific severity
+nuclei -u https://example.com -severity critical,high
+
+# Scan a list of targets
+nuclei -l targets.txt -t cves/ -o results.json -json
+```
+
+## Writing Custom Templates
+
+The real power of Nuclei is in its template engine. Here's a template for detecting exposed `.env` files — a common misconfiguration we see constantly in our ASM work:
+
+```yaml
+id: exposed-env-file
+
+info:
+  name: Exposed .env File
+  author: theforcesecurity
+  severity: high
+  description: Detects publicly accessible .env files that may expose secrets.
+  tags: exposure,config,files
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.env"
+      - "{{BaseURL}}/.env.local"
+      - "{{BaseURL}}/.env.production"
+
+    matchers-condition: and
+    matchers:
+      - type: word
+        words:
+          - "DB_PASSWORD"
+          - "API_KEY"
+          - "SECRET"
+        condition: or
+
+      - type: status
+        status:
+          - 200
+```
+
+## Integration with ASM Pipelines
+
+At The Force Security, we run Nuclei as part of our continuous ASM pipeline. Here's how we integrate it:
+
+1. **Asset Discovery** → Subfinder + httpx identify live subdomains
+2. **Bulk Scanning** → Nuclei runs against all discovered hosts with severity-filtered templates
+3. **Result Ingestion** → Findings flow into our ASM platform via the `/api/v1/findings` endpoint
+4. **Deduplication** → We fingerprint findings to avoid noise on recurring scans
+5. **Prioritization** → Aegis Oracle scores each finding for exploitability
+
+## Performance Tips
+
+- Use `-rate-limit` to avoid overwhelming targets (and getting banned)
+- Use `-bulk-size` and `-concurrency` to tune throughput
+- Cache template updates with `nuclei -update-templates` periodically
+- Use `-interactsh-url` with your own Interactsh instance for OOB detection
+
+## Verdict
+
+**Rating: 5/5** — Nuclei is an essential tool in any security team's stack. The template ecosystem, combined with its speed and flexibility, makes it unmatched for scalable vulnerability detection. The ProjectDiscovery team continues to ship improvements at an impressive pace.
+
+The only caveat: template quality varies. Always review community templates before running them against production assets.
+
+---
+
+*Reviewed and tested on Nuclei v3.2.1 against a controlled lab environment.*

@@ -291,3 +291,20 @@ func TestParseAVAC(t *testing.T) {
 		t.Errorf("CVE-2025-55130 reconciled vector should parse AV:L, got %q", av)
 	}
 }
+
+func TestExploitationVulnCheckSignals(t *testing.T) {
+	weaponizedInitialAccess := schema.ExploitationEvidence{
+		VulnCheckWeaponized:   true,
+		VulnCheckExploitTypes: []string{"initial-access"},
+	}
+	if got := exploitation(weaponizedInitialAccess); got < 8.5 {
+		t.Fatalf("weaponized initial-access exploit score = %.1f; want >= 8.5", got)
+	}
+
+	ransomware := schema.ExploitationEvidence{
+		VulnCheckRansomwareCount: 1,
+	}
+	if got := exploitation(ransomware); got < 9.0 {
+		t.Fatalf("ransomware-associated VulnCheck score = %.1f; want >= 9.0", got)
+	}
+}

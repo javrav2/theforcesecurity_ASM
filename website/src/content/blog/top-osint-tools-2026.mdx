@@ -1,0 +1,117 @@
+---
+title: "Top OSINT Tools for Security Professionals in 2026"
+excerpt: "Open-source intelligence gathering has never been more powerful — or more essential. We review the best OSINT tools available today, from passive recon to active enumeration."
+date: "2026-04-28"
+author: "Drew Vravick"
+authorRole: "Founder, The Force Security"
+category: "Tool Review"
+tags: ["osint", "recon", "passive-intelligence", "tools"]
+readTime: 10
+featured: false
+---
+
+## The State of OSINT in 2026
+
+The OSINT landscape has exploded. Between the proliferation of data brokers, the growth of internet-connected devices, and the rise of AI-assisted analysis tools, the amount of publicly available intelligence has never been greater.
+
+For defenders, this is both an opportunity and a threat. The same tools that help red teamers and threat intelligence analysts profile targets are available to adversaries profiling your organization.
+
+Here's our current toolkit.
+
+## Passive Reconnaissance
+
+### Shodan
+
+Shodan remains indispensable. Its database of internet-connected devices, updated continuously, gives you a real-time view of what services are exposed. In 2026, Shodan's AI features can now summarize exposure patterns and flag trending vulnerabilities across your monitored IP ranges.
+
+**Best for:** External attack surface visibility, IoT exposure, banner grabbing at scale  
+**Pricing:** Freemium (personal plan: $49/mo)  
+**Verdict:** ★★★★★
+
+### Censys
+
+Censys is Shodan's closest competitor and arguably more accurate for enterprise IP ranges. Its ASM platform has matured significantly and integrates well with SIEM/SOAR workflows.
+
+**Best for:** Certificate transparency monitoring, ASM, enterprise exposure tracking  
+**Pricing:** Freemium  
+**Verdict:** ★★★★☆
+
+### GreyNoise
+
+GreyNoise filters out internet noise — scanners, crawlers, and mass-exploitation tools — helping you focus on targeted activity. If Shodan tells you *what* is exposed, GreyNoise tells you *who is scanning for it*.
+
+**Best for:** SOC triage, reducing alert fatigue, threat hunting  
+**Pricing:** Freemium  
+**Verdict:** ★★★★★
+
+## Domain and DNS Intelligence
+
+### Subfinder
+
+```bash
+subfinder -d target.com -o subdomains.txt -all -recursive
+```
+
+The gold standard for passive subdomain enumeration. Fast, accurate, and integrates with 50+ data sources.
+
+### amass
+
+More configurable than Subfinder and supports active enumeration modes. Better for thorough engagements where speed is secondary to completeness.
+
+### DNSx
+
+Part of the ProjectDiscovery toolkit, DNSx resolves and validates discovered subdomains at scale with support for wildcard filtering.
+
+## Certificate Transparency
+
+Certificate transparency logs are a goldmine that many defenders underutilize:
+
+```bash
+# Query crt.sh for all certs issued to a domain
+curl "https://crt.sh/?q=%.target.com&output=json" | jq -r '.[].name_value' | sort -u
+```
+
+Tools like **certstream** let you monitor CT logs in real-time — catching newly issued certificates for your domains (and subdomains you didn't know about) as they appear.
+
+## Social and People Intelligence
+
+### Maltego
+
+Maltego's transform framework lets you connect the dots between domains, IPs, email addresses, social profiles, and corporate entities. The visualization makes complex relationship mapping intuitive.
+
+**Best for:** Investigation workflows, APT attribution, third-party risk  
+**Pricing:** Freemium (community) / Commercial  
+**Verdict:** ★★★★☆
+
+### theHarvester
+
+A classic tool for gathering emails, subdomains, and hosts from public sources like search engines and LinkedIn. Simple but effective for initial target profiling.
+
+## Code and Secrets Intelligence
+
+### GitHub Dorking
+
+Don't underestimate what's exposed on GitHub. Developers accidentally commit credentials, API keys, and internal architecture details constantly:
+
+```
+org:targetcompany filename:.env
+org:targetcompany "DB_PASSWORD"
+org:targetcompany "aws_access_key_id"
+```
+
+### TruffleHog
+
+Scan git history for secrets at scale. Useful both offensively (finding leaked credentials) and defensively (auditing your own repos).
+
+## Building an OSINT Workflow
+
+The key is systematizing your approach. Our recommended workflow for external recon:
+
+1. **Seed** — start with the root domain and known IP ranges
+2. **Expand** — CT logs, passive DNS, WHOIS, ASN enumeration
+3. **Resolve** — validate live assets with httpx
+4. **Profile** — Shodan/Censys for service fingerprinting
+5. **Analyze** — correlate findings, identify patterns
+6. **Document** — everything in structured format for follow-up
+
+The best OSINT practitioners think like investigators, not just tool operators.

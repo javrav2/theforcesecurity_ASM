@@ -34,6 +34,23 @@ knowledgebase:
   # Path to the knowledgebase/ directory (relative or absolute).
   root: "./knowledgebase"
 
+# ── External intelligence ─────────────────────────────────────────────
+# All optional. Prefer setting these via environment variables
+# (VULNCHECK_API_TOKEN, PDCP_API_KEY, NVD_API_KEY) or in config.local.yaml
+# so the file checked in to git stays free of secrets.
+
+# VulnCheck Exploit Intelligence — primary signal for confirmed-exploited
+# evidence (KEV-class, weaponized, threat-actor, ransomware/botnet usage).
+vulncheck_api_token: ""
+
+# ProjectDiscovery Cloud Platform — raises rate limits on the vulnx API
+# used for on-demand CVE ingest and the search_vulnx ReAct tool.
+pdcp_api_key: ""
+
+# NVD API key — raises the NVD CVE 2.0 rate limit, used as a fallback
+# when vulnx doesn't yet have a brand-new CVE id.
+nvd_api_key: ""
+
 # ── OPES scoring ──────────────────────────────────────────────────────
 opes:
   weights:

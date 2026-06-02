@@ -47,6 +47,7 @@ import {
   TrendingUp,
   Sparkles,
   ArrowUpDown,
+  RefreshCw,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -125,6 +126,32 @@ interface Finding {
   resolved_at?: string;
   // Delphi (CISA KEV + FIRST EPSS) enrichment
   delphi?: DelphiEnrichment;
+  // Aegis Oracle enrichment — denormalised payload persisted by the
+  // backend's oracle_enrichment_service. Either a full Phase A+B+OPES
+  // analysis (mode='full'), Phase-A intrinsic only (mode='intrinsic'), or
+  // ASM-native non-CVE analysis (mode='generic_finding').
+  oracle?: OracleEnrichment;
+}
+
+interface OracleEnrichment {
+  mode: 'full' | 'intrinsic' | 'generic_finding';
+  enriched_at?: string;
+  analysis_status?: string;
+  analysis_error?: string;
+  finding_class?: string;
+  opes_score?: number;
+  opes_category?: 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
+  opes_label?: string;
+  opes_confidence?: 'high' | 'medium' | 'low';
+  attack_path_class?: string;
+  recommendation_text?: string;
+  analyst_brief?: {
+    title?: string;
+    attack_vector_summary?: string;
+    real_world_likelihood?: string;
+    exploitability_score?: number;
+    exploitability_tier?: string;
+  };
 }
 
 type SortMode = 'severity' | 'delphi' | 'recent' | 'cvss';
@@ -147,6 +174,208 @@ const delphiPriorityStyle: Record<string, { label: string; className: string }> 
 function isRansomwareKev(kev?: DelphiKEV | null): boolean {
   const v = (kev?.known_ransomware_use || '').toLowerCase();
   return v === 'known' || v === 'yes';
+}
+
+// OPES priority styles — match the colour scheme used on the dedicated
+// /oracle page so badges read consistently across the app.
+const opesCategoryStyle: Record<string, { label: string; className: string }> = {
+  P0: { label: 'OPES P0', className: 'bg-red-600/20 text-red-300 border-red-600/40' },
+  P1: { label: 'OPES P1', className: 'bg-orange-500/20 text-orange-300 border-orange-500/40' },
+  P2: { label: 'OPES P2', className: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40' },
+  P3: { label: 'OPES P3', className: 'bg-blue-500/20 text-blue-300 border-blue-500/40' },
+  P4: { label: 'OPES P4', className: 'bg-muted text-muted-foreground border-muted-foreground/30' },
+};
+
+function OracleBadge({ oracle, compact = false }: { oracle?: OracleEnrichment; compact?: boolean }) {
+  if (!oracle || !oracle.opes_category) return null;
+  const style = opesCategoryStyle[oracle.opes_category] ?? opesCategoryStyle.P4;
+  const score = oracle.opes_score != null ? ` · ${oracle.opes_score.toFixed(1)}` : '';
+  const title = [
+    `${style.label}${score}`,
+    oracle.opes_label,
+    oracle.attack_path_class ? `Attack path: ${oracle.attack_path_class}` : null,
+    oracle.opes_confidence ? `Confidence: ${oracle.opes_confidence}` : null,
+  ].filter(Boolean).join(' · ');
+  return (
+    <Badge
+      variant="outline"
+      className={cn('text-[10px] px-1.5 py-0 h-5 border font-semibold', style.className, compact ? '' : '')}
+      title={title}
+    >
+      <Sparkles className="h-3 w-3 mr-0.5" />
+      {style.label}{score}
+    </Badge>
+  );
+}
+
+// OracleEnrichmentPanel renders the Aegis Oracle analysis attached to a
+// vulnerability. Falls back to a small "no analysis yet" card with an
+// "Analyze with Oracle" button so an analyst can request enrichment
+// on demand. When enrichment already exists, the button refreshes it
+// (force=true) so the analyst can re-run after asset signals change.
+function OracleEnrichmentPanel({
+  finding,
+  onUpdate,
+}: {
+  finding: Finding | null;
+  onUpdate: (oracle: OracleEnrichment) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  if (!finding) return null;
+
+  const oracle = finding.oracle;
+  const canEnrich = !!finding.id;
+
+  async function runEnrich(force: boolean) {
+    if (!finding || !finding.id) return;
+    if (!canEnrich) {
+      setError('Oracle cannot run analysis for this finding.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      // The single-vuln route returns a summary, but the persisted payload
+      // on the row carries the full narrative. Re-fetch the vulnerability
+      // would be cleaner but we already get the most useful fields on the
+      // response; merge them and trust the next list reload for the full
+      // recommendation text.
+      const summary = await api.oracleEnrichVulnerability(finding.id, force);
+      // We optimistically reflect the new headline data; full narrative
+      // becomes available the next time findings are reloaded from /api.
+      onUpdate({
+        ...(oracle ?? { mode: finding.cve_id ? 'intrinsic' : 'generic_finding' }),
+        mode: (summary.mode as OracleEnrichment['mode']) || (finding.cve_id ? 'intrinsic' : 'generic_finding'),
+        enriched_at: summary.enriched_at ?? new Date().toISOString(),
+        analysis_status: summary.analysis_status ?? oracle?.analysis_status,
+        analysis_error: summary.analysis_error ?? oracle?.analysis_error,
+        opes_score: summary.opes_score ?? oracle?.opes_score,
+        opes_category: (summary.opes_category as OracleEnrichment['opes_category']) ?? oracle?.opes_category,
+        opes_label: summary.opes_label ?? oracle?.opes_label,
+        attack_path_class: summary.attack_path_class ?? oracle?.attack_path_class,
+      });
+      toast({
+        title: 'Oracle analysis updated',
+        description: summary.opes_category
+          ? `${summary.opes_category} · ${summary.opes_label ?? ''}`
+          : 'Phase-A analysis fetched (no asset linked yet).',
+      });
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail ?? err?.message ?? 'Oracle is unavailable.';
+      setError(msg);
+      toast({ variant: 'destructive', title: 'Oracle enrichment failed', description: msg });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // No enrichment yet — show a call-to-action card.
+  if (!oracle) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm font-medium flex items-center gap-2 text-orange-300">
+          <Sparkles className="h-4 w-4" /> Aegis Oracle
+        </p>
+        <div className="rounded-lg border bg-orange-500/5 border-orange-500/30 p-3 text-sm">
+          <p className="text-muted-foreground">
+            No Oracle analysis on this finding yet. Run Oracle to get an OPES
+            priority, attack-path classification, analyst brief, and a
+            recommendation narrative.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <Button size="sm" disabled={busy || !canEnrich} onClick={() => runEnrich(false)}>
+              {busy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1.5" />}
+              Analyze with Oracle
+            </Button>
+            {error && <span className="text-xs text-red-400">{error}</span>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Enrichment present — render the OPES headline, attack path, analyst brief
+  // summary, and the recommendation narrative.
+  const style = oracle.opes_category ? opesCategoryStyle[oracle.opes_category] : null;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-sm font-medium flex items-center gap-2 text-orange-300">
+          <Sparkles className="h-4 w-4" /> Aegis Oracle
+          {oracle.mode === 'intrinsic' && (
+            <Badge variant="outline" className="text-[10px] border-yellow-500/40 text-yellow-300">
+              Phase-A only (no asset)
+            </Badge>
+          )}
+          {oracle.mode === 'generic_finding' && (
+            <Badge variant="outline" className="text-[10px] border-blue-500/40 text-blue-300">
+              ASM finding
+            </Badge>
+          )}
+        </p>
+        <Button size="sm" variant="outline" disabled={busy || !canEnrich} onClick={() => runEnrich(true)}>
+          {busy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
+          Refresh
+        </Button>
+      </div>
+
+      <div className="rounded-lg border bg-orange-500/5 border-orange-500/30 p-3 space-y-3">
+        {oracle.analysis_status === 'failed' && oracle.analysis_error && (
+          <div className="rounded border border-red-500/40 bg-red-500/5 p-2 text-xs text-red-300">
+            {oracle.analysis_error}
+          </div>
+        )}
+
+        {/* Headline row: OPES category + score + label + confidence */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {style && oracle.opes_category && (
+            <Badge variant="outline" className={cn('text-xs font-semibold', style.className)}>
+              {style.label}
+              {oracle.opes_score != null && ` · ${oracle.opes_score.toFixed(1)}`}
+            </Badge>
+          )}
+          {oracle.opes_label && <span className="text-sm">{oracle.opes_label}</span>}
+          {oracle.opes_confidence && (
+            <span className="text-xs text-muted-foreground">{oracle.opes_confidence} confidence</span>
+          )}
+          {oracle.attack_path_class && (
+            <Badge variant="outline" className="text-[10px]">
+              {oracle.attack_path_class.replace(/_/g, ' ')}
+            </Badge>
+          )}
+        </div>
+
+        {/* Analyst brief highlights — single attack-vector summary + likelihood line */}
+        {oracle.analyst_brief?.attack_vector_summary && (
+          <div className="border-l-2 border-orange-500/50 pl-2 text-xs">
+            <p className="text-foreground/90">{oracle.analyst_brief.attack_vector_summary}</p>
+          </div>
+        )}
+
+        {/* Recommendation narrative — section-headed, monospace so the
+            ATTACK PATH / EVIDENCE / NEXT STEPS structure stays legible. */}
+        {oracle.recommendation_text && (
+          <details className="text-xs" open>
+            <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
+              Recommendation narrative
+            </summary>
+            <pre className="mt-2 whitespace-pre-wrap font-mono leading-relaxed text-foreground/80 text-[11px]">
+              {oracle.recommendation_text}
+            </pre>
+          </details>
+        )}
+
+        {oracle.enriched_at && (
+          <p className="text-[10px] text-muted-foreground">
+            Enriched {formatDate(oracle.enriched_at)}
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function DelphiBadges({ delphi, compact = false }: { delphi?: DelphiEnrichment; compact?: boolean }) {
@@ -257,6 +486,7 @@ export default function FindingsPage() {
   const [assignee, setAssignee] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('severity');
   const [onlyKev, setOnlyKev] = useState(false);
+  const [oracleBatchBusy, setOracleBatchBusy] = useState(false);
   const { toast } = useToast();
 
   // Fetch remediation playbook when a finding is selected
@@ -482,6 +712,40 @@ export default function FindingsPage() {
     setSelectedSeverity(severity === selectedSeverity ? null : severity);
   };
 
+  const handleOracleBatchEnrich = async () => {
+    setOracleBatchBusy(true);
+    try {
+      const result = await api.oracleEnrichBatch(200, false);
+      if (result.queued) {
+        toast({
+          title: 'Oracle batch enrichment queued',
+          description: `${result.selected} vulnerabilities queued for background analysis. Results will appear as each completes — refresh the page in a minute.`,
+        });
+      } else if (result.selected === 0) {
+        toast({ title: 'Nothing to enrich', description: result.message ?? 'All open vulnerabilities are already enriched.' });
+      } else {
+        toast({
+          title: 'Oracle enrichment complete',
+          description: `${result.enriched ?? 0} enriched · ${result.skipped_cached ?? 0} cached · ${result.errors ?? 0} errors. Refresh to see updated badges.`,
+        });
+        // Refresh in place so updated rows show their new OPES badges.
+        try {
+          const refreshed = await api.getVulnerabilities({ limit: 500 });
+          if (Array.isArray(refreshed)) {
+            setFindings(refreshed as Finding[]);
+          }
+        } catch {
+          // Non-fatal — the user can refresh manually.
+        }
+      }
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail ?? err?.message ?? 'Oracle is unavailable.';
+      toast({ variant: 'destructive', title: 'Oracle batch failed', description: msg });
+    } finally {
+      setOracleBatchBusy(false);
+    }
+  };
+
   const handleExport = () => {
     if (filteredFindings.length === 0) {
       toast({
@@ -684,6 +948,20 @@ export default function FindingsPage() {
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="h-4 w-4 mr-2" />
               Export Report
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleOracleBatchEnrich}
+              disabled={oracleBatchBusy}
+              title="Run Aegis Oracle analysis on open vulnerabilities in your organization"
+            >
+              {oracleBatchBusy ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4 mr-2 text-orange-400" />
+              )}
+              Enrich with Oracle
             </Button>
           </div>
         </div>
@@ -888,6 +1166,7 @@ export default function FindingsPage() {
                           {finding.cve_id && (
                             <span className="text-xs text-primary font-mono">{finding.cve_id}</span>
                           )}
+                          <OracleBadge oracle={finding.oracle} compact />
                           <DelphiBadges delphi={finding.delphi} compact />
                         </div>
                       </div>
@@ -1249,6 +1528,20 @@ export default function FindingsPage() {
                   </div>
                 </div>
               )}
+
+              {/* Aegis Oracle enrichment panel — OPES priority + analyst brief
+                  + recommendation narrative. Includes an inline "Analyze" button
+                  to run/refresh the enrichment on demand. */}
+              <OracleEnrichmentPanel
+                finding={selectedFinding}
+                onUpdate={(updated) => {
+                  if (!selectedFinding) return;
+                  setSelectedFinding({ ...selectedFinding, oracle: updated });
+                  setFindings((prev) =>
+                    prev.map((f) => (f.id === selectedFinding.id ? { ...f, oracle: updated } : f)),
+                  );
+                }}
+              />
 
               {/* Matched At / Evidence */}
               {selectedFinding?.matched_at && (

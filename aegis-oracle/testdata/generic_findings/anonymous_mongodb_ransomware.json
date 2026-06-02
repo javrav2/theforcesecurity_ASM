@@ -1,0 +1,16 @@
+{
+  "vulnerability": {
+    "vulnerability_id": "fixture-anonymous-mongodb",
+    "title": "MongoDB exposed without authentication",
+    "severity": "critical",
+    "description": "Public MongoDB listener accepted anonymous metadata commands.",
+    "evidence": "Database READ_ME_TO_RECOVER_YOUR_DATA contained a Bitcoin ransom note.",
+    "detected_by": "port_scanner",
+    "tags": ["database", "mongodb", "ransomware-marker"],
+    "metadata": {
+      "port": 27017,
+      "service": "mongodb",
+      "anonymous_hello": true
+    }
+  }
+}

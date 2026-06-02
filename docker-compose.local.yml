@@ -1,0 +1,38 @@
+# Local desktop testing (macOS / Linux / Windows Docker Desktop)
+# =============================================================================
+# The default docker-compose.yml exposes the Next app only inside the Docker
+# network and puts nginx on :80/:443 expecting Let's Encrypt certs — awkward
+# on a laptop. This overlay publishes the frontend on port 3000 and points
+# Next.js SSR API rewrites at the backend container.
+#
+# Usage (from repo root):
+#
+#   cp .env.local.example .env
+#   # edit .env — set SECRET_KEY, ANTHROPIC_API_KEY (and Postgres password if you want)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# Then open:  http://localhost:3000
+# API docs:    http://localhost:8000/api/docs
+# Oracle:      http://localhost:8742/health
+#
+# Lighter stack (UI + API + DB + Redis + Oracle only — no nginx/scanner/scheduler):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build \
+#     db redis backend frontend aegis-oracle
+# =============================================================================
+
+services:
+  frontend:
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    build:
+      args:
+        - NEXT_PUBLIC_API_URL=http://backend:8000
+
+  backend:
+    environment:
+      # Browser talks to :3000; Next.js server rewrites /api/* to backend:8000
+      - CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000","http://localhost:8000","http://127.0.0.1:8000"]

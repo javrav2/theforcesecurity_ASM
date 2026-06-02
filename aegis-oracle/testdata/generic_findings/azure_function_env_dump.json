@@ -1,0 +1,16 @@
+{
+  "vulnerability": {
+    "vulnerability_id": "fixture-azure-function-env",
+    "title": "Anonymous Azure Function exposes runtime secrets",
+    "severity": "critical",
+    "description": "A public test endpoint returned application environment variables and parsed settings.",
+    "evidence": "Response included AzureWebJobsStorage, Cosmos DB key, WEBSITE_AUTH signing material, and Key Vault name.",
+    "detected_by": "agent",
+    "tags": ["secret-leak", "azure", "function-app"],
+    "metadata": {
+      "kind": "azure_function_env_dump",
+      "verified": true,
+      "secret_verified": true
+    }
+  }
+}

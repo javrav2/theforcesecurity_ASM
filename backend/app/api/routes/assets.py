@@ -10,12 +10,14 @@ from sqlalchemy import func, case
 from app.db.database import get_db
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.port_service import PortService, PortState
+from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.user import User
 from app.schemas.asset import (
     AssetCreate, AssetUpdate, AssetResponse, 
     AssetPortsSummary, PortServiceSummary, PaginatedAssetsResponse
 )
 from app.api.deps import get_current_active_user, require_analyst
+from app.api.routes.scans import send_scan_to_sqs
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +401,30 @@ def create_asset(
     db.add(new_asset)
     db.commit()
     db.refresh(new_asset)
-    
+
+    # Auto-kick subdomain enumeration when a root domain is onboarded
+    if new_asset.asset_type == AssetType.DOMAIN:
+        domain_value = new_asset.value.strip().lower()
+        subdomain_scan = Scan(
+            name=f"Subdomain enumeration: {domain_value}",
+            scan_type=ScanType.SUBDOMAIN_ENUM,
+            organization_id=new_asset.organization_id,
+            targets=[domain_value],
+            config={
+                "domain": domain_value,
+                "triggered_by": "asset_created",
+            },
+            started_by=current_user.username,
+            status=ScanStatus.PENDING,
+        )
+        db.add(subdomain_scan)
+        db.commit()
+        db.refresh(subdomain_scan)
+        send_scan_to_sqs(subdomain_scan)
+        logger.info(
+            f"Auto-enqueued SUBDOMAIN_ENUM scan {subdomain_scan.id} for {domain_value}"
+        )
+
     return new_asset
 
 
