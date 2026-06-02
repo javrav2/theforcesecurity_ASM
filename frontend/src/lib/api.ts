@@ -1353,6 +1353,27 @@ class ApiClient {
     return response.data;
   }
 
+  async getDiscoveryTree(assetId: number, organizationId?: number) {
+    const params: any = { asset_id: assetId };
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/graph/discovery-tree', { params });
+    return response.data;
+  }
+
+  async getDiscoverySources(organizationId?: number) {
+    const params: any = {};
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/graph/discovery-sources', { params });
+    return response.data;
+  }
+
+  async getSharedInfrastructure(ip: string, organizationId?: number) {
+    const params: any = { ip };
+    if (organizationId) params.organization_id = organizationId;
+    const response = await this.client.get('/graph/shared-infrastructure', { params });
+    return response.data;
+  }
+
   async getAssetsByTechnology(params?: { organization_id?: number; category?: string }, useFallback?: boolean) {
     try {
       // Try Neo4j first if not explicitly requesting fallback

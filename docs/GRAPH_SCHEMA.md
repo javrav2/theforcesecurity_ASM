@@ -1,133 +1,188 @@
 # Graph Database Schema
 
-## Canonical relationship chain
+## Layers
+
+The graph has two layers:
+
+1. **Technical topology** — what infrastructure exists and how it connects
+2. **Discovery provenance** — how each asset was found and what it shares with other assets
+
+## Technical topology chain
 
 ```
 Domain → Subdomain → IP → Port → Service → Technology → Vulnerability → CVE
-                                                          Vulnerability → MITRE
+                                                          Vulnerability → MITRE (CWE)
 ```
 
-## Entity-relationship (high level)
+## Discovery provenance chain
 
-| From       | Relationship   | To           |
-|-----------|----------------|--------------|
-| Domain    | HAS_SUBDOMAIN  | Subdomain    |
-| Subdomain | RESOLVES_TO    | IP           |
-| IP        | HAS_PORT       | Port         |
-| Port      | RUNS_SERVICE   | Service      |
-| Service   | USES_TECHNOLOGY| Technology   |
-| Technology| HAS_VULNERABILITY | Vulnerability |
-| Vulnerability | REFERENCES | CVE        |
-| Vulnerability | MAPS_TO    | MITRE       |
-| Subdomain     | SAME_IP_AS | Subdomain   |
+```
+Asset ──[DISCOVERED_VIA]──> DiscoverySource   (subfinder, whoxy, certspotter, etc.)
+Asset ──[HOSTED_BY]──────> HostingProvider    (aws, cloudflare, azure, etc.)
+IP    ──[BELONGS_TO_ASN]──> ASN               (AS number + ISP)
+Asset ──[SIGNED_BY]──────> Certificate
+Certificate ──[ALSO_COVERS]──> Subdomain      (SAN expansion → shadow IT discovery)
+IP    ──[HOSTED_BY]──────> HostingProvider
+```
 
-**SAME_IP_AS** is created between Subdomains that resolve to the same IP (per organization). Use it to answer “what else is on this IP?” and to reason about shared infrastructure (RedAmon-style graph robustness).
+## Full entity-relationship table
 
-## Logical connections (RedAmon-style)
+| From            | Relationship      | To                | Notes                                       |
+|-----------------|-------------------|-------------------|---------------------------------------------|
+| Domain          | HAS_SUBDOMAIN     | Subdomain         | Canonical chain                             |
+| Subdomain       | RESOLVES_TO       | IP                | DNS A/AAAA resolution                       |
+| IP              | HAS_PORT          | Port              | Canonical chain                             |
+| Port            | RUNS_SERVICE      | Service           | Canonical chain                             |
+| Service         | USES_TECHNOLOGY   | Technology        | Canonical chain                             |
+| Technology      | HAS_VULNERABILITY | Vulnerability     | Canonical chain                             |
+| Vulnerability   | REFERENCES        | CVE               | CVE linkage                                 |
+| Vulnerability   | MAPS_TO           | CWE               | Weakness mapping                            |
+| CVE             | EXPLOITS_WEAKNESS | CWE               | Cross-reference                             |
+| Subdomain       | SAME_IP_AS        | Subdomain         | Co-hosted assets (same IP)                  |
+| Asset           | HAS_CHILD         | Asset             | Hierarchical parent→child                   |
+| Asset           | SERVES_URL        | BaseURL           | Live HTTP endpoint                          |
+| Service         | SERVES_URL        | BaseURL           | Port 80/443 → BaseURL                       |
+| Asset           | HAS_ENDPOINT      | Endpoint          | Discovered paths                            |
+| Asset           | HAS_PARAMETER     | Parameter         | Discovered URL params                       |
+| Vulnerability   | FOUND_AT          | Endpoint          | Vuln located at a specific path             |
+| **Asset**       | **DISCOVERED_VIA**| **DiscoverySource** | **Provenance: how asset was found**       |
+| **Asset**       | **HOSTED_BY**     | **HostingProvider** | **Cloud/CDN hosting context**             |
+| **IP**          | **BELONGS_TO_ASN**| **ASN**           | **Network block ownership**                 |
+| **IP**          | **HOSTED_BY**     | **HostingProvider** | **CDN/cloud routing context**             |
+| **Asset**       | **SIGNED_BY**     | **Certificate**   | **TLS certificate linkage**                 |
+| **Certificate** | **ALSO_COVERS**   | **Subdomain**     | **SAN expansion → shadow IT discovery**     |
 
-These patterns support attack-surface reasoning and technology/domain relationships:
+**Bold rows** are the discovery provenance relationships added in the June 2026 update.
 
-- **Same IP** – Subdomains that share an IP (co-hosted):  
-  `(s1:Subdomain)-[:SAME_IP_AS]-(s2:Subdomain)`  
-  Example: “Subdomains on same IP as this asset”  
-  `MATCH (a:Asset)-[:RESOLVES_TO]->(ip:IP)<-[:RESOLVES_TO]-(s:Subdomain) WHERE a.organization_id = $org_id RETURN s`
+**SAME_IP_AS** is created between Subdomains that resolve to the same IP (per organization). Use it to answer "what else is on this IP?" and to reason about shared infrastructure (RedAmon-style graph robustness).
 
-- **Same technology** – Assets using the same technology:  
-  `(t:Technology)<-[:USES_TECHNOLOGY]-(a:Asset)`  
-  Example: “All assets running WordPress”  
+## Logical connections (query patterns)
+
+- **Same IP** – Subdomains that share an IP (co-hosted):
+  `(s1:Subdomain)-[:SAME_IP_AS]-(s2:Subdomain)`
+
+- **Same technology** – Assets using the same technology:
   `MATCH (t:Technology {name: 'WordPress'})<-[:USES_TECHNOLOGY]-(a:Asset) WHERE a.organization_id = $org_id RETURN a`
 
-- **Technology → CVE** – Vulnerabilities linked to a technology (via Asset or Service):  
-  `(t:Technology)-[:HAS_VULNERABILITY]->(v:Vulnerability)-[:REFERENCES]->(c:CVE)`  
-  Example: “Technologies with critical CVEs”  
+- **Technology → CVE** – Technologies with critical CVEs:
   `MATCH (t:Technology)-[:HAS_VULNERABILITY]->(v:Vulnerability)-[:REFERENCES]->(c:CVE) WHERE v.severity = 'critical' AND v.organization_id = $org_id RETURN t, c`
 
-- **Domain → Subdomain → IP** – Full chain for a root domain:  
-  `(d:Domain)-[:HAS_SUBDOMAIN]->(s:Subdomain)-[:RESOLVES_TO]->(ip:IP)`  
-  Always filter by `organization_id` (e.g. `d.organization_id = $org_id`).
+- **Discovery chain** – How an asset was found:
+  `MATCH (a:Asset {asset_id: $id})-[r:DISCOVERED_VIA]->(ds:DiscoverySource) RETURN ds.name, r.step, r.confidence`
+
+- **Shared hosting** – All assets on the same provider:
+  `MATCH (a:Asset)-[:HOSTED_BY]->(h:HostingProvider {name: 'cloudflare'}) WHERE a.organization_id = $org_id RETURN a`
+
+- **SAN expansion** – Subdomains sharing a TLS cert:
+  `MATCH (a:Asset)-[:SIGNED_BY]->(cert:Certificate)-[:ALSO_COVERS]->(san:Subdomain) WHERE a.value = $domain RETURN san.name`
+
+- **ASN cluster** – All IPs in the same autonomous system:
+  `MATCH (ip:IP)-[:BELONGS_TO_ASN]->(asn:ASN {asn_number: $asn}) RETURN ip.address`
 
 ## Node types and properties
 
 ### Domain (root)
-
 - `name` (string) – root domain name
-- `organization_id` (number) – tenant
-- `discovered_at` (datetime) – when first seen
+- `organization_id` (number)
+- `discovered_at` (datetime)
 
 ### Subdomain
-
-- `name` (string) – hostname / subdomain
-- `status` (string) – e.g. discovered, verified
+- `name` (string)
+- `status` (string) – discovered, verified, etc.
+- `organization_id` (number)
 
 ### IP
-
-- `address` (string) – IP address
-- `type` (string) – e.g. ipv4, ipv6
-- `is_cdn` (boolean) – CDN/cloud indicator
+- `address` (string)
+- `type` (string) – ipv4, ipv6
+- `is_cdn` (boolean)
+- `is_internet_facing` (boolean) – true for publicly routable IPs
+- `is_live` (boolean) – responded to probes
+- `organization_id` (number)
 
 ### Port
-
-- `number` (int) – port number
+- `number` (int)
 - `protocol` (string) – tcp, udp
 - `state` (string) – open, closed, filtered
+- `is_risky` (boolean)
 
 ### Service
-
-- `name` (string) – service name
-- `version` (string) – optional version
-- `banner` (string) – optional banner
+- `name` (string)
+- `version` (string)
+- `banner` (string)
 
 ### Technology
-
-- `name` (string) – technology name
-- `version` (string) – optional version
-- `category` (string) – category
+- `name` (string)
+- `version` (string)
+- `category` (string)
+- `cpe` (string)
 
 ### Vulnerability
-
-- `id` (string) – unique identifier
+- `id` (string)
 - `severity` (string) – critical, high, medium, low, info
-- `description` (string) – finding description
+- `description` (string)
+- `cvss_score` (number)
 
 ### CVE
+- `cve_id` (string)
+- `cvss_score` (number)
+- `cwe_id` (string)
 
-- `cve_id` (string) – CVE identifier (e.g. CVE-2021-1234)
-- `cvss_score` (number) – optional
-- `cwe_id` (string) – optional CWE link
+### CWE (MITRE)
+- `cwe_id` (string)
 
-### MITRE (CWE)
+### DiscoverySource *(new)*
+- `name` (string) – tool/method name: `subfinder`, `whoxy_reverse_whois`, `certspotter`, `manual`, etc.
+- `display_name` (string) – human-readable label
+- `organization_id` (number)
 
-- `cwe_id` (string) – CWE identifier (e.g. CWE-89)
-- Used for Vulnerability → MAPS_TO → MITRE (weakness mapping).
+### ASN *(new)*
+- `asn_number` (string) – e.g. `AS15169`
+- `isp` (string) – ISP/org name
+- `country` (string)
+- `organization_id` (number)
+
+### HostingProvider *(new)*
+- `name` (string) – e.g. `cloudflare`, `aws`, `azure`
+- `hosting_type` (string) – cdn, cloud, owned, third_party
+
+### Certificate *(new)*
+- `fingerprint` (string) – SHA-256 fingerprint (unique key)
+- `common_name` (string) – certificate CN
+- `issuer` (string) – issuing CA
+- `expiry` (string) – not-after date
+- `san_count` (number) – number of SANs
+- `organization_id` (number)
 
 ## Multi-tenant filtering
 
-All queries must filter by `organization_id` (or equivalent tenant id) so that indexes are used and data is isolated per organization.
+All queries must filter by `organization_id` so indexes are used and data is tenant-isolated.
 
 ## Implementation notes
 
-- **Domain**: One node per (organization_id, root domain).
-- **Subdomain**: One node per (organization_id, hostname); linked from Domain via HAS_SUBDOMAIN.
-- **IP**: One node per address; Subdomain RESOLVES_TO IP.
-- **Port**: Linked from IP via HAS_PORT; each port has RUNS_SERVICE to a Service.
-- **Service**: Linked from Port; USES_TECHNOLOGY links to Technology.
-- **Technology**: Linked from Service; HAS_VULNERABILITY links to Vulnerability.
-- **Vulnerability**: REFERENCES CVE and MAPS_TO MITRE (CWE) when applicable.
+- **DiscoverySource**: Created from `asset.discovery_chain` JSON during sync. Each step in the chain becomes a `DISCOVERED_VIA` edge with `step`, `confidence`, and `found_value` properties.
+- **ASN**: Created from `asset.asn` and linked to all resolved IPs via `BELONGS_TO_ASN`.
+- **HostingProvider**: Created from `asset.hosting_provider` and linked to both the asset and its IPs via `HOSTED_BY`.
+- **Certificate**: Created from `asset.ssl_info` JSON. SAN entries are expanded into `Subdomain` nodes via `ALSO_COVERS` — this surfaces shadow IT not yet in the asset inventory.
+- **is_internet_facing** on `IP` nodes: derived from `asset.is_public`. This is the boundary marker for future internal-hop modeling when nanoclaw-agent discovers internal assets.
 
 ## Troubleshooting: graphs not working on /graph
 
-If https://aegis.theforcesecurity.io/graph (or your deployment) shows no data or “Disconnected”:
+If https://aegis.theforcesecurity.io/graph (or your deployment) shows no data or "Disconnected":
 
-1. **Neo4j not configured**  
-   Without Neo4j you still get the **Attack Surface** tab (risk distribution, technologies, ports, entry points) using PostgreSQL fallback. The **Relationships**, **Attack Paths**, and **Vulnerability Impact** tabs only appear when Neo4j is connected.  
-   - To use full graph features: set `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` and start Neo4j (e.g. `docker compose --profile graph up -d`), then open the Graph page and click **Sync Data**.
+1. **Neo4j not configured**
+   Without Neo4j you still get the **Attack Surface** tab using PostgreSQL fallback. The **Relationships**, **Discovery**, **Attack Paths**, and **Vulnerability Impact** tabs only appear when Neo4j is connected.
+   - Set `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` and start Neo4j:
+     `docker compose --profile graph up -d`
+   - Open the Graph page, select an organization, click **Sync Data**.
 
-2. **API not reachable**  
-   The frontend calls `/api/v1/graph/status`, `/api/v1/graph/fallback/attack-surface-overview`, etc.  
-   - If the app is at `https://aegis.theforcesecurity.io`, the browser uses that origin for API calls. Ensure your reverse proxy (e.g. nginx) forwards `/api` to the backend, or set `NEXT_PUBLIC_API_URL` to the backend URL and rebuild the frontend so the graph (and rest of the app) can reach the API.
+2. **Discovery provenance nodes not appearing**
+   These are populated during sync from `asset.discovery_chain`, `asset.hosting_provider`, `asset.asn`, and `asset.ssl_info`. If these fields are empty for your assets, the provenance nodes won't exist yet. Run your discovery scanners and re-sync.
 
-3. **Attack Surface tab empty**  
-   The PostgreSQL fallback returns `risk_distribution`, `discovery_sources`, technologies, and ports. If you see empty cards, check backend logs for 401/500 on `/graph/fallback/*`. Ensure the user is in an organization and has assets/ports/technologies in the DB.
+3. **API not reachable**
+   The frontend calls `/api/v1/graph/status`, `/api/v1/graph/discovery-tree`, etc. Ensure your nginx proxy forwards `/api` to the backend.
 
-4. **Relationships / Explorer tab missing data**  
-   The graph is populated only after **Sync Data** is run for the selected organization. Sync pushes assets and their related ports, technologies, vulnerabilities, endpoints, and IPs from PostgreSQL into Neo4j. If you’ve just run scans, click **Sync Data** again so new ports, tech, and vulns appear. Attack path search uses `asset_id` in Neo4j; the Explorer loads relationships for the **selected asset** only, so pick an asset from the dropdown to see its neighbors (ports, IPs, technologies, vulns).
+4. **Attack Surface tab empty**
+   The PostgreSQL fallback returns `risk_distribution`, `discovery_sources`, technologies, and ports. If empty, check backend logs for 401/500 on `/graph/fallback/*`. Ensure the user is in an organization with assets.
+
+5. **Relationships / Explorer tab missing data**
+   Populated only after **Sync Data** is run. New ports, tech, and vulns won't appear until you re-sync after scanning.

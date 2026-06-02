@@ -336,6 +336,152 @@ async def execute_graph_query(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/discovery-tree")
+async def get_discovery_tree(
+    asset_id: int = Query(..., description="Asset ID to trace provenance for"),
+    organization_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the full discovery provenance graph for an asset.
+
+    Shows how the asset was found (DiscoverySource), where it is hosted
+    (HostingProvider), what ASN it belongs to, and which subdomains share
+    its TLS certificate via SAN expansion.
+    """
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, "organization_id") else None)
+    if not org_id:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+    try:
+        graph = get_graph_service()
+        result = graph.get_discovery_tree(asset_id, org_id)
+        nodes = []
+        relationships = []
+        seen_nodes: set = set()
+        for n in result.get("nodes", []):
+            nid = n.get("id")
+            if nid and nid not in seen_nodes:
+                seen_nodes.add(nid)
+                nodes.append({
+                    "id": nid,
+                    "element_id": nid,
+                    "labels": n.get("labels", []),
+                    "properties": n.get("properties", {}),
+                })
+        for e in result.get("edges", []):
+            relationships.append({
+                "source": e.get("source"),
+                "target": e.get("target"),
+                "start_node": e.get("source"),
+                "end_node": e.get("target"),
+                "type": e.get("type"),
+                "properties": {},
+            })
+        return {"nodes": nodes, "relationships": relationships}
+    except Exception as e:
+        logger.error(f"Discovery tree error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/shared-infrastructure")
+async def get_shared_infrastructure(
+    ip: str = Query(..., description="IP address to find co-hosted assets for"),
+    organization_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return all assets that share the same IP, ASN, or hosting provider.
+
+    Useful for answering: "What else is on this IP / network?" and
+    identifying shared-infrastructure blast radius.
+    """
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, "organization_id") else None)
+    if not org_id:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+    try:
+        graph = get_graph_service()
+        result = graph.get_shared_infrastructure(ip, org_id)
+        return result
+    except Exception as e:
+        logger.error(f"Shared infrastructure error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cert-expansion")
+async def get_cert_expansion(
+    domain: str = Query(..., description="Domain to expand via TLS certificate SANs"),
+    organization_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return subdomains that share a TLS certificate with a given domain.
+
+    Traverses SIGNED_BY -> Certificate -> ALSO_COVERS to surface shadow IT
+    and related assets discovered via certificate transparency.
+    """
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, "organization_id") else None)
+    if not org_id:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+    try:
+        graph = get_graph_service()
+        result = graph.get_cert_expansion(domain, org_id)
+        return result
+    except Exception as e:
+        logger.error(f"Cert expansion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/discovery-sources")
+async def get_discovery_sources(
+    organization_id: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return asset counts grouped by discovery source.
+
+    Answers: "How many assets did subfinder vs whoxy vs certspotter find?"
+    Falls back to PostgreSQL when Neo4j is unavailable.
+    """
+    org_id = organization_id or (current_user.organization_id if hasattr(current_user, "organization_id") else None)
+    if not org_id:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+    try:
+        graph = get_graph_service()
+        if graph._connected:
+            results = graph.get_discovery_sources_summary(org_id)
+            if results:
+                return {"sources": results, "source": "neo4j"}
+
+        # PostgreSQL fallback
+        from app.db.database import SessionLocal
+        from app.models.asset import Asset
+        from sqlalchemy import func
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(
+                    func.coalesce(Asset.discovery_source, "manual").label("source"),
+                    func.count(Asset.id).label("asset_count"),
+                )
+                .filter(Asset.organization_id == org_id)
+                .group_by(func.coalesce(Asset.discovery_source, "manual"))
+                .order_by(func.count(Asset.id).desc())
+                .all()
+            )
+            return {
+                "sources": [
+                    {"source": r.source, "display_name": r.source.replace("_", " ").title(), "asset_count": r.asset_count}
+                    for r in rows
+                ],
+                "source": "postgresql",
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Discovery sources error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/group-by-technology")
 async def get_assets_by_technology(
     organization_id: Optional[int] = Query(None, description="Filter by organization"),

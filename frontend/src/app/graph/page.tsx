@@ -86,6 +86,9 @@ export default function GraphPage() {
   const [techGrouping, setTechGrouping] = useState<any>(null);
   const [portGrouping, setPortGrouping] = useState<any>(null);
   const [attackSurfaceLoading, setAttackSurfaceLoading] = useState(false);
+  const [discoverySources, setDiscoverySources] = useState<any[]>([]);
+  const [discoveryGraphData, setDiscoveryGraphData] = useState<GraphData>({ nodes: [], links: [] });
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const { toast } = useToast();
 
   // Fetch graph status
@@ -283,6 +286,42 @@ export default function GraphPage() {
     }
   };
 
+  // Load discovery provenance for an asset
+  const loadDiscoveryTree = async (assetId: number) => {
+    setDiscoveryLoading(true);
+    try {
+      const orgId = selectedOrg !== 'all' ? parseInt(selectedOrg) : undefined;
+      const data = await api.getDiscoveryTree(assetId, orgId);
+      const nodes: GraphNode[] = (data.nodes || []).map((n: any) => ({
+        id: n.id || n.element_id,
+        label: n.properties?.name || n.properties?.value || n.properties?.display_name || n.properties?.asn_number || n.labels?.[0] || 'Unknown',
+        type: mapNeo4jLabelToType(n.labels?.[0]),
+        properties: n.properties,
+      }));
+      const links = (data.relationships || []).map((r: any) => ({
+        source: r.start_node || r.source,
+        target: r.end_node || r.target,
+        type: r.type,
+      }));
+      setDiscoveryGraphData({ nodes, links });
+    } catch (error) {
+      console.error('Failed to load discovery tree:', error);
+    } finally {
+      setDiscoveryLoading(false);
+    }
+  };
+
+  // Load discovery sources summary
+  const loadDiscoverySources = async () => {
+    try {
+      const orgId = selectedOrg !== 'all' ? parseInt(selectedOrg) : undefined;
+      const data = await api.getDiscoverySources(orgId);
+      setDiscoverySources(data.sources || []);
+    } catch (error) {
+      console.error('Failed to load discovery sources:', error);
+    }
+  };
+
   // Map Neo4j labels to our node types
   const mapNeo4jLabelToType = (label: string): GraphNode['type'] => {
     const mapping: Record<string, GraphNode['type']> = {
@@ -296,6 +335,10 @@ export default function GraphPage() {
       Vulnerability: 'vulnerability',
       CVE: 'cve',
       CWE: 'cwe',
+      DiscoverySource: 'discovery_source',
+      ASN: 'asn',
+      HostingProvider: 'hosting_provider',
+      Certificate: 'certificate',
     };
     return mapping[label] || 'domain';
   };
@@ -314,11 +357,12 @@ export default function GraphPage() {
   // Fetch attack surface when tab changes or status is determined
   useEffect(() => {
     if (activeTab === 'attack-surface' && !attackSurfaceLoading) {
-      // Always fetch when we're on attack surface tab after status is known
-      // This handles both Neo4j connected and fallback scenarios
       if (status !== null && (!attackSurface || attackSurface.source !== (status?.connected ? 'neo4j' : 'postgresql'))) {
         fetchAttackSurface();
       }
+    }
+    if (activeTab === 'discovery' && status?.connected) {
+      loadDiscoverySources();
     }
   }, [activeTab, status]);
 
@@ -431,6 +475,10 @@ export default function GraphPage() {
             </TabsTrigger>
             {status?.connected && (
               <>
+                <TabsTrigger value="discovery" className="flex items-center gap-2">
+                  <Search className="h-4 w-4" />
+                  Discovery
+                </TabsTrigger>
                 <TabsTrigger value="explorer" className="flex items-center gap-2">
                   <GitBranch className="h-4 w-4" />
                   Relationships
@@ -745,6 +793,143 @@ export default function GraphPage() {
                 </>
               )}
             </TabsContent>
+
+            {/* Discovery Provenance Tab (requires Neo4j) */}
+            {status?.connected && (
+            <TabsContent value="discovery" className="space-y-4">
+              {/* Discovery source summary cards */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <Card className="lg:col-span-1">
+                  <CardHeader>
+                    <div className="flex items-center gap-2">
+                      <Search className="h-5 w-5 text-lime-500" />
+                      <CardTitle className="text-base">Discovery Sources</CardTitle>
+                    </div>
+                    <CardDescription>How assets were found — registrar lookups, DNS enumeration, cert transparency</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {discoverySources.length > 0 ? (
+                      <div className="space-y-2">
+                        {discoverySources.map((src: any, i: number) => (
+                          <div key={i} className="flex items-center justify-between p-2 bg-muted/50 rounded">
+                            <span className="text-sm">{src.display_name || src.source?.replace(/_/g, ' ')}</span>
+                            <Badge variant="secondary">{src.asset_count} assets</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-6 text-muted-foreground text-sm">
+                        <Search className="h-6 w-6 mx-auto mb-2 opacity-40" />
+                        Sync data to populate discovery sources
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="lg:col-span-2">
+                  <CardHeader>
+                    <CardTitle className="text-base">Asset Discovery Provenance</CardTitle>
+                    <CardDescription>
+                      Select an asset to visualize its discovery chain — registrar → domain → subdomain → IP → hosting provider → ASN
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex gap-4 mb-4">
+                      <Select value={selectedOrg} onValueChange={setSelectedOrg}>
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Organization" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Organizations</SelectItem>
+                          {organizations.map((org) => (
+                            <SelectItem key={org.id} value={org.id.toString()}>{org.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={selectedAssetId}
+                        onValueChange={(v) => {
+                          setSelectedAssetId(v);
+                          loadDiscoveryTree(parseInt(v));
+                        }}
+                      >
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="Select an asset to trace..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {assets.map((asset) => (
+                            <SelectItem key={asset.id} value={asset.id.toString()}>
+                              {asset.value} ({asset.asset_type})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Dashed-ring nodes (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full border border-dashed border-lime-500 bg-lime-500/40" />
+                        Discovery source
+                      </span>,{' '}
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full border border-dashed border-teal-500 bg-teal-500/40" />
+                        ASN
+                      </span>,{' '}
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full border border-dashed border-indigo-500 bg-indigo-500/40" />
+                        Hosting provider
+                      </span>,{' '}
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full border border-dashed border-pink-500 bg-pink-500/40" />
+                        Certificate
+                      </span>
+                      ) represent provenance context, not scanned infrastructure.
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Discovery graph canvas */}
+              <Card>
+                <CardContent className="p-0">
+                  <GraphVisualization
+                    data={discoveryGraphData}
+                    onNodeClick={handleNodeClick}
+                    selectedNodeId={selectedNode?.id}
+                    highlightPath={[]}
+                    loading={discoveryLoading}
+                    height={560}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Selected node details in discovery context */}
+              {selectedNode && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: selectedNode.type === 'discovery_source' ? '#84cc16' : selectedNode.type === 'asn' ? '#14b8a6' : selectedNode.type === 'hosting_provider' ? '#6366f1' : selectedNode.type === 'certificate' ? '#ec4899' : '#6b7280' }} />
+                      {selectedNode.label}
+                      <Badge variant="outline" className="capitalize ml-1 text-xs">{selectedNode.type.replace('_', ' ')}</Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                      {selectedNode.properties && Object.entries(selectedNode.properties)
+                        .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
+                        .slice(0, 12)
+                        .map(([key, value]) => (
+                          <div key={key} className="bg-muted/50 rounded p-2">
+                            <div className="text-xs text-muted-foreground mb-0.5">{key.replace(/_/g, ' ')}</div>
+                            <div className="font-medium truncate">{String(value)}</div>
+                          </div>
+                        ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+            )}
 
             {/* Relationship Explorer Tab (requires Neo4j) */}
             {status?.connected && (

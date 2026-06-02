@@ -17,6 +17,7 @@ import {
   Shield,
   Cpu,
   Network,
+  Search,
 } from 'lucide-react';
 
 // Dynamically import ForceGraph2D to avoid SSR issues
@@ -32,7 +33,7 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
 export interface GraphNode {
   id: string;
   label: string;
-  type: 'domain' | 'subdomain' | 'ip' | 'port' | 'service' | 'technology' | 'vulnerability' | 'cve' | 'cwe';
+  type: 'domain' | 'subdomain' | 'ip' | 'port' | 'service' | 'technology' | 'vulnerability' | 'cve' | 'cwe' | 'discovery_source' | 'asn' | 'hosting_provider' | 'certificate';
   properties?: Record<string, any>;
   x?: number;
   y?: number;
@@ -64,15 +65,38 @@ interface GraphVisualizationProps {
 
 // Node colors by type
 const NODE_COLORS: Record<string, string> = {
-  domain: '#3b82f6',      // blue
-  subdomain: '#60a5fa',   // light blue
-  ip: '#8b5cf6',          // purple
-  port: '#f59e0b',        // amber
-  service: '#10b981',     // emerald
-  technology: '#06b6d4',  // cyan
-  vulnerability: '#ef4444', // red
-  cve: '#dc2626',         // dark red
-  cwe: '#f97316',         // orange
+  // Technical topology
+  domain: '#3b82f6',          // blue
+  subdomain: '#60a5fa',       // light blue
+  ip: '#8b5cf6',              // purple
+  port: '#f59e0b',            // amber
+  service: '#10b981',         // emerald
+  technology: '#06b6d4',      // cyan
+  vulnerability: '#ef4444',   // red
+  cve: '#dc2626',             // dark red
+  cwe: '#f97316',             // orange
+  // Discovery provenance layer
+  discovery_source: '#84cc16', // lime green
+  asn: '#14b8a6',             // teal
+  hosting_provider: '#6366f1', // indigo
+  certificate: '#ec4899',     // pink
+};
+
+// Node sizes by type (relative importance in the graph)
+const NODE_SIZES: Record<string, number> = {
+  domain: 10,
+  subdomain: 7,
+  ip: 8,
+  port: 5,
+  service: 5,
+  technology: 7,
+  vulnerability: 9,
+  cve: 8,
+  cwe: 7,
+  discovery_source: 12,  // larger — anchor nodes in provenance view
+  asn: 11,
+  hosting_provider: 11,
+  certificate: 9,
 };
 
 // Node icons by type
@@ -86,6 +110,10 @@ const NODE_ICONS: Record<string, React.ElementType> = {
   vulnerability: AlertTriangle,
   cve: Shield,
   cwe: AlertTriangle,
+  discovery_source: Search,
+  asn: Network,
+  hosting_provider: Server,
+  certificate: Shield,
 };
 
 export function GraphVisualization({
@@ -123,42 +151,58 @@ export function GraphVisualization({
     (node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const label = node.label || node.id;
       const fontSize = 12 / globalScale;
-      const nodeSize = 8;
-      
+      const nodeSize = (NODE_SIZES[node.type] || 8);
+      const color = NODE_COLORS[node.type] || '#6b7280';
+
       const isSelected = selectedNodeId === node.id;
       const isHighlighted = highlightPath.includes(node.id);
       const isHovered = hoveredNode?.id === node.id;
+      const isVulnerable = node.type === 'vulnerability' || node.type === 'cve';
+
+      // Glow for highlighted / vulnerable / selected nodes
+      if (isSelected || isHighlighted || isVulnerable) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = isSelected ? 20 : isVulnerable ? 10 : 14;
+      }
 
       // Draw node circle
       ctx.beginPath();
       ctx.arc(node.x, node.y, nodeSize, 0, 2 * Math.PI);
-      ctx.fillStyle = NODE_COLORS[node.type] || '#6b7280';
-      
-      if (isSelected || isHighlighted) {
-        ctx.shadowColor = NODE_COLORS[node.type] || '#6b7280';
-        ctx.shadowBlur = 15;
-      }
-      
+      ctx.fillStyle = color;
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // Draw border for selected/hovered nodes
+      // Draw ring for discovery-layer nodes (dashed outer ring)
+      const isProvenance = ['discovery_source', 'asn', 'hosting_provider', 'certificate'].includes(node.type);
+      if (isProvenance) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, nodeSize + 3 / globalScale, 0, 2 * Math.PI);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1 / globalScale;
+        ctx.setLineDash([3 / globalScale, 2 / globalScale]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Solid border for selected/hovered nodes
       if (isSelected || isHovered) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, nodeSize + 2 / globalScale, 0, 2 * Math.PI);
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 2 / globalScale;
         ctx.stroke();
       }
 
-      // Draw label
-      ctx.font = `${fontSize}px Sans-Serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#e5e7eb';
-      
-      // Truncate label if too long
-      const maxLength = 20;
-      const displayLabel = label.length > maxLength ? label.substring(0, maxLength) + '...' : label;
-      ctx.fillText(displayLabel, node.x, node.y + nodeSize + fontSize);
+      // Draw label (only when zoomed in enough)
+      if (globalScale > 0.6) {
+        ctx.font = `${fontSize}px Sans-Serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#e5e7eb';
+        const maxLength = 22;
+        const displayLabel = label.length > maxLength ? label.substring(0, maxLength) + '…' : label;
+        ctx.fillText(displayLabel, node.x, node.y + nodeSize + fontSize);
+      }
     },
     [selectedNodeId, highlightPath, hoveredNode]
   );
@@ -251,18 +295,40 @@ export function GraphVisualization({
       </div>
 
       {/* Legend */}
-      <div className="absolute bottom-4 left-4 z-10 bg-background/80 backdrop-blur rounded-lg p-3">
-        <div className="text-xs font-medium mb-2">Node Types</div>
-        <div className="grid grid-cols-3 gap-2 text-xs">
-          {Object.entries(NODE_COLORS).map(([type, color]) => (
-            <div key={type} className="flex items-center gap-1">
-              <div
-                className="w-3 h-3 rounded-full"
-                style={{ backgroundColor: color }}
-              />
-              <span className="capitalize">{type}</span>
-            </div>
-          ))}
+      <div className="absolute bottom-4 left-4 z-10 bg-background/80 backdrop-blur rounded-lg p-3 max-w-[260px]">
+        <div className="text-xs font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Legend</div>
+        <div className="mb-2">
+          <div className="text-xs text-muted-foreground mb-1">Infrastructure</div>
+          <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-xs">
+            {(['domain', 'subdomain', 'ip', 'port', 'service', 'technology'] as const).map((type) => (
+              <div key={type} className="flex items-center gap-1">
+                <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: NODE_COLORS[type] }} />
+                <span className="capitalize truncate">{type}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="mb-2">
+          <div className="text-xs text-muted-foreground mb-1">Vulnerabilities</div>
+          <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-xs">
+            {(['vulnerability', 'cve', 'cwe'] as const).map((type) => (
+              <div key={type} className="flex items-center gap-1">
+                <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: NODE_COLORS[type] }} />
+                <span className="capitalize truncate">{type}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted-foreground mb-1">Discovery Provenance</div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            {(['discovery_source', 'asn', 'hosting_provider', 'certificate'] as const).map((type) => (
+              <div key={type} className="flex items-center gap-1">
+                <div className="w-2.5 h-2.5 rounded-full border border-dashed flex-shrink-0" style={{ backgroundColor: NODE_COLORS[type], borderColor: NODE_COLORS[type] }} />
+                <span className="capitalize truncate">{type.replace('_', ' ')}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
