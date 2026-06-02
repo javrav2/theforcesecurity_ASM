@@ -72,7 +72,7 @@ anthropic>=0.34.0
 neo4j==5.15.0
 
 # WebSocket support
-websockets==12.0
+websockets>=14,<16
 
 # GitHub API for secret scanning
 PyGithub==2.1.1
