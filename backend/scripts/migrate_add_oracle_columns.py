@@ -99,7 +99,7 @@ def run_migration(backfill: bool = False) -> None:
                     oracle_enriched_at     = ((metadata->>'oracle')::jsonb->>'enriched_at')::timestamptz,
                     oracle_analysis_status = (metadata->>'oracle')::jsonb->>'analysis_status',
                     oracle_finding_id      = (metadata->>'oracle')::jsonb->>'finding_id'
-                WHERE metadata ? 'oracle'
+                WHERE metadata->>'oracle' IS NOT NULL
             """))
             conn.commit()
             result = conn.execute(text(
