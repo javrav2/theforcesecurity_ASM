@@ -583,6 +583,31 @@ def _persist(db: Session, vuln: Vulnerability, payload: Dict[str, Any]) -> Dict[
     meta = dict(vuln.metadata_) if isinstance(vuln.metadata_, dict) else {}
     meta["oracle"] = payload
     vuln.metadata_ = meta
+
+    # Promote key Oracle fields to dedicated columns for efficient querying.
+    # Columns may not exist yet in older deployments; ignore AttributeError.
+    try:
+        from datetime import datetime as _dt
+        vuln.oracle_opes_score      = payload.get("opes_score")
+        vuln.oracle_opes_category   = payload.get("opes_category")
+        vuln.oracle_opes_label      = payload.get("opes_label")
+        vuln.oracle_opes_confidence = payload.get("opes_confidence")
+        vuln.oracle_attack_path     = payload.get("attack_path_class")
+        vuln.oracle_lateral_mvmt    = payload.get("lateral_movement_potential")
+        vuln.oracle_mode            = payload.get("mode")
+        vuln.oracle_analysis_status = payload.get("analysis_status")
+        vuln.oracle_finding_id      = payload.get("finding_id")
+        enriched_at_str = payload.get("enriched_at")
+        if enriched_at_str:
+            try:
+                vuln.oracle_enriched_at = _dt.fromisoformat(
+                    enriched_at_str.replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError):
+                pass
+    except AttributeError:
+        pass
+
     # SQLAlchemy doesn't auto-detect JSON mutation; force a flush by
     # reassigning the dict (done above) plus an explicit commit by caller.
     db.add(vuln)

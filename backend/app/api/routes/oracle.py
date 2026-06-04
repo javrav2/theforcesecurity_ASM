@@ -197,7 +197,13 @@ class EnrichResponse(BaseModel):
     opes_score: Optional[float] = None
     opes_category: Optional[str] = None
     opes_label: Optional[str] = None
+    opes_confidence: Optional[str] = None
     attack_path_class: Optional[str] = None
+    lateral_movement_potential: Optional[str] = None
+    recommendation_text: Optional[str] = None
+    analyst_brief: Optional[Dict[str, Any]] = None
+    cvss_reconciliation: Optional[Dict[str, Any]] = None
+    exploitation_evidence: Optional[Dict[str, Any]] = None
     analysis_status: Optional[str] = None
     analysis_error: Optional[str] = None
 
@@ -235,6 +241,9 @@ def oracle_enrich_one(
         raise HTTPException(status_code=400, detail=str(e))
     except OracleUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("oracle enrichment unexpected error for vuln=%s", vuln_id)
+        raise HTTPException(status_code=500, detail=f"Oracle enrichment failed: {e}")
 
     return EnrichResponse(
         vulnerability_id=vuln.id,
@@ -244,7 +253,13 @@ def oracle_enrich_one(
         opes_score=payload.get("opes_score"),
         opes_category=payload.get("opes_category"),
         opes_label=payload.get("opes_label"),
+        opes_confidence=payload.get("opes_confidence"),
         attack_path_class=payload.get("attack_path_class"),
+        lateral_movement_potential=payload.get("lateral_movement_potential"),
+        recommendation_text=payload.get("recommendation_text"),
+        analyst_brief=payload.get("analyst_brief"),
+        cvss_reconciliation=payload.get("cvss_reconciliation"),
+        exploitation_evidence=payload.get("exploitation_evidence"),
         analysis_status=payload.get("analysis_status"),
         analysis_error=payload.get("analysis_error"),
     )

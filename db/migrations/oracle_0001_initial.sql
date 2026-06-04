@@ -1,10 +1,13 @@
 -- Aegis Oracle initial schema (v1).
 --
--- Designed for Postgres 15+. Apply with `psql -f` or via the migration
--- runner once the daemon is in place. See pkg/schema/* for the matching
--- Go types — table column names mirror the JSON tags where practical.
+-- Designed for Postgres 15+. Apply with:
+--   psql -d asm_db -f oracle_0001_initial.sql
+-- Tables live in the "oracle" schema to avoid collisions with ASM tables.
 
 BEGIN;
+
+CREATE SCHEMA IF NOT EXISTS oracle;
+SET search_path TO oracle, public;
 
 -- ──────────────────────────────────────────────────────────────────────
 -- Raw ingest tables — one per source, lossless. Authoritative records
@@ -235,7 +238,7 @@ CREATE TABLE IF NOT EXISTS assets (
     ip           inet,
     open_ports   int[] NOT NULL DEFAULT '{}',
     signals      jsonb NOT NULL DEFAULT '{}'::jsonb,
-    signals_hash text NOT NULL,
+    signals_hash text NOT NULL DEFAULT '',
     criticality  text NOT NULL DEFAULT 'unknown',
     exposure     text NOT NULL DEFAULT 'unknown',
     source       text NOT NULL,
@@ -270,6 +273,8 @@ CREATE TABLE IF NOT EXISTS findings (
     confidence              text NOT NULL CHECK (confidence IN ('high','medium','low')),
     priority_rationale      text NOT NULL,
     recommendation_text     text NOT NULL,
+    cvss_reconciliation     jsonb,
+    analyst_brief           jsonb,
 
     status                  text NOT NULL DEFAULT 'open'
                             CHECK (status IN ('open','verifying','suppressed','fixed','superseded')),

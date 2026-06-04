@@ -28,42 +28,34 @@ ARG TARGETARCH=amd64
 # ProjectDiscovery tools - download pre-built binaries (much faster than compiling)
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "arm64" ]; then PD_ARCH="arm64"; else PD_ARCH="amd64"; fi && \
-    # Nuclei
-    wget -q "https://github.com/projectdiscovery/nuclei/releases/download/v3.3.7/nuclei_3.3.7_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "nuclei_3.3.7_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "nuclei_3.3.7_linux_${PD_ARCH}.zip" && \
-    # Subfinder
-    wget -q "https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "subfinder_2.6.7_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "subfinder_2.6.7_linux_${PD_ARCH}.zip" && \
-    # HTTPX
-    wget -q "https://github.com/projectdiscovery/httpx/releases/download/v1.6.10/httpx_1.6.10_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "httpx_1.6.10_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "httpx_1.6.10_linux_${PD_ARCH}.zip" && \
-    # DNSX
-    wget -q "https://github.com/projectdiscovery/dnsx/releases/download/v1.2.1/dnsx_1.2.1_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "dnsx_1.2.1_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "dnsx_1.2.1_linux_${PD_ARCH}.zip" && \
-    # Naabu
-    wget -q "https://github.com/projectdiscovery/naabu/releases/download/v2.3.3/naabu_2.3.3_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "naabu_2.3.3_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "naabu_2.3.3_linux_${PD_ARCH}.zip" && \
-    # Katana
-    wget -q "https://github.com/projectdiscovery/katana/releases/download/v1.1.0/katana_1.1.0_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "katana_1.1.0_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "katana_1.1.0_linux_${PD_ARCH}.zip" && \
-    # Chaos
-    wget -q "https://github.com/projectdiscovery/chaos-client/releases/download/v0.5.2/chaos-client_0.5.2_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "chaos-client_0.5.2_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "chaos-client_0.5.2_linux_${PD_ARCH}.zip" && \
-    # TLSX
-    wget -q "https://github.com/projectdiscovery/tlsx/releases/download/v1.1.7/tlsx_1.1.7_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "tlsx_1.1.7_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "tlsx_1.1.7_linux_${PD_ARCH}.zip" && \
-    # vulnx (successor to cvemap — requires Go 1.24 so use pre-built release)
-    wget -q "https://github.com/projectdiscovery/vulnx/releases/download/v2.0.1/vulnx_2.0.1_linux_${PD_ARCH}.zip" && \
-    unzip -o -q "vulnx_2.0.1_linux_${PD_ARCH}.zip" -d /tools && \
-    rm "vulnx_2.0.1_linux_${PD_ARCH}.zip"
+    # Each tool is downloaded independently so a single failure doesn't abort the build
+    (wget -q "https://github.com/projectdiscovery/nuclei/releases/download/v3.3.7/nuclei_3.3.7_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "nuclei_3.3.7_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "nuclei_3.3.7_linux_${PD_ARCH}.zip") || echo "nuclei download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "subfinder_2.6.7_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "subfinder_2.6.7_linux_${PD_ARCH}.zip") || echo "subfinder download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/httpx/releases/download/v1.6.10/httpx_1.6.10_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "httpx_1.6.10_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "httpx_1.6.10_linux_${PD_ARCH}.zip") || echo "httpx download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/dnsx/releases/download/v1.2.1/dnsx_1.2.1_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "dnsx_1.2.1_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "dnsx_1.2.1_linux_${PD_ARCH}.zip") || echo "dnsx download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/naabu/releases/download/v2.3.3/naabu_2.3.3_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "naabu_2.3.3_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "naabu_2.3.3_linux_${PD_ARCH}.zip") || echo "naabu download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/katana/releases/download/v1.1.0/katana_1.1.0_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "katana_1.1.0_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "katana_1.1.0_linux_${PD_ARCH}.zip") || echo "katana download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/chaos-client/releases/download/v0.5.2/chaos-client_0.5.2_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "chaos-client_0.5.2_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "chaos-client_0.5.2_linux_${PD_ARCH}.zip") || echo "chaos download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/tlsx/releases/download/v1.1.7/tlsx_1.1.7_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "tlsx_1.1.7_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "tlsx_1.1.7_linux_${PD_ARCH}.zip") || echo "tlsx download skipped" && \
+    (wget -q "https://github.com/projectdiscovery/vulnx/releases/download/v2.0.1/vulnx_2.0.1_linux_${PD_ARCH}.zip" && \
+     unzip -o -q "vulnx_2.0.1_linux_${PD_ARCH}.zip" -d /tools && \
+     rm -f "vulnx_2.0.1_linux_${PD_ARCH}.zip") || echo "vulnx download skipped"
 
 # Other Go tools (pre-built releases)
 RUN ARCH=$(dpkg --print-architecture) && \
@@ -152,25 +144,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     git
 
 # Copy pre-built binaries
-COPY --from=tool-downloader /tools/nuclei /usr/local/bin/
-COPY --from=tool-downloader /tools/subfinder /usr/local/bin/
-COPY --from=tool-downloader /tools/httpx /usr/local/bin/
-COPY --from=tool-downloader /tools/dnsx /usr/local/bin/
-COPY --from=tool-downloader /tools/naabu /usr/local/bin/
-COPY --from=tool-downloader /tools/katana /usr/local/bin/
-COPY --from=tool-downloader /tools/chaos-client /usr/local/bin/chaos
-COPY --from=tool-downloader /tools/tlsx /usr/local/bin/
-COPY --from=tool-downloader /tools/ffuf /usr/local/bin/
-COPY --from=tool-downloader /tools/amass /usr/local/bin/
-COPY --from=tool-downloader /tools/masscan /usr/local/bin/
-COPY --from=tool-downloader /tools/massdns /usr/local/bin/
-COPY --from=tool-downloader /tools/waybackurls /usr/local/bin/
-COPY --from=tool-downloader /tools/assetfinder /usr/local/bin/
-COPY --from=tool-downloader /tools/gau /usr/local/bin/
-COPY --from=tool-downloader /tools/kr /usr/local/bin/kiterunner
-COPY --from=tool-downloader /tools/gitleaks /usr/local/bin/
-
-RUN chmod +x /usr/local/bin/*
+# Copy tools that were successfully downloaded (skips missing files gracefully)
+COPY --from=tool-downloader /tools/ /tmp/downloaded-tools/
+RUN for tool in nuclei subfinder httpx dnsx naabu katana tlsx ffuf amass masscan massdns waybackurls assetfinder gau gitleaks vulnx; do \
+        [ -f "/tmp/downloaded-tools/${tool}" ] && cp "/tmp/downloaded-tools/${tool}" /usr/local/bin/ && echo "installed ${tool}" || echo "skipped ${tool}"; \
+    done && \
+    [ -f "/tmp/downloaded-tools/chaos-client" ] && cp /tmp/downloaded-tools/chaos-client /usr/local/bin/chaos || true && \
+    [ -f "/tmp/downloaded-tools/kr" ] && cp /tmp/downloaded-tools/kr /usr/local/bin/kiterunner || true && \
+    rm -rf /tmp/downloaded-tools && \
+    chmod +x /usr/local/bin/* 2>/dev/null || true
 
 # Install EyeWitness
 RUN git clone --depth 1 https://github.com/RedSiege/EyeWitness.git /opt/EyeWitness \

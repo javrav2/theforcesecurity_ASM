@@ -13,8 +13,7 @@ from app.db.database import engine, Base, SessionLocal
 from app.core.security import get_password_hash
 from app.models.user import User, UserRole
 from app.models.netblock import Netblock  # Import to ensure table creation
-from app.services.aegis_bootstrap import bootstrap_aegis_praetorium
-from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, remediation, exceptions, agent, agent_knowledge, graph, github_secrets, mitre, mcp, app_structure, reports, llm_red_team, ingestion, pentest, delphi, roe, agent_confirmations, agent_skills, oracle
+from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, endpoints, sni_discovery, scan_config, acquisitions, oracle
 
 # Configure logging
 logging.basicConfig(
@@ -25,11 +24,6 @@ logger = logging.getLogger(__name__)
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
-
-# Configure the shared Aegis Praetorium guard layer (Lictor / Censor / Augur)
-# from platform settings and register a SQLAlchemy-backed scope resolver so
-# enforce_scope can query the Asset table for the calling org.
-bootstrap_aegis_praetorium()
 
 # Create FastAPI app
 app = FastAPI(
@@ -47,6 +41,7 @@ A comprehensive platform for discovering and managing your organization's extern
 - **Technology Fingerprinting**: Identify web technologies using Wappalyzer-style detection
 - **Vulnerability Scanning**: Run Nuclei scans with configurable profiles
 - **ProjectDiscovery Tools**: Integrated subfinder, httpx, dnsx, naabu, katana
+- **Aegis Oracle**: OPES exploitability scoring, attack-path classification, analyst briefs
 - **Multi-tenant**: Support for multiple organizations with RBAC
 
 ## Port & Service Reporting
@@ -61,45 +56,26 @@ Track and report on exposed services with structured data:
     openapi_url="/api/openapi.json"
 )
 
-# Configure CORS - allow all origins for flexibility with different deployment scenarios
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins - required for dynamic IP/hostname access
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Global exception handler for database errors
 @app.exception_handler(SQLAlchemyError)
-async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
-    """
-    Handle SQLAlchemy errors globally.
-    
-    This catches database errors including InFailedSqlTransaction and ensures
-    a clean response is returned to the client.
-    """
-    error_msg = str(exc)
-    logger.error(f"Database error on {request.url.path}: {error_msg[:200]}")
-    
-    # Check for transaction-related errors
-    if "InFailedSqlTransaction" in error_msg or "current transaction is aborted" in error_msg:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "detail": "Database transaction error. Please retry your request.",
-                "error_type": "transaction_error"
-            }
-        )
-    
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": "A database error occurred. Please try again.",
-            "error_type": "database_error"
-        }
-    )
+async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
+    logger.error("Database error on %s: %s", request.url.path, exc)
+    return JSONResponse(status_code=500, content={"detail": "A database error occurred."})
+
+
+@app.exception_handler(Exception)
+async def generic_error_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s", request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "An internal server error occurred."})
 
 
 # Include routers
@@ -119,26 +95,10 @@ app.include_router(netblocks.router, prefix=settings.API_PREFIX)
 app.include_router(labels.router, prefix=settings.API_PREFIX)
 app.include_router(scan_schedules.router, prefix=settings.API_PREFIX)
 app.include_router(tools.router, prefix=settings.API_PREFIX)
+app.include_router(endpoints.router, prefix=settings.API_PREFIX)
 app.include_router(sni_discovery.router, prefix=settings.API_PREFIX)
 app.include_router(scan_config.router, prefix=settings.API_PREFIX)
 app.include_router(acquisitions.router, prefix=settings.API_PREFIX)
-app.include_router(remediation.router, prefix=settings.API_PREFIX)
-app.include_router(exceptions.router, prefix=settings.API_PREFIX)
-app.include_router(agent.router, prefix=settings.API_PREFIX)
-app.include_router(agent_knowledge.router, prefix=settings.API_PREFIX)
-app.include_router(graph.router, prefix=settings.API_PREFIX)
-app.include_router(github_secrets.router, prefix=settings.API_PREFIX)
-app.include_router(mitre.router, prefix=settings.API_PREFIX)
-app.include_router(mcp.router, prefix=settings.API_PREFIX)
-app.include_router(app_structure.router, prefix=settings.API_PREFIX)
-app.include_router(reports.router, prefix=settings.API_PREFIX)
-app.include_router(llm_red_team.router, prefix=settings.API_PREFIX)
-app.include_router(ingestion.router, prefix=settings.API_PREFIX)
-app.include_router(pentest.router, prefix=settings.API_PREFIX)
-app.include_router(delphi.router, prefix=settings.API_PREFIX)
-app.include_router(roe.router, prefix=settings.API_PREFIX)
-app.include_router(agent_confirmations.router, prefix=settings.API_PREFIX)
-app.include_router(agent_skills.router, prefix=settings.API_PREFIX)
 app.include_router(oracle.router, prefix=settings.API_PREFIX)
 
 
@@ -177,86 +137,9 @@ def api_info():
             "nuclei": f"{settings.API_PREFIX}/nuclei",
             "screenshots": f"{settings.API_PREFIX}/screenshots",
             "external_discovery": f"{settings.API_PREFIX}/external-discovery",
+            "oracle": f"{settings.API_PREFIX}/oracle",
         },
-        "port_service_features": {
-            "list_ports": "GET /api/v1/ports - List all port services",
-            "by_asset": "GET /api/v1/ports/report/by-asset/{id} - Ports for specific asset",
-            "port_distribution": "GET /api/v1/ports/report/distribution/ports - Port distribution",
-            "service_distribution": "GET /api/v1/ports/report/distribution/services - Service distribution",
-            "risky_ports": "GET /api/v1/ports/report/risky - Risky ports report",
-            "summary": "GET /api/v1/ports/report/summary - Comprehensive summary",
-            "search": "POST /api/v1/ports/search - Advanced port search",
-        }
     }
-
-
-def apply_database_migrations():
-    """
-    Apply database migrations at startup.
-    
-    This ensures required columns exist, fixing issues like missing
-    verification columns that cause "column does not exist" errors.
-    """
-    from sqlalchemy import text
-    
-    db = SessionLocal()
-    try:
-        # Check if port_services table exists
-        result = db.execute(text("""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables 
-                WHERE table_name = 'port_services'
-            )
-        """)).scalar()
-        
-        if result:
-            # Add port verification columns if missing
-            columns_to_add = [
-                ("verified", "BOOLEAN DEFAULT FALSE"),
-                ("verified_at", "TIMESTAMP"),
-                ("verified_state", "VARCHAR(50)"),
-                ("verification_scanner", "VARCHAR(50)"),
-            ]
-            
-            for col_name, col_def in columns_to_add:
-                exists = db.execute(text(f"""
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name = 'port_services' AND column_name = '{col_name}'
-                    )
-                """)).scalar()
-                
-                if not exists:
-                    db.execute(text(f"ALTER TABLE port_services ADD COLUMN {col_name} {col_def}"))
-                    logger.info(f"✓ Added missing column: port_services.{col_name}")
-            
-            db.commit()
-            
-            # Create indexes if missing
-            indexes = [
-                ("idx_port_services_verified", "port_services", "verified"),
-                ("idx_port_services_verified_state", "port_services", "verified_state"),
-            ]
-            
-            for idx_name, table, column in indexes:
-                idx_exists = db.execute(text(f"""
-                    SELECT EXISTS (
-                        SELECT 1 FROM pg_indexes 
-                        WHERE indexname = '{idx_name}'
-                    )
-                """)).scalar()
-                
-                if not idx_exists:
-                    db.execute(text(f"CREATE INDEX {idx_name} ON {table} ({column})"))
-                    logger.info(f"✓ Created missing index: {idx_name}")
-            
-            db.commit()
-            logger.info("✓ Database migrations verified")
-    except Exception as e:
-        logger.error(f"Database migration check failed: {e}")
-        db.rollback()
-    finally:
-        db.close()
 
 
 @app.on_event("startup")
@@ -264,29 +147,29 @@ async def startup_event():
     """Run on application startup."""
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info("API documentation available at /api/docs")
-    
-    # Apply database migrations first
-    apply_database_migrations()
-    
+
+    # Apply Oracle schema migrations so the Go service's tables exist
+    apply_oracle_migrations()
+
     # Check ProjectDiscovery tools installation
     from app.services.nuclei_service import NucleiService
     from app.services.projectdiscovery_service import ProjectDiscoveryService
-    
-    nuclei = NucleiService()
+
+    nuclei_svc = NucleiService()
     pd_tools = ProjectDiscoveryService()
-    
-    if nuclei.check_installation():
+
+    if nuclei_svc.check_installation():
         logger.info("✓ Nuclei is installed")
     else:
         logger.warning("✗ Nuclei is not installed - vulnerability scanning unavailable")
-    
+
     tools_status = pd_tools.check_tools()
     for tool, installed in tools_status.items():
         if installed:
             logger.info(f"✓ {tool} is installed")
         else:
             logger.warning(f"✗ {tool} is not installed")
-    
+
     # Check EyeWitness installation
     from app.services.eyewitness_service import get_eyewitness_service
     eyewitness = get_eyewitness_service()
@@ -294,7 +177,7 @@ async def startup_event():
     if ew_status["installed"]:
         logger.info("✓ EyeWitness is installed")
     else:
-        logger.warning(f"✗ EyeWitness is not installed - screenshots unavailable: {ew_status.get('error', '')}")
+        logger.warning(f"✗ EyeWitness is not installed: {ew_status.get('error', '')}")
 
     ensure_default_admin()
 
@@ -303,6 +186,137 @@ async def startup_event():
 async def shutdown_event():
     """Run on application shutdown."""
     logger.info("Shutting down application")
+
+
+def apply_oracle_migrations():
+    """Ensure the oracle schema and its tables exist.
+
+    The Go aegis-oracle service expects these tables but does not create them
+    itself. We create them idempotently at startup so a fresh DB just works.
+    """
+    from sqlalchemy import text
+    ddl_statements = [
+        "CREATE SCHEMA IF NOT EXISTS oracle",
+        """
+        CREATE TABLE IF NOT EXISTS oracle.cves (
+            cve_id              text PRIMARY KEY,
+            published           timestamptz,
+            modified            timestamptz,
+            description         text NOT NULL DEFAULT '',
+            cvss_v3_score       real,
+            cvss_v3_vector      text NOT NULL DEFAULT '',
+            cvss_v2_score       real,
+            cvss_v2_vector      text NOT NULL DEFAULT '',
+            epss_score          real,
+            epss_percentile     real,
+            kev_listed          boolean NOT NULL DEFAULT false,
+            kev_date_added      date,
+            cwe_ids             text[] NOT NULL DEFAULT '{}',
+            affected_products   jsonb NOT NULL DEFAULT '[]',
+            references_         jsonb NOT NULL DEFAULT '[]',
+            raw_nvd             jsonb,
+            fetched_at          timestamptz NOT NULL DEFAULT now(),
+            created_at          timestamptz NOT NULL DEFAULT now(),
+            updated_at          timestamptz NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS oracle.cve_intrinsic_analyses (
+            id                      bigserial PRIMARY KEY,
+            cve_id                  text NOT NULL REFERENCES oracle.cves(cve_id) ON DELETE CASCADE,
+            remote_triggerability   text NOT NULL DEFAULT '',
+            exploit_complexity      text NOT NULL DEFAULT '',
+            attacker_capability     text NOT NULL DEFAULT '',
+            attack_path_class       text NOT NULL DEFAULT '',
+            lateral_movement        text NOT NULL DEFAULT '',
+            preconditions           jsonb NOT NULL DEFAULT '[]',
+            cvss_reconciliation     jsonb,
+            attack_chain_summary    text NOT NULL DEFAULT '',
+            analyst_brief           jsonb,
+            detection_signals       jsonb NOT NULL DEFAULT '[]',
+            rationale               text NOT NULL DEFAULT '',
+            confidence              text NOT NULL DEFAULT '',
+            prompt_version          text NOT NULL DEFAULT '',
+            llm_model               text NOT NULL DEFAULT '',
+            created_at              timestamptz NOT NULL DEFAULT now(),
+            updated_at              timestamptz NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS oracle.assets (
+            asset_id        text PRIMARY KEY,
+            hostname        text NOT NULL DEFAULT '',
+            ip_addresses    text[] NOT NULL DEFAULT '{}',
+            ports           jsonb NOT NULL DEFAULT '[]',
+            technologies    text[] NOT NULL DEFAULT '{}',
+            network_zone    text NOT NULL DEFAULT '',
+            signals_hash    text NOT NULL DEFAULT '',
+            created_at      timestamptz NOT NULL DEFAULT now(),
+            updated_at      timestamptz NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS oracle.findings (
+            finding_id              text PRIMARY KEY,
+            cve_id                  text,
+            asset_id                text,
+            cve_hash                text NOT NULL DEFAULT '',
+            asset_hash              text NOT NULL DEFAULT '',
+            signals_hash            text NOT NULL DEFAULT '',
+            evaluator_version       text NOT NULL DEFAULT '',
+            preconditions_evaluated jsonb NOT NULL DEFAULT '[]',
+            opes                    jsonb NOT NULL DEFAULT '{}',
+            cvss_reconciliation     jsonb,
+            analyst_brief           jsonb,
+            attack_path_class       text NOT NULL DEFAULT '',
+            lateral_movement_potential text NOT NULL DEFAULT '',
+            recommendation_text     text NOT NULL DEFAULT '',
+            verification_tasks      jsonb NOT NULL DEFAULT '[]',
+            confidence              text NOT NULL DEFAULT '',
+            priority_rationale      text NOT NULL DEFAULT '',
+            status                  text NOT NULL DEFAULT 'open'
+                                    CHECK (status IN ('open','verifying','suppressed','fixed','superseded')),
+            created_at              timestamptz NOT NULL DEFAULT now(),
+            updated_at              timestamptz NOT NULL DEFAULT now()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS oracle.module_state (
+            module      text PRIMARY KEY,
+            last_run    timestamptz,
+            state       jsonb NOT NULL DEFAULT '{}'
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS oracle.raw_kev (
+            cve_id          text PRIMARY KEY,
+            date_added      date,
+            vendor_project  text,
+            product         text,
+            vulnerability_name text,
+            short_description text,
+            required_action text,
+            due_date        date,
+            notes           text,
+            fetched_at      timestamptz NOT NULL DEFAULT now()
+        )
+        """,
+        # Idempotently add columns that older migrations may have omitted
+        "ALTER TABLE oracle.findings ADD COLUMN IF NOT EXISTS cvss_reconciliation jsonb",
+        "ALTER TABLE oracle.findings ADD COLUMN IF NOT EXISTS analyst_brief jsonb",
+    ]
+
+    try:
+        with engine.connect() as conn:
+            for stmt in ddl_statements:
+                try:
+                    conn.execute(text(stmt))
+                except Exception as e:
+                    logger.warning("oracle migration stmt skipped: %s", e)
+            conn.commit()
+        logger.info("Oracle schema migrations applied.")
+    except Exception as exc:
+        logger.error("Oracle schema migrations failed (non-fatal): %s", exc)
 
 
 def ensure_default_admin():
@@ -354,10 +368,10 @@ def ensure_default_admin():
         if updated:
             db.add(user)
             db.commit()
-            logger.info("Default admin user validated/updated with configured credentials.")
+            logger.info("Default admin user validated/updated.")
         else:
             logger.info("Default admin user already valid.")
-    except Exception as exc:  # pragma: no cover - startup logging path
+    except Exception as exc:
         logger.error(f"Failed to ensure default admin user: {exc}")
     finally:
         db.close()
