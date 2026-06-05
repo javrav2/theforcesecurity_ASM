@@ -10,6 +10,10 @@
 # nginx:alpine entrypoint at container start (envsubst).
 # =============================================================================
 
+# Use Docker's internal DNS resolver so upstream hostnames are re-resolved
+# dynamically after container restarts (prevents stale-IP 502 errors).
+resolver 127.0.0.11 valid=10s ipv6=off;
+
 upstream asm_backend {
     server backend:8000;
     keepalive 32;
@@ -85,6 +89,10 @@ server {
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host  $host;
+
+        # Required for WebSocket upgrade (agent + pentest streaming endpoints)
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $http_connection;
 
         # Long timeouts: AI agent calls + LLM tool loops can take minutes
         # (matches DEPLOYMENT.md "504 Gateway Timeout (Agent)" guidance)

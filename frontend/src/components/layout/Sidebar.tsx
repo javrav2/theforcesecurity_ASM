@@ -24,7 +24,6 @@ import {
   GitBranch,
   MessageSquare,
   Crosshair,
-  Eye,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/store/auth';
@@ -46,7 +45,6 @@ const navigation = [
   { name: 'Discovery', href: '/discovery', icon: Search },
   { name: 'Agent', href: '/agent', icon: MessageSquare },
   { name: 'Pentest', href: '/pentest', icon: Crosshair },
-  { name: 'Oracle', href: '/oracle', icon: Eye },
 ];
 
 const adminNavigation = [
@@ -96,7 +94,8 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto">
         {navigation.map((item) => {
-          const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+          const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`)
+            || (item.href === '/agent' && pathname === '/oracle');
           return (
             <Link
               key={item.name}

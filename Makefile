@@ -1,5 +1,5 @@
 # The Force Security ASM - Makefile
-.PHONY: help build up down restart logs shell db-shell init-db clean dev
+.PHONY: help build up down restart logs shell db-shell init-db clean dev dev-graph deploy
 
 # Default target
 help:
@@ -18,6 +18,7 @@ help:
 	@echo "  init-db     Initialize database with seed data"
 	@echo "  clean       Remove containers, volumes, and images"
 	@echo "  dev         Start services with development tools (Adminer)"
+	@echo "  dev-graph   Start services + Neo4j graph database"
 	@echo ""
 
 # Build Docker images
@@ -43,9 +44,20 @@ dev:
 	@echo "  - Adminer:  http://localhost:8080"
 	@echo ""
 
+# Start with development tools + Neo4j graph database
+dev-graph:
+	docker-compose --profile dev --profile graph up -d
+	@echo ""
+	@echo "Services started (development mode + Neo4j)!"
+	@echo "  - API:      http://localhost:8000"
+	@echo "  - Docs:     http://localhost:8000/api/docs"
+	@echo "  - Adminer:  http://localhost:8080"
+	@echo "  - Neo4j:    http://localhost:7474"
+	@echo ""
+
 # Stop all services
 down:
-	docker-compose --profile dev down
+	docker-compose --profile dev --profile graph down
 
 # Restart services
 restart: down up
@@ -68,7 +80,7 @@ init-db:
 
 # Clean everything
 clean:
-	docker-compose --profile dev down -v --rmi local
+	docker-compose --profile dev --profile graph down -v --rmi local
 	@echo "Cleaned up containers, volumes, and images."
 
 # Run tests
@@ -78,6 +90,20 @@ test:
 # Show service status
 status:
 	docker-compose ps
+
+# Deploy to EC2: make deploy EC2=1.2.3.4 KEY=~/.ssh/mykey.pem
+# Only rebuilds backend + oracle; leaves db/redis/scanner untouched.
+deploy:
+	@[ -n "$(EC2)" ] || (echo "Usage: make deploy EC2=<ip> KEY=<path/to/key.pem>" && exit 1)
+	@SSH_OPTS="-o StrictHostKeyChecking=no -i $(KEY)"; \
+	echo "→ Deploying to ubuntu@$(EC2):/opt/asm"; \
+	ssh $$SSH_OPTS ubuntu@$(EC2) '\
+	  cd /opt/asm && \
+	  git pull && \
+	  docker compose build backend aegis-oracle && \
+	  docker compose up -d --no-deps backend aegis-oracle frontend && \
+	  docker exec asm_backend python scripts/migrate_add_oracle_columns.py --backfill 2>/dev/null || true && \
+	  echo "" && echo "✓ Done." && docker compose ps'
 
 
 
