@@ -189,121 +189,265 @@ async def shutdown_event():
 
 
 def apply_oracle_migrations():
-    """Ensure the oracle schema and its tables exist.
+    """Ensure the oracle schema and its tables exist with the correct structure.
 
-    The Go aegis-oracle service expects these tables but does not create them
-    itself. We create them idempotently at startup so a fresh DB just works.
+    Uses CREATE TABLE IF NOT EXISTS so it is safe to run on every startup.
+    Column names and types exactly match what the Go aegis-oracle service
+    reads/writes (see aegis-oracle/internal/store/pg/store.go).
     """
     from sqlalchemy import text
+
+    # Each statement is run independently so one failure does not block others.
     ddl_statements = [
         "CREATE SCHEMA IF NOT EXISTS oracle",
-        """
-        CREATE TABLE IF NOT EXISTS oracle.cves (
-            cve_id              text PRIMARY KEY,
-            published           timestamptz,
-            modified            timestamptz,
-            description         text NOT NULL DEFAULT '',
-            cvss_v3_score       real,
-            cvss_v3_vector      text NOT NULL DEFAULT '',
-            cvss_v2_score       real,
-            cvss_v2_vector      text NOT NULL DEFAULT '',
-            epss_score          real,
-            epss_percentile     real,
-            kev_listed          boolean NOT NULL DEFAULT false,
-            kev_date_added      date,
-            cwe_ids             text[] NOT NULL DEFAULT '{}',
-            affected_products   jsonb NOT NULL DEFAULT '[]',
-            references_         jsonb NOT NULL DEFAULT '[]',
-            raw_nvd             jsonb,
-            fetched_at          timestamptz NOT NULL DEFAULT now(),
-            created_at          timestamptz NOT NULL DEFAULT now(),
-            updated_at          timestamptz NOT NULL DEFAULT now()
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS oracle.cve_intrinsic_analyses (
-            id                      bigserial PRIMARY KEY,
-            cve_id                  text NOT NULL REFERENCES oracle.cves(cve_id) ON DELETE CASCADE,
-            remote_triggerability   text NOT NULL DEFAULT '',
-            exploit_complexity      text NOT NULL DEFAULT '',
-            attacker_capability     text NOT NULL DEFAULT '',
-            attack_path_class       text NOT NULL DEFAULT '',
-            lateral_movement        text NOT NULL DEFAULT '',
-            preconditions           jsonb NOT NULL DEFAULT '[]',
-            cvss_reconciliation     jsonb,
-            attack_chain_summary    text NOT NULL DEFAULT '',
-            analyst_brief           jsonb,
-            detection_signals       jsonb NOT NULL DEFAULT '[]',
-            rationale               text NOT NULL DEFAULT '',
-            confidence              text NOT NULL DEFAULT '',
-            prompt_version          text NOT NULL DEFAULT '',
-            llm_model               text NOT NULL DEFAULT '',
-            created_at              timestamptz NOT NULL DEFAULT now(),
-            updated_at              timestamptz NOT NULL DEFAULT now()
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS oracle.assets (
-            asset_id        text PRIMARY KEY,
-            hostname        text NOT NULL DEFAULT '',
-            ip_addresses    text[] NOT NULL DEFAULT '{}',
-            ports           jsonb NOT NULL DEFAULT '[]',
-            technologies    text[] NOT NULL DEFAULT '{}',
-            network_zone    text NOT NULL DEFAULT '',
-            signals_hash    text NOT NULL DEFAULT '',
-            created_at      timestamptz NOT NULL DEFAULT now(),
-            updated_at      timestamptz NOT NULL DEFAULT now()
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS oracle.findings (
-            finding_id              text PRIMARY KEY,
-            cve_id                  text,
-            asset_id                text,
-            cve_hash                text NOT NULL DEFAULT '',
-            asset_hash              text NOT NULL DEFAULT '',
-            signals_hash            text NOT NULL DEFAULT '',
+
+        # Raw ingest tables
+        """CREATE TABLE IF NOT EXISTS oracle.raw_cvelistv5 (
+            cve_id     text        NOT NULL,
+            fetched_at timestamptz NOT NULL DEFAULT now(),
+            payload    jsonb       NOT NULL,
+            PRIMARY KEY (cve_id, fetched_at)
+        )""",
+        """CREATE TABLE IF NOT EXISTS oracle.raw_nvd (
+            cve_id     text        NOT NULL,
+            fetched_at timestamptz NOT NULL DEFAULT now(),
+            payload    jsonb       NOT NULL,
+            PRIMARY KEY (cve_id, fetched_at)
+        )""",
+        """CREATE TABLE IF NOT EXISTS oracle.raw_osv (
+            osv_id     text        NOT NULL,
+            cve_id     text,
+            fetched_at timestamptz NOT NULL DEFAULT now(),
+            payload    jsonb       NOT NULL,
+            PRIMARY KEY (osv_id, fetched_at)
+        )""",
+        "CREATE INDEX IF NOT EXISTS oracle_raw_osv_cve_idx ON oracle.raw_osv (cve_id) WHERE cve_id IS NOT NULL",
+        """CREATE TABLE IF NOT EXISTS oracle.raw_epss (
+            cve_id     text         NOT NULL,
+            scored_on  date         NOT NULL,
+            score      numeric(5,4) NOT NULL,
+            percentile numeric(5,4) NOT NULL,
+            PRIMARY KEY (cve_id, scored_on)
+        )""",
+        """CREATE TABLE IF NOT EXISTS oracle.raw_kev (
+            cve_id          text PRIMARY KEY,
+            added_on        date NOT NULL DEFAULT CURRENT_DATE,
+            vendor          text,
+            product         text,
+            required_action text,
+            ransomware_use  boolean,
+            fetched_at      timestamptz NOT NULL DEFAULT now()
+        )""",
+        """CREATE TABLE IF NOT EXISTS oracle.raw_pocs (
+            cve_id     text        NOT NULL,
+            source     text        NOT NULL,
+            url        text        NOT NULL,
+            title      text,
+            stars      int,
+            pushed_at  timestamptz,
+            fetched_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (cve_id, source, url)
+        )""",
+        """CREATE TABLE IF NOT EXISTS oracle.raw_hackerone_reports (
+            report_id    text PRIMARY KEY,
+            cve_id       text,
+            url          text NOT NULL,
+            title        text,
+            cvss_vector  text,
+            cvss_score   numeric(3,1),
+            severity     text,
+            reporter     text,
+            team         text,
+            disclosed_at timestamptz,
+            body_text    text,
+            fetched_at   timestamptz NOT NULL DEFAULT now()
+        )""",
+        "CREATE INDEX IF NOT EXISTS oracle_raw_hackerone_cve_idx ON oracle.raw_hackerone_reports (cve_id) WHERE cve_id IS NOT NULL",
+
+        # Canonical CVE table — column names must match store.go SELECT/INSERT
+        """CREATE TABLE IF NOT EXISTS oracle.cves (
+            cve_id               text PRIMARY KEY,
+            published_at         timestamptz NOT NULL DEFAULT now(),
+            modified_at          timestamptz NOT NULL DEFAULT now(),
+            description          text NOT NULL DEFAULT '',
+            cwes                 text[] NOT NULL DEFAULT '{}',
+            cpes                 jsonb NOT NULL DEFAULT '[]',
+            cvss_vectors         jsonb NOT NULL DEFAULT '[]',
+            reference_urls       text[] NOT NULL DEFAULT '{}',
+            epss_score           numeric(5,4),
+            epss_percentile      numeric(5,4),
+            in_kev               boolean NOT NULL DEFAULT false,
+            kev_added_on         date,
+            nuclei_template      text,
+            poc_count            int NOT NULL DEFAULT 0,
+            primary_source       text NOT NULL DEFAULT 'cve.org',
+            adp_enrichment       jsonb,
+            ghsa_id              text,
+            osv_ids              text[] NOT NULL DEFAULT '{}',
+            source_versions      jsonb NOT NULL DEFAULT '{}',
+            intrinsic_input_hash text,
+            updated_at           timestamptz NOT NULL DEFAULT now()
+        )""",
+        "CREATE INDEX IF NOT EXISTS oracle_cves_modified_at_idx ON oracle.cves (modified_at DESC)",
+        "CREATE INDEX IF NOT EXISTS oracle_cves_kev_idx ON oracle.cves (in_kev) WHERE in_kev",
+        "CREATE INDEX IF NOT EXISTS oracle_cves_epss_high_idx ON oracle.cves (epss_score DESC) WHERE epss_score > 0.5",
+
+        """CREATE TABLE IF NOT EXISTS oracle.reference_content (
+            url           text PRIMARY KEY,
+            cve_ids       text[] NOT NULL DEFAULT '{}',
+            source_kind   text NOT NULL DEFAULT '',
+            content_text  text,
+            content_hash  text NOT NULL DEFAULT '',
+            http_status   int,
+            fetched_at    timestamptz NOT NULL DEFAULT now(),
+            fetch_error   text
+        )""",
+
+        """CREATE TABLE IF NOT EXISTS oracle.exploitation_observations (
+            cve_id        text NOT NULL,
+            source        text NOT NULL,
+            first_seen_at timestamptz NOT NULL DEFAULT now(),
+            evidence_url  text,
+            notes         text,
+            PRIMARY KEY (cve_id, source)
+        )""",
+
+        # Phase A intrinsic analyses
+        """CREATE TABLE IF NOT EXISTS oracle.cve_intrinsic_analyses (
+            cve_id                text NOT NULL,
+            input_hash            text NOT NULL,
+            prompt_version        text NOT NULL,
+            llm_provider          text NOT NULL DEFAULT '',
+            llm_model             text NOT NULL DEFAULT '',
+            remote_triggerability text NOT NULL DEFAULT '',
+            exploit_complexity    text NOT NULL DEFAULT '',
+            attacker_capability   text NOT NULL DEFAULT '',
+            preconditions         jsonb NOT NULL DEFAULT '[]',
+            cvss_reconciliation   jsonb NOT NULL DEFAULT '{}',
+            attack_chain_summary  text NOT NULL DEFAULT '',
+            detection_signals     jsonb NOT NULL DEFAULT '[]',
+            rationale             text NOT NULL DEFAULT '',
+            confidence            text NOT NULL DEFAULT '',
+            token_usage           jsonb,
+            cost_usd              numeric(8,4),
+            created_at            timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (cve_id, input_hash, prompt_version)
+        )""",
+        "CREATE INDEX IF NOT EXISTS oracle_cve_intrinsic_latest_idx ON oracle.cve_intrinsic_analyses (cve_id, created_at DESC)",
+
+        # Knowledge base
+        """CREATE TABLE IF NOT EXISTS oracle.cwe_profiles (
+            cwe_id             text PRIMARY KEY,
+            name               text NOT NULL DEFAULT '',
+            abstraction        text NOT NULL DEFAULT '',
+            parent_cwes        text[] NOT NULL DEFAULT '{}',
+            exploit_archetypes jsonb NOT NULL DEFAULT '[]',
+            ecosystem_notes    jsonb NOT NULL DEFAULT '{}',
+            framework_notes    jsonb NOT NULL DEFAULT '{}',
+            detection_signals  jsonb NOT NULL DEFAULT '[]',
+            curator_notes      text,
+            source_refs        text[] NOT NULL DEFAULT '{}',
+            last_reviewed_at   timestamptz,
+            reviewed_by        text,
+            yaml_hash          text NOT NULL DEFAULT '',
+            loaded_at          timestamptz NOT NULL DEFAULT now()
+        )""",
+        """CREATE TABLE IF NOT EXISTS oracle.dev_patterns (
+            pattern_id            text PRIMARY KEY,
+            cwe_ids               text[] NOT NULL DEFAULT '{}',
+            ecosystem             text NOT NULL DEFAULT '',
+            framework             text,
+            library               text,
+            pattern_name          text NOT NULL DEFAULT '',
+            summary               text NOT NULL DEFAULT '',
+            exploit_preconditions jsonb NOT NULL DEFAULT '[]',
+            code_indicators       text[] NOT NULL DEFAULT '{}',
+            config_indicators     text[] NOT NULL DEFAULT '{}',
+            runtime_indicators    text[] NOT NULL DEFAULT '{}',
+            attacker_capability   text NOT NULL DEFAULT '',
+            remote_triggerability text NOT NULL DEFAULT '',
+            vulnerable_example    text,
+            secure_example        text,
+            remediation_summary   text NOT NULL DEFAULT '',
+            references_           text[] NOT NULL DEFAULT '{}',
+            related_cves          text[] NOT NULL DEFAULT '{}',
+            curator               text NOT NULL DEFAULT '',
+            reviewed_at           timestamptz NOT NULL DEFAULT now(),
+            yaml_hash             text NOT NULL DEFAULT '',
+            loaded_at             timestamptz NOT NULL DEFAULT now()
+        )""",
+
+        # Assets
+        """CREATE TABLE IF NOT EXISTS oracle.assets (
+            asset_id     text PRIMARY KEY,
+            tenant_id    text,
+            hostname     text,
+            ip           inet,
+            open_ports   int[] NOT NULL DEFAULT '{}',
+            signals      jsonb NOT NULL DEFAULT '{}',
+            signals_hash text NOT NULL DEFAULT '',
+            criticality  text NOT NULL DEFAULT 'unknown',
+            exposure     text NOT NULL DEFAULT 'unknown',
+            source       text NOT NULL DEFAULT 'asm',
+            updated_at   timestamptz NOT NULL DEFAULT now()
+        )""",
+        "CREATE INDEX IF NOT EXISTS oracle_assets_signals_gin ON oracle.assets USING gin (signals jsonb_path_ops)",
+
+        # Findings (Phase B output)
+        """CREATE TABLE IF NOT EXISTS oracle.findings (
+            finding_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            cve_id                  text NOT NULL,
+            asset_id                text NOT NULL,
+            intrinsic_input_hash    text NOT NULL DEFAULT '',
+            asset_signals_hash      text NOT NULL DEFAULT '',
             evaluator_version       text NOT NULL DEFAULT '',
             preconditions_evaluated jsonb NOT NULL DEFAULT '[]',
-            opes                    jsonb NOT NULL DEFAULT '{}',
+            opes_score              numeric(3,1) NOT NULL DEFAULT 0,
+            opes_category           text NOT NULL DEFAULT 'P4',
+            opes_label              text NOT NULL DEFAULT '',
+            opes_components         jsonb NOT NULL DEFAULT '{}',
+            opes_top_contributors   jsonb NOT NULL DEFAULT '[]',
+            opes_dampener           text,
+            opes_override           text,
+            confidence              text NOT NULL DEFAULT 'low',
+            priority_rationale      text NOT NULL DEFAULT '',
+            recommendation_text     text NOT NULL DEFAULT '',
             cvss_reconciliation     jsonb,
             analyst_brief           jsonb,
-            attack_path_class       text NOT NULL DEFAULT '',
-            lateral_movement_potential text NOT NULL DEFAULT '',
-            recommendation_text     text NOT NULL DEFAULT '',
-            verification_tasks      jsonb NOT NULL DEFAULT '[]',
-            confidence              text NOT NULL DEFAULT '',
-            priority_rationale      text NOT NULL DEFAULT '',
-            status                  text NOT NULL DEFAULT 'open'
-                                    CHECK (status IN ('open','verifying','suppressed','fixed','superseded')),
+            status                  text NOT NULL DEFAULT 'open',
+            superseded_by           uuid,
             created_at              timestamptz NOT NULL DEFAULT now(),
             updated_at              timestamptz NOT NULL DEFAULT now()
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS oracle.module_state (
-            module      text PRIMARY KEY,
-            last_run    timestamptz,
-            state       jsonb NOT NULL DEFAULT '{}'
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS oracle.raw_kev (
-            cve_id          text PRIMARY KEY,
-            date_added      date,
-            vendor_project  text,
-            product         text,
-            vulnerability_name text,
-            short_description text,
-            required_action text,
-            due_date        date,
-            notes           text,
-            fetched_at      timestamptz NOT NULL DEFAULT now()
-        )
-        """,
-        # Idempotently add columns that older migrations may have omitted
-        "ALTER TABLE oracle.findings ADD COLUMN IF NOT EXISTS cvss_reconciliation jsonb",
-        "ALTER TABLE oracle.findings ADD COLUMN IF NOT EXISTS analyst_brief jsonb",
+        )""",
+        "CREATE INDEX IF NOT EXISTS oracle_findings_open_priority_idx ON oracle.findings (opes_category, created_at DESC) WHERE status = 'open'",
+        "CREATE INDEX IF NOT EXISTS oracle_findings_asset_open_idx ON oracle.findings (asset_id) WHERE status = 'open'",
+        "CREATE INDEX IF NOT EXISTS oracle_findings_cve_idx ON oracle.findings (cve_id)",
+
+        # Verification tasks
+        """CREATE TABLE IF NOT EXISTS oracle.verification_tasks (
+            task_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            finding_id           uuid NOT NULL,
+            precondition_id      text NOT NULL DEFAULT '',
+            task_kind            text NOT NULL DEFAULT 'manual',
+            command              text,
+            expected_signal_path text NOT NULL DEFAULT '',
+            expected_match       text,
+            external_ref         text,
+            status               text NOT NULL DEFAULT 'open',
+            resolution_notes     text,
+            signal_value         text,
+            created_at           timestamptz NOT NULL DEFAULT now(),
+            resolved_at          timestamptz
+        )""",
+
+        # Module state
+        """CREATE TABLE IF NOT EXISTS oracle.module_state (
+            module_name text NOT NULL,
+            key         text NOT NULL,
+            value       jsonb NOT NULL DEFAULT '{}',
+            updated_at  timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (module_name, key)
+        )""",
     ]
 
     try:
