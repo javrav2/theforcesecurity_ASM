@@ -21,10 +21,10 @@ import {
 } from '@/components/ui/select';
 import {
   MessageSquare, Send, Loader2, AlertCircle, CheckCircle, CheckCircle2,
-  Wifi, WifiOff, Clock, Trash2, Plus, ChevronRight, History, Crosshair, Eye,
+  Wifi, WifiOff, Clock, Trash2, Plus, History, Crosshair, Eye,
   ShieldAlert, HelpCircle, XCircle, AlertTriangle, Flame, TrendingUp,
   RefreshCw, BookOpen, Globe, BarChart2, Code2, ShieldCheck, Mail,
-  ArrowRightLeft, Key, Package, MoveRight, Search,
+  ArrowRightLeft, Key, Package, MoveRight, Search, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { AttackScenarioPanel, ChainData } from '@/components/agent/AttackScenarioPanel';
 import { api, getApiErrorMessage } from '@/lib/api';
@@ -125,16 +125,6 @@ interface TraceStep {
   elapsed_ms?: number;
 }
 
-interface OracleChatMessage {
-  id: string;
-  role: 'user' | 'oracle';
-  content: string;
-  finding?: OracleFinding;
-  loading?: boolean;
-  iterations?: number;
-  trace?: TraceStep[];
-}
-
 // ═══════════════════════════════════════════════════════
 // Agent types
 // ═══════════════════════════════════════════════════════
@@ -198,12 +188,12 @@ const STATUS_ICON: Record<string, React.ReactNode> = {
 };
 
 const BRIEF_SECTIONS: { key: keyof Omit<AnalystBrief, 'title'>; label: string; icon: React.ReactNode; accent: string }[] = [
-  { key: 'what_is_it',            label: 'What is this vulnerability?',          icon: <BookOpen className="h-4 w-4" />,   accent: 'border-blue-500/30 bg-blue-500/5' },
-  { key: 'attack_vector_summary', label: 'Attack vector',                         icon: <Globe className="h-4 w-4" />,      accent: 'border-orange-500/30 bg-orange-500/5' },
-  { key: 'attack_scenario',       label: 'How would an attacker exploit this?',   icon: <Crosshair className="h-4 w-4" />,  accent: 'border-red-500/30 bg-red-500/5' },
-  { key: 'real_world_likelihood', label: 'Real-world exploitation likelihood',    icon: <BarChart2 className="h-4 w-4" />,  accent: 'border-purple-500/30 bg-purple-500/5' },
-  { key: 'affected_if',           label: 'You are affected if…',                  icon: <Code2 className="h-4 w-4" />,      accent: 'border-yellow-500/30 bg-yellow-500/5' },
-  { key: 'not_affected_if',       label: 'You are NOT affected if…',              icon: <ShieldCheck className="h-4 w-4" />, accent: 'border-green-500/30 bg-green-500/5' },
+  { key: 'what_is_it',            label: 'What is this vulnerability?',        icon: <BookOpen className="h-4 w-4" />,    accent: 'border-blue-500/30 bg-blue-500/5' },
+  { key: 'attack_vector_summary', label: 'Attack vector',                       icon: <Globe className="h-4 w-4" />,       accent: 'border-orange-500/30 bg-orange-500/5' },
+  { key: 'attack_scenario',       label: 'How would an attacker exploit this?', icon: <Crosshair className="h-4 w-4" />,   accent: 'border-red-500/30 bg-red-500/5' },
+  { key: 'real_world_likelihood', label: 'Real-world exploitation likelihood',  icon: <BarChart2 className="h-4 w-4" />,   accent: 'border-purple-500/30 bg-purple-500/5' },
+  { key: 'affected_if',           label: 'You are affected if…',                icon: <Code2 className="h-4 w-4" />,       accent: 'border-yellow-500/30 bg-yellow-500/5' },
+  { key: 'not_affected_if',       label: 'You are NOT affected if…',            icon: <ShieldCheck className="h-4 w-4" />, accent: 'border-green-500/30 bg-green-500/5' },
 ];
 
 const EXPLOITABILITY_TIER_META: Record<string, { label: string; color: string; bg: string; border: string; bar: number }> = {
@@ -215,18 +205,18 @@ const EXPLOITABILITY_TIER_META: Record<string, { label: string; color: string; b
 };
 
 const ATTACK_PATH_META: Record<AttackPathClass, { label: string; icon: React.ReactNode; color: string; bg: string; border: string; tooltip: string }> = {
-  exploit_public_facing:      { label: 'Direct Exploit',       icon: <Globe className="h-3 w-3" />,          color: 'text-red-700 dark:text-red-400',       bg: 'bg-red-50 dark:bg-red-950/40',       border: 'border-red-200 dark:border-red-800',       tooltip: 'T1190 — Attacker directly exploits an internet-facing service. No user interaction required; automatable.' },
-  phishing_delivery:          { label: 'Phishing Delivery',    icon: <Mail className="h-3 w-3" />,            color: 'text-orange-700 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-950/40', border: 'border-orange-200 dark:border-orange-800', tooltip: 'T1566 — Exploit is delivered via email or malicious link. Requires a victim to trigger.' },
-  lateral_movement_required:  { label: 'Lateral Movement',     icon: <ArrowRightLeft className="h-3 w-3" />,  color: 'text-purple-700 dark:text-purple-400', bg: 'bg-purple-50 dark:bg-purple-950/40', border: 'border-purple-200 dark:border-purple-800', tooltip: 'T1021/T1550 — Requires an existing foothold on another host. Attacker moves laterally to reach this asset.' },
-  valid_credentials_required: { label: 'Credential-Dependent', icon: <Key className="h-3 w-3" />,             color: 'text-yellow-700 dark:text-yellow-400', bg: 'bg-yellow-50 dark:bg-yellow-950/30', border: 'border-yellow-200 dark:border-yellow-800', tooltip: 'T1078 — Attack requires valid credentials. Risk depends heavily on credential hygiene and MFA posture.' },
-  supply_chain:               { label: 'Supply Chain',          icon: <Package className="h-3 w-3" />,        color: 'text-blue-700 dark:text-blue-400',     bg: 'bg-blue-50 dark:bg-blue-950/40',     border: 'border-blue-200 dark:border-blue-800',     tooltip: 'T1195 — Compromise via a malicious dependency, build system, or update mechanism.' },
+  exploit_public_facing:      { label: 'Direct Exploit',       icon: <Globe className="h-3 w-3" />,          color: 'text-red-700 dark:text-red-400',       bg: 'bg-red-50 dark:bg-red-950/40',       border: 'border-red-200 dark:border-red-800',       tooltip: 'T1190 — Attacker directly exploits an internet-facing service.' },
+  phishing_delivery:          { label: 'Phishing Delivery',    icon: <Mail className="h-3 w-3" />,            color: 'text-orange-700 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-950/40', border: 'border-orange-200 dark:border-orange-800', tooltip: 'T1566 — Exploit is delivered via email or malicious link.' },
+  lateral_movement_required:  { label: 'Lateral Movement',     icon: <ArrowRightLeft className="h-3 w-3" />,  color: 'text-purple-700 dark:text-purple-400', bg: 'bg-purple-50 dark:bg-purple-950/40', border: 'border-purple-200 dark:border-purple-800', tooltip: 'T1021/T1550 — Requires an existing foothold on another host.' },
+  valid_credentials_required: { label: 'Credential-Dependent', icon: <Key className="h-3 w-3" />,             color: 'text-yellow-700 dark:text-yellow-400', bg: 'bg-yellow-50 dark:bg-yellow-950/30', border: 'border-yellow-200 dark:border-yellow-800', tooltip: 'T1078 — Attack requires valid credentials.' },
+  supply_chain:               { label: 'Supply Chain',          icon: <Package className="h-3 w-3" />,        color: 'text-blue-700 dark:text-blue-400',     bg: 'bg-blue-50 dark:bg-blue-950/40',     border: 'border-blue-200 dark:border-blue-800',     tooltip: 'T1195 — Compromise via a malicious dependency or update mechanism.' },
   unknown:                    { label: 'Unknown Path',           icon: <HelpCircle className="h-3 w-3" />,    color: 'text-slate-600 dark:text-slate-400',   bg: 'bg-slate-50 dark:bg-slate-900/40',   border: 'border-slate-200 dark:border-slate-700',   tooltip: 'Insufficient information to classify the initial access technique.' },
 };
 
 const LATERAL_MOVEMENT_META: Record<LateralMovementPotential, { label: string; color: string; bg: string; border: string; tooltip: string }> = {
-  high:   { label: 'High Pivot Risk',   color: 'text-red-700 dark:text-red-400',       bg: 'bg-red-50 dark:bg-red-950/40',       border: 'border-red-200 dark:border-red-800',       tooltip: 'Exploitation enables wide lateral movement: credential theft, domain controller or secrets manager access, pivot gateway takeover.' },
-  medium: { label: 'Medium Pivot Risk', color: 'text-orange-700 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-950/40', border: 'border-orange-200 dark:border-orange-800', tooltip: 'Limited pivot capability: access to one adjacent segment or partial credential exposure.' },
-  low:    { label: 'Low Pivot Risk',    color: 'text-slate-600 dark:text-slate-400',   bg: 'bg-slate-50 dark:bg-slate-900/40',   border: 'border-slate-200 dark:border-slate-700',   tooltip: 'Isolated blast radius — no meaningful path to other hosts or credentials post-exploitation.' },
+  high:   { label: 'High Pivot Risk',   color: 'text-red-700 dark:text-red-400',       bg: 'bg-red-50 dark:bg-red-950/40',       border: 'border-red-200 dark:border-red-800',       tooltip: 'Exploitation enables wide lateral movement.' },
+  medium: { label: 'Medium Pivot Risk', color: 'text-orange-700 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-950/40', border: 'border-orange-200 dark:border-orange-800', tooltip: 'Limited pivot capability.' },
+  low:    { label: 'Low Pivot Risk',    color: 'text-slate-600 dark:text-slate-400',   bg: 'bg-slate-50 dark:bg-slate-900/40',   border: 'border-slate-200 dark:border-slate-700',   tooltip: 'Isolated blast radius.' },
 };
 
 // ═══════════════════════════════════════════════════════
@@ -248,29 +238,18 @@ function ConfidenceBadge({ c }: { c: string }) {
 
 function ExploitabilityBadge({ score, tier }: { score: number; tier: string }) {
   const meta = EXPLOITABILITY_TIER_META[tier] ?? EXPLOITABILITY_TIER_META.moderate;
-  const pips = [1, 2, 3, 4, 5];
   return (
     <div className={cn('rounded-xl border px-4 py-3 flex items-center gap-4', meta.bg, meta.border)}>
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-0.5">
-          Exploitability Index
-        </p>
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-0.5">Exploitability Index</p>
         <p className={cn('text-lg font-bold leading-tight', meta.color)}>{meta.label}</p>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Practical exploitation difficulty · not CVSS severity
-        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">Practical exploitation difficulty · not CVSS severity</p>
       </div>
       <div className="flex flex-col items-center gap-1.5 shrink-0">
         <span className={cn('text-3xl font-black tabular-nums', meta.color)}>{score.toFixed(1)}</span>
         <div className="flex gap-0.5">
-          {pips.map(p => (
-            <div
-              key={p}
-              className={cn(
-                'h-1.5 w-5 rounded-full transition-colors',
-                p <= meta.bar ? meta.color.replace('text-', 'bg-').replace(' dark:text-', ' dark:bg-') : 'bg-muted',
-              )}
-            />
+          {[1, 2, 3, 4, 5].map(p => (
+            <div key={p} className={cn('h-1.5 w-5 rounded-full', p <= meta.bar ? meta.color.replace('text-', 'bg-').replace(' dark:text-', ' dark:bg-') : 'bg-muted')} />
           ))}
         </div>
         <span className="text-[9px] text-muted-foreground">out of 5</span>
@@ -285,19 +264,11 @@ function AttackContextBadges({ attackPath, lateralMovement }: { attackPath?: Att
     <div className="flex flex-wrap gap-2">
       {attackPath && attackPath !== 'unknown' && (() => {
         const m = ATTACK_PATH_META[attackPath];
-        return (
-          <span title={m.tooltip} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium', m.bg, m.border, m.color)}>
-            {m.icon}{m.label}
-          </span>
-        );
+        return <span title={m.tooltip} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium', m.bg, m.border, m.color)}>{m.icon}{m.label}</span>;
       })()}
       {lateralMovement && (() => {
         const m = LATERAL_MOVEMENT_META[lateralMovement];
-        return (
-          <span title={m.tooltip} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium', m.bg, m.border, m.color)}>
-            <MoveRight className="h-3 w-3" />{m.label}
-          </span>
-        );
+        return <span title={m.tooltip} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium', m.bg, m.border, m.color)}><MoveRight className="h-3 w-3" />{m.label}</span>;
       })()}
     </div>
   );
@@ -312,14 +283,10 @@ function AnalystBriefPanel({ brief }: { brief: AnalystBrief }) {
           Vulnerability Intelligence
           <span className="text-[10px] font-normal text-muted-foreground ml-1">AI-generated · verify before citing</span>
         </h4>
-        {brief.title && (
-          <p className="text-base font-semibold text-foreground leading-snug pl-6">{brief.title}</p>
-        )}
+        {brief.title && <p className="text-base font-semibold text-foreground leading-snug pl-6">{brief.title}</p>}
       </div>
       {brief.exploitability_score != null && brief.exploitability_tier && (
-        <div className="mb-3">
-          <ExploitabilityBadge score={brief.exploitability_score} tier={brief.exploitability_tier} />
-        </div>
+        <div className="mb-3"><ExploitabilityBadge score={brief.exploitability_score} tier={brief.exploitability_tier} /></div>
       )}
       <div className="space-y-2">
         {BRIEF_SECTIONS.map(({ key, label, icon, accent }) => {
@@ -356,9 +323,7 @@ function FindingDetail({ f }: { f: OracleFinding }) {
                 <CategoryBadge cat={f.opes.category} />
                 <span className="text-sm">{f.opes.label}</span>
                 <ConfidenceBadge c={f.opes.confidence} />
-                <span className="text-xs text-muted-foreground ml-auto">
-                  OPES {f.opes.score.toFixed(1)} · {f.opes.evaluator_version}
-                </span>
+                <span className="text-xs text-muted-foreground ml-auto">OPES {f.opes.score.toFixed(1)} · {f.opes.evaluator_version}</span>
               </div>
               <AttackContextBadges attackPath={f.attack_path_class} lateralMovement={f.lateral_movement_potential} />
             </DialogDescription>
@@ -375,19 +340,11 @@ function FindingDetail({ f }: { f: OracleFinding }) {
                   </div>
                 ))}
               </div>
-              {f.opes.dampener && (
-                <p className="mt-2 text-xs text-yellow-400 flex items-center gap-1">
-                  <AlertTriangle className="h-3.5 w-3.5" />{f.opes.dampener}
-                </p>
-              )}
-              {f.opes.override && (
-                <p className="mt-1 text-xs text-blue-400 font-medium">Override: {f.opes.override}</p>
-              )}
+              {f.opes.dampener && <p className="mt-2 text-xs text-yellow-400 flex items-center gap-1"><AlertTriangle className="h-3.5 w-3.5" />{f.opes.dampener}</p>}
+              {f.opes.override && <p className="mt-1 text-xs text-blue-400 font-medium">Override: {f.opes.override}</p>}
               <ul className="mt-2 space-y-0.5">
                 {f.opes.top_contributors?.map((c, i) => (
-                  <li key={i} className="text-xs text-muted-foreground flex gap-1">
-                    <span className="text-primary">•</span> {c}
-                  </li>
+                  <li key={i} className="text-xs text-muted-foreground flex gap-1"><span className="text-primary">•</span> {c}</li>
                 ))}
               </ul>
             </section>
@@ -423,9 +380,7 @@ function FindingDetail({ f }: { f: OracleFinding }) {
                     <p className="text-xs text-muted-foreground">{e.precondition.description}</p>
                     <p className="text-xs mt-1 text-foreground/70">{e.reason}</p>
                     {e.status === 'unknown' && (
-                      <p className="text-xs mt-1 border-l-2 border-yellow-500 pl-2 text-yellow-400">
-                        Verify: {e.precondition.verification_method}
-                      </p>
+                      <p className="text-xs mt-1 border-l-2 border-yellow-500 pl-2 text-yellow-400">Verify: {e.precondition.verification_method}</p>
                     )}
                   </div>
                 ))}
@@ -438,9 +393,7 @@ function FindingDetail({ f }: { f: OracleFinding }) {
                   {f.verification_tasks.map((t) => (
                     <div key={t.id} className="rounded-lg border p-3 text-xs space-y-1">
                       <p className="font-medium">{t.summary}</p>
-                      {t.command && (
-                        <code className="block bg-muted rounded px-2 py-1 font-mono">{t.command}</code>
-                      )}
+                      {t.command && <code className="block bg-muted rounded px-2 py-1 font-mono">{t.command}</code>}
                       <p className="text-muted-foreground">Signal: {t.expected_signal_path}</p>
                     </div>
                   ))}
@@ -455,95 +408,6 @@ function FindingDetail({ f }: { f: OracleFinding }) {
         </DialogContent>
       </Dialog>
     </>
-  );
-}
-
-function OracleMessage({ msg }: { msg: OracleChatMessage }) {
-  const isUser = msg.role === 'user';
-  return (
-    <div className={cn('flex flex-col gap-1', isUser ? 'items-end' : 'items-start')}>
-      <div className={cn('rounded-xl px-4 py-2.5 max-w-[88%] text-sm', isUser ? 'bg-primary text-primary-foreground' : 'bg-muted border')}>
-        {msg.loading ? (
-          <span className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Oracle is reasoning…
-          </span>
-        ) : (
-          <>
-            <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-            {msg.iterations !== undefined && (
-              <p className="text-[10px] text-muted-foreground mt-1">
-                {msg.iterations} iteration{msg.iterations !== 1 ? 's' : ''}
-              </p>
-            )}
-          </>
-        )}
-        {msg.trace && msg.trace.length > 0 && (
-          <details className="mt-2 text-xs">
-            <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">
-              Reasoning trace ({msg.trace.length} steps)
-            </summary>
-            <div className="mt-2 space-y-2 border-l-2 border-muted pl-3">
-              {msg.trace.map((step, i) => (
-                <div key={i} className="space-y-0.5">
-                  <p className="font-medium text-foreground/80">
-                    <span className="text-muted-foreground">Step {step.iteration + 1} · </span>{step.thought}
-                  </p>
-                  {step.tool_name && (
-                    <p className="text-blue-400">
-                      → <code>{step.tool_name}</code>
-                      {step.tool_args && Object.keys(step.tool_args).length > 0 && (
-                        <span className="text-muted-foreground ml-1">
-                          ({Object.entries(step.tool_args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')})
-                        </span>
-                      )}
-                    </p>
-                  )}
-                  {step.observation && (
-                    <pre className="text-[10px] bg-muted/50 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap max-h-[120px] overflow-y-auto">
-                      {step.observation.slice(0, 800)}{step.observation.length > 800 ? '…' : ''}
-                    </pre>
-                  )}
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-        {msg.finding && (
-          <div className="mt-3 rounded-lg border bg-card p-3 text-xs space-y-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              <CategoryBadge cat={msg.finding.opes.category} />
-              <span className="font-medium">{msg.finding.opes.label}</span>
-              <span className="text-muted-foreground">OPES {msg.finding.opes.score.toFixed(1)}</span>
-              <ConfidenceBadge c={msg.finding.opes.confidence} />
-            </div>
-            {msg.finding.opes.dampener && (
-              <p className="text-yellow-400 flex items-center gap-1">
-                <AlertTriangle className="h-3 w-3" />{msg.finding.opes.dampener}
-              </p>
-            )}
-            {msg.finding.analyst_brief?.title && (
-              <p className="font-medium text-foreground/90 text-xs">{msg.finding.analyst_brief.title}</p>
-            )}
-            {msg.finding.analyst_brief?.exploitability_score != null && msg.finding.analyst_brief?.exploitability_tier && (() => {
-              const meta = EXPLOITABILITY_TIER_META[msg.finding.analyst_brief!.exploitability_tier!] ?? EXPLOITABILITY_TIER_META.moderate;
-              return (
-                <div className={cn('inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold border w-fit', meta.bg, meta.border, meta.color)}>
-                  <span>{meta.label}</span>
-                  <span className="font-black">{msg.finding.analyst_brief!.exploitability_score!.toFixed(1)}/5</span>
-                </div>
-              );
-            })()}
-            <AttackContextBadges attackPath={msg.finding.attack_path_class} lateralMovement={msg.finding.lateral_movement_potential} />
-            {msg.finding.analyst_brief?.attack_vector_summary && (
-              <p className="text-muted-foreground border-l-2 border-orange-500/40 pl-2 leading-relaxed">
-                {msg.finding.analyst_brief.attack_vector_summary}
-              </p>
-            )}
-            <FindingDetail f={msg.finding} />
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -566,17 +430,13 @@ function OpenFindingsTable({ findings, onSelect }: { findings: OracleFinding[]; 
           <TableBody>
             {findings.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-10">
-                  No open findings yet. Ask Oracle to analyze a CVE.
+                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                  No open findings yet.
                 </TableCell>
               </TableRow>
             )}
             {findings.map((f) => (
-              <TableRow
-                key={`${f.cve_id}-${f.asset_id}`}
-                className="cursor-pointer hover:bg-muted/50"
-                onClick={() => { setSelected(f); onSelect(f); }}
-              >
+              <TableRow key={`${f.cve_id}-${f.asset_id}`} className="cursor-pointer hover:bg-muted/50" onClick={() => { setSelected(f); onSelect(f); }}>
                 <TableCell className="font-mono text-xs">{f.cve_id}</TableCell>
                 <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">{f.asset_id}</TableCell>
                 <TableCell>
@@ -600,9 +460,7 @@ function OpenFindingsTable({ findings, onSelect }: { findings: OracleFinding[]; 
       {selected && (
         <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
           <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>{selected.cve_id} — {selected.asset_id}</DialogTitle>
-            </DialogHeader>
+            <DialogHeader><DialogTitle>{selected.cve_id} — {selected.asset_id}</DialogTitle></DialogHeader>
             <FindingDetail f={selected} />
           </DialogContent>
         </Dialog>
@@ -620,9 +478,7 @@ function CveLookupResult({ data }: { data: { cve: any; analysis: any; exploitati
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const e = data.exploitation ?? {} as any;
   const brief: AnalystBrief | undefined = a.analyst_brief;
-  const tierMeta = brief?.exploitability_tier
-    ? (EXPLOITABILITY_TIER_META[brief.exploitability_tier] ?? EXPLOITABILITY_TIER_META.moderate)
-    : null;
+  const tierMeta = brief?.exploitability_tier ? (EXPLOITABILITY_TIER_META[brief.exploitability_tier] ?? EXPLOITABILITY_TIER_META.moderate) : null;
 
   return (
     <div className="space-y-4">
@@ -639,19 +495,10 @@ function CveLookupResult({ data }: { data: { cve: any; analysis: any; exploitati
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-          {a.attack_path_class && (
-            <Badge variant="outline" className="text-[10px]">{String(a.attack_path_class).replace(/_/g, ' ')}</Badge>
-          )}
-          {a.lateral_movement_potential && (
-            <Badge variant="outline" className="text-[10px]">lateral: {a.lateral_movement_potential}</Badge>
-          )}
+          {a.attack_path_class && <Badge variant="outline" className="text-[10px]">{String(a.attack_path_class).replace(/_/g, ' ')}</Badge>}
+          {a.lateral_movement_potential && <Badge variant="outline" className="text-[10px]">lateral: {a.lateral_movement_potential}</Badge>}
           {cve.in_kev && <Badge variant="destructive" className="text-[10px]">CISA KEV</Badge>}
-          {a.cvss_reconciliation?.correct_vector && (
-            <code className="bg-muted px-1 py-0.5 rounded text-[10px]">{a.cvss_reconciliation.correct_vector}</code>
-          )}
-          {a.cvss_reconciliation?.correct_score != null && (
-            <span className="font-semibold text-foreground">{Number(a.cvss_reconciliation.correct_score).toFixed(1)}</span>
-          )}
+          {a.cvss_reconciliation?.correct_score != null && <span className="font-semibold text-foreground">{Number(a.cvss_reconciliation.correct_score).toFixed(1)}</span>}
         </div>
       </div>
 
@@ -670,38 +517,18 @@ function CveLookupResult({ data }: { data: { cve: any; analysis: any; exploitati
       {e && (e.in_kev_sources?.length || e.metasploit_available || e.vulncheck_reported_exploited || e.ransomware_associated || e.zero_day_confirmed) && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Flame className="h-4 w-4 text-primary" /> Exploitation Evidence
-            </CardTitle>
+            <CardTitle className="text-sm flex items-center gap-2"><Flame className="h-4 w-4 text-primary" /> Exploitation Evidence</CardTitle>
           </CardHeader>
           <CardContent className="text-xs space-y-1.5">
-            {e.in_kev_sources?.map((src: string) => (
-              <p key={src}><Badge variant="destructive" className="mr-2 text-[10px]">{src}</Badge>confirmed exploited</p>
-            ))}
-            {e.ransomware_associated && (
-              <p><Badge variant="destructive" className="mr-2 text-[10px]">ransomware</Badge>used by ransomware operators</p>
-            )}
-            {e.zero_day_confirmed && (
-              <p><Badge variant="destructive" className="mr-2 text-[10px]">0day</Badge>exploited before patch existed (GP0)</p>
-            )}
-            {e.vulncheck_reported_exploited && (
-              <p><Badge variant="outline" className="mr-2 text-[10px]">VulnCheck</Badge>reported in the wild</p>
-            )}
-            {e.vulncheck_weaponized && (
-              <p><Badge variant="outline" className="mr-2 text-[10px]">VulnCheck</Badge>validated weaponised exploit</p>
-            )}
-            {e.vulncheck_threat_actor_count > 0 && (
-              <p><Badge variant="outline" className="mr-2 text-[10px]">threat actors</Badge>linked to {e.vulncheck_threat_actor_count} group(s)</p>
-            )}
-            {e.metasploit_available && (
-              <p><Badge variant="outline" className="mr-2 text-[10px]">Metasploit</Badge>{e.metasploit_module_count > 1 ? `${e.metasploit_module_count} modules available` : 'module available (push-button)'}</p>
-            )}
-            {e.cisa_ssvc_decision && (
-              <p><Badge variant="outline" className="mr-2 text-[10px]">CISA SSVC</Badge>{e.cisa_ssvc_decision}</p>
-            )}
-            {e.recent_poc_days > 0 && e.recent_poc_days <= 30 && (
-              <p><Badge variant="outline" className="mr-2 text-[10px]">PoC</Badge>public PoC within {e.recent_poc_days} days</p>
-            )}
+            {e.in_kev_sources?.map((src: string) => <p key={src}><Badge variant="destructive" className="mr-2 text-[10px]">{src}</Badge>confirmed exploited</p>)}
+            {e.ransomware_associated && <p><Badge variant="destructive" className="mr-2 text-[10px]">ransomware</Badge>used by ransomware operators</p>}
+            {e.zero_day_confirmed && <p><Badge variant="destructive" className="mr-2 text-[10px]">0day</Badge>exploited before patch existed</p>}
+            {e.vulncheck_reported_exploited && <p><Badge variant="outline" className="mr-2 text-[10px]">VulnCheck</Badge>reported in the wild</p>}
+            {e.vulncheck_weaponized && <p><Badge variant="outline" className="mr-2 text-[10px]">VulnCheck</Badge>validated weaponised exploit</p>}
+            {e.vulncheck_threat_actor_count > 0 && <p><Badge variant="outline" className="mr-2 text-[10px]">threat actors</Badge>linked to {e.vulncheck_threat_actor_count} group(s)</p>}
+            {e.metasploit_available && <p><Badge variant="outline" className="mr-2 text-[10px]">Metasploit</Badge>{e.metasploit_module_count > 1 ? `${e.metasploit_module_count} modules available` : 'module available (push-button)'}</p>}
+            {e.cisa_ssvc_decision && <p><Badge variant="outline" className="mr-2 text-[10px]">CISA SSVC</Badge>{e.cisa_ssvc_decision}</p>}
+            {e.recent_poc_days > 0 && e.recent_poc_days <= 30 && <p><Badge variant="outline" className="mr-2 text-[10px]">PoC</Badge>public PoC within {e.recent_poc_days} days</p>}
           </CardContent>
         </Card>
       )}
@@ -709,12 +536,8 @@ function CveLookupResult({ data }: { data: { cve: any; analysis: any; exploitati
       {a.preconditions?.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-primary" /> Preconditions
-            </CardTitle>
-            <CardDescription className="text-xs">
-              Facts that must hold for exploitation. Verify each on the target before treating as exploitable.
-            </CardDescription>
+            <CardTitle className="text-sm flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-primary" /> Preconditions</CardTitle>
+            <CardDescription className="text-xs">Facts that must hold for exploitation. Verify each on the target.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
@@ -725,30 +548,7 @@ function CveLookupResult({ data }: { data: { cve: any; analysis: any; exploitati
                   <Badge variant="outline" className="text-[9px]">{p.severity}</Badge>
                 </div>
                 <p className="text-xs text-muted-foreground">{p.description}</p>
-                {p.verification_method && (
-                  <p className="text-[11px] mt-1 border-l-2 border-yellow-500 pl-2 text-yellow-400">
-                    Verify: {p.verification_method}
-                  </p>
-                )}
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
-
-      {a.cvss_reconciliation?.disagreements?.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">CVSS Reconciliation</CardTitle>
-            <CardDescription className="text-xs">{a.cvss_reconciliation.rationale}</CardDescription>
-          </CardHeader>
-          <CardContent className="text-xs space-y-1.5">
-            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            {a.cvss_reconciliation.disagreements.map((d: any, i: number) => (
-              <div key={i} className="border-l-2 border-yellow-500 pl-2">
-                <span className="font-medium text-yellow-400">{d.source}</span>{' '}
-                <code className="bg-muted px-1 rounded text-[10px]">{d.their_vector}</code>
-                <p className="text-muted-foreground mt-0.5">{d.disagreement}</p>
+                {p.verification_method && <p className="text-[11px] mt-1 border-l-2 border-yellow-500 pl-2 text-yellow-400">Verify: {p.verification_method}</p>}
               </div>
             ))}
           </CardContent>
@@ -759,18 +559,13 @@ function CveLookupResult({ data }: { data: { cve: any; analysis: any; exploitati
 }
 
 // ═══════════════════════════════════════════════════════
-// Unified page
+// Main page
 // ═══════════════════════════════════════════════════════
 
 export default function AgentPage() {
   const searchParams = useSearchParams();
 
-  // ── Active view ─────────────────────────────────────────────────────────────
-  const [activeView, setActiveView] = useState<'agent' | 'oracle'>(
-    searchParams.get('view') === 'oracle' ? 'oracle' : 'agent'
-  );
-
-  // ── Agent state ─────────────────────────────────────────────────────────────
+  // ── Agent state ─────────────────────────────────────────────────
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -795,30 +590,21 @@ export default function AgentPage() {
   const [showScenario, setShowScenario] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // ── Oracle state ─────────────────────────────────────────────────────────────
-  const [oracleMessages, setOracleMessages] = useState<OracleChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'oracle',
-      content: `I'm Aegis Oracle — I analyze CVEs and tell you whether they're actually exploitable on your assets.\n\nAsk me things like:\n• "Analyze CVE-2025-55130 on asset ftds-tenant-prod-7421"\n• "Is CVE-2024-3094 exploitable on my internet-facing assets?"\n• "What open P0 and P1 findings do we have?"\n• "Explain the preconditions for CVE-2025-12345"`,
-    },
-  ]);
-  const [oracleInput, setOracleInput] = useState('');
-  const [oracleLoading, setOracleLoading] = useState(false);
+  // ── Oracle state ─────────────────────────────────────────────────
   const [findings, setFindings] = useState<OracleFinding[]>([]);
   const [findingsLoading, setFindingsLoading] = useState(false);
-  const [oracleActiveTab, setOracleActiveTab] = useState<'chat' | 'lookup' | 'findings'>('lookup');
   const [filterCat, setFilterCat] = useState<string>('all');
+  const [showCveLookup, setShowCveLookup] = useState(false);
+  const [showFindings, setShowFindings] = useState(false);
   const [cveLookupId, setCveLookupId] = useState('');
   const [cveLookup, setCveLookup] = useState<{ cve: unknown; analysis: unknown; exploitation: unknown; analysis_status?: string; analysis_error?: string } | null>(null);
   const [cveLookupLoading, setCveLookupLoading] = useState(false);
   const [cveLookupError, setCveLookupError] = useState<string | null>(null);
   const [cveLookupStatus, setCveLookupStatus] = useState<string | null>(null);
-  const oracleMessagesEndRef = useRef<HTMLDivElement>(null);
 
   const { toast } = useToast();
 
-  // ── Agent: URL prefill ────────────────────────────────────────────────────────
+  // ── URL prefill ────────────────────────────────────────────────
   useEffect(() => {
     const t = searchParams.get('target');
     const p = searchParams.get('playbook');
@@ -826,14 +612,14 @@ export default function AgentPage() {
     if (t != null && t !== '') setTarget(decodeURIComponent(t));
     if (p != null && p !== '') setSelectedPlaybookId(decodeURIComponent(p));
     if (q != null && q !== '') { setQuestion(decodeURIComponent(q)); setUrlPrefilled(true); }
+    // Open findings panel if ?view=oracle
+    if (searchParams.get('view') === 'oracle') setShowFindings(true);
   }, [searchParams]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   useEffect(() => { scrollToBottom(); }, [messages, liveStatus]);
 
-  useEffect(() => { oracleMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [oracleMessages]);
-
-  // ── Agent: status + playbooks + conversations ─────────────────────────────────
+  // ── Agent status + playbooks + conversations ───────────────────
   useEffect(() => {
     api.getAgentStatus()
       .then((data: { available?: boolean; hint?: string }) => {
@@ -861,7 +647,7 @@ export default function AgentPage() {
       .catch(() => setConversations([]));
   }, []);
 
-  // ── Agent: WebSocket ──────────────────────────────────────────────────────────
+  // ── WebSocket ─────────────────────────────────────────────────
   const connectWebSocket = useCallback((sid: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
     const token = api.getToken();
@@ -885,15 +671,13 @@ export default function AgentPage() {
   const handleWsMessage = useCallback((data: Record<string, unknown>, sid: string) => {
     const msgType = data.type as string;
     if (msgType === 'authenticated') {
-      wsAuthenticatedRef.current = true;
-      setConnectionMode('websocket');
+      wsAuthenticatedRef.current = true; setConnectionMode('websocket');
     } else if (['thinking', 'tool_start', 'tool_complete'].includes(msgType)) {
       setLiveStatus(data as unknown as StatusUpdate);
     } else if (msgType === 'attack_scenario_update') {
       if (data.chain) setChainData(data.chain as ChainData);
     } else if (msgType === 'response') {
-      setLiveStatus(null);
-      setLoading(false);
+      setLiveStatus(null); setLoading(false);
       appendAgentMessage({
         answer: data.answer as string,
         current_phase: data.current_phase as string,
@@ -908,8 +692,7 @@ export default function AgentPage() {
       loadConversations();
       if (sid) api.getAgentSessionChain(sid, true).then(setChainData).catch(() => {});
     } else if (msgType === 'error') {
-      setLiveStatus(null);
-      setLoading(false);
+      setLiveStatus(null); setLoading(false);
       const errMsg = (data.message as string) || 'Unknown error';
       toast({ variant: 'destructive', title: 'Agent error', description: errMsg });
       appendAgentMessage({ answer: `Error: ${errMsg}` });
@@ -934,52 +717,40 @@ export default function AgentPage() {
   useEffect(() => {
     if (loading) {
       loadingTimeoutRef.current = setTimeout(() => {
-        setLoading(false);
-        setLiveStatus(null);
+        setLoading(false); setLiveStatus(null);
         toast({ variant: 'destructive', title: 'Timeout', description: 'No response from the agent after 3 minutes.' });
         appendAgentMessage({ answer: 'Error: No response received within 3 minutes. Please try again.' });
       }, 180_000);
     } else if (loadingTimeoutRef.current) {
-      clearTimeout(loadingTimeoutRef.current);
-      loadingTimeoutRef.current = null;
+      clearTimeout(loadingTimeoutRef.current); loadingTimeoutRef.current = null;
     }
     return () => { if (loadingTimeoutRef.current) clearTimeout(loadingTimeoutRef.current); };
   }, [loading]);
 
-  // ── Agent: message helpers ────────────────────────────────────────────────────
+  // ── Message helpers ───────────────────────────────────────────
   const appendAgentMessage = (payload: {
-    answer: string;
-    current_phase?: string;
-    task_complete?: boolean;
-    execution_trace_summary?: string;
-    awaiting_approval?: boolean;
-    approval_request?: Record<string, unknown>;
-    awaiting_question?: boolean;
+    answer: string; current_phase?: string; task_complete?: boolean;
+    execution_trace_summary?: string; awaiting_approval?: boolean;
+    approval_request?: Record<string, unknown>; awaiting_question?: boolean;
     question_request?: Record<string, unknown>;
   }) => {
     setMessages((prev) => [...prev, {
-      id: `agent-${Date.now()}`,
-      role: 'agent',
-      content: payload.answer || '(No response)',
-      phase: payload.current_phase,
-      taskComplete: payload.task_complete,
-      traceSummary: payload.execution_trace_summary,
-      awaitingApproval: payload.awaiting_approval,
-      approvalRequest: payload.approval_request,
-      awaitingQuestion: payload.awaiting_question,
+      id: `agent-${Date.now()}`, role: 'agent', content: payload.answer || '(No response)',
+      phase: payload.current_phase, taskComplete: payload.task_complete,
+      traceSummary: payload.execution_trace_summary, awaitingApproval: payload.awaiting_approval,
+      approvalRequest: payload.approval_request, awaitingQuestion: payload.awaiting_question,
       questionRequest: payload.question_request,
     }]);
   };
 
   const sendViaWs = (msgObj: Record<string, unknown>): boolean => {
     if (wsRef.current?.readyState === WebSocket.OPEN && wsAuthenticatedRef.current) {
-      wsRef.current.send(JSON.stringify(msgObj));
-      return true;
+      wsRef.current.send(JSON.stringify(msgObj)); return true;
     }
     return false;
   };
 
-  const handleAgentSend = async () => {
+  const handleSend = async () => {
     const q = question.trim();
     const usePreset = selectedPlaybookId !== 'custom';
     if (!usePreset && !q) return;
@@ -991,9 +762,7 @@ export default function AgentPage() {
 
     setMessages((prev) => [...prev, { id: `user-${Date.now()}`, role: 'user', content: displayContent }]);
     if (!usePreset) setQuestion('');
-    setUrlPrefilled(false);
-    setLoading(true);
-    setLiveStatus(null);
+    setUrlPrefilled(false); setLoading(true); setLiveStatus(null);
 
     const sid = sessionId || crypto.randomUUID();
     if (!sessionId) setSessionId(sid);
@@ -1004,8 +773,7 @@ export default function AgentPage() {
         const sent = sendViaWs({ type: 'answer', answer: q || displayContent });
         if (!sent) {
           const data = await api.answerAgentQuestion(sid, q || displayContent);
-          setLoading(false);
-          appendAgentMessage(data);
+          setLoading(false); appendAgentMessage(data);
           if (data.awaiting_question) setPendingAnswer(true);
           loadConversations();
         }
@@ -1014,11 +782,9 @@ export default function AgentPage() {
         if (usePreset) { wsMsg.playbook_id = selectedPlaybookId; wsMsg.target = target.trim() || undefined; }
         const sent = sendViaWs(wsMsg);
         if (!sent) {
-          const data = await api.queryAgent(
-            usePreset ? displayContent : q,
-            sid,
-            { ...(usePreset ? { playbookId: selectedPlaybookId, target: target.trim() || undefined } : {}), mode }
-          );
+          const data = await api.queryAgent(usePreset ? displayContent : q, sid, {
+            ...(usePreset ? { playbookId: selectedPlaybookId, target: target.trim() || undefined } : {}), mode,
+          });
           setLoading(false);
           if (data.session_id) setSessionId(data.session_id);
           appendAgentMessage(data);
@@ -1037,14 +803,12 @@ export default function AgentPage() {
 
   const handleApprove = async (decision: 'approve' | 'modify' | 'abort', modification?: string) => {
     if (!sessionId || loading) return;
-    setLoading(true);
-    setLiveStatus(null);
+    setLoading(true); setLiveStatus(null);
     const sent = sendViaWs({ type: 'approval', decision, modification });
     if (!sent) {
       try {
         const data = await api.approveAgent(sessionId, decision, modification);
-        setLoading(false);
-        appendAgentMessage(data);
+        setLoading(false); appendAgentMessage(data);
         if (data.awaiting_question) setPendingAnswer(true);
         loadConversations();
       } catch (err: unknown) {
@@ -1062,9 +826,7 @@ export default function AgentPage() {
         id: `${m.role}-${i}`, role: m.role as MessageRole, content: m.content,
         phase: m.role === 'agent' ? data.current_phase : undefined,
       }));
-      setMessages(restored);
-      setShowHistory(false);
-      setPendingAnswer(false);
+      setMessages(restored); setShowHistory(false); setPendingAnswer(false);
       api.getAgentSessionChain(sid, true).then(setChainData).catch(() => setChainData(null));
     } catch {
       toast({ variant: 'destructive', title: 'Error', description: 'Could not load conversation' });
@@ -1082,109 +844,51 @@ export default function AgentPage() {
   };
 
   const startNewConversation = () => {
-    setMessages([]);
-    setPendingAnswer(false);
-    setLiveStatus(null);
-    setShowHistory(false);
-    setChainData(null);
+    setMessages([]); setPendingAnswer(false); setLiveStatus(null); setShowHistory(false); setChainData(null);
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
-    wsAuthenticatedRef.current = false;
-    wsFailCountRef.current = 0;
-    const newSid = crypto.randomUUID();
-    setSessionId(newSid);
-    setConnectionMode('connecting');
+    wsAuthenticatedRef.current = false; wsFailCountRef.current = 0;
+    setSessionId(crypto.randomUUID()); setConnectionMode('connecting');
   };
 
-  // ── Oracle: functions ─────────────────────────────────────────────────────────
+  // ── Oracle functions ─────────────────────────────────────────
   const loadFindings = useCallback(async () => {
     setFindingsLoading(true);
-    try {
-      const data = await api.oracleGetFindings();
-      setFindings(data?.findings ?? []);
-    } catch { /* silently fail */ }
+    try { const data = await api.oracleGetFindings(); setFindings(data?.findings ?? []); }
+    catch { /* silently fail */ }
     finally { setFindingsLoading(false); }
   }, []);
 
   useEffect(() => { loadFindings(); }, [loadFindings]);
 
-  const handleOracleSend = async () => {
-    const q = oracleInput.trim();
-    if (!q || oracleLoading) return;
-    setOracleInput('');
-
-    const userMsg: OracleChatMessage = { id: crypto.randomUUID(), role: 'user', content: q };
-    const placeholderId = crypto.randomUUID();
-    const placeholder: OracleChatMessage = { id: placeholderId, role: 'oracle', content: '', loading: true };
-
-    setOracleMessages((prev) => [...prev, userMsg, placeholder]);
-    setOracleLoading(true);
-
-    try {
-      const resp = await api.oracleChat(q);
-      const oracleMsg: OracleChatMessage = {
-        id: placeholderId,
-        role: 'oracle',
-        content: resp.answer,
-        finding: resp.finding ?? undefined,
-        iterations: resp.iterations ?? undefined,
-        trace: resp.trace ?? undefined,
-      };
-      setOracleMessages((prev) => prev.map((m) => m.id === placeholderId ? oracleMsg : m));
-      if (resp.finding) {
-        setFindings((prev) => {
-          const key = `${resp.finding.cve_id}|${resp.finding.asset_id}`;
-          return [resp.finding, ...prev.filter((f) => `${f.cve_id}|${f.asset_id}` !== key)];
-        });
-      }
-    } catch (err: unknown) {
-      const errMsg = (err as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail
-        ?? (err as { message?: string })?.message
-        ?? 'Oracle is unavailable. Make sure the aegis-oracle service is running.';
-      setOracleMessages((prev) => prev.map((m) =>
-        m.id === placeholderId ? { ...m, loading: false, content: `Error: ${errMsg}` } : m
-      ));
-      toast({ variant: 'destructive', title: 'Oracle error', description: errMsg });
-    } finally {
-      setOracleLoading(false);
-    }
-  };
-
   const handleCveLookup = async () => {
     const raw = cveLookupId.trim().toUpperCase();
     if (!raw) return;
     if (!/^CVE-\d{4}-\d{4,7}$/.test(raw)) { setCveLookupError('Please enter a CVE id in the form CVE-YYYY-NNNN.'); return; }
-    setCveLookupError(null);
-    setCveLookupLoading(true);
-    setCveLookupStatus('Fetching CVE intelligence…');
-    const slowTimer = setTimeout(() => {
-      setCveLookupStatus('Ingesting this CVE on demand (first lookup may take 30–60s)…');
-    }, 5000);
+    setCveLookupError(null); setCveLookupLoading(true); setCveLookupStatus('Fetching CVE intelligence…');
+    const slowTimer = setTimeout(() => setCveLookupStatus('Ingesting this CVE on demand (first lookup may take 30–60s)…'), 5000);
     try {
       const data = await api.oracleCveLookup(raw);
       setCveLookup(data);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail
         ?? (err as { message?: string })?.message ?? 'Oracle is unavailable.';
-      setCveLookupError(msg);
-      setCveLookup(null);
+      setCveLookupError(msg); setCveLookup(null);
       toast({ variant: 'destructive', title: 'CVE lookup failed', description: msg });
     } finally {
-      clearTimeout(slowTimer);
-      setCveLookupStatus(null);
-      setCveLookupLoading(false);
+      clearTimeout(slowTimer); setCveLookupStatus(null); setCveLookupLoading(false);
     }
   };
 
   const filteredFindings = findings.filter((f) => filterCat === 'all' || f.opes.category === filterCat);
   const countByCategory = (cat: string) => findings.filter((f) => f.opes.category === cat).length;
 
-  // ── Agent: render helpers ─────────────────────────────────────────────────────
+  // ── Render helpers ────────────────────────────────────────────
   const connectionBadge = () => {
     switch (connectionMode) {
-      case 'websocket':   return <Badge variant="outline" className="text-green-500 border-green-500 gap-1 text-xs"><Wifi className="h-3 w-3" /> Live</Badge>;
-      case 'rest':        return <Badge variant="outline" className="text-yellow-500 border-yellow-500 gap-1 text-xs"><WifiOff className="h-3 w-3" /> REST</Badge>;
-      case 'connecting':  return <Badge variant="outline" className="text-muted-foreground gap-1 text-xs"><Loader2 className="h-3 w-3 animate-spin" /> Connecting</Badge>;
-      default:            return <Badge variant="outline" className="text-red-500 border-red-500 gap-1 text-xs"><WifiOff className="h-3 w-3" /> Offline</Badge>;
+      case 'websocket':  return <Badge variant="outline" className="text-green-500 border-green-500 gap-1 text-xs"><Wifi className="h-3 w-3" /> Live</Badge>;
+      case 'rest':       return <Badge variant="outline" className="text-yellow-500 border-yellow-500 gap-1 text-xs"><WifiOff className="h-3 w-3" /> REST</Badge>;
+      case 'connecting': return <Badge variant="outline" className="text-muted-foreground gap-1 text-xs"><Loader2 className="h-3 w-3 animate-spin" /> Connecting</Badge>;
+      default:           return <Badge variant="outline" className="text-red-500 border-red-500 gap-1 text-xs"><WifiOff className="h-3 w-3" /> Offline</Badge>;
     }
   };
 
@@ -1220,480 +924,338 @@ export default function AgentPage() {
     return null;
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────
   return (
     <MainLayout>
       <div className="flex flex-col h-full">
         <Header
-          title={activeView === 'agent' ? 'Agent' : 'Oracle'}
-          subtitle={
-            activeView === 'agent'
-              ? 'AI security agent — run scans and pentest operations via autonomous tool use'
-              : 'Practical exploitability scoring — ask about any CVE or asset'
-          }
+          title="Agent"
+          subtitle="AI security agent — run scans, query assets, and analyze vulnerabilities"
         />
 
-        {/* View switcher */}
-        <div className="flex items-center gap-3 px-6 py-3 border-b border-border bg-card/20">
-          <div className="inline-flex rounded-lg border bg-muted p-1 gap-0.5">
-            <Button
-              variant={activeView === 'agent' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setActiveView('agent')}
-              className="gap-2 h-8 px-3"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              Agent
-            </Button>
-            <Button
-              variant={activeView === 'oracle' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setActiveView('oracle')}
-              className="gap-2 h-8 px-3"
-            >
-              <Eye className="h-3.5 w-3.5" />
-              Oracle
-              {findings.length > 0 && (
-                <Badge variant={activeView === 'oracle' ? 'secondary' : 'outline'} className="ml-0.5 h-4 px-1.5 text-[10px]">
-                  {findings.length}
-                </Badge>
-              )}
-            </Button>
-          </div>
-        </div>
+        <div className="flex-1 overflow-auto p-6 space-y-4">
 
-        {/* ── Agent view ── */}
-        {activeView === 'agent' && (
-          <div className="flex-1 overflow-auto p-6 space-y-4">
-            {agentAvailable === false && (
-              <Card className="border-amber-500/50 bg-amber-500/5">
-                <CardContent className="pt-4 flex flex-col gap-2">
-                  <p className="text-sm flex items-center gap-2">
-                    <AlertCircle className="h-5 w-5 text-amber-500 shrink-0" />
-                    Agent is not available.
+          {/* Oracle OPES strip — only visible once there are findings */}
+          {findings.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap rounded-lg border bg-card/50 px-4 py-2.5">
+              <span className="text-xs text-muted-foreground font-medium shrink-0">Oracle findings:</span>
+              {(['P0', 'P1', 'P2', 'P3', 'P4'] as const).map((cat) => {
+                const count = countByCategory(cat);
+                if (count === 0) return null;
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => { setFilterCat(cat); setShowFindings(true); }}
+                    className="flex items-center gap-1 hover:opacity-80 transition-opacity"
+                  >
+                    <CategoryBadge cat={cat} />
+                    <span className="text-xs font-semibold">{count}</span>
+                  </button>
+                );
+              })}
+              <button
+                onClick={() => { setShowFindings(!showFindings); setFilterCat('all'); }}
+                className="ml-auto text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+              >
+                {showFindings ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                {showFindings ? 'Hide findings' : 'View all'}
+              </button>
+            </div>
+          )}
+
+          {/* Agent unavailable warning */}
+          {agentAvailable === false && (
+            <Card className="border-amber-500/50 bg-amber-500/5">
+              <CardContent className="pt-4 flex flex-col gap-2">
+                <p className="text-sm flex items-center gap-2">
+                  <AlertCircle className="h-5 w-5 text-amber-500 shrink-0" />
+                  Agent is not available.
+                </p>
+                {agentStatusHint && <p className="text-sm text-muted-foreground pl-7">{agentStatusHint}</p>}
+                {!agentStatusHint && (
+                  <p className="text-sm text-muted-foreground pl-7">
+                    Configure <code className="bg-muted px-1 rounded">OPENAI_API_KEY</code> or <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> in the backend .env, then restart.
                   </p>
-                  {agentStatusHint && <p className="text-sm text-muted-foreground pl-7">{agentStatusHint}</p>}
-                  {!agentStatusHint && (
-                    <p className="text-sm text-muted-foreground pl-7">
-                      Configure <code className="bg-muted px-1 rounded">OPENAI_API_KEY</code> or <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> in the backend .env, then restart.
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-
-            <div className="flex gap-4">
-              {/* Conversation history sidebar */}
-              {showHistory && (
-                <Card className="w-72 shrink-0">
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-sm flex items-center gap-1.5"><History className="h-4 w-4" /> History</CardTitle>
-                      <Button variant="ghost" size="sm" onClick={startNewConversation} className="h-7 px-2">
-                        <Plus className="h-3.5 w-3.5 mr-1" /> New
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="p-2 max-h-[60vh] overflow-y-auto space-y-1">
-                    {conversations.length === 0 && <p className="text-xs text-muted-foreground p-2">No conversations yet.</p>}
-                    {conversations.map((c) => (
-                      <div
-                        key={c.session_id}
-                        className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 cursor-pointer text-sm hover:bg-muted/60 transition-colors ${c.session_id === sessionId ? 'bg-muted' : ''}`}
-                        onClick={() => loadConversation(c.session_id)}
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="truncate font-medium text-xs">{c.title || c.session_id.slice(0, 8)}</p>
-                          <p className="text-[10px] text-muted-foreground">
-                            {new Date(c.updated_at).toLocaleDateString()} · {c.message_count} msgs
-                          </p>
-                        </div>
-                        <Badge variant="outline" className="text-[10px] shrink-0">{c.current_phase}</Badge>
-                        <Button
-                          variant="ghost" size="icon" className="h-5 w-5 shrink-0 opacity-50 hover:opacity-100"
-                          onClick={(e) => { e.stopPropagation(); deleteConversation(c.session_id); }}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Main chat card */}
-              <Card className="flex-1">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2">
-                      <MessageSquare className="h-5 w-5" />
-                      AI Security Agent
-                    </CardTitle>
-                    <div className="flex items-center gap-2">
-                      {connectionBadge()}
-                      <Button
-                        variant="ghost" size="sm"
-                        onClick={() => setShowScenario(!showScenario)}
-                        className={`h-8 px-2 ${showScenario ? 'bg-muted' : ''}`}
-                        title="Toggle attack scenario panel"
-                      >
-                        <Crosshair className="h-4 w-4 mr-1" />
-                        <span className="text-xs">{showScenario ? 'Hide' : 'Scenario'}</span>
-                      </Button>
-                      <Button
-                        variant="ghost" size="sm"
-                        onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadConversations(); }}
-                        className="h-8 px-2"
-                      >
-                        <Clock className="h-4 w-4 mr-1" />
-                        <span className="text-xs">{showHistory ? 'Hide' : 'History'}</span>
-                      </Button>
-                    </div>
-                  </div>
-                  <CardDescription>
-                    Use the agent to query assets, scan targets, and analyze your attack surface. WebSocket provides real-time status; REST is used as fallback.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="rounded-lg border bg-muted/30 max-h-[50vh] overflow-y-auto p-4 space-y-3">
-                    {messages.length === 0 && (
-                      <p className="text-muted-foreground text-sm">Send a message to start. The agent can run scans and discovery for your organization.</p>
-                    )}
-                    {messages.map((m) => (
-                      <div key={m.id} className={`flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                        <div className={`rounded-lg px-3 py-2 max-w-[85%] ${m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted border'}`}>
-                          <p className="text-sm whitespace-pre-wrap">{m.content}</p>
-                          {m.role === 'agent' && m.phase && (
-                            <Badge variant="outline" className="mt-2 text-xs">{m.phase}</Badge>
-                          )}
-                          {m.role === 'agent' && m.taskComplete && (
-                            <span className="ml-2 text-xs text-muted-foreground flex items-center gap-1">
-                              <CheckCircle className="h-3 w-3" /> Task complete
-                            </span>
-                          )}
-                          {m.role === 'agent' && m.traceSummary && (
-                            <details className="mt-2">
-                              <summary className="text-xs cursor-pointer text-muted-foreground">Execution trace</summary>
-                              <pre className="text-xs mt-1 p-2 rounded bg-background overflow-x-auto whitespace-pre-wrap">{m.traceSummary}</pre>
-                            </details>
-                          )}
-                        </div>
-                        {m.role === 'agent' && m.awaitingApproval && m.approvalRequest && (
-                          <div className="flex flex-wrap gap-2 mt-1">
-                            <Button size="sm" onClick={() => handleApprove('approve')} disabled={loading}>Approve</Button>
-                            <Button size="sm" variant="outline" onClick={() => handleApprove('abort')} disabled={loading}>Abort</Button>
-                          </div>
-                        )}
-                        {m.role === 'agent' && m.awaitingQuestion && m.questionRequest && (
-                          <p className="text-xs text-muted-foreground mt-1">Type your answer below and press Send.</p>
-                        )}
-                      </div>
-                    ))}
-                    {loading && renderLiveStatus()}
-                    {loading && !liveStatus && (
-                      <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Agent is thinking and may run tools…
-                      </div>
-                    )}
-                    <div ref={messagesEndRef} />
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <Label htmlFor="mode-select">Mode</Label>
-                      <Select value={mode} onValueChange={(v) => setMode(v as 'assist' | 'agent')}>
-                        <SelectTrigger id="mode-select"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="assist">Assist (approval required between phases)</SelectItem>
-                          <SelectItem value="agent">Agent (autonomous; no approval)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">Agent mode runs without asking for approval between phases.</p>
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="playbook-select">Preset</Label>
-                      <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
-                        <SelectTrigger id="playbook-select"><SelectValue placeholder="Custom" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="custom">Custom (free-form question)</SelectItem>
-                          {playbooks.map((p) => (
-                            <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {selectedPlaybookId !== 'custom' && (
-                      <div className="space-y-1.5">
-                        <Label htmlFor="target-input">Target (optional)</Label>
-                        <Input
-                          id="target-input"
-                          placeholder="e.g. example.com"
-                          value={target}
-                          onChange={(e) => setTarget(e.target.value)}
-                          disabled={loading || agentAvailable === false}
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {urlPrefilled && (
-                    <p className="text-sm text-muted-foreground">Pre-filled from link. Click Send to start.</p>
-                  )}
-
-                  <div className="flex gap-2">
-                    <Textarea
-                      placeholder={
-                        pendingAnswer
-                          ? 'Type your answer to the agent…'
-                          : selectedPlaybookId === 'custom'
-                            ? 'Ask a question (e.g. run a port scan on example.com)'
-                            : 'Add a note or leave blank to run the preset'
-                      }
-                      value={question}
-                      onChange={(e) => setQuestion(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAgentSend(); } }}
-                      rows={2}
-                      className="resize-none"
-                      disabled={loading || agentAvailable === false}
-                    />
-                    <Button
-                      onClick={handleAgentSend}
-                      disabled={loading || agentAvailable === false || (selectedPlaybookId === 'custom' ? !question.trim() : false)}
-                      size="icon"
-                      className="shrink-0 h-auto py-3"
-                    >
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                    </Button>
-                  </div>
-                  {sessionId && (
-                    <p className="text-xs text-muted-foreground">Session: {sessionId.slice(0, 8)}…</p>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Attack scenario panel */}
-              {showScenario && (
-                <AttackScenarioPanel
-                  chainData={chainData}
-                  loading={loading}
-                  collapsed={scenarioCollapsed}
-                  onToggleCollapse={() => setScenarioCollapsed(!scenarioCollapsed)}
-                />
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── Oracle view ── */}
-        {activeView === 'oracle' && (
-          <div className="flex-1 overflow-auto p-6 space-y-6">
-            {/* OPES summary strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-              {(['P0', 'P1', 'P2', 'P3', 'P4'] as const).map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => { setOracleActiveTab('findings'); setFilterCat(cat); }}
-                  className={cn(
-                    'rounded-lg border p-3 text-center hover:bg-muted/50 transition-colors',
-                    filterCat === cat && 'ring-2 ring-primary'
-                  )}
-                >
-                  <CategoryBadge cat={cat} />
-                  <div className="mt-1 text-2xl font-bold">{countByCategory(cat)}</div>
-                </button>
-              ))}
-            </div>
-
-            {/* Oracle inner tab bar */}
-            <div className="flex gap-2">
-              <Button
-                variant={oracleActiveTab === 'lookup' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setOracleActiveTab('lookup')}
-                className="gap-1.5"
-              >
-                <Search className="h-4 w-4" /> Quick CVE Lookup
-              </Button>
-              <Button
-                variant={oracleActiveTab === 'chat' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setOracleActiveTab('chat')}
-                className="gap-1.5"
-              >
-                <BookOpen className="h-4 w-4" /> Chat
-              </Button>
-              <Button
-                variant={oracleActiveTab === 'findings' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => { setOracleActiveTab('findings'); setFilterCat('all'); loadFindings(); }}
-                className="gap-1.5"
-              >
-                <ShieldAlert className="h-4 w-4" /> Open Findings
-                {findings.length > 0 && (
-                  <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{findings.length}</Badge>
                 )}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={loadFindings} disabled={findingsLoading} className="ml-auto">
-                <RefreshCw className={cn('h-4 w-4', findingsLoading && 'animate-spin')} />
-              </Button>
-            </div>
+              </CardContent>
+            </Card>
+          )}
 
-            {/* CVE lookup panel */}
-            {oracleActiveTab === 'lookup' && (
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Search className="h-4 w-4 text-primary" />
-                    Quick CVE Lookup
-                  </CardTitle>
-                  <CardDescription>
-                    Paste any CVE id to get Oracle&apos;s analyst brief, attack path, and exploitation evidence — no asset required.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="CVE-2026-0300"
-                      value={cveLookupId}
-                      onChange={(e) => setCveLookupId(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCveLookup(); } }}
-                      disabled={cveLookupLoading}
-                      className="font-mono"
-                    />
-                    <Button onClick={handleCveLookup} disabled={cveLookupLoading || !cveLookupId.trim()} className="shrink-0">
-                      {cveLookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                      <span className="ml-1.5">Analyze</span>
+          {/* Main agent area */}
+          <div className="flex gap-4">
+            {/* Conversation history sidebar */}
+            {showHistory && (
+              <Card className="w-72 shrink-0">
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm flex items-center gap-1.5"><History className="h-4 w-4" /> History</CardTitle>
+                    <Button variant="ghost" size="sm" onClick={startNewConversation} className="h-7 px-2">
+                      <Plus className="h-3.5 w-3.5 mr-1" /> New
                     </Button>
                   </div>
-
-                  {cveLookupError && (
-                    <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-3 text-sm text-red-400 flex items-start gap-2">
-                      <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                      <div>
-                        <p className="font-medium">Lookup failed</p>
-                        <p className="text-xs opacity-90">{cveLookupError}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {cveLookupLoading && cveLookupStatus && (
-                    <div className="rounded-lg border bg-muted/30 p-3 text-sm flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                      <p className="text-muted-foreground">{cveLookupStatus}</p>
-                    </div>
-                  )}
-
-                  {cveLookup && <CveLookupResult data={cveLookup as Parameters<typeof CveLookupResult>[0]['data']} />}
-
-                  {!cveLookup && !cveLookupError && !cveLookupLoading && (
-                    <div className="rounded-lg border bg-muted/30 p-4 text-xs text-muted-foreground space-y-1.5">
-                      <p className="font-medium text-foreground">What you&apos;ll get back:</p>
-                      <ul className="list-disc list-inside space-y-0.5">
-                        <li><span className="text-foreground">Analyst brief</span> — what the bug is, how it&apos;s exploited, who&apos;s affected, who isn&apos;t</li>
-                        <li><span className="text-foreground">Attack path classification</span> — direct internet exposure, phishing, lateral movement, etc.</li>
-                        <li><span className="text-foreground">Real-world likelihood</span> — KEV listing, weaponised exploits, threat-actor links</li>
-                        <li><span className="text-foreground">Preconditions</span> — facts that must hold for exploitation to succeed</li>
-                        <li><span className="text-foreground">CVSS reconciliation</span> — Oracle&apos;s adjudicated CVSS when sources disagree</li>
-                      </ul>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Oracle chat panel */}
-            {oracleActiveTab === 'chat' && (
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Flame className="h-4 w-4 text-primary" />
-                    Oracle Chat
-                  </CardTitle>
-                  <CardDescription>
-                    Ask Oracle to analyze a CVE + asset pair, explain a finding, or list your open risks.
-                  </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="rounded-lg border bg-muted/30 min-h-[360px] max-h-[55vh] overflow-y-auto p-4 space-y-3">
-                    {oracleMessages.map((m) => <OracleMessage key={m.id} msg={m} />)}
-                    <div ref={oracleMessagesEndRef} />
-                  </div>
-                  <div className="flex gap-2">
-                    <Textarea
-                      placeholder='e.g. "Analyze CVE-2025-55130 on asset ftds-tenant-prod-7421" or "List P0 findings"'
-                      value={oracleInput}
-                      onChange={(e) => setOracleInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleOracleSend(); } }}
-                      rows={2}
-                      className="resize-none"
-                      disabled={oracleLoading}
-                    />
-                    <Button
-                      onClick={handleOracleSend}
-                      disabled={oracleLoading || !oracleInput.trim()}
-                      size="icon"
-                      className="shrink-0 h-auto py-3"
+                <CardContent className="p-2 max-h-[60vh] overflow-y-auto space-y-1">
+                  {conversations.length === 0 && <p className="text-xs text-muted-foreground p-2">No conversations yet.</p>}
+                  {conversations.map((c) => (
+                    <div
+                      key={c.session_id}
+                      className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 cursor-pointer text-sm hover:bg-muted/60 transition-colors ${c.session_id === sessionId ? 'bg-muted' : ''}`}
+                      onClick={() => loadConversation(c.session_id)}
                     >
-                      {oracleLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                    </Button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      'List all P0 and P1 findings',
-                      'What CVEs are in KEV?',
-                      'Show me unverified blocker preconditions',
-                    ].map((p) => (
-                      <button
-                        key={p}
-                        onClick={() => setOracleInput(p)}
-                        className="text-xs border rounded-full px-3 py-1 text-muted-foreground hover:text-foreground hover:border-foreground transition-colors"
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate font-medium text-xs">{c.title || c.session_id.slice(0, 8)}</p>
+                        <p className="text-[10px] text-muted-foreground">{new Date(c.updated_at).toLocaleDateString()} · {c.message_count} msgs</p>
+                      </div>
+                      <Badge variant="outline" className="text-[10px] shrink-0">{c.current_phase}</Badge>
+                      <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 opacity-50 hover:opacity-100"
+                        onClick={(e) => { e.stopPropagation(); deleteConversation(c.session_id); }}>
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ))}
                 </CardContent>
               </Card>
             )}
 
-            {/* Findings table panel */}
-            {oracleActiveTab === 'findings' && (
-              <Card>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <TrendingUp className="h-4 w-4 text-primary" />
-                      Open Findings
-                    </CardTitle>
-                    <div className="flex gap-2 flex-wrap">
-                      {['all', 'P0', 'P1', 'P2', 'P3', 'P4'].map((c) => (
-                        <Button
-                          key={c}
-                          size="sm"
-                          variant={filterCat === c ? 'default' : 'outline'}
-                          onClick={() => setFilterCat(c)}
-                          className="h-7 px-2.5 text-xs"
-                        >
-                          {c === 'all' ? 'All' : <><CategoryBadge cat={c} /><span className="ml-1">{countByCategory(c)}</span></>}
-                        </Button>
-                      ))}
-                    </div>
+            {/* Chat card */}
+            <Card className="flex-1">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2">
+                    <MessageSquare className="h-5 w-5" />
+                    AI Security Agent
+                  </CardTitle>
+                  <div className="flex items-center gap-2">
+                    {connectionBadge()}
+                    <Button variant="ghost" size="sm" onClick={() => setShowScenario(!showScenario)}
+                      className={`h-8 px-2 ${showScenario ? 'bg-muted' : ''}`} title="Toggle attack scenario panel">
+                      <Crosshair className="h-4 w-4 mr-1" />
+                      <span className="text-xs">{showScenario ? 'Hide' : 'Scenario'}</span>
+                    </Button>
+                    <Button variant="ghost" size="sm"
+                      onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadConversations(); }}
+                      className="h-8 px-2">
+                      <Clock className="h-4 w-4 mr-1" />
+                      <span className="text-xs">{showHistory ? 'Hide' : 'History'}</span>
+                    </Button>
                   </div>
-                  <CardDescription>
-                    Click a row to view full analysis. Sorted by OPES score descending.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <OpenFindingsTable
-                    findings={filteredFindings.sort((a, b) => b.opes.score - a.opes.score)}
-                    onSelect={() => {}}
+                </div>
+                <CardDescription>
+                  Query assets, scan targets, and analyze your attack surface. Use the CVE Lookup and Findings sections below for exploitability intelligence.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-lg border bg-muted/30 max-h-[50vh] overflow-y-auto p-4 space-y-3">
+                  {messages.length === 0 && (
+                    <p className="text-muted-foreground text-sm">Send a message to start. The agent can run scans and discovery for your organization.</p>
+                  )}
+                  {messages.map((m) => (
+                    <div key={m.id} className={`flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                      <div className={`rounded-lg px-3 py-2 max-w-[85%] ${m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted border'}`}>
+                        <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                        {m.role === 'agent' && m.phase && <Badge variant="outline" className="mt-2 text-xs">{m.phase}</Badge>}
+                        {m.role === 'agent' && m.taskComplete && (
+                          <span className="ml-2 text-xs text-muted-foreground flex items-center gap-1">
+                            <CheckCircle className="h-3 w-3" /> Task complete
+                          </span>
+                        )}
+                        {m.role === 'agent' && m.traceSummary && (
+                          <details className="mt-2">
+                            <summary className="text-xs cursor-pointer text-muted-foreground">Execution trace</summary>
+                            <pre className="text-xs mt-1 p-2 rounded bg-background overflow-x-auto whitespace-pre-wrap">{m.traceSummary}</pre>
+                          </details>
+                        )}
+                      </div>
+                      {m.role === 'agent' && m.awaitingApproval && m.approvalRequest && (
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          <Button size="sm" onClick={() => handleApprove('approve')} disabled={loading}>Approve</Button>
+                          <Button size="sm" variant="outline" onClick={() => handleApprove('abort')} disabled={loading}>Abort</Button>
+                        </div>
+                      )}
+                      {m.role === 'agent' && m.awaitingQuestion && m.questionRequest && (
+                        <p className="text-xs text-muted-foreground mt-1">Type your answer below and press Send.</p>
+                      )}
+                    </div>
+                  ))}
+                  {loading && renderLiveStatus()}
+                  {loading && !liveStatus && (
+                    <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Agent is thinking and may run tools…
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="mode-select">Mode</Label>
+                    <Select value={mode} onValueChange={(v) => setMode(v as 'assist' | 'agent')}>
+                      <SelectTrigger id="mode-select"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="assist">Assist (approval required between phases)</SelectItem>
+                        <SelectItem value="agent">Agent (autonomous; no approval)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">Agent mode runs without asking for approval between phases.</p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="playbook-select">Preset</Label>
+                    <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
+                      <SelectTrigger id="playbook-select"><SelectValue placeholder="Custom" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="custom">Custom (free-form question)</SelectItem>
+                        {playbooks.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {selectedPlaybookId !== 'custom' && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="target-input">Target (optional)</Label>
+                      <Input id="target-input" placeholder="e.g. example.com" value={target}
+                        onChange={(e) => setTarget(e.target.value)} disabled={loading || agentAvailable === false} />
+                    </div>
+                  )}
+                </div>
+
+                {urlPrefilled && <p className="text-sm text-muted-foreground">Pre-filled from link. Click Send to start.</p>}
+
+                <div className="flex gap-2">
+                  <Textarea
+                    placeholder={
+                      pendingAnswer ? 'Type your answer to the agent…'
+                        : selectedPlaybookId === 'custom' ? 'Ask a question (e.g. run a port scan on example.com)'
+                        : 'Add a note or leave blank to run the preset'
+                    }
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                    rows={2} className="resize-none"
+                    disabled={loading || agentAvailable === false}
                   />
-                </CardContent>
-              </Card>
+                  <Button
+                    onClick={handleSend}
+                    disabled={loading || agentAvailable === false || (selectedPlaybookId === 'custom' ? !question.trim() : false)}
+                    size="icon" className="shrink-0 h-auto py-3"
+                  >
+                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  </Button>
+                </div>
+                {sessionId && <p className="text-xs text-muted-foreground">Session: {sessionId.slice(0, 8)}…</p>}
+              </CardContent>
+            </Card>
+
+            {/* Attack scenario panel */}
+            {showScenario && (
+              <AttackScenarioPanel
+                chainData={chainData} loading={loading}
+                collapsed={scenarioCollapsed}
+                onToggleCollapse={() => setScenarioCollapsed(!scenarioCollapsed)}
+              />
             )}
           </div>
-        )}
+
+          {/* ── CVE Quick Lookup (collapsible) ── */}
+          <div className="rounded-lg border bg-card">
+            <button
+              onClick={() => setShowCveLookup(!showCveLookup)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/40 transition-colors rounded-lg"
+            >
+              <span className="flex items-center gap-2">
+                <Search className="h-4 w-4 text-muted-foreground" />
+                CVE Quick Lookup
+                <span className="text-xs text-muted-foreground font-normal">— exploitability intel without an asset</span>
+              </span>
+              {showCveLookup ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+            </button>
+
+            {showCveLookup && (
+              <div className="px-4 pb-4 space-y-4 border-t pt-4">
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="CVE-2026-0300"
+                    value={cveLookupId}
+                    onChange={(e) => setCveLookupId(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCveLookup(); } }}
+                    disabled={cveLookupLoading}
+                    className="font-mono"
+                  />
+                  <Button onClick={handleCveLookup} disabled={cveLookupLoading || !cveLookupId.trim()} className="shrink-0">
+                    {cveLookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                    <span className="ml-1.5">Analyze</span>
+                  </Button>
+                </div>
+
+                {cveLookupError && (
+                  <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-3 text-sm text-red-400 flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <div><p className="font-medium">Lookup failed</p><p className="text-xs opacity-90">{cveLookupError}</p></div>
+                  </div>
+                )}
+
+                {cveLookupLoading && cveLookupStatus && (
+                  <div className="rounded-lg border bg-muted/30 p-3 text-sm flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                    <p className="text-muted-foreground">{cveLookupStatus}</p>
+                  </div>
+                )}
+
+                {cveLookup && <CveLookupResult data={cveLookup as Parameters<typeof CveLookupResult>[0]['data']} />}
+
+                {!cveLookup && !cveLookupError && !cveLookupLoading && (
+                  <p className="text-xs text-muted-foreground">
+                    Enter a CVE id to get an analyst brief, attack path, exploitation evidence, and preconditions.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ── Open Findings (collapsible) ── */}
+          <div className="rounded-lg border bg-card">
+            <button
+              onClick={() => { setShowFindings(!showFindings); if (!showFindings) loadFindings(); }}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/40 transition-colors rounded-lg"
+            >
+              <span className="flex items-center gap-2">
+                <ShieldAlert className="h-4 w-4 text-muted-foreground" />
+                Open Findings
+                {findings.length > 0 && (
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{findings.length}</Badge>
+                )}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost" size="sm" className="h-6 w-6 p-0"
+                  onClick={(e) => { e.stopPropagation(); loadFindings(); }}
+                  disabled={findingsLoading}
+                  title="Refresh findings"
+                >
+                  <RefreshCw className={cn('h-3.5 w-3.5 text-muted-foreground', findingsLoading && 'animate-spin')} />
+                </Button>
+                {showFindings ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+              </div>
+            </button>
+
+            {showFindings && (
+              <div className="px-4 pb-4 border-t pt-4 space-y-3">
+                <div className="flex gap-2 flex-wrap">
+                  {['all', 'P0', 'P1', 'P2', 'P3', 'P4'].map((c) => (
+                    <Button key={c} size="sm" variant={filterCat === c ? 'default' : 'outline'}
+                      onClick={() => setFilterCat(c)} className="h-7 px-2.5 text-xs">
+                      {c === 'all' ? 'All' : <><CategoryBadge cat={c} /><span className="ml-1">{countByCategory(c)}</span></>}
+                    </Button>
+                  ))}
+                </div>
+                <OpenFindingsTable
+                  findings={filteredFindings.sort((a, b) => b.opes.score - a.opes.score)}
+                  onSelect={() => {}}
+                />
+              </div>
+            )}
+          </div>
+
+        </div>
       </div>
     </MainLayout>
   );
