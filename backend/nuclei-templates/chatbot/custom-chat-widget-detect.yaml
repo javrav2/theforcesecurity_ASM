@@ -1,0 +1,50 @@
+id: custom-chat-widget-detect
+
+info:
+  name: Custom / Generic Chat Widget Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects custom or unbranded chat widgets on internet-facing web assets using
+    class/ID naming patterns common to bespoke implementations. To avoid false
+    positives from cookie banners and newsletter popups, a match requires BOTH a
+    widget-presence signal (e.g. "chat-bubble", "chat-launcher") AND an interaction
+    signal (e.g. "send-message", "message-input", "aria-label=open chat"). Generic
+    chat implementations may still have file-upload surfaces, authenticated sessions,
+    or backend integrations worth reviewing.
+  tags: chatbot,live-chat,tech,custom
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    # Both matchers must match to fire (AND). This prevents false positives from
+    # cookie consent banners that use generic "chat" or "popup" class names.
+    matchers-condition: and
+    matchers:
+      - type: regex
+        part: body
+        name: widget-presence
+        regex:
+          - "chat-bubble"
+          - "chat-button"
+          - "chat-widget"
+          - "support-chat"
+          - "start-chat"
+          - "livechat-widget"
+          - "chat-launcher"
+          - "chat-window"
+        condition: or
+
+      - type: regex
+        part: body
+        name: interaction-signal
+        regex:
+          - "send-message"
+          - "message-input"
+          - "chat-input"
+          - "aria-label=['\"][^'\"]*(?:send message|open chat|start chat|chat)"
+          - "button[^>]+(?:send|message)"
+          - "placeholder=['\"][^'\"]*(?:message|question)"
+        condition: or

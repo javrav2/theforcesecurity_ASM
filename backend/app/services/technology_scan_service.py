@@ -23,6 +23,11 @@ from app.db.database import SessionLocal
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.technology import Technology
 from app.services.asset_labeling_service import add_tech_to_asset
+from app.services.chatbot_detection_service import (
+    ChatbotDetectionService,
+    chatbot_detection_to_metadata,
+    chatbot_detections_to_technologies,
+)
 from app.services.wappalyzer_service import WappalyzerService, DetectedTechnology
 from app.services.whatruns_service import WhatRunsService, get_whatruns_service
 from app.services.whatweb_service import WhatWebService
@@ -81,6 +86,8 @@ def _wappalyzer_options_from_config(config: Optional[dict]) -> dict:
     return {
         "min_confidence": max(0, min(100, int(config.get("min_confidence_threshold", 0)))),
         "require_html": bool(config.get("require_html", False)),
+        "detect_chatbots": bool(config.get("detect_chatbots", True)),
+        "render_chatbots": bool(config.get("render_chatbots", False)),
     }
 
 
@@ -114,6 +121,7 @@ async def _scan_single_host(
 
     techs_found = 0
     all_detected_techs: List[DetectedTechnology] = []
+    chatbot_detections: list[dict] = []
     live_url = None
     
     # Build list of URLs to try
@@ -182,6 +190,24 @@ async def _scan_single_host(
                     all_detected_techs.extend(ww_result.technologies)
             except Exception as e:
                 logger.debug(f"WhatWeb scan failed for {url}: {e}")
+
+        # Chatbot/live-chat detection runs alongside technology detection. It
+        # uses vendor-specific signals plus generic chat-bubble AND message/send
+        # correlation to avoid cookie/banner false positives.
+        opts = wappalyzer_options or {}
+        if opts.get("detect_chatbots", True):
+            try:
+                chatbot = ChatbotDetectionService()
+                chatbot_result = await chatbot.detect_url(
+                    url,
+                    render=opts.get("render_chatbots", False),
+                )
+                if chatbot_result.detections:
+                    live_url = url
+                    all_detected_techs.extend(chatbot_detections_to_technologies(chatbot_result))
+                    chatbot_detections.extend(chatbot_detection_to_metadata(chatbot_result))
+            except Exception as e:
+                logger.debug(f"Chatbot detection failed for {url}: {e}")
         
         # If we got any detections on this URL, break
         if all_detected_techs:
@@ -215,7 +241,22 @@ async def _scan_single_host(
         )
         techs_found += 1
 
-    return {"host": host, "scanned": True, "techs_found": techs_found}
+    if chatbot_detections:
+        metadata = dict(host_asset.metadata_ or {})
+        existing = metadata.get("chatbot_detections") or []
+        by_slug = {item.get("slug"): item for item in existing if isinstance(item, dict)}
+        for item in chatbot_detections:
+            by_slug[item.get("slug")] = item
+        metadata["chatbot_detections"] = list(by_slug.values())
+        host_asset.metadata_ = metadata
+        db.flush()
+
+    return {
+        "host": host,
+        "scanned": True,
+        "techs_found": techs_found,
+        "chatbots_found": len(chatbot_detections),
+    }
 
 
 async def _scan_hosts_batch(
@@ -273,6 +314,7 @@ async def _scan_hosts_async(
     
     total_scanned = 0
     total_techs_found = 0
+    total_chatbots_found = 0
     
     # For WhatRuns, use smaller batch size due to rate limiting
     batch_size = 3 if source == "whatruns" else (5 if source == "both" else BATCH_SIZE)
@@ -304,6 +346,7 @@ async def _scan_hosts_async(
             if result.get("scanned"):
                 total_scanned += 1
                 total_techs_found += result.get("techs_found", 0)
+                total_chatbots_found += result.get("chatbots_found", 0)
                 if result.get("techs_found", 0) == 0:
                     logger.debug(f"Host {result.get('host')} scanned but no technologies detected")
             else:
@@ -322,12 +365,16 @@ async def _scan_hosts_async(
         if i + batch_size < total_hosts:
             await asyncio.sleep(batch_delay)
     
-    logger.info(f"Technology scan complete: {total_scanned}/{total_hosts} hosts scanned, {total_techs_found} technologies detected")
+    logger.info(
+        f"Technology scan complete: {total_scanned}/{total_hosts} hosts scanned, "
+        f"{total_techs_found} technologies detected, {total_chatbots_found} chatbot signals"
+    )
     
     return {
         "total_hosts": total_hosts,
         "hosts_scanned": total_scanned,
         "technologies_found": total_techs_found,
+        "chatbots_found": total_chatbots_found,
         "source": source,
     }
 

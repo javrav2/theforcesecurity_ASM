@@ -1,0 +1,40 @@
+id: hubspot-chat-detect
+
+info:
+  name: HubSpot Live Chat / Conversations Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the HubSpot Conversations live chat widget on internet-facing web assets.
+    HubSpot chat often integrates with CRM, forms, and marketing automation back-ends
+    and may expose contact data or submission endpoints worth reviewing.
+  reference:
+    - https://developers.hubspot.com/docs/api/conversations/visitor-identification
+  tags: chatbot,live-chat,tech,hubspot
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "HubSpotConversations"
+          - "hs-chat"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "js\\.hs-scripts\\.com/[0-9]+\\.js"
+          - "js\\.hubspot\\.com/.*chat"
+
+      - type: word
+        part: body
+        words:
+          - "static.hsappstatic.net"
+          - "static.hsappstatic.net/MeetingsEmbed"
+        condition: or

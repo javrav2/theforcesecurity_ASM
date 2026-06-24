@@ -1,0 +1,33 @@
+id: helpscout-beacon-detect
+
+info:
+  name: HelpScout Beacon Widget Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the HelpScout Beacon help-widget on internet-facing web assets.
+    Beacon widgets may expose article search APIs and email submission endpoints
+    that can be used for reconnaissance or social engineering.
+  reference:
+    - https://developer.helpscout.com/beacon-2/
+  tags: chatbot,live-chat,tech,helpscout
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        part: body
+        regex:
+          - "beacon-v2\\.helpscout\\.net"
+          - "Beacon\\(['\"]init"
+
+      - type: word
+        part: body
+        words:
+          - "helpscout.net"
+          - "beacon-v2.helpscout.net"
+        condition: or

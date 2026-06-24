@@ -5,28 +5,29 @@ import { Footer } from '@/components/footer'
 
 export const metadata: Metadata = {
   title: {
-    default: 'The Force Security — Security Tools & Research',
-    template: '%s | The Force Security',
+    default: 'Judah Security — Cyber Security Advisory, Consulting & Services',
+    template: '%s | Judah Security',
   },
   description:
-    'Discover, compare, and learn about the best cybersecurity tools. Expert reviews, guides, and research from The Force Security team.',
-  keywords: ['cybersecurity', 'security tools', 'penetration testing', 'vulnerability management', 'ASM', 'attack surface management'],
-  authors: [{ name: 'The Force Security' }],
+    'Practitioner-led cyber security research, tool evaluations, and whitepapers. Advisory, consulting and services from the Judah Security team.',
+  keywords: ['cybersecurity', 'security consulting', 'penetration testing', 'vulnerability management', 'ASM', 'attack surface management', 'security advisory'],
+  authors: [{ name: 'Judah Security' }],
   openGraph: {
     type: 'website',
     locale: 'en_US',
-    url: 'https://theforcesecurity.io',
-    siteName: 'The Force Security',
-    title: 'The Force Security — Security Tools & Research',
-    description: 'Discover, compare, and learn about the best cybersecurity tools.',
+    url: 'https://judahsecurity.com',
+    siteName: 'Judah Security',
+    title: 'Judah Security — Cyber Security Advisory, Consulting & Services',
+    description: 'Practitioner-led cyber security research, tool evaluations, and whitepapers.',
+    images: [{ url: '/logo.png' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'The Force Security',
-    description: 'Discover, compare, and learn about the best cybersecurity tools.',
+    title: 'Judah Security',
+    description: 'Practitioner-led cyber security research, tool evaluations, and whitepapers.',
   },
   icons: {
-    icon: '/favicon.ico',
+    icon: '/logo.png',
   },
 }
 

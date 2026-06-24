@@ -163,7 +163,17 @@ class ScannerWorker:
             self.queue_url = None
         
         # Initialize services (lazy init for discovery which needs db)
-        self.nuclei_service = NucleiService()
+        from app.core.config import settings
+        from pathlib import Path
+        _custom_templates: Optional[str] = None
+        if settings.NUCLEI_CUSTOM_TEMPLATES_PATH:
+            _p = Path(__file__).parent.parent.parent / settings.NUCLEI_CUSTOM_TEMPLATES_PATH
+            if _p.exists():
+                _custom_templates = str(_p)
+                logger.info(f"Custom Nuclei templates loaded from: {_custom_templates}")
+            else:
+                logger.warning(f"Custom Nuclei templates path not found: {_p}")
+        self.nuclei_service = NucleiService(templates_path=_custom_templates)
         self.port_scanner_service = PortScannerService()
         self._discovery_service = None  # Lazy initialized with db session
         
@@ -3657,6 +3667,7 @@ class ScannerWorker:
                         'total_hosts': result.get('total_hosts', 0),
                         'hosts_scanned': result.get('hosts_scanned', 0),
                         'technologies_found': result.get('technologies_found', 0),
+                        'chatbots_found': result.get('chatbots_found', 0),
                         'source': source,
                     }
                     db.commit()

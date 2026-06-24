@@ -1,0 +1,35 @@
+id: salesforce-chat-detect
+
+info:
+  name: Salesforce Embedded Service / Live Agent Chat Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects Salesforce Embedded Service chat or Live Agent on internet-facing web assets.
+    Salesforce chat integrations are high-value targets: they often tie directly into
+    CRM records, support cases, and authenticated customer portals that may be reachable
+    through chat-side channels.
+  reference:
+    - https://developer.salesforce.com/docs/service/messaging-web/guide/deploy.html
+  tags: chatbot,live-chat,tech,salesforce
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "embeddedservice_bootstrap"
+          - "embeddedservice_liveagent"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "liveagent\\.salesforce\\.com"
+          - "service\\.force\\.com.*embeddedservice"
+          - "embeddedservice\\.app\\.sfdcstatic\\.com"

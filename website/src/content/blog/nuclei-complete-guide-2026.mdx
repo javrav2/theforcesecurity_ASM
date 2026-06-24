@@ -3,7 +3,7 @@ title: "Nuclei in 2026: The Complete Guide to Template-Based Vulnerability Scann
 excerpt: "ProjectDiscovery's Nuclei has become the de facto standard for scalable vulnerability scanning. Here's everything you need to know — from installation to writing custom templates for your attack surface."
 date: "2026-05-20"
 author: "Drew Vravick"
-authorRole: "Founder, The Force Security"
+authorRole: "Founder, Judah Security"
 category: "Tool Review"
 tags: ["nuclei", "vulnerability-scanning", "penetration-testing", "open-source"]
 readTime: 12
@@ -70,7 +70,7 @@ id: exposed-env-file
 
 info:
   name: Exposed .env File
-  author: theforcesecurity
+  author: judahsecurity
   severity: high
   description: Detects publicly accessible .env files that may expose secrets.
   tags: exposure,config,files
@@ -98,7 +98,7 @@ requests:
 
 ## Integration with ASM Pipelines
 
-At The Force Security, we run Nuclei as part of our continuous ASM pipeline. Here's how we integrate it:
+At Judah Security, we run Nuclei as part of our continuous ASM pipeline. Here's how we integrate it:
 
 1. **Asset Discovery** → Subfinder + httpx identify live subdomains
 2. **Bulk Scanning** → Nuclei runs against all discovered hosts with severity-filtered templates

@@ -4,7 +4,7 @@ import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: 'Blog',
-  description: 'Security research, tool reviews, and practical guides from The Force Security team.',
+  description: 'Security research, tool reviews, and practical guides from Judah Security.',
 }
 
 const BLOG_CATEGORIES = ['All', 'Tool Review', 'Research', 'Tutorials', 'News']
@@ -115,8 +115,8 @@ export default function BlogPage({
             <div className="rounded-xl border border-border bg-card p-5">
               <h3 className="text-sm font-semibold text-foreground mb-2">About This Blog</h3>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Written by practitioners at The Force Security — a security research and tooling
-                company focused on attack surface management and offensive security.
+                Written by practitioners at Judah Security — an attack surface management,
+                offensive security, and advisory company built for decisive teams.
               </p>
             </div>
           </aside>

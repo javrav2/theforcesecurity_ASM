@@ -1,0 +1,38 @@
+id: livechat-detect
+
+info:
+  name: LiveChat Widget Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the LiveChat.com customer support widget on internet-facing web assets.
+    LiveChat integrations often have file upload for support tickets and connect to
+    back-end CRM / helpdesk systems worth probing.
+  reference:
+    - https://developers.livechat.com/docs/getting-started/
+  tags: chatbot,live-chat,tech,livechat
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "livechat-widget"
+          - "LiveChatWidget"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "cdn\\.livechatinc\\.com"
+          - "livechatinc\\.com"
+
+      - type: word
+        part: body
+        words:
+          - "secure.livechatinc.com"

@@ -1,202 +1,318 @@
 import Link from 'next/link'
-import { ArrowRight, Search, Shield, Zap, BookOpen, ChevronRight } from 'lucide-react'
-import { getFeaturedTools, CATEGORIES, TOOLS } from '@/lib/tools'
-import { getFeaturedPosts, getRecentPosts } from '@/lib/blog'
-import { ToolCard } from '@/components/tool-card'
-import { BlogCard } from '@/components/blog-card'
+import Image from 'next/image'
+import { ArrowRight, Download, ChevronRight, Shield, Eye, Target, FileText, Users, BookOpen } from 'lucide-react'
+import { getAllResearch } from '@/lib/research'
+import { getRecentPosts } from '@/lib/blog'
+import { formatDate } from '@/lib/utils'
+
+const SERVICES = [
+  {
+    icon: Eye,
+    name: 'Attack Surface Management',
+    description: 'Continuous discovery of every internet-facing asset you own -- including the ones you forgot about. We see your organization the way attackers do.',
+  },
+  {
+    icon: Target,
+    name: 'Penetration Testing',
+    description: 'Adversary-minded assessments that prove exploitability, not just exposure. Red team engagements, web application testing, and infrastructure assessments.',
+  },
+  {
+    icon: Shield,
+    name: 'Security Advisory',
+    description: 'Executive and technical guidance for teams that need clear priorities and decisive action. We translate security risk into business language.',
+  },
+  {
+    icon: FileText,
+    name: 'Vulnerability Management',
+    description: 'Program design and operational support to help your team identify, prioritize, and remediate vulnerabilities at the pace your business demands.',
+  },
+  {
+    icon: Users,
+    name: 'Incident Response',
+    description: 'When something goes wrong, time is the variable that matters most. We help organizations prepare, respond, and recover from security incidents.',
+  },
+  {
+    icon: BookOpen,
+    name: 'Security Awareness',
+    description: 'Your people are both your greatest risk and your greatest defense. We build programs that turn awareness into measurable behavior change.',
+  },
+]
 
 export default function HomePage() {
-  const featuredTools = getFeaturedTools()
-  const featuredPosts = getFeaturedPosts()
-  const recentPosts = getRecentPosts(5)
+  const research = getAllResearch().slice(0, 3)
+  const posts = getRecentPosts(3)
 
   return (
     <div>
-      {/* Hero */}
+
+      {/* HERO */}
       <section className="relative overflow-hidden border-b border-border">
-        <div className="absolute inset-0 grid-lines opacity-30 pointer-events-none" />
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-background pointer-events-none" />
+        <div className="absolute inset-0 dot-grid opacity-40 pointer-events-none" />
+        <div className="absolute inset-0 bg-gradient-to-b from-background/0 via-background/0 to-background pointer-events-none" />
 
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 md:py-36">
-          <div className="max-w-3xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-primary/30 bg-primary/5 text-primary text-xs font-medium mb-6">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-              Security Intelligence for Modern Teams
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
 
-            <h1 className="text-4xl md:text-6xl font-bold text-foreground tracking-tight leading-tight mb-6">
-              Find the right{' '}
-              <span className="text-primary glow-green">security tool</span>
-              {' '}for every threat
-            </h1>
-
-            <p className="text-lg text-muted-foreground leading-relaxed mb-10 max-w-2xl">
-              We research, test, and review the best cybersecurity tools on the market.
-              From open-source scanners to enterprise platforms — cut through the noise and
-              find what actually works.
-            </p>
-
-            <div className="flex flex-col sm:flex-row gap-4">
-              <Link
-                href="/tools"
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground font-medium text-sm hover:bg-primary/90 transition-colors"
-              >
-                <Search className="w-4 h-4" />
-                Browse Tools
-                <ArrowRight className="w-4 h-4" />
-              </Link>
-              <Link
-                href="/blog"
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg border border-border text-foreground font-medium text-sm hover:bg-accent transition-colors"
-              >
-                <BookOpen className="w-4 h-4" />
-                Read Research
-              </Link>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Stats */}
-      <section className="border-b border-border bg-card/30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-3 divide-x divide-border">
-            {[
-              { value: `${TOOLS.length}+`, label: 'Tools Reviewed' },
-              { value: `${CATEGORIES.length}`, label: 'Categories' },
-              { value: '100%', label: 'Practitioner-Tested' },
-            ].map((stat) => (
-              <div key={stat.label} className="py-8 px-8 text-center">
-                <div className="text-2xl font-bold text-primary font-mono">{stat.value}</div>
-                <div className="text-xs text-muted-foreground mt-1">{stat.label}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Featured Tools */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h2 className="text-2xl font-bold text-foreground">Featured Tools</h2>
-            <p className="text-sm text-muted-foreground mt-1">Hand-picked by our security team</p>
-          </div>
-          <Link
-            href="/tools"
-            className="flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 transition-colors font-medium"
-          >
-            View all <ChevronRight className="w-4 h-4" />
-          </Link>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {featuredTools.map((tool) => (
-            <ToolCard key={tool.id} tool={tool} />
-          ))}
-        </div>
-      </section>
-
-      {/* Categories */}
-      <section className="border-y border-border bg-card/20">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-          <div className="mb-8">
-            <h2 className="text-2xl font-bold text-foreground">Browse by Category</h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              {CATEGORIES.length} security disciplines covered
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {CATEGORIES.map((cat) => (
-              <Link
-                key={cat}
-                href={`/tools?category=${encodeURIComponent(cat)}`}
-                className="px-4 py-2 rounded-lg border border-border bg-card text-sm text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/5 transition-all duration-150"
-              >
-                {cat}
-              </Link>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Blog + Recent Posts */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-12">
-          {/* Featured posts */}
-          <div className="lg:col-span-3">
-            <div className="flex items-center justify-between mb-8">
-              <div>
-                <h2 className="text-2xl font-bold text-foreground">Latest Research</h2>
-                <p className="text-sm text-muted-foreground mt-1">In-depth security insights</p>
-              </div>
-              <Link
-                href="/blog"
-                className="flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 transition-colors font-medium"
-              >
-                All posts <ChevronRight className="w-4 h-4" />
-              </Link>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {featuredPosts.slice(0, 2).map((post) => (
-                <BlogCard key={post.slug} post={post} featured />
-              ))}
-            </div>
-          </div>
-
-          {/* Recent posts list */}
-          <div className="lg:col-span-2">
-            <div className="flex items-center justify-between mb-8">
-              <h2 className="text-xl font-bold text-foreground">Recent Posts</h2>
-            </div>
             <div>
-              {recentPosts.map((post) => (
-                <BlogCard key={post.slug} post={post} />
-              ))}
+              <p className="text-xs font-mono text-primary uppercase tracking-widest mb-6">
+                Cyber Security Advisory &middot; Consulting &middot; Services
+              </p>
+
+              <h1 className="text-5xl md:text-6xl font-bold text-foreground leading-tight tracking-tight mb-6">
+                We don&apos;t wait<br />
+                <span className="text-primary glow-blue">for the attack.</span>
+              </h1>
+
+              <div className="rule" />
+
+              <p className="text-lg text-muted-foreground leading-relaxed mb-10 max-w-lg">
+                Judah Security helps organizations identify, understand, and eliminate
+                risk before attackers exploit it. Continuous visibility, offensive
+                validation, and clear advisory built for decisive security teams.
+              </p>
+
+              <div className="flex flex-wrap gap-4">
+                <Link
+                  href="mailto:hello@judahsecurity.com"
+                  className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-colors"
+                >
+                  Talk to Our Team
+                  <ArrowRight className="w-4 h-4" />
+                </Link>
+                <Link
+                  href="/research"
+                  className="inline-flex items-center gap-2 px-6 py-3 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-accent transition-colors"
+                >
+                  Read Research
+                </Link>
+              </div>
             </div>
+
+            <div className="flex items-center justify-center lg:justify-end">
+              <div className="relative">
+                <div className="absolute inset-0 rounded-full bg-primary/10 blur-3xl scale-110" />
+                <Image
+                  src="/logo.png"
+                  alt="Judah Security"
+                  width={340}
+                  height={340}
+                  className="relative object-contain drop-shadow-2xl"
+                  priority
+                />
+              </div>
+            </div>
+
           </div>
         </div>
       </section>
 
-      {/* About / CTA */}
-      <section id="about" className="border-t border-border bg-card/20">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+      {/* MISSION */}
+      <section className="border-b border-border bg-card/20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
           <div className="max-w-3xl">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-lg bg-primary/10 border border-primary/30 flex items-center justify-center">
-                <Shield className="w-5 h-5 text-primary" />
-              </div>
-              <h2 className="text-2xl font-bold text-foreground">About The Force Security</h2>
-            </div>
-            <p className="text-muted-foreground leading-relaxed mb-4">
-              We&apos;re a team of offensive security practitioners building tools and research at
-              the intersection of attack surface management, vulnerability intelligence, and
-              AI-assisted security operations.
+            <p className="text-xs font-mono text-primary uppercase tracking-widest mb-4">Why Judah Security</p>
+            <h2 className="text-3xl font-bold text-foreground leading-tight mb-5">
+              Strength. Vigilance. Leadership. Triumph.
+            </h2>
+            <p className="text-muted-foreground leading-relaxed text-base mb-5">
+              The lion is the symbol of vigilance and decisive action -- the posture every
+              security program needs. Most organizations find out about their exposures when
+              an attacker tells them. We find them first.
             </p>
-            <p className="text-muted-foreground leading-relaxed mb-8">
-              This site is where we share what we learn — honest tool reviews from practitioners
-              who use this software daily, deep dives into security research, and practical guides
-              for security teams navigating an increasingly complex threat landscape.
+            <p className="text-muted-foreground leading-relaxed text-base">
+              Our team combines offensive security expertise with operational advisory to give
+              you both the intelligence to understand your risk and the roadmap to eliminate it.
+              No vendor bias. No checkbox security. Clear findings, validated risk, decisive next steps.
             </p>
+          </div>
+        </div>
+      </section>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* SERVICES */}
+      <section id="services" className="border-b border-border">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+          <div className="flex items-end justify-between mb-12">
+            <div>
+              <p className="text-xs font-mono text-primary uppercase tracking-widest mb-3">Services</p>
+              <h2 className="text-3xl font-bold text-foreground">
+                Your single point of contact<br className="hidden sm:block" /> for cyber security expertise.
+              </h2>
+            </div>
+            <Link
+              href="mailto:hello@judahsecurity.com"
+              className="hidden md:flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 font-medium transition-colors"
+            >
+              Engage Judah <ChevronRight className="w-4 h-4" />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-border rounded-xl overflow-hidden">
+            {SERVICES.map((service) => {
+              const Icon = service.icon
+              return (
+                <div key={service.name} className="bg-background p-7 hover:bg-card/60 transition-colors group">
+                  <div className="w-9 h-9 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center mb-5 group-hover:bg-primary/20 transition-colors">
+                    <Icon className="w-4 h-4 text-primary" />
+                  </div>
+                  <h3 className="font-semibold text-foreground text-sm mb-2 leading-snug">{service.name}</h3>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{service.description}</p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* RESEARCH */}
+      <section className="border-b border-border bg-card/10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+          <div className="flex items-end justify-between mb-12">
+            <div>
+              <p className="text-xs font-mono text-primary uppercase tracking-widest mb-3">Research</p>
+              <h2 className="text-3xl font-bold text-foreground">
+                Whitepapers &amp; technical reports<br className="hidden sm:block" /> written by practitioners.
+              </h2>
+            </div>
+            <Link href="/research" className="hidden md:flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 font-medium transition-colors">
+              All research <ChevronRight className="w-4 h-4" />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {research.map((item) => (
+              <div key={item.slug} className="flex flex-col rounded-xl border border-border bg-card p-6 hover:border-primary/30 transition-colors group">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs font-mono text-primary uppercase tracking-wider">{item.type}</span>
+                  {item.downloadable && (
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground/60">
+                      <Download className="w-3 h-3" />PDF
+                    </span>
+                  )}
+                </div>
+                <h3 className="font-semibold text-foreground text-sm leading-snug mb-3 group-hover:text-primary transition-colors flex-1">
+                  {item.title}
+                </h3>
+                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-5">
+                  {item.excerpt}
+                </p>
+                <div className="flex items-center justify-between pt-4 border-t border-border mt-auto">
+                  <span className="text-xs text-muted-foreground/60 font-mono">{formatDate(item.date)}</span>
+                  <Link href={`/research/${item.slug}`} className="text-xs text-primary hover:text-primary/80 font-medium transition-colors flex items-center gap-1">
+                    Read <ArrowRight className="w-3 h-3" />
+                  </Link>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-8 text-center">
+            <Link href="/research" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+              View all research &amp; whitepapers <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* BLOG */}
+      <section className="border-b border-border">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+          <div className="flex items-end justify-between mb-10">
+            <div>
+              <p className="text-xs font-mono text-primary uppercase tracking-widest mb-3">Blog</p>
+              <h2 className="text-3xl font-bold text-foreground">Latest from the field.</h2>
+            </div>
+            <Link href="/blog" className="hidden md:flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 font-medium transition-colors">
+              All posts <ChevronRight className="w-4 h-4" />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {posts.map((post) => (
+              <Link key={post.slug} href={`/blog/${post.slug}`} className="group block rounded-xl border border-border bg-card p-6 hover:border-primary/30 transition-colors">
+                <p className="text-xs font-mono text-muted-foreground/60 mb-3">{formatDate(post.date)}</p>
+                <h3 className="font-semibold text-foreground text-sm leading-snug mb-3 group-hover:text-primary transition-colors line-clamp-2">
+                  {post.title}
+                </h3>
+                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-4">
+                  {post.excerpt}
+                </p>
+                <span className="text-xs text-primary font-medium flex items-center gap-1">
+                  Read more <ArrowRight className="w-3 h-3" />
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ABOUT */}
+      <section id="about" className="border-b border-border bg-card/10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-start">
+            <div>
+              <p className="text-xs font-mono text-primary uppercase tracking-widest mb-4">About</p>
+              <h2 className="text-3xl font-bold text-foreground mb-6">
+                Practitioner-led.<br />Operationally grounded.
+              </h2>
+              <p className="text-muted-foreground leading-relaxed mb-4 text-base">
+                Judah Security is an offensive security and advisory firm. We build and operate
+                security infrastructure, conduct penetration tests, and publish what we learn.
+                Our public research is practitioner-written and operationally grounded.
+              </p>
+              <p className="text-muted-foreground leading-relaxed mb-8 text-base">
+                When we say a tool works or a technique is effective, it is because we have
+                validated it against real environments -- not because a vendor paid us to say so.
+              </p>
+              <Link
+                href="mailto:hello@judahsecurity.com"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-primary text-primary-foreground font-medium text-sm hover:bg-primary/90 transition-colors"
+              >
+                Start a Conversation <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4">
               {[
-                { icon: Shield, title: 'Practitioner-Led', desc: 'Written by security professionals, not marketers' },
-                { icon: Zap, title: 'Hands-On Testing', desc: 'Every tool tested in real environments' },
-                { icon: BookOpen, title: 'No Vendor Bias', desc: 'Independent reviews, no sponsored content' },
-              ].map(({ icon: Icon, title, desc }) => (
-                <div key={title} className="p-4 rounded-lg border border-border bg-card">
-                  <Icon className="w-5 h-5 text-primary mb-3" />
-                  <h3 className="font-semibold text-foreground text-sm mb-1">{title}</h3>
-                  <p className="text-xs text-muted-foreground">{desc}</p>
+                { label: 'Vigilant by default', desc: 'We continuously look for the exposures attackers can reach before your team knows they exist.' },
+                { label: 'Offensive by design', desc: 'We validate risk through exploitation-minded testing -- not theoretical analysis alone.' },
+                { label: 'Decisive in delivery', desc: 'We turn findings into clear priorities that both security leaders and engineers can act on immediately.' },
+                { label: 'No vendor bias', desc: 'We do not accept payment for tool placements or sponsored content. Our recommendations are earned, not bought.' },
+              ].map((item) => (
+                <div key={item.label} className="flex gap-4 p-5 rounded-xl border border-border bg-card hover:border-primary/20 transition-colors">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary mt-2 flex-shrink-0" />
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground mb-1">{item.label}</h3>
+                    <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         </div>
       </section>
+
+      {/* CTA */}
+      <section>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+          <div className="rounded-2xl border border-primary/20 bg-primary/5 px-8 md:px-16 py-14 text-center">
+            <p className="text-xs font-mono text-primary uppercase tracking-widest mb-4">Ready to work together?</p>
+            <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-5">
+              Let&apos;s find your exposures<br className="hidden sm:block" /> before attackers do.
+            </h2>
+            <p className="text-muted-foreground text-base max-w-xl mx-auto mb-8">
+              Whether you need a one-time assessment or an ongoing security partner,
+              we are ready to help. Reach out and let us talk about what you are defending.
+            </p>
+            <Link
+              href="mailto:hello@judahsecurity.com"
+              className="inline-flex items-center gap-2 px-7 py-3.5 rounded-lg bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-colors"
+            >
+              Talk to Our Team <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+        </div>
+      </section>
+
     </div>
   )
 }

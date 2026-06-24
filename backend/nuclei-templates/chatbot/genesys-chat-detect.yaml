@@ -1,0 +1,41 @@
+id: genesys-chat-detect
+
+info:
+  name: Genesys Cloud / PureCloud Chat Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects Genesys Cloud (formerly PureCloud) or Genesys Engage chat widget on
+    internet-facing web assets. Enterprise contact-center chat widgets frequently
+    have privileged access to customer records and authenticated back-end systems.
+  reference:
+    - https://developer.genesys.cloud/commdigital/digital/webmessaging/
+  tags: chatbot,live-chat,tech,genesys,contact-center
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "purecloud"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "Genesys\\(['\"]command"
+          - "apps\\.mypurecloud\\.com"
+          - "genesys.*messenger"
+          - "genesys-bootstrap"
+
+      - type: word
+        part: body
+        words:
+          - "genesys-cloud"
+          - "purecloud.com"
+        condition: or

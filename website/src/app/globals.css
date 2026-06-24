@@ -6,21 +6,21 @@
 
 @layer base {
   :root {
-    --background: 222 47% 4%;
+    --background: 222 67% 5%;
     --foreground: 210 40% 96%;
 
-    --card: 222 47% 7%;
+    --card: 222 47% 8%;
     --card-foreground: 210 40% 96%;
 
-    --border: 217 19% 14%;
-    --muted: 217 19% 12%;
+    --border: 222 30% 16%;
+    --muted: 222 30% 13%;
     --muted-foreground: 215 16% 55%;
 
-    --accent: 222 47% 11%;
+    --accent: 222 47% 12%;
     --accent-foreground: 210 40% 96%;
 
-    --primary: 155 100% 45%;
-    --primary-foreground: 222 47% 4%;
+    --primary: 213 100% 62%;
+    --primary-foreground: 0 0% 100%;
 
     --success: 155 100% 45%;
     --warning: 38 92% 50%;
@@ -55,8 +55,8 @@
 }
 
 @layer components {
-  .glow-green {
-    text-shadow: 0 0 20px hsl(var(--primary) / 0.5);
+  .glow-blue {
+    text-shadow: 0 0 32px hsl(var(--primary) / 0.4);
   }
 
   .card-hover {
@@ -67,10 +67,18 @@
     @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border;
   }
 
-  .grid-lines {
-    background-image:
-      linear-gradient(hsl(var(--border) / 0.4) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(var(--border) / 0.4) 1px, transparent 1px);
-    background-size: 40px 40px;
+  .section-divide {
+    @apply border-b border-border;
+  }
+
+  /* Bromure-style dot grid */
+  .dot-grid {
+    background-image: radial-gradient(hsl(var(--border) / 0.6) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  /* Subtle horizontal rule */
+  .rule {
+    @apply w-12 h-px bg-primary/40 my-6;
   }
 }

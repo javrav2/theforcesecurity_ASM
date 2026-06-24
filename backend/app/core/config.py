@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     DELPHI_ENRICHMENT_ENABLED: bool = True
     DELPHI_REFRESH_HOURS: int = 24  # Re-fetch KEV + EPSS after this many hours
     DELPHI_AUTO_ENRICH_ON_INGEST: bool = True  # Enrich CVEs during ingestion pipeline
+
+    # Custom Nuclei templates shipped with the platform.
+    # Relative to the backend/ directory; resolved to an absolute path at runtime.
+    # Set to an empty string or override via env to disable custom templates.
+    NUCLEI_CUSTOM_TEMPLATES_PATH: str = "nuclei-templates"
     
     class Config:
         env_file = ".env"

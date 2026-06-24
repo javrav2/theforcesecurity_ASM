@@ -1,0 +1,38 @@
+id: drift-chat-detect
+
+info:
+  name: Drift Conversational Marketing Widget Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the Drift conversational marketing / sales chatbot widget on internet-facing
+    web assets. Drift bots often have lead capture forms and CRM integrations that may
+    expose PII or accept arbitrary file uploads.
+  reference:
+    - https://devdocs.drift.com/
+  tags: chatbot,live-chat,tech,drift
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "drift-widget"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "js\\.driftt\\.com"
+          - "drift\\.load"
+          - "drift\\.com/widget"
+
+      - type: word
+        part: body
+        words:
+          - "js.drift.com"

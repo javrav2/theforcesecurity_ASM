@@ -1203,21 +1203,21 @@ TECHNOLOGY_FINGERPRINTS = {
     # -------------------------------------------------------------------------
     "Intercom": {
         "cats": ["Live chat"],
-        "html": [r"widget\.intercom\.io", r"intercomSettings", r"Intercom\\("],
-        "scriptSrc": [r"intercom"],
+        "html": [r"intercom-app", r"widget\.intercom\.io", r"intercomSettings", r"Intercom\\("],
+        "scriptSrc": [r"intercom", r"widget\.intercom\.io"],
         "icon": "Intercom.svg",
         "website": "https://intercom.com"
     },
     "Zendesk": {
         "cats": ["Live chat", "Helpdesk"],
-        "html": [r"static\.zdassets\.com", r"zendesk"],
-        "scriptSrc": [r"zdassets\.com"],
+        "html": [r"ZendeskChat", r"static\.zdassets\.com", r"zendesk", r"zopim"],
+        "scriptSrc": [r"zdassets\.com", r"zopim"],
         "icon": "Zendesk.svg",
         "website": "https://zendesk.com"
     },
     "Drift": {
         "cats": ["Live chat"],
-        "html": [r"drift\.com", r"js\.driftt\.com"],
+        "html": [r"drift-widget", r"drift\.com", r"js\.driftt\.com"],
         "scriptSrc": [r"drift\.com", r"driftt\.com"],
         "scripts": [r"drift\\.(?:load|on)"],
         "icon": "Drift.svg",
@@ -1225,7 +1225,7 @@ TECHNOLOGY_FINGERPRINTS = {
     },
     "Crisp": {
         "cats": ["Live chat"],
-        "html": [r"crisp\.chat"],
+        "html": [r"crisp-chat", r"crisp\.chat"],
         "scriptSrc": [r"client\.crisp\.chat"],
         "scripts": [r"\\$crisp"],
         "icon": "Crisp.svg",
@@ -1233,7 +1233,7 @@ TECHNOLOGY_FINGERPRINTS = {
     },
     "Tawk.to": {
         "cats": ["Live chat"],
-        "html": [r"embed\.tawk\.to"],
+        "html": [r"tawkto", r"embed\.tawk\.to"],
         "scriptSrc": [r"tawk\.to"],
         "scripts": [r"Tawk_API"],
         "icon": "tawk.to.svg",
@@ -1241,7 +1241,7 @@ TECHNOLOGY_FINGERPRINTS = {
     },
     "LiveChat": {
         "cats": ["Live chat"],
-        "html": [r"cdn\.livechatinc\.com"],
+        "html": [r"livechat-widget", r"cdn\.livechatinc\.com", r"LiveChatWidget"],
         "scriptSrc": [r"livechatinc\.com"],
         "icon": "LiveChat.svg",
         "website": "https://livechat.com",

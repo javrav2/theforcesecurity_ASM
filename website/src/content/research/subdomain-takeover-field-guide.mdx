@@ -1,0 +1,116 @@
+---
+title: "Subdomain Takeover: A Field Guide for Defenders"
+excerpt: "Everything a security team needs to know about subdomain takeover vulnerabilities — how they happen, how to find them at scale, and how to prevent them permanently."
+date: "2026-04-15"
+author: "Drew Vravick"
+authorRole: "Founder, Judah Security"
+type: "Field Guide"
+tags: ["subdomain-takeover", "dns", "cloud", "defensive"]
+readTime: 14
+featured: false
+downloadable: true
+---
+
+## What Is Subdomain Takeover?
+
+A subdomain takeover occurs when a DNS record points to an external service that is no longer provisioned or claimed. An attacker who provisions that service can then serve content — including malicious content — under your organization's domain.
+
+The attack is deceptively simple:
+
+1. `staging.example.com` points to `example-staging.s3-website.amazonaws.com`
+2. The S3 bucket `example-staging` is deleted (project cancelled, forgotten)
+3. The DNS record is not cleaned up
+4. An attacker registers the S3 bucket name and now controls `staging.example.com`
+
+The attacker now has a subdomain of your organization's domain with a valid TLS certificate, capable of serving malicious content, phishing pages, or cookies scoped to `.example.com`.
+
+## Impact
+
+Subdomain takeover is frequently underrated because it doesn't give direct access to internal systems. The actual risk surface is broader than it appears:
+
+- **Cookie theft**: Cookies scoped to the parent domain are readable from subdomains
+- **CORS exploitation**: Applications that trust `*.example.com` may accept cross-origin requests from a taken-over subdomain
+- **Phishing credibility**: An email pointing to `login.example.com` is far more convincing than an external domain
+- **Content injection**: Serving malicious JavaScript that loads on pages trusting `*.example.com` resources
+- **OAuth abuse**: OAuth flows that trust any subdomain of a whitelisted domain
+
+## Vulnerable Services
+
+The following external services are commonly associated with subdomain takeover vulnerabilities:
+
+| Service | Indicator | Takeover Difficulty |
+|---|---|---|
+| AWS S3 | `s3-website.amazonaws.com` | Easy |
+| GitHub Pages | `github.io` | Easy |
+| Heroku | `herokuapp.com` | Easy |
+| Netlify | `netlify.app` | Easy |
+| Azure (various) | `azurewebsites.net`, `cloudapp.net` | Medium |
+| Fastly | `fastly.net` | Medium |
+| Shopify | `myshopify.com` | Medium |
+
+## Discovery at Scale
+
+Finding subdomain takeover vulnerabilities across a large external attack surface requires automation.
+
+### Step 1: Enumerate all subdomains
+
+```bash
+subfinder -d example.com -all -recursive -o subdomains.txt
+```
+
+### Step 2: Resolve and identify CNAMEs
+
+```bash
+cat subdomains.txt | dnsx -silent -cname -resp | grep CNAME > cnames.txt
+```
+
+### Step 3: Check for dangling CNAMEs
+
+```bash
+# subjack is purpose-built for this
+subjack -w subdomains.txt -t 100 -timeout 30 -o results.txt -ssl
+
+# nuclei has templates for this too
+nuclei -l subdomains.txt -t takeovers/ -o nuclei_takeovers.json -json
+```
+
+### Step 4: Manual validation
+
+Automated tools have false positives. For any flagged subdomain, manually verify:
+1. Confirm the CNAME resolution
+2. Confirm the target resource doesn't exist (HTTP 404, error page)
+3. Confirm the service allows registration of that resource name
+
+## Prevention
+
+The permanent fix is simple: **clean up DNS records when deprovisioning services.**
+
+In practice, this requires process changes:
+
+**Offboarding process**: Add DNS cleanup as a required step in any service deprovisioning runbook.
+
+**CNAME auditing**: Run automated checks weekly against your DNS zone to flag any CNAMEs pointing to unclaimed resources.
+
+**DNS ownership model**: Centralize DNS management so that changes require review and records are tagged with the owner and associated service.
+
+**Monitoring**: Set up alerts for new CNAME records and changes to existing ones.
+
+A simple monitoring query if you use Route 53:
+
+```bash
+# List all CNAME records and check if targets resolve
+aws route53 list-resource-record-sets --hosted-zone-id YOUR_ZONE_ID \
+  --query "ResourceRecordSets[?Type=='CNAME']" \
+  | jq -r '.[].ResourceRecords[].Value' \
+  | while read cname; do
+      if ! host "$cname" > /dev/null 2>&1; then
+        echo "DANGLING CNAME: $cname"
+      fi
+    done
+```
+
+## Summary
+
+Subdomain takeover is a preventable vulnerability class that exists almost entirely because of process failures — specifically, not cleaning up DNS when services are deprovisioned. The tooling to detect it is free and mature. The fix is operationally simple.
+
+There is no excuse for having active subdomain takeover vulnerabilities in your external attack surface in 2026.

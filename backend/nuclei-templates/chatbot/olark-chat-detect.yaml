@@ -1,0 +1,32 @@
+id: olark-chat-detect
+
+info:
+  name: Olark Live Chat Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the Olark live chat widget on internet-facing web assets.
+    Olark provides real-time visitor tracking and may expose visitor metadata
+    or allow probing of the support workflow.
+  reference:
+    - https://www.olark.com/help/javascript
+  tags: chatbot,live-chat,tech,olark
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: regex
+        part: body
+        regex:
+          - "static\\.olark\\.com"
+          - "olark\\.identify"
+          - "olark\\.com/jsclient"
+
+      - type: word
+        part: body
+        words:
+          - "olark.com"

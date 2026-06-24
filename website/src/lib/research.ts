@@ -2,38 +2,39 @@ import fs from 'fs'
 import path from 'path'
 import matter from 'gray-matter'
 
-const BLOG_DIR = path.join(process.cwd(), 'src/content/blog')
+const RESEARCH_DIR = path.join(process.cwd(), 'src/content/research')
 
-export interface BlogPost {
+export type ResearchType = 'Whitepaper' | 'Technical Report' | 'Tool Evaluation' | 'Field Guide' | 'Advisory'
+
+export interface ResearchItem {
   slug: string
   title: string
   excerpt: string
   date: string
   author: string
   authorRole: string
-  category: string
+  type: ResearchType
   tags: string[]
   readTime: number
   featured?: boolean
-  coverImage?: string
+  downloadable?: boolean
   content: string
 }
 
-export interface BlogPostMeta extends Omit<BlogPost, 'content'> {}
+export type ResearchMeta = Omit<ResearchItem, 'content'>
 
 function computeReadTime(content: string): number {
-  const words = content.split(/\s+/).length
-  return Math.max(1, Math.ceil(words / 200))
+  return Math.max(1, Math.ceil(content.split(/\s+/).length / 200))
 }
 
-export function getAllPosts(): BlogPostMeta[] {
-  if (!fs.existsSync(BLOG_DIR)) return []
+export function getAllResearch(): ResearchMeta[] {
+  if (!fs.existsSync(RESEARCH_DIR)) return []
 
-  const files = fs.readdirSync(BLOG_DIR).filter((f) => f.endsWith('.mdx') || f.endsWith('.md'))
+  const files = fs.readdirSync(RESEARCH_DIR).filter((f) => f.endsWith('.mdx') || f.endsWith('.md'))
 
-  const posts = files.map((file) => {
+  const items = files.map((file) => {
     const slug = file.replace(/\.(mdx|md)$/, '')
-    const raw = fs.readFileSync(path.join(BLOG_DIR, file), 'utf-8')
+    const raw = fs.readFileSync(path.join(RESEARCH_DIR, file), 'utf-8')
     const { data, content } = matter(raw)
 
     return {
@@ -43,21 +44,21 @@ export function getAllPosts(): BlogPostMeta[] {
       date: data.date ?? new Date().toISOString().split('T')[0],
       author: data.author ?? 'Judah Security',
       authorRole: data.authorRole ?? 'Security Researcher',
-      category: data.category ?? 'Research',
+      type: (data.type ?? 'Technical Report') as ResearchType,
       tags: data.tags ?? [],
       readTime: data.readTime ?? computeReadTime(content),
       featured: data.featured ?? false,
-      coverImage: data.coverImage,
-    } satisfies BlogPostMeta
+      downloadable: data.downloadable ?? false,
+    } satisfies ResearchMeta
   })
 
-  return posts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+  return items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 }
 
-export function getPostBySlug(slug: string): BlogPost | null {
+export function getResearchBySlug(slug: string): ResearchItem | null {
   const candidates = [
-    path.join(BLOG_DIR, `${slug}.mdx`),
-    path.join(BLOG_DIR, `${slug}.md`),
+    path.join(RESEARCH_DIR, `${slug}.mdx`),
+    path.join(RESEARCH_DIR, `${slug}.md`),
   ]
   const filePath = candidates.find((p) => fs.existsSync(p))
   if (!filePath) return null
@@ -72,23 +73,19 @@ export function getPostBySlug(slug: string): BlogPost | null {
     date: data.date ?? new Date().toISOString().split('T')[0],
       author: data.author ?? 'Judah Security',
     authorRole: data.authorRole ?? 'Security Researcher',
-    category: data.category ?? 'Research',
+    type: (data.type ?? 'Technical Report') as ResearchType,
     tags: data.tags ?? [],
     readTime: data.readTime ?? computeReadTime(content),
     featured: data.featured ?? false,
-    coverImage: data.coverImage,
+    downloadable: data.downloadable ?? false,
     content,
   }
 }
 
-export function getFeaturedPosts(): BlogPostMeta[] {
-  return getAllPosts().filter((p) => p.featured).slice(0, 3)
+export function getRecentResearch(count = 6): ResearchMeta[] {
+  return getAllResearch().slice(0, count)
 }
 
-export function getRecentPosts(count = 6): BlogPostMeta[] {
-  return getAllPosts().slice(0, count)
-}
-
-export function getPostsByCategory(category: string): BlogPostMeta[] {
-  return getAllPosts().filter((p) => p.category === category)
+export function getFeaturedResearch(): ResearchMeta[] {
+  return getAllResearch().filter((r) => r.featured)
 }

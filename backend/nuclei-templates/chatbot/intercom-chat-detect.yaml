@@ -1,0 +1,38 @@
+id: intercom-chat-detect
+
+info:
+  name: Intercom Live Chat Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the Intercom live chat / messaging widget on internet-facing web assets.
+    Intercom widgets may expose customer support flows, file upload surfaces, and
+    backend CRM integrations that warrant LLM red-team or manual review.
+  reference:
+    - https://developers.intercom.com/installing-intercom/docs/
+  tags: chatbot,live-chat,tech,intercom
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "intercom-app"
+          - "intercomSettings"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "widget\\.intercom\\.io"
+          - "\\bIntercom\\(['\"]"
+
+      - type: word
+        part: body
+        words:
+          - "js.intercomcdn.com"

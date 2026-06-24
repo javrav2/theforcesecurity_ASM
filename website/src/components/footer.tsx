@@ -1,5 +1,6 @@
 import Link from 'next/link'
-import { Shield, Github, Twitter, Linkedin } from 'lucide-react'
+import Image from 'next/image'
+import { Github, Twitter, Linkedin } from 'lucide-react'
 
 const FOOTER_LINKS = {
   Tools: [
@@ -11,13 +12,13 @@ const FOOTER_LINKS = {
   ],
   Content: [
     { href: '/blog', label: 'Blog' },
+    { href: '/research', label: 'Research' },
     { href: '/blog?category=Tool+Review', label: 'Tool Reviews' },
-    { href: '/blog?category=Research', label: 'Research' },
     { href: '/blog?category=Tutorials', label: 'Tutorials' },
   ],
   Company: [
     { href: '/#about', label: 'About' },
-    { href: 'mailto:hello@theforcesecurity.io', label: 'Contact' },
+    { href: 'mailto:hello@judahsecurity.com', label: 'Contact' },
   ],
 }
 
@@ -27,43 +28,34 @@ export function Footer() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-12">
           <div className="col-span-2 md:col-span-1">
-            <Link href="/" className="flex items-center gap-2 mb-4">
-              <div className="w-7 h-7 rounded-md bg-primary/10 border border-primary/30 flex items-center justify-center">
-                <Shield className="w-3.5 h-3.5 text-primary" />
+            <Link href="/" className="flex items-center gap-2.5 mb-4">
+              <Image
+                src="/logo.png"
+                alt="Judah Security"
+                width={32}
+                height={32}
+                className="rounded object-contain"
+              />
+              <div className="flex flex-col leading-none">
+                <span className="text-xs font-bold text-foreground tracking-widest uppercase">
+                  Judah Security
+                </span>
+                <span className="text-[9px] text-muted-foreground tracking-wider uppercase font-mono">
+                  Cyber Security
+                </span>
               </div>
-              <span className="font-semibold text-sm">
-                The Force<span className="text-primary">Security</span>
-              </span>
             </Link>
             <p className="text-xs text-muted-foreground leading-relaxed mb-4">
-              Expert security research and tool reviews for the modern security practitioner.
+              Cyber security advisory, consulting & services. Practitioner-led research and tool evaluations.
             </p>
             <div className="flex items-center gap-3">
-              <a
-                href="https://github.com/theforcesecurity"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                aria-label="GitHub"
-              >
+              <a href="https://github.com/judahsecurity" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground transition-colors" aria-label="GitHub">
                 <Github className="w-4 h-4" />
               </a>
-              <a
-                href="https://twitter.com/theforcesec"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                aria-label="Twitter"
-              >
+              <a href="https://twitter.com/judahsecurity" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground transition-colors" aria-label="Twitter">
                 <Twitter className="w-4 h-4" />
               </a>
-              <a
-                href="https://linkedin.com/company/theforcesecurity"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                aria-label="LinkedIn"
-              >
+              <a href="https://linkedin.com/company/judahsecurity" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground transition-colors" aria-label="LinkedIn">
                 <Linkedin className="w-4 h-4" />
               </a>
             </div>
@@ -77,10 +69,7 @@ export function Footer() {
               <ul className="space-y-2.5">
                 {links.map((link) => (
                   <li key={link.href}>
-                    <Link
-                      href={link.href}
-                      className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
+                    <Link href={link.href} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
                       {link.label}
                     </Link>
                   </li>
@@ -92,10 +81,10 @@ export function Footer() {
 
         <div className="pt-6 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-4">
           <p className="text-xs text-muted-foreground">
-            &copy; {new Date().getFullYear()} The Force Security. All rights reserved.
+            &copy; {new Date().getFullYear()} Judah Security. All rights reserved.
           </p>
           <p className="text-xs text-muted-foreground font-mono">
-            theforcesecurity.io
+            judahsecurity.com
           </p>
         </div>
       </div>

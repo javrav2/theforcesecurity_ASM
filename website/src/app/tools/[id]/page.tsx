@@ -91,7 +91,7 @@ export default function ToolDetailPage({ params }: Props) {
                   />
                 ))}
                 <span className="text-xs text-muted-foreground ml-2">
-                  {tool.rating}/5 — The Force Security Rating
+                  {tool.rating}/5 — Judah Security Rating
                 </span>
               </div>
             )}

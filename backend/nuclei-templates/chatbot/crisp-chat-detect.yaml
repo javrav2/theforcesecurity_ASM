@@ -1,0 +1,39 @@
+id: crisp-chat-detect
+
+info:
+  name: Crisp Customer Messaging Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the Crisp customer messaging / live-chat widget on internet-facing web assets.
+    Crisp widgets can expose email addresses, chat histories, and often have file-sharing
+    capabilities.
+  reference:
+    - https://docs.crisp.chat/guides/chatbox/
+  tags: chatbot,live-chat,tech,crisp
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "crisp-chat"
+          - "crisp.website"
+          - "$crisp"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "client\\.crisp\\.chat"
+          - "\\$crisp\\s*="
+
+      - type: word
+        part: body
+        words:
+          - "settings.crisp.chat"

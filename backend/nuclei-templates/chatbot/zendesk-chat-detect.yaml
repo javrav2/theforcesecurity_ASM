@@ -1,0 +1,40 @@
+id: zendesk-chat-detect
+
+info:
+  name: Zendesk Chat / Web Widget Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects Zendesk Chat (formerly Zopim) or the Zendesk Web Widget on internet-facing
+    web assets. Zendesk integrations often expose ticketing back-ends and may have
+    SSO or authentication flows worth probing.
+  reference:
+    - https://support.zendesk.com/hc/en-us/articles/4408868719514
+  tags: chatbot,live-chat,tech,zendesk
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "ZendeskChat"
+          - "zopim"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "static\\.zdassets\\.com"
+          - "zE\\(['\"]webWidget"
+
+      - type: word
+        part: body
+        words:
+          - "ekr.zdassets.com"
+          - "ekr.zendesk.com"
+        condition: or

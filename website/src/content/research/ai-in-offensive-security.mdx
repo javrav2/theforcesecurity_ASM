@@ -1,0 +1,97 @@
+---
+title: "AI-Assisted Offensive Security: What's Actually Working in 2026"
+excerpt: "A practitioner's review of where LLMs and AI agents genuinely accelerate offensive security work — and where the hype outpaces reality."
+date: "2026-05-10"
+author: "Drew Vravick"
+authorRole: "Founder, Judah Security"
+type: "Technical Report"
+tags: ["ai", "llm", "offensive-security", "automation", "red-teaming"]
+readTime: 18
+featured: true
+downloadable: false
+---
+
+## The Honest Answer
+
+Let's skip the breathless AI hype and talk about what's actually shipping and actually working.
+
+After spending the past year integrating LLMs into offensive security workflows — reconnaissance, vulnerability analysis, exploit development, and post-exploitation — here's what we've found.
+
+**Where AI genuinely helps:**
+- Vulnerability research triage and CVE analysis
+- Custom tool and script generation
+- Natural language querying over large datasets (scan results, logs)
+- Reconnaissance synthesis and pattern recognition
+- Report writing and finding documentation
+
+**Where it mostly doesn't (yet):**
+- End-to-end autonomous exploitation
+- Novel vulnerability discovery
+- Reliable code execution in complex environments
+- Anything requiring genuine persistence or creativity under adversarial pressure
+
+## What We Actually Shipped
+
+At Judah Security, we've built two AI-integrated systems that are in production:
+
+### 1. Aegis Oracle — Exploitability Scoring
+
+Aegis Oracle uses a multi-stage pipeline to score CVE exploitability in context:
+
+1. **Structured extraction**: An LLM reads CVE descriptions, NVD data, and public PoC information to extract preconditions (authentication required, network access needed, specific configuration required, etc.)
+2. **Rule matching**: Extracted preconditions are matched against what we know about the target environment
+3. **Score generation**: An OPES (Operational Prioritization and Exploitability Score) is computed combining CVSS, precondition satisfaction, and exploitation activity
+
+The LLM component handles the hardest part: understanding the natural language description of a vulnerability well enough to extract structured data. This was previously done manually by security engineers and took 5–10 minutes per CVE. The LLM does it in under 2 seconds with accuracy comparable to a senior analyst.
+
+### 2. Nanoclaw — Autonomous Pentest Agent
+
+Nanoclaw is a ReACT-based autonomous agent that can conduct targeted penetration testing with minimal human supervision. It:
+
+- Plans an attack strategy based on scope and objectives
+- Executes reconnaissance using integrated tools (Nuclei, httpx, nmap, Playwright)
+- Chains findings into exploitation attempts
+- Documents actions and findings in real time
+- Knows when to escalate to a human
+
+**Honest limitations**: Nanoclaw works well for discovery and low-hanging-fruit exploitation. It struggles with complex, multi-step attack chains that require creativity or adapting to unexpected defensive responses. It's a force multiplier, not a replacement for a skilled penetration tester.
+
+## The Prompt Engineering Reality
+
+A significant portion of AI integration work in offensive security is prompt engineering. This is less exciting than it sounds but more important than most people admit.
+
+The difference between an LLM that gives you useful vulnerability analysis and one that hallucinates CVE details is almost entirely in how you structure the prompt, what context you provide, and how you validate the output.
+
+Key patterns we've found effective:
+
+**Chain-of-thought for vulnerability analysis:**
+```
+Given the following CVE description, extract the preconditions for exploitation.
+Think step by step:
+1. What authentication (if any) is required?
+2. What network access is required?
+3. What specific configuration or state must be present?
+4. What is the attack complexity?
+
+CVE Description: {description}
+
+Extract each precondition as a structured JSON object with: type, required, description.
+```
+
+**Few-shot prompting for consistent output formatting:**
+Provide 2–3 examples of the exact output format you want before asking the model to process new input.
+
+**Self-critique loops:**
+For high-stakes analysis (e.g., determining if a vulnerability is exploitable in a specific environment), run the analysis twice with different temperature settings and compare outputs. Divergence is a signal of uncertainty.
+
+## Where This Is Heading
+
+The trajectory is clear: AI agents will handle more and more of the routine offensive security work. Reconnaissance, standard vulnerability testing, report writing — these will be increasingly automated.
+
+What won't be automated, at least not soon:
+- Building trust with clients and understanding business context
+- Novel attack research
+- Red team operations that require social engineering
+- Anything requiring genuine creativity under pressure
+
+The practitioners who thrive will be the ones who understand how to direct and validate AI agents, not just operate tools manually.

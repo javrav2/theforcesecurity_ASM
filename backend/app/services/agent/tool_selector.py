@@ -38,7 +38,12 @@ _TECH_CLASSIFIERS: Dict[str, List[str]] = {
     "cloudflare": ["cloudflare"],
     "cdn": ["cloudflare", "akamai", "fastly", "cloudfront", "incapsula"],
     "waf": ["cloudflare", "akamai", "imperva", "incapsula", "f5", "modsecurity", "sucuri", "barracuda"],
-    "chatbot": ["openai", "anthropic", "langchain", "chatbot", "chatgpt", "intercom", "drift", "zendesk"],
+    "chatbot": [
+        "openai", "anthropic", "langchain", "chatbot", "chatgpt",
+        "intercom", "drift", "zendesk", "zendesk chat", "crisp", "tawk",
+        "tawk.to", "livechat", "freshchat", "helpscout", "hubspot chat",
+        "salesforce chat", "custom chat widget", "live chat",
+    ],
 }
 
 # Port → service type mapping for common non-HTTP services

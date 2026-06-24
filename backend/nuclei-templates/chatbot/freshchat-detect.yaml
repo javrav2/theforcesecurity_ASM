@@ -1,0 +1,40 @@
+id: freshchat-detect
+
+info:
+  name: Freshchat / Freshworks Widget Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the Freshchat or Freshworks unified customer messaging widget on
+    internet-facing web assets. Freshworks integrations may tie into ticketing,
+    CRM, and e-mail systems and commonly include file-upload capabilities.
+  reference:
+    - https://developers.freshchat.com/
+  tags: chatbot,live-chat,tech,freshchat,freshworks
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "freshchat"
+          - "FreshworksWidget"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "wchat\\.freshchat\\.com"
+          - "fw-cdn\\.com.*freshchat"
+
+      - type: word
+        part: body
+        words:
+          - "euc-widget.freshworks.com"
+          - "ind-widget.freshworks.com"
+        condition: or

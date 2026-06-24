@@ -1,0 +1,34 @@
+id: tawk-to-chat-detect
+
+info:
+  name: Tawk.to Live Chat Detect
+  author: theforcesecurity
+  severity: info
+  description: |
+    Detects the Tawk.to free live chat widget on internet-facing web assets.
+    Tawk.to is widely deployed and its API endpoints may accept unauthenticated
+    messages that could be used for social engineering or reconnaissance.
+  reference:
+    - https://help.tawk.to/article/tawk-to-javascript-api
+  tags: chatbot,live-chat,tech,tawk
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "tawkto"
+          - "Tawk_API"
+        condition: or
+
+      - type: regex
+        part: body
+        regex:
+          - "embed\\.tawk\\.to"
+          - "tawk\\.to/chat"
+          - "s1\\.tawk\\.to"
