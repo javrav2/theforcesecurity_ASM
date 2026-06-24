@@ -10,6 +10,10 @@ A "skill" is a named, bounded workflow the agent knows how to run:
     * ``takeover``     - Subdomain takeover sweep
     * ``secrets``      - TruffleHog verified secret scan
     * ``llm-redteam``  - LLM / chatbot red-team
+    * ``surface-ranking`` - Rank recon results by testing value
+    * ``api-authz-validation`` - Prove API authz gaps with minimal requests
+    * ``idor-validation`` - Validate BOLA / IDOR with response comparison
+    * ``evidence-hygiene`` - Redact sensitive evidence before reporting
 
 In chat, the user can invoke any skill with::
 
@@ -130,6 +134,71 @@ SKILLS: list[Skill] = [
         ),
     ),
     Skill(
+        id="surface-ranking",
+        aliases=["surface", "rank-surface", "attack-surface-ranking", "rank"],
+        title="Surface ranking",
+        description="Rank discovered assets and endpoints by likely testing value and impact.",
+        scan_type="surface_ranking",
+        playbook_id="surface_ranking",
+        system_context=(
+            "You are running the SURFACE-RANKING skill. Build a prioritized target "
+            "queue from existing recon and light follow-up checks. Favor assets with "
+            "authentication, APIs, exposed Swagger/OpenAPI, GraphQL, file upload, admin "
+            "routes, sensitive technologies, high-risk ports, known vulns, JS secrets, "
+            "or cloud/identity integrations. Do not perform destructive validation; "
+            "finish with ranked targets, why each matters, and the next safe proof step."
+        ),
+    ),
+    Skill(
+        id="api-authz-validation",
+        aliases=["api-authz", "api-authorization", "swagger-authz", "api-validation"],
+        title="API authorization validation",
+        description="Validate unauthenticated or under-authorized API exposure from discovered API specs and endpoints.",
+        scan_type="api_authz_validation",
+        playbook_id="api_authz_validation",
+        system_context=(
+            "You are running the API-AUTHZ-VALIDATION skill. Start from discovered "
+            "OpenAPI/Swagger, GraphQL, or REST endpoints. Prove exposure with minimal "
+            "GET/HEAD requests first, then compare unauthenticated and authorized "
+            "responses when credentials are available. Look for sensitive data, PII, "
+            "bulk records, secrets, and missing 401/403 controls. Do not modify data "
+            "or exercise unsafe methods unless explicitly authorized."
+        ),
+    ),
+    Skill(
+        id="idor-validation",
+        aliases=["idor", "bola", "authz-validation", "object-authz"],
+        title="IDOR / BOLA validation",
+        description="Validate object-level authorization flaws with safe response comparison.",
+        scan_type="idor_validation",
+        playbook_id="idor_validation",
+        system_context=(
+            "You are running the IDOR-VALIDATION skill. Identify endpoints with object "
+            "IDs, account IDs, document IDs, tenant IDs, or predictable UUIDs. Compare "
+            "responses across unauthenticated, user A, and user B contexts when test "
+            "credentials are available. A finding needs concrete cross-user or cross-"
+            "tenant data access, not just a 200 response. Use read-only requests unless "
+            "the engagement explicitly authorizes mutation."
+        ),
+    ),
+    Skill(
+        id="evidence-hygiene",
+        aliases=["evidence", "redact", "sanitize-evidence", "report-hygiene"],
+        title="Evidence hygiene",
+        description="Redact cookies, tokens, secrets, and PII before findings or reports are submitted.",
+        scan_type="evidence_hygiene",
+        playbook_id="evidence_hygiene",
+        system_context=(
+            "You are running the EVIDENCE-HYGIENE skill. Review evidence before it is "
+            "saved or reported. Redact session cookies, bearer tokens, API keys, private "
+            "keys, authorization codes, passwords, emails beyond the minimum needed, "
+            "phone numbers, SSNs, payment data, and unnecessary response bodies. Preserve "
+            "enough structure to prove impact: endpoint, status, field names, data type, "
+            "and a short redacted snippet."
+        ),
+        required_inputs=["finding"],
+    ),
+    Skill(
         id="fireteam",
         aliases=["scatter", "parallel-agents"],
         title="Fireteam (parallel specialists)",
@@ -139,6 +208,138 @@ SKILLS: list[Skill] = [
             "appropriate mission and the relevant specialist names."
         ),
         required_inputs=["mission"],
+    ),
+    Skill(
+        id="finding-validation",
+        aliases=["validate", "gate", "7q", "triage", "validate-finding"],
+        title="Finding validation (7-Question Gate)",
+        description="Score a proposed finding through 7 criteria before reporting: impact, reachability, reproducibility, boundary, evidence, severity, and N/A risk.",
+        scan_type="finding_validation",
+        playbook_id="finding_validation",
+        system_context=(
+            "You are running the FINDING-VALIDATION skill. Call validate_finding with "
+            "the title, description, severity, and any evidence. Use the score and "
+            "verdict to decide: SUBMIT (6-7), IMPROVE (3-5), or DROP (0-2). "
+            "For IMPROVE, explain each failing question to the user. "
+            "After validation, call detect_bug_chains to surface follow-on test opportunities."
+        ),
+        required_inputs=["finding"],
+    ),
+    Skill(
+        id="chain-detection",
+        aliases=["chain", "bug-chain", "vuln-chain", "chains"],
+        title="Bug chain detection",
+        description="Given a confirmed vulnerability, surface follow-on bug classes that commonly chain with it and rank them by impact.",
+        scan_type="chain_detection",
+        playbook_id="chain_detection",
+        system_context=(
+            "You are running the CHAIN-DETECTION skill. Call detect_bug_chains with the "
+            "confirmed vuln_type and target. Then for each CRITICAL/HIGH chain candidate, "
+            "use the appropriate tool or skill to validate the chain. "
+            "Document chain findings with create_finding referencing the original bug."
+        ),
+        required_inputs=["vuln_type"],
+    ),
+    Skill(
+        id="403-bypass",
+        aliases=["bypass", "bypass403", "access-bypass", "forbidden-bypass"],
+        title="403 / 401 access bypass",
+        description="Test header tricks, path normalization, and method overrides to bypass 403/401 access restrictions.",
+        scan_type="bypass_403",
+        playbook_id="bypass_403",
+        system_context=(
+            "You are running the 403-BYPASS skill. "
+            "1) Identify all 403/401/302 restricted endpoints using execute_katana or execute_ffuf. "
+            "2) Call bypass_403(url=<restricted_url>) for each candidate. "
+            "3) If bypasses are found, call create_finding with the successful technique as evidence. "
+            "4) Call detect_bug_chains(vuln_type='broken_auth') to surface follow-on tests."
+        ),
+    ),
+    Skill(
+        id="request-smuggling",
+        aliases=["smuggling", "http-smuggling", "req-smuggling", "cl-te", "te-cl"],
+        title="HTTP request smuggling",
+        description="Detect CL.TE, TE.CL, and TE.TE HTTP/1.1 request desync via timing-based probes.",
+        scan_type="request_smuggling",
+        playbook_id="request_smuggling",
+        system_context=(
+            "You are running the REQUEST-SMUGGLING skill. "
+            "1) Call test_request_smuggling(url=target, technique='all'). "
+            "2) If timing-based indicators are found, use execute_curl with crafted CL/TE payloads "
+            "to attempt differential confirmation. "
+            "3) Call detect_bug_chains(vuln_type='request_smuggling') for downstream impact. "
+            "4) Document confirmed findings with create_finding citing the timed-out probe."
+        ),
+    ),
+    Skill(
+        id="cache-poisoning",
+        aliases=["cache", "web-cache", "cache-poison", "cache-deception"],
+        title="Web cache poisoning",
+        description="Probe for unkeyed header injection and cache poisoning via canary-value reflection tests.",
+        scan_type="cache_poisoning",
+        playbook_id="cache_poisoning",
+        system_context=(
+            "You are running the CACHE-POISONING skill. "
+            "1) Call test_cache_poisoning(url=target) with default probe headers. "
+            "2) For any confirmed or candidate unkeyed headers, craft manual payloads "
+            "with execute_curl to confirm cache storage. "
+            "3) Call detect_bug_chains(vuln_type='cache_poisoning') for downstream impact. "
+            "4) Create findings only for confirmed cache storage of injected values."
+        ),
+    ),
+    Skill(
+        id="race-conditions",
+        aliases=["race", "concurrent", "toctou", "race-condition"],
+        title="Race condition testing",
+        description="Fire concurrent requests to detect TOCTOU flaws in transactions, coupons, balances, and rate limits.",
+        scan_type="race_conditions",
+        playbook_id="race_conditions",
+        system_context=(
+            "You are running the RACE-CONDITIONS skill. "
+            "1) Identify state-changing endpoints: balance/credits, coupon/voucher redemption, "
+            "invite/role changes, file operations, or any 'one-time' actions. "
+            "2) Call test_race_condition(url=endpoint, method='POST', concurrency=20) with "
+            "the appropriate body/auth_headers. "
+            "3) Look for multiple success responses or duplicate unique field values. "
+            "4) Create a finding with evidence showing the race (number of successes, duplicated IDs)."
+        ),
+    ),
+    Skill(
+        id="saml-sso",
+        aliases=["saml", "sso", "oauth-bypass", "oidc", "jwt-confusion", "saml-attack"],
+        title="SAML / SSO / OAuth attack surface",
+        description="Discover SAML/OAuth/OIDC endpoints and probe for signature wrapping, algorithm confusion, open redirect, and OIDC misconfiguration.",
+        scan_type="saml_sso",
+        playbook_id="saml_sso",
+        system_context=(
+            "You are running the SAML-SSO skill. "
+            "1) Call test_saml_sso(url=target) to discover endpoints and run all category probes. "
+            "2) For OAuth open redirect findings, test token theft with execute_curl. "
+            "3) For OIDC alg=none or HS256 findings, attempt JWT forging manually. "
+            "4) If a SAMLResponse is captured, re-run with saml_response_b64=<base64> for "
+            "XML Signature Wrapping analysis. "
+            "5) Create findings for any confirmed bypasses."
+        ),
+    ),
+    Skill(
+        id="credential-spray",
+        aliases=["spray", "cred-spray", "password-spray", "bruteforce"],
+        title="Credential spray (authorized)",
+        description="Spray a small, targeted credential set against a login endpoint with lockout detection and rate-limit awareness. Requires explicit authorization.",
+        scan_type="credential_spray",
+        playbook_id="credential_spray",
+        system_context=(
+            "You are running the CREDENTIAL-SPRAY skill. "
+            "LEGAL REQUIREMENT: Confirm with the user that they have written authorization "
+            "to test credentials against the target before proceeding. "
+            "1) Identify the login endpoint URL and confirm the username/password field names. "
+            "2) Call test_credential_spray(login_url=..., usernames=[...], passwords=[...], "
+            "authorized=True, max_attempts=10, delay_seconds=3.0). "
+            "3) If lockout is detected, stop immediately and report the lockout as a positive "
+            "finding (lockout policy exists). "
+            "4) If hits are found, create_finding with severity=critical and REDACTED evidence."
+        ),
+        required_inputs=["login_url", "credentials"],
     ),
 ]
 
@@ -158,6 +359,7 @@ def list_skills() -> list[dict]:
             "title": s.title,
             "description": s.description,
             "scan_type": s.scan_type,
+            "playbook_id": s.playbook_id,
             "required_inputs": s.required_inputs,
         }
         for s in SKILLS

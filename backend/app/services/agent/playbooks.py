@@ -97,6 +97,133 @@ PLAYBOOKS: List[Dict[str, Any]] = [
         ],
     },
     {
+        "id": "surface_ranking",
+        "name": "Surface ranking",
+        "description": "Prioritize discovered assets and endpoints by likely exploitability, impact, and proof value.",
+        "objective": (
+            "Rank the target's attack surface by testing value and likely impact.\n\n"
+            "**Phase 1 - Gather existing context**\n"
+            "1) Use query_assets, query_vulnerabilities, query_ports, query_technologies, "
+            "analyze_attack_surface, rank_attack_surface, and get_notes to understand what is already known.\n"
+            "2) Use query_prior_sessions if available to pull prior findings, failed attempts, "
+            "and lessons for this organization.\n\n"
+            "**Phase 2 - Light enrichment**\n"
+            "3) For the requested target or top candidates, run lightweight checks such as "
+            "execute_httpx, execute_wappalyzer or execute_whatweb, execute_wafw00f, and "
+            "execute_katana only when needed to fill gaps.\n"
+            "4) Look for high-value surfaces: login/admin flows, APIs, Swagger/OpenAPI, "
+            "GraphQL, file upload, payment/export/webhook flows, exposed JS bundles, "
+            "cloud/identity integrations, risky ports, known vulnerable tech, or existing "
+            "critical/high findings.\n\n"
+            "**Phase 3 - Rank and route**\n"
+            "5) Produce a ranked queue with each target's evidence, why it matters, likely "
+            "vulnerability classes, and the next safest validation skill/tool.\n"
+            "6) Save the ranked queue with save_note(category='artifact') so later skills "
+            "can pick up from it.\n\n"
+            "Do not perform destructive validation in this playbook. The deliverable is a "
+            "prioritized target queue and a concise next-step plan."
+        ),
+        "initial_todos": [
+            {"description": "Review existing assets, vulns, ports, technologies, and notes", "status": "pending", "priority": "high"},
+            {"description": "Run light enrichment on the requested target or top candidates", "status": "pending", "priority": "medium"},
+            {"description": "Rank surfaces by proof value and likely impact", "status": "pending", "priority": "high"},
+            {"description": "Save the ranked target queue as an artifact note", "status": "pending", "priority": "medium"},
+        ],
+    },
+    {
+        "id": "api_authz_validation",
+        "name": "API authorization validation",
+        "description": "Validate unauthenticated or under-authorized API access with minimal safe requests.",
+        "objective": (
+            "Validate API authorization exposure using the least intrusive proof possible.\n\n"
+            "**Phase 1 - Identify API surface**\n"
+            "1) Review existing assets, notes, and recon. Use execute_katana, execute_kiterunner, "
+            "discover_parameters, and execute_curl for focused discovery when needed.\n"
+            "2) Look for OpenAPI/Swagger specs, GraphQL endpoints, REST route patterns, "
+            "JSON responses, WebSocket hints, and JS-discovered endpoints.\n\n"
+            "**Phase 2 - Safe authorization checks**\n"
+            "3) For each candidate endpoint, send minimal GET or HEAD requests first with "
+            "execute_curl. Compare unauthenticated vs authenticated responses when provided "
+            "credentials or headers are available.\n"
+            "4) If an OpenAPI/Swagger spec exists and active testing is approved, request "
+            "the exploitation phase and use execute_schemathesis or targeted curl requests "
+            "to validate documented endpoints. Avoid POST/PUT/PATCH/DELETE unless explicitly "
+            "authorized.\n\n"
+            "**Phase 3 - Evidence and reporting**\n"
+            "5) A valid finding needs proof of meaningful impact: missing 401/403, sensitive "
+            "data, PII, secrets, bulk records, tenant data, or privileged operations exposed.\n"
+            "6) Call sanitize_evidence to redact credentials, cookies, PII, and response "
+            "bodies before create_finding. "
+            "Store only the endpoint, status codes, request context, and short redacted snippets.\n"
+            "7) Save non-findings and exhausted endpoints with save_note so future runs skip them."
+        ),
+        "initial_todos": [
+            {"description": "Map candidate API endpoints and any API specs", "status": "pending", "priority": "high"},
+            {"description": "Compare unauthenticated and authorized responses with safe methods", "status": "pending", "priority": "high"},
+            {"description": "Confirm meaningful exposed data or access-control impact", "status": "pending", "priority": "high"},
+            {"description": "Create redacted findings or save exhausted endpoint notes", "status": "pending", "priority": "medium"},
+        ],
+    },
+    {
+        "id": "idor_validation",
+        "name": "IDOR / BOLA validation",
+        "description": "Validate object-level authorization flaws by comparing read-only responses across identities.",
+        "objective": (
+            "Validate IDOR/BOLA candidates with safe response comparison.\n\n"
+            "**Phase 1 - Find object access patterns**\n"
+            "1) Review recon, notes, Katana output, API routes, and JS bundles for endpoints "
+            "with object IDs: user_id, account_id, org_id, tenant_id, document IDs, order IDs, "
+            "numeric paths, predictable UUIDs, or GraphQL node IDs.\n"
+            "2) Use discover_parameters and execute_arjun on high-value endpoints when needed.\n\n"
+            "**Phase 2 - Compare access contexts**\n"
+            "3) Prefer read-only GET requests. Compare unauthenticated, user A, and user B "
+            "responses when the engagement provides test credentials or headers.\n"
+            "4) Vary one object identifier at a time. Record status code, content length, "
+            "stable identifiers, owner fields, and sensitive data type.\n"
+            "5) Do not create, update, delete, purchase, invite, export, or trigger workflows "
+            "unless explicitly authorized.\n\n"
+            "**Phase 3 - Confirm and document**\n"
+            "6) A valid finding requires demonstrated cross-user, cross-tenant, or privilege "
+            "boundary impact. A 200 response alone is not enough.\n"
+            "7) Call sanitize_evidence to redact PII and tokens, then create_finding with the compared requests, "
+            "responses, and impact. Save false positives as exhausted notes."
+        ),
+        "initial_todos": [
+            {"description": "Identify endpoints with object IDs or tenant/user identifiers", "status": "pending", "priority": "high"},
+            {"description": "Compare read-only responses across available auth contexts", "status": "pending", "priority": "high"},
+            {"description": "Confirm cross-user or cross-tenant data access impact", "status": "pending", "priority": "high"},
+            {"description": "Create redacted findings or save false-positive notes", "status": "pending", "priority": "medium"},
+        ],
+    },
+    {
+        "id": "evidence_hygiene",
+        "name": "Evidence hygiene",
+        "description": "Redact sensitive evidence while preserving enough proof for triage.",
+        "objective": (
+            "Review and sanitize finding evidence before it is submitted or reported.\n\n"
+            "**Phase 1 - Identify sensitive material**\n"
+            "1) Inspect the provided finding/evidence and any related notes. Identify session "
+            "cookies, bearer tokens, API keys, auth codes, passwords, private keys, emails, "
+            "phone numbers, SSNs, payment data, full database rows, and unnecessary response bodies.\n\n"
+            "**Phase 2 - Redact safely**\n"
+            "2) Replace secrets with stable placeholders such as [REDACTED_TOKEN], "
+            "[REDACTED_COOKIE], [REDACTED_EMAIL], or partial fingerprints like akia...last4 "
+            "when needed to show credential type without exposing value.\n"
+            "3) Preserve proof structure: endpoint, method, status code, affected field names, "
+            "data type, tenant/user boundary, short snippet, and reproduction steps.\n\n"
+            "**Phase 3 - Save clean evidence**\n"
+            "4) Call sanitize_evidence on raw evidence. If a finding already exists, summarize "
+            "the sanitized evidence for the user. If creating a new finding, use create_finding "
+            "only with redacted evidence.\n"
+            "5) Save the redaction rationale with save_note(category='artifact') when useful."
+        ),
+        "initial_todos": [
+            {"description": "Inspect evidence for cookies, tokens, secrets, and PII", "status": "pending", "priority": "high"},
+            {"description": "Redact sensitive values while preserving proof structure", "status": "pending", "priority": "high"},
+            {"description": "Prepare sanitized evidence for finding/report use", "status": "pending", "priority": "medium"},
+        ],
+    },
+    {
         "id": "llm_red_team",
         "name": "AI/LLM Red Team Assessment",
         "description": "Security assessment of chatbots and AI-powered endpoints: discover, test, and report AI-specific vulnerabilities.",
@@ -136,6 +263,237 @@ PLAYBOOKS: List[Dict[str, Any]] = [
             {"description": "Run execute_llm_red_team against confirmed chatbot endpoints", "status": "pending", "priority": "high"},
             {"description": "Review results and create findings for any manual observations", "status": "pending", "priority": "medium"},
             {"description": "Generate final report with OWASP LLM Top 10 mapping and remediation", "status": "pending", "priority": "medium"},
+        ],
+    },
+    {
+        "id": "finding_validation",
+        "name": "Finding validation (7-Question Gate)",
+        "description": "Score a proposed finding through 7 criteria before reporting to eliminate weak, theoretical, and duplicate submissions.",
+        "objective": (
+            "Validate one or more proposed findings using the 7-Question Gate.\n\n"
+            "**Phase 1 — Score the finding**\n"
+            "1) Call validate_finding(title, description, severity, target, evidence) for each finding.\n"
+            "2) Report the score and verdict: SUBMIT (6-7/7), IMPROVE (3-5/7), DROP (0-2/7).\n\n"
+            "**Phase 2 — Address gaps (IMPROVE verdict)**\n"
+            "3) For each failing question, explain to the user what evidence or language is missing.\n"
+            "4) If evidence is missing: use execute_curl, execute_browser, or the appropriate injection "
+            "tool to generate a concrete PoC request/response.\n"
+            "5) Re-run validate_finding once the gaps are addressed.\n\n"
+            "**Phase 3 — Surface follow-on opportunities**\n"
+            "6) For any SUBMIT finding, call detect_bug_chains(vuln_type=<confirmed_type>) to "
+            "identify what else to test that commonly chains with this vulnerability.\n"
+            "7) Save chain recommendations with save_note(category='artifact').\n\n"
+            "IMPORTANT: Never create_finding for a DROP verdict. Only create_finding after SUBMIT."
+        ),
+        "initial_todos": [
+            {"description": "Run validate_finding on the proposed finding(s)", "status": "pending", "priority": "high"},
+            {"description": "Address failing questions if IMPROVE verdict", "status": "pending", "priority": "high"},
+            {"description": "Run detect_bug_chains on confirmed findings", "status": "pending", "priority": "medium"},
+            {"description": "Create findings only for SUBMIT verdicts", "status": "pending", "priority": "high"},
+        ],
+    },
+    {
+        "id": "chain_detection",
+        "name": "Bug chain detection",
+        "description": "Given a confirmed vulnerability, surface follow-on bug classes that commonly chain with it and attempt to validate the highest-impact chains.",
+        "objective": (
+            "Discover and validate vulnerability chains from a confirmed finding.\n\n"
+            "**Phase 1 — Map chain candidates**\n"
+            "1) Call detect_bug_chains(vuln_type=<confirmed_type>, target=<target>) to get "
+            "ranked chain candidates with severity and attack path explanations.\n"
+            "2) Review the CRITICAL and HIGH chain candidates first.\n\n"
+            "**Phase 2 — Validate top chains**\n"
+            "3) For SSRF chains: test cloud metadata access (169.254.169.254), internal ports.\n"
+            "4) For XSS chains: check for missing HttpOnly, test cookie exfiltration path.\n"
+            "5) For SQLi chains: test authentication bypass, attempt data extraction.\n"
+            "6) For IDOR chains: vary object IDs, compare cross-user responses.\n"
+            "7) Use the tool most appropriate for each chain (execute_curl, execute_browser, "
+            "execute_sqlmap, execute_nuclei, etc.).\n\n"
+            "**Phase 3 — Document chains**\n"
+            "8) For each confirmed chain, call create_finding with evidence and reference to "
+            "the original finding.\n"
+            "9) Save the chain map with save_note(category='artifact') for the report."
+        ),
+        "initial_todos": [
+            {"description": "Call detect_bug_chains for the confirmed vulnerability", "status": "pending", "priority": "high"},
+            {"description": "Validate CRITICAL chain candidates", "status": "pending", "priority": "high"},
+            {"description": "Validate HIGH chain candidates", "status": "pending", "priority": "medium"},
+            {"description": "Create findings for confirmed chains", "status": "pending", "priority": "high"},
+        ],
+    },
+    {
+        "id": "bypass_403",
+        "name": "403 / 401 access bypass",
+        "description": "Enumerate restricted endpoints and test header tricks, path normalization, and method overrides to bypass access controls.",
+        "objective": (
+            "Find and bypass access-restricted endpoints.\n\n"
+            "**Phase 1 — Find restricted endpoints**\n"
+            "1) Use execute_katana to crawl the target and identify endpoints.\n"
+            "2) Use execute_ffuf with a common paths wordlist to discover hidden endpoints.\n"
+            "3) Review responses — collect all URLs returning 403, 401, or 302.\n\n"
+            "**Phase 2 — Attempt bypasses**\n"
+            "4) For each 403/401 URL, call bypass_403(url=<restricted_url>).\n"
+            "5) Bypass categories tested: IP override headers, path normalization tricks, "
+            "HTTP method overrides, and protocol/scheme headers.\n\n"
+            "**Phase 3 — Validate and report**\n"
+            "6) For any bypass, use execute_curl to confirm the response contents are "
+            "sensitive or privileged (not just a 200 with empty body).\n"
+            "7) Call detect_bug_chains(vuln_type='broken_auth') for follow-on opportunities.\n"
+            "8) Create findings with the bypass header/path as evidence."
+        ),
+        "initial_todos": [
+            {"description": "Enumerate 403/401/302 restricted endpoints via katana + ffuf", "status": "pending", "priority": "high"},
+            {"description": "Run bypass_403 on each restricted URL", "status": "pending", "priority": "high"},
+            {"description": "Confirm bypass contents are sensitive or privileged", "status": "pending", "priority": "high"},
+            {"description": "Create findings for confirmed bypasses", "status": "pending", "priority": "high"},
+        ],
+    },
+    {
+        "id": "request_smuggling",
+        "name": "HTTP request smuggling",
+        "description": "Detect CL.TE, TE.CL, and TE.TE desync vulnerabilities via timing-based probes and differential response analysis.",
+        "objective": (
+            "Detect and confirm HTTP request smuggling vulnerabilities.\n\n"
+            "**Phase 1 — Timing-based detection**\n"
+            "1) Call test_request_smuggling(url=target, technique='all').\n"
+            "2) A probe that times out (>10 s) indicates a desync condition.\n"
+            "3) Note which technique (CL.TE, TE.CL, or TE.TE variant) triggered the timeout.\n\n"
+            "**Phase 2 — Differential confirmation**\n"
+            "4) Use execute_curl with a crafted request matching the vulnerable technique to "
+            "confirm via a differential response (poison the next request).\n"
+            "5) If HTTP/2 is supported, test H2.CL and H2.TE downgrade variants manually.\n\n"
+            "**Phase 3 — Impact assessment**\n"
+            "6) Call detect_bug_chains(vuln_type='request_smuggling') to understand downstream "
+            "impact (cache poisoning, auth bypass, XSS).\n"
+            "7) Create a HIGH/CRITICAL finding with the timing evidence and technique used.\n\n"
+            "CAUTION: Do not attempt to poison real user traffic. Use timing detection only."
+        ),
+        "initial_todos": [
+            {"description": "Run timing-based smuggling probes (CL.TE, TE.CL, TE.TE)", "status": "pending", "priority": "high"},
+            {"description": "Confirm with differential curl probe if timing indicates vulnerability", "status": "pending", "priority": "high"},
+            {"description": "Run detect_bug_chains for downstream impact mapping", "status": "pending", "priority": "medium"},
+            {"description": "Create finding with technique and timing evidence", "status": "pending", "priority": "high"},
+        ],
+    },
+    {
+        "id": "cache_poisoning",
+        "name": "Web cache poisoning",
+        "description": "Probe for unkeyed HTTP headers that are reflected in cached responses, enabling persistent XSS, open redirect, or DoS via cache corruption.",
+        "objective": (
+            "Detect and confirm web cache poisoning vulnerabilities.\n\n"
+            "**Phase 1 — Unkeyed header discovery**\n"
+            "1) Call test_cache_poisoning(url=target) to probe all common unkeyed headers with "
+            "a canary value and check for reflection in clean (un-poisoned) fetches.\n"
+            "2) Review results for 'potentially_poisoned' and 'unkeyed_header_candidates'.\n\n"
+            "**Phase 2 — Manual confirmation**\n"
+            "3) For confirmed or candidate headers, use execute_curl to manually send the "
+            "injected header and then fetch without it — confirm canary appears in cached response.\n"
+            "4) Check the Cache-Control, X-Cache, Age, and Vary response headers to understand "
+            "the caching behavior and cache TTL.\n\n"
+            "**Phase 3 — Impact escalation**\n"
+            "5) Escalate: if X-Forwarded-Host is unkeyed, inject a malicious host to test for "
+            "open redirect or XSS via poisoned resource URLs.\n"
+            "6) Call detect_bug_chains(vuln_type='cache_poisoning') for downstream impact.\n"
+            "7) Create a finding with the unkeyed header, canary evidence, and cache headers."
+        ),
+        "initial_todos": [
+            {"description": "Run test_cache_poisoning to find unkeyed headers", "status": "pending", "priority": "high"},
+            {"description": "Confirm cache storage of injected values via manual curl", "status": "pending", "priority": "high"},
+            {"description": "Escalate impact (XSS, redirect) via poisoned resource injection", "status": "pending", "priority": "medium"},
+            {"description": "Create finding with header, evidence, and cache headers", "status": "pending", "priority": "high"},
+        ],
+    },
+    {
+        "id": "race_conditions",
+        "name": "Race condition testing",
+        "description": "Identify TOCTOU flaws in transactions, coupons, balances, and rate limits by firing concurrent requests and observing inconsistent state.",
+        "objective": (
+            "Detect race conditions in state-changing endpoints.\n\n"
+            "**Phase 1 — Identify candidate endpoints**\n"
+            "1) Use execute_katana or query_assets to enumerate endpoints.\n"
+            "2) Target: coupon/voucher redemption, balance deductions, vote/like counters, "
+            "invite/role changes, referral bonuses, order creation, file deduplication.\n\n"
+            "**Phase 2 — Concurrent request test**\n"
+            "3) Call test_race_condition(url=endpoint, method='POST', concurrency=20, "
+            "body={<request_body>}, auth_headers={<auth>}).\n"
+            "4) Increase concurrency to 30-50 if initial tests show no effect.\n"
+            "5) If a unique field (transaction_id, reference_code) is in the response, "
+            "pass it as expected_unique_field to detect duplicate values.\n\n"
+            "**Phase 3 — Confirm and document**\n"
+            "6) A race condition is confirmed when: multiple success responses are returned, "
+            "or a unique field has duplicate values, or state changes exceed expected limits.\n"
+            "7) Document with success_count, duplicate field values, and response samples.\n"
+            "8) Create a HIGH finding — recommend atomic DB operations or distributed locks."
+        ),
+        "initial_todos": [
+            {"description": "Identify single-use or state-changing endpoints", "status": "pending", "priority": "high"},
+            {"description": "Run test_race_condition with concurrency=20", "status": "pending", "priority": "high"},
+            {"description": "Confirm state inconsistency (duplicate IDs or multiple successes)", "status": "pending", "priority": "high"},
+            {"description": "Create finding with success_count and duplicate value evidence", "status": "pending", "priority": "high"},
+        ],
+    },
+    {
+        "id": "saml_sso",
+        "name": "SAML / SSO / OAuth attack surface",
+        "description": "Discover and probe SAML, OAuth, and OIDC endpoints for signature wrapping, algorithm confusion, open redirect, and misconfiguration.",
+        "objective": (
+            "Assess the SAML/SSO/OAuth attack surface.\n\n"
+            "**Phase 1 — Endpoint discovery and probing**\n"
+            "1) Call test_saml_sso(url=target) to run all categories: saml_endpoints, "
+            "oauth_bypass, oidc_misconfig, jwt_confusion.\n"
+            "2) Review discovered endpoints and any high/critical findings.\n\n"
+            "**Phase 2 — Follow up on findings**\n"
+            "3) OAuth open redirect: use execute_curl to craft a redirect_uri=https://evil.example.com "
+            "and confirm the redirect occurs.\n"
+            "4) OIDC alg=none or HS256: manually forge a JWT using the public key as HMAC secret "
+            "and test acceptance (use save_note to guide manual test steps).\n"
+            "5) If a SAMLResponse is captured from Burp/browser: re-run "
+            "test_saml_sso(saml_response_b64=<base64>) to check for signature wrapping.\n\n"
+            "**Phase 3 — Document**\n"
+            "6) Create findings for: open OAuth redirect, alg=none acceptance, "
+            "missing NotOnOrAfter, or multiple Assertion elements.\n"
+            "7) Provide platform-specific remediation (strict redirect_uri allowlist, "
+            "algorithm enforcement, assertion expiry)."
+        ),
+        "initial_todos": [
+            {"description": "Run test_saml_sso for endpoint discovery and all categories", "status": "pending", "priority": "high"},
+            {"description": "Confirm OAuth open redirect with manual curl", "status": "pending", "priority": "high"},
+            {"description": "Test JWT algorithm confusion if HS256/alg=none found", "status": "pending", "priority": "high"},
+            {"description": "Analyze SAMLResponse if captured (signature wrapping)", "status": "pending", "priority": "medium"},
+            {"description": "Create findings with evidence and remediation guidance", "status": "pending", "priority": "high"},
+        ],
+    },
+    {
+        "id": "credential_spray",
+        "name": "Credential spray (authorized)",
+        "description": "Spray targeted credentials against a login endpoint with lockout detection. Requires explicit written authorization.",
+        "objective": (
+            "Conduct an authorized credential spray test.\n\n"
+            "**PRE-FLIGHT: Confirm Authorization**\n"
+            "REQUIRED: Ask the user to explicitly confirm they have written permission to test "
+            "credentials against this target before proceeding. If not confirmed, stop here.\n\n"
+            "**Phase 1 — Identify login endpoint**\n"
+            "1) Use execute_httpx, execute_katana, or execute_browser to locate the login form.\n"
+            "2) Confirm the HTTP method (POST), endpoint path, username/password field names, "
+            "and any CSRF token requirements.\n\n"
+            "**Phase 2 — Credential spray**\n"
+            "3) Call test_credential_spray(login_url=..., usernames=[...], passwords=[...], "
+            "authorized=True, max_attempts=10, delay_seconds=3.0).\n"
+            "4) Use a password spray strategy: 1-2 passwords × many usernames (avoids lockout).\n\n"
+            "**Phase 3 — Document results**\n"
+            "5) If lockout is detected: create a MEDIUM finding — account lockout policy exists "
+            "(positive finding) or confirm rate limiting is effective.\n"
+            "6) If no lockout detected: create a MEDIUM finding — missing account lockout / "
+            "rate limiting on authentication endpoint.\n"
+            "7) If hits are found: create CRITICAL finding — valid credentials found. "
+            "NEVER log the actual password in the finding; use sanitize_evidence first."
+        ),
+        "initial_todos": [
+            {"description": "Confirm written authorization from user before proceeding", "status": "pending", "priority": "high"},
+            {"description": "Locate and confirm login endpoint, field names", "status": "pending", "priority": "high"},
+            {"description": "Run test_credential_spray with authorized=True, max_attempts=10", "status": "pending", "priority": "high"},
+            {"description": "Document lockout behavior (finding regardless of hits)", "status": "pending", "priority": "medium"},
+            {"description": "Create critical finding if valid credentials found (sanitize password)", "status": "pending", "priority": "high"},
         ],
     },
 ]

@@ -117,6 +117,7 @@ class ASMToolsManager:
             "query_technologies": self.query_technologies,
             "query_graph": self.query_graph,
             "analyze_attack_surface": self.analyze_attack_surface,
+            "rank_attack_surface": self.rank_attack_surface,
             "get_asset_details": self.get_asset_details,
             "search_cve": self.search_cve,
             # Asset management
@@ -127,6 +128,7 @@ class ASMToolsManager:
             "save_note": self.save_note,
             "get_notes": self.get_notes,
             "create_finding": self.create_finding,
+            "sanitize_evidence": self.sanitize_evidence,
             # LLM Red Team Scanner
             "execute_llm_red_team": self.execute_llm_red_team,
             # Injection testing tools (pure-Python, no external binary)
@@ -211,6 +213,15 @@ class ASMToolsManager:
             "execute_uncover": self.execute_uncover,
             # Knowledge base (RAG) search
             "search_knowledge_base": self.search_knowledge_base,
+            # Offensive workflow tools
+            "validate_finding": self.validate_finding,
+            "detect_bug_chains": self.detect_bug_chains,
+            "bypass_403": self.bypass_403,
+            "test_request_smuggling": self.test_request_smuggling,
+            "test_cache_poisoning": self.test_cache_poisoning,
+            "test_race_condition": self.test_race_condition,
+            "test_saml_sso": self.test_saml_sso,
+            "test_credential_spray": self.test_credential_spray,
         }
         # Optional: web search (RedAmon-style) when Tavily API key is set
         if getattr(settings, "TAVILY_API_KEY", None):
@@ -755,6 +766,164 @@ class ASMToolsManager:
             return report
         finally:
             db.close()
+
+    async def rank_attack_surface(
+        self,
+        target: Optional[str] = None,
+        limit: int = 20,
+    ) -> str:
+        """
+        Rank assets by likely testing value using stored ASM data.
+
+        This is a lightweight triage helper for the surface-ranking skill. It
+        does not scan; it prioritizes known assets based on exposure, tech,
+        existing findings, and high-value route/asset signals.
+
+        Args:
+            target: Optional hostname/domain substring to focus ranking.
+            limit: Maximum ranked assets to return.
+        """
+        _, org_id = get_tenant_context()
+        if not org_id:
+            return json.dumps({"error": "No organization context."}, indent=2)
+
+        limit = max(1, min(int(limit or 20), 100))
+        focus = (target or "").strip().lower()
+
+        db = SessionLocal()
+        try:
+            query = db.query(Asset).filter(Asset.organization_id == org_id)
+            if focus:
+                query = query.filter(Asset.value.ilike(f"%{focus}%"))
+            assets = query.limit(500).all()
+
+            ranked = []
+            high_value_terms = {
+                "admin": 20,
+                "api": 18,
+                "auth": 18,
+                "login": 16,
+                "sso": 16,
+                "oauth": 16,
+                "graphql": 16,
+                "swagger": 15,
+                "openapi": 15,
+                "upload": 14,
+                "files": 10,
+                "export": 10,
+                "webhook": 10,
+                "payment": 12,
+                "billing": 12,
+                "chat": 10,
+                "support": 8,
+                "dev": 8,
+                "staging": 8,
+                "test": 6,
+            }
+            risky_ports = {21, 22, 23, 25, 445, 3389, 5432, 3306, 6379, 9200, 9300, 11211}
+            severity_weight = {
+                "critical": 40,
+                "high": 28,
+                "medium": 12,
+                "low": 4,
+                "info": 1,
+            }
+            tech_weight = {
+                "wordpress": 12,
+                "gitlab": 14,
+                "jenkins": 16,
+                "jira": 12,
+                "confluence": 12,
+                "spring": 10,
+                "struts": 14,
+                "apache tomcat": 12,
+                "graphql": 12,
+                "swagger": 10,
+                "intercom": 10,
+                "zendesk": 10,
+                "drift": 10,
+                "crisp": 10,
+                "tawk": 10,
+                "livechat": 10,
+                "freshchat": 10,
+                "custom chat widget": 10,
+                "kubernetes": 14,
+                "elasticsearch": 14,
+            }
+
+            for asset in assets:
+                score = float(getattr(asset, "ars_score", None) or 0)
+                reasons = []
+                value = (asset.value or "").lower()
+
+                if getattr(asset, "is_live", False):
+                    score += 10
+                    reasons.append("live asset")
+
+                for term, weight in high_value_terms.items():
+                    if term in value:
+                        score += weight
+                        reasons.append(f"name contains {term}")
+
+                for vuln in getattr(asset, "vulnerabilities", [])[:50]:
+                    sev = getattr(getattr(vuln, "severity", None), "value", None) or "info"
+                    weight = severity_weight.get(str(sev).lower(), 1)
+                    score += weight
+                    reasons.append(f"{str(sev).upper()} finding: {vuln.title[:80]}")
+
+                for port in getattr(asset, "ports", [])[:50]:
+                    port_num = getattr(port, "port", None)
+                    if getattr(port, "is_risky", False) or port_num in risky_ports:
+                        score += 12
+                        reasons.append(f"risky exposed port {port_num}")
+                    elif port_num in (80, 443, 8080, 8443):
+                        score += 4
+                        reasons.append(f"web port {port_num}")
+
+                for tech in getattr(asset, "technologies", [])[:50]:
+                    name = (getattr(tech, "name", "") or "").lower()
+                    for needle, weight in tech_weight.items():
+                        if needle in name:
+                            score += weight
+                            label = getattr(tech, "name", "") or needle
+                            reasons.append(f"high-value technology: {label}")
+
+                if score <= 0 and not reasons:
+                    continue
+
+                ranked.append({
+                    "asset_id": asset.id,
+                    "asset": asset.value,
+                    "type": asset.asset_type.value if asset.asset_type else None,
+                    "score": round(score, 1),
+                    "reasons": list(dict.fromkeys(reasons))[:8],
+                    "recommended_next_skill": self._recommend_skill_for_asset(value, reasons),
+                })
+
+            ranked.sort(key=lambda item: item["score"], reverse=True)
+            return json.dumps({
+                "target_filter": focus or None,
+                "ranked_count": len(ranked[:limit]),
+                "ranked_assets": ranked[:limit],
+            }, indent=2, default=str)[:_tool_output_max_chars()]
+        finally:
+            db.close()
+
+    def _recommend_skill_for_asset(self, asset_value: str, reasons: List[str]) -> str:
+        reason_blob = " ".join(reasons).lower()
+        if any(x in asset_value or x in reason_blob for x in ("chat", "intercom", "zendesk", "drift", "crisp", "tawk", "livechat")):
+            return "llm-redteam"
+        if any(x in asset_value or x in reason_blob for x in ("swagger", "openapi", "api", "graphql")):
+            return "api-authz-validation"
+        if any(x in asset_value or x in reason_blob for x in ("login", "auth", "sso", "oauth")):
+            return "api-authz-validation"
+        if any(x in asset_value or x in reason_blob for x in ("upload", "files")):
+            return "vuln-scan"
+        if "xss" in reason_blob:
+            return "vuln-scan"
+        if "sqli" in reason_blob or "sql injection" in reason_blob:
+            return "vuln-scan"
+        return "vuln-scan"
     
     async def get_asset_details(
         self,
@@ -1480,6 +1649,84 @@ class ASMToolsManager:
         finally:
             db.close()
 
+    async def sanitize_evidence(
+        self,
+        evidence: str,
+        preserve_last: int = 4,
+    ) -> str:
+        """
+        Redact sensitive values from evidence before creating a finding or report.
+
+        Args:
+            evidence: Raw request/response/log/screenshot OCR text to sanitize.
+            preserve_last: Number of trailing characters to keep for token fingerprints.
+        """
+        if not evidence:
+            return json.dumps({"sanitized": "", "redactions": []}, indent=2)
+
+        preserve_last = max(0, min(int(preserve_last or 4), 8))
+        redactions: List[Dict[str, Any]] = []
+
+        def replacement(label: str, value: str) -> str:
+            suffix = value[-preserve_last:] if preserve_last and len(value) > preserve_last else ""
+            redactions.append({"type": label, "length": len(value)})
+            return f"[REDACTED_{label}{':' + suffix if suffix else ''}]"
+
+        sanitized = evidence
+
+        header_patterns = [
+            (r"(?i)(authorization:\s*bearer\s+)([A-Za-z0-9._~+/=-]{12,})", "BEARER_TOKEN"),
+            (r"(?i)(api[-_]?key:\s*)([A-Za-z0-9._~+/=-]{12,})", "API_KEY"),
+            (r"(?i)(x-api-key:\s*)([A-Za-z0-9._~+/=-]{12,})", "API_KEY"),
+            (r"(?i)(cookie:\s*)([^\r\n]+)", "COOKIE_HEADER"),
+            (r"(?i)(set-cookie:\s*)([^\r\n;]+)", "SET_COOKIE"),
+        ]
+        for pattern, label in header_patterns:
+            sanitized = _re.sub(
+                pattern,
+                lambda m, lbl=label: m.group(1) + replacement(lbl, m.group(2)),
+                sanitized,
+            )
+
+        value_patterns = [
+            (r"\bAKIA[0-9A-Z]{16}\b", "AWS_ACCESS_KEY"),
+            (r"\bASIA[0-9A-Z]{16}\b", "AWS_TEMP_ACCESS_KEY"),
+            (r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b", "GITHUB_TOKEN"),
+            (r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b", "SLACK_TOKEN"),
+            (r"\bsk_live_[A-Za-z0-9]{16,}\b", "STRIPE_SECRET"),
+            (r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", "PRIVATE_KEY"),
+            (r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b", "JWT"),
+            (r"\b(?:\d[ -]*?){13,19}\b", "PAYMENT_CARD"),
+            (r"\b\d{3}-\d{2}-\d{4}\b", "SSN"),
+            (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "EMAIL"),
+        ]
+        for pattern, label in value_patterns:
+            flags = _re.DOTALL if label == "PRIVATE_KEY" else 0
+            sanitized = _re.sub(
+                pattern,
+                lambda m, lbl=label: replacement(lbl, m.group(0)),
+                sanitized,
+                flags=flags,
+            )
+
+        # Redact common JSON/form secret fields while preserving field names.
+        field_pattern = (
+            r'(?i)("?(?:password|passwd|secret|token|access_token|refresh_token|'
+            r'id_token|client_secret|api_key|apikey|session|sessionid|auth_code)"?\s*[:=]\s*)'
+            r'("?)([^",\s&}]{6,})\2'
+        )
+        sanitized = _re.sub(
+            field_pattern,
+            lambda m: m.group(1) + m.group(2) + replacement("SECRET_FIELD", m.group(3)) + m.group(2),
+            sanitized,
+        )
+
+        return json.dumps({
+            "sanitized": sanitized[:_tool_output_max_chars()],
+            "redaction_count": len(redactions),
+            "redactions": redactions[:100],
+        }, indent=2)
+
     async def scan_js_urls_for_secrets(
         self,
         urls: str,
@@ -1984,6 +2231,1094 @@ class ASMToolsManager:
             max_findings=max_findings,
             max_failures=max_failures,
         ) or ""
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Bug chain lookup table: confirmed_vuln → likely follow-on vulns
+    # ──────────────────────────────────────────────────────────────────────
+    _BUG_CHAINS: Dict[str, List[Dict[str, str]]] = {
+        "ssrf": [
+            {"vuln": "Cloud Metadata Exfiltration", "severity": "critical", "why": "SSRF reaches AWS/GCP/Azure metadata endpoints exposing IAM credentials."},
+            {"vuln": "Internal Network Pivot (Redis, Elasticsearch, Jenkins)", "severity": "high", "why": "SSRF pivots to unauthenticated internal services."},
+            {"vuln": "SSRF → RCE via internal Consul/Kubernetes API", "severity": "critical", "why": "Internal orchestration APIs often have no auth."},
+            {"vuln": "SSRF via PDF/Image renderer → LFI (file:// scheme)", "severity": "high", "why": "wkhtmltopdf / Headless Chrome server-side renderers follow file:// URIs."},
+        ],
+        "xss": [
+            {"vuln": "Account Takeover via Cookie Theft", "severity": "high", "why": "Stored XSS + document.cookie exfil = ATO when HttpOnly is absent."},
+            {"vuln": "CSRF via XSS (SameSite bypass)", "severity": "high", "why": "In-browser execution bypasses SameSite cookie restrictions for CSRF."},
+            {"vuln": "Admin Privilege Escalation via Admin-visible XSS", "severity": "critical", "why": "XSS in admin panel can create new admins or dump secrets."},
+            {"vuln": "postMessage Hijacking (DOM XSS)", "severity": "medium", "why": "Insecure postMessage listeners amplify DOM XSS to cross-origin data theft."},
+        ],
+        "sqli": [
+            {"vuln": "Authentication Bypass", "severity": "critical", "why": "OR-based SQLi in login forms defeats authentication entirely."},
+            {"vuln": "PII / Credential Exfiltration", "severity": "critical", "why": "UNION or error-based SQLi dumps user tables and password hashes."},
+            {"vuln": "File Read/Write → RCE (MySQL LOAD/INTO OUTFILE)", "severity": "critical", "why": "MySQL FILE privilege with misconfigured secure_file_priv allows shell upload."},
+            {"vuln": "Second-Order SQLi", "severity": "high", "why": "Payload stored in DB, triggered on a later query — bypasses most scanners."},
+        ],
+        "idor": [
+            {"vuln": "Mass Account Enumeration", "severity": "high", "why": "Sequential/predictable IDs allow scraping all user records."},
+            {"vuln": "Privilege Escalation to Admin", "severity": "critical", "why": "Accessing admin-role object IDs or manipulating role fields."},
+            {"vuln": "Private File / Document Disclosure", "severity": "high", "why": "IDOR on file IDs leaks contracts, PII, medical records."},
+            {"vuln": "IDOR + Mass Assignment → Account Takeover", "severity": "critical", "why": "Combining writable user fields with IDOR enables full ATO."},
+        ],
+        "open_redirect": [
+            {"vuln": "OAuth Access Token Theft via redirect_uri", "severity": "high", "why": "Open redirect in redirect_uri leaks OAuth tokens to attacker."},
+            {"vuln": "Phishing / Credential Harvesting", "severity": "medium", "why": "Trusted-domain redirect enables convincing phishing pages."},
+            {"vuln": "SSRF via server-side redirect following", "severity": "high", "why": "If the server follows the redirect, it becomes an SSRF pivot."},
+        ],
+        "xxe": [
+            {"vuln": "LFI via XXE (file:// entity)", "severity": "high", "why": "XXE reads /etc/passwd, ~/.aws/credentials, app config files."},
+            {"vuln": "SSRF via XXE (http:// entity)", "severity": "high", "why": "XXE forces internal HTTP requests — same impact as SSRF."},
+            {"vuln": "Blind XXE via OOB DNS / HTTP callback", "severity": "high", "why": "Error-blind XXE exfiltrates data through DNS or HTTP callbacks."},
+            {"vuln": "XXE → RCE via PHP expect:// or phar:// wrapper", "severity": "critical", "why": "PHP stream wrappers convert XXE into code execution on legacy stacks."},
+        ],
+        "lfi": [
+            {"vuln": "Log Poisoning → RCE", "severity": "critical", "why": "Include access.log after injecting PHP into User-Agent → RCE."},
+            {"vuln": "SSH Key / Credential Disclosure", "severity": "high", "why": "LFI of ~/.ssh/id_rsa or /etc/shadow leaks credentials."},
+            {"vuln": "PHP Session File Disclosure", "severity": "high", "why": "LFI of /tmp/sess_<token> discloses active PHP sessions."},
+            {"vuln": "LFI → RCE via phar:// / zip:// wrapper", "severity": "critical", "why": "PHP stream wrappers escalate file inclusion to code execution."},
+        ],
+        "csrf": [
+            {"vuln": "Account Takeover via Password/Email Change", "severity": "high", "why": "CSRF on password-change or email-update = ATO."},
+            {"vuln": "Admin Action Execution", "severity": "high", "why": "CSRF on admin-only actions when admin visits attacker-controlled page."},
+            {"vuln": "SSRF via CSRF (server-side request forgery chain)", "severity": "high", "why": "CSRF on an SSRF-prone action chains into SSRF impact."},
+        ],
+        "broken_auth": [
+            {"vuln": "Account Takeover via Password Reset Flaw", "severity": "critical", "why": "Weak tokens, host-header injection in reset link, or token reuse."},
+            {"vuln": "MFA Bypass", "severity": "high", "why": "Missing MFA on API endpoints or OTP brute-force with no rate limiting."},
+            {"vuln": "Session Fixation", "severity": "high", "why": "Token not rotated on login/logout allows session fixation attack."},
+            {"vuln": "JWT Algorithm Confusion (RS256 → HS256)", "severity": "critical", "why": "RS256 public key used as HS256 HMAC secret forges arbitrary tokens."},
+        ],
+        "rce": [
+            {"vuln": "Reverse Shell / C2 Persistence", "severity": "critical", "why": "RCE enables persistent foothold and lateral movement."},
+            {"vuln": "Credential Harvesting from Config / Env Vars", "severity": "critical", "why": "DB credentials, API keys, k8s secrets are trivially readable."},
+            {"vuln": "Cloud Metadata → IAM Privilege Escalation", "severity": "critical", "why": "EC2/GCP instance metadata provides IAM role credentials."},
+            {"vuln": "Container Escape (privileged / CAP_SYS_ADMIN)", "severity": "critical", "why": "Privileged Docker container or host-mounted socket → host escape."},
+        ],
+        "mass_assignment": [
+            {"vuln": "Privilege Escalation (role = admin)", "severity": "critical", "why": "Mass-assigning the role field promotes any user to admin."},
+            {"vuln": "Account Balance / Credits Manipulation", "severity": "critical", "why": "Assigning balance/credits field bypasses payment logic."},
+            {"vuln": "Email Takeover via email field assignment", "severity": "high", "why": "Overwriting email field hijacks the account without a reset flow."},
+        ],
+        "business_logic": [
+            {"vuln": "Race Condition on Transaction / Balance", "severity": "high", "why": "Concurrent requests exploit TOCTOU in balance/inventory checks."},
+            {"vuln": "Negative Price / Discount Stacking", "severity": "high", "why": "Missing input validation on price/discount fields."},
+            {"vuln": "Order State Skip (unpaid → shipped)", "severity": "medium", "why": "Manipulating workflow state variables skips payment enforcement."},
+        ],
+        "subdomain_takeover": [
+            {"vuln": "Cookie Tossing / Session Hijacking", "severity": "high", "why": "Taken-over subdomain sets cookies for the parent domain."},
+            {"vuln": "Phishing via Trusted Company Subdomain", "severity": "medium", "why": "Company subdomain used for convincing phishing campaigns."},
+            {"vuln": "CSP Whitelist Bypass", "severity": "medium", "why": "Subdomain in CSP whitelist — takeover bypasses Content Security Policy."},
+        ],
+        "cache_poisoning": [
+            {"vuln": "Stored XSS via Cached Response", "severity": "high", "why": "Poisoned cache serves malicious payload to all visitors of the page."},
+            {"vuln": "Denial of Service via Cache Corruption", "severity": "medium", "why": "Injecting error responses into cache causes widespread availability issues."},
+            {"vuln": "Open Redirect via X-Forwarded-Host", "severity": "medium", "why": "Poisoned redirect target serves attacker-controlled redirect to all users."},
+        ],
+        "request_smuggling": [
+            {"vuln": "Cache Poisoning via Smuggled Poison", "severity": "high", "why": "Smuggled poison request poisons the cache for subsequent victims."},
+            {"vuln": "Authentication Bypass via Smuggled Prefix", "severity": "critical", "why": "Prefix injected by smuggling rewrites the next victim's request."},
+            {"vuln": "XSS via Smuggled Reflected Content", "severity": "high", "why": "Reflected content from smuggled request executes in victim's browser."},
+            {"vuln": "Internal Service Access via Smuggling", "severity": "high", "why": "Smuggled request routes to internal endpoints not exposed externally."},
+        ],
+    }
+
+    async def detect_bug_chains(
+        self,
+        vuln_type: str,
+        target: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> str:
+        """Return vulnerability classes that commonly chain with a confirmed finding.
+
+        Use this after confirming a vulnerability to discover what else to test.
+        Returns chains ranked by severity with attack path explanations.
+
+        Args:
+            vuln_type: Confirmed or suspected vulnerability class. Supported:
+                       ssrf, xss, sqli, idor, open_redirect, xxe, lfi, csrf,
+                       broken_auth, rce, mass_assignment, business_logic,
+                       subdomain_takeover, cache_poisoning, request_smuggling.
+            target: Optional hostname/URL for context in the output.
+            notes: Optional notes about the confirmed finding.
+        """
+        key = (vuln_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+        alias_map = {
+            "bola": "idor", "object_injection": "idor",
+            "reflected_xss": "xss", "stored_xss": "xss", "dom_xss": "xss",
+            "sql_injection": "sqli", "injection": "sqli",
+            "redirect": "open_redirect",
+            "xml_injection": "xxe",
+            "path_traversal": "lfi", "directory_traversal": "lfi",
+            "authentication_bypass": "broken_auth", "auth_bypass": "broken_auth",
+            "account_takeover": "broken_auth",
+            "code_execution": "rce", "command_injection": "rce", "cmdi": "rce",
+            "parameter_pollution": "mass_assignment",
+            "logic_flaw": "business_logic",
+            "smuggling": "request_smuggling", "http_smuggling": "request_smuggling",
+            "cache": "cache_poisoning", "web_cache": "cache_poisoning",
+            "subdomain_takeover": "subdomain_takeover", "takeover": "subdomain_takeover",
+        }
+        key = alias_map.get(key, key)
+        chains = self._BUG_CHAINS.get(key)
+        if not chains:
+            return json.dumps({
+                "error": f"No chain data for '{vuln_type}'.",
+                "supported_types": sorted(self._BUG_CHAINS.keys()),
+            }, indent=2)
+        sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        ranked = sorted(chains, key=lambda c: sev_order.get(c.get("severity", "medium"), 4))
+        by_sev: Dict[str, list] = {}
+        for c in ranked:
+            by_sev.setdefault(c["severity"], []).append(c)
+        return json.dumps({
+            "confirmed_vuln": vuln_type,
+            "target": target or "not specified",
+            "notes": notes or None,
+            "chain_count": len(chains),
+            "chains_by_severity": by_sev,
+            "next_steps": [
+                f"[{c['severity'].upper()}] Test for {c['vuln']}: {c['why']}"
+                for c in ranked
+            ],
+        }, indent=2)
+
+    async def validate_finding(
+        self,
+        title: str,
+        description: str,
+        severity: str = "medium",
+        target: Optional[str] = None,
+        evidence: Optional[str] = None,
+        cve_id: Optional[str] = None,
+        remediation: Optional[str] = None,
+    ) -> str:
+        """7-Question Validation Gate — score a proposed finding before reporting.
+
+        Evaluates the finding against 7 criteria and returns a verdict:
+        SUBMIT (6-7/7), IMPROVE (3-5/7), or DROP (0-2/7).
+
+        Args:
+            title: Short finding title.
+            description: Full description of the vulnerability.
+            severity: Proposed severity (critical/high/medium/low/info).
+            target: Affected hostname or URL.
+            evidence: Request/response snippet or reproduction proof.
+            cve_id: Optional CVE ID if mapping to a known CVE.
+            remediation: Optional remediation guidance.
+        """
+        text = f"{title} {description} {evidence or ''} {remediation or ''}".lower()
+        questions: List[Dict[str, Any]] = []
+
+        # Q1: Demonstrable technical impact
+        impact_words = ["access", "execute", "exfiltrat", "bypass", "steal", "read", "write",
+                        "delete", "escalat", "takeover", "inject", "expose", "leak", "dump",
+                        "disclose", "overwrite", "redirect", "forge"]
+        q1 = any(w in text for w in impact_words)
+        questions.append({
+            "question": "Is there demonstrable technical impact?",
+            "pass": q1,
+            "feedback": "PASS — clear impact language found." if q1 else
+                        "FAIL — describe the concrete impact (data exposed, action achievable, etc.).",
+        })
+
+        # Q2: Reachable by an external attacker
+        privileged_only = any(w in text for w in ["requires admin", "internal only", "localhost only",
+                                                    "requires physical", "requires vpn access",
+                                                    "not internet-facing"])
+        q2 = not privileged_only
+        questions.append({
+            "question": "Is this reachable by an external attacker without prior privileged access?",
+            "pass": q2,
+            "feedback": "PASS — no privileged-access gating found." if q2 else
+                        "FAIL — if it requires admin/VPN/internal access, severity and scope need adjustment.",
+        })
+
+        # Q3: Reproducible attack path
+        path_words = ["step", "request", "payload", "parameter", "endpoint", "curl", "poc",
+                      "proof", "reproduct", "navigate", "visit", "send", "intercept"]
+        q3 = any(w in text for w in path_words) or bool(evidence and len(evidence.strip()) > 20)
+        questions.append({
+            "question": "Is there a clear, reproducible attack path?",
+            "pass": q3,
+            "feedback": "PASS — reproduction steps or evidence present." if q3 else
+                        "FAIL — add step-by-step reproduction instructions or a PoC request.",
+        })
+
+        # Q4: Crosses a meaningful security boundary
+        boundary_words = ["other user", "another user", "admin", "privilege", "unauthorized",
+                          "unauthenticated", "tenant", "account", "cross-user", "cross-tenant",
+                          "without authentication", "without authorization", "arbitrary"]
+        q4 = any(w in text for w in boundary_words)
+        questions.append({
+            "question": "Does the impact cross an auth, privilege, or data-ownership boundary?",
+            "pass": q4,
+            "feedback": "PASS — boundary crossing language found." if q4 else
+                        "FAIL — clarify the security boundary violated (e.g. 'access another user's data').",
+        })
+
+        # Q5: Has direct evidence (not purely theoretical)
+        theoretical_words = ["might", "could potentially", "it is possible that", "theoretically",
+                              "in theory", "may be possible", "hypothetically"]
+        q5_theoretical = any(w in text for w in theoretical_words)
+        q5_has_evidence = bool(evidence and len(evidence.strip()) > 30)
+        q5 = q5_has_evidence or not q5_theoretical
+        questions.append({
+            "question": "Is the finding backed by direct evidence (not purely theoretical)?",
+            "pass": q5,
+            "feedback": "PASS — evidence provided or non-theoretical language." if q5 else
+                        "FAIL — replace theoretical language with a tested payload and observed response.",
+        })
+
+        # Q6: Non-trivial severity
+        sev_weight = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+        q6 = sev_weight.get(severity.strip().lower(), 0) >= 2
+        questions.append({
+            "question": "Is the severity at least Medium (meaningful real-world impact)?",
+            "pass": q6,
+            "feedback": f"PASS — severity '{severity}' is medium or above." if q6 else
+                        f"FAIL — severity '{severity}' findings rarely justify submission effort.",
+        })
+
+        # Q7: Would survive duplicate/informational review
+        dupe_risk_words = ["default page", "missing header", "server version", "banner",
+                           "clickjacking", "self-xss", "csrf on logout", "logout csrf",
+                           "rate limit on non-sensitive", "no rate limit on login page only",
+                           "options method", "http methods", "cors wildcard on public"]
+        q7 = not any(w in text for w in dupe_risk_words)
+        questions.append({
+            "question": "Is this unlikely to be marked as N/A / Informational / Duplicate?",
+            "pass": q7,
+            "feedback": "PASS — no common N/A patterns detected." if q7 else
+                        "FAIL — common low-value pattern detected; review program policy for acceptability.",
+        })
+
+        score = sum(1 for q in questions if q["pass"])
+        if score >= 6:
+            verdict = "SUBMIT"
+            verdict_detail = "Strong finding. Submit with the evidence and steps provided."
+        elif score >= 3:
+            verdict = "IMPROVE"
+            gaps = [q["feedback"] for q in questions if not q["pass"]]
+            verdict_detail = "Address the gaps before submitting: " + " | ".join(gaps)
+        else:
+            verdict = "DROP"
+            verdict_detail = "Fundamental issues — likely to be rejected. Address all failing questions."
+
+        return json.dumps({
+            "title": title,
+            "severity": severity,
+            "target": target or "not specified",
+            "score": f"{score}/7",
+            "verdict": verdict,
+            "verdict_detail": verdict_detail,
+            "questions": questions,
+            "has_evidence": bool(evidence),
+            "has_remediation": bool(remediation),
+            "has_cve": bool(cve_id),
+        }, indent=2)
+
+    async def bypass_403(
+        self,
+        url: str,
+        techniques: Optional[List[str]] = None,
+        additional_headers: Optional[Dict[str, str]] = None,
+        timeout: int = 15,
+    ) -> str:
+        """Test for 403/401/302 access restriction bypasses via header tricks,
+        path normalization, and method overrides.
+
+        Args:
+            url: The restricted URL to test (must return 403/401/302 normally).
+            techniques: Subset of bypass classes to run. Options:
+                        ip_headers, path_tricks, method_override, protocol_headers.
+                        Omit to run all.
+            additional_headers: Extra headers to include in every probe (e.g. auth cookies).
+            timeout: Per-request timeout in seconds.
+        """
+        from urllib.parse import urlparse, urlunparse
+        import asyncio as _asyncio
+
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
+        all_techniques = {"ip_headers", "path_tricks", "method_override", "protocol_headers"}
+        active = set(techniques or all_techniques) & all_techniques
+
+        base_headers = dict(additional_headers or {})
+        base_headers.setdefault("User-Agent", "Mozilla/5.0 (Security Assessment)")
+
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+
+        probes: List[Dict[str, Any]] = []
+
+        if "ip_headers" in active:
+            ip_bypass_headers = [
+                {"X-Forwarded-For": "127.0.0.1"},
+                {"X-Real-IP": "127.0.0.1"},
+                {"X-Originating-IP": "127.0.0.1"},
+                {"X-Remote-IP": "127.0.0.1"},
+                {"X-Client-IP": "127.0.0.1"},
+                {"True-Client-IP": "127.0.0.1"},
+                {"CF-Connecting-IP": "127.0.0.1"},
+                {"X-Forwarded-For": "::1"},
+                {"X-Forwarded-For": "0.0.0.0"},
+            ]
+            for hdr in ip_bypass_headers:
+                probes.append({"label": f"IP header: {list(hdr.keys())[0]}={list(hdr.values())[0]}", "url": url, "headers": {**base_headers, **hdr}, "method": "GET"})
+
+        if "path_tricks" in active:
+            path_variants = [
+                path + "/",
+                path + "/..",
+                "/" + path.lstrip("/"),
+                path + "%20",
+                path + "%09",
+                path.replace("/", "//", 1),
+                path + "#",
+                path + "?",
+                _re.sub(r"^(/[^/])", lambda m: "/" + m.group(1), path),
+            ]
+            # URL-encode first char of last segment
+            parts = path.rsplit("/", 1)
+            if len(parts) == 2 and parts[1]:
+                enc_path = parts[0] + "/" + "%" + format(ord(parts[1][0]), "02X") + parts[1][1:]
+                path_variants.append(enc_path)
+            for vpath in path_variants:
+                vurl = urlunparse(parsed._replace(path=vpath))
+                probes.append({"label": f"Path trick: {vpath}", "url": vurl, "headers": base_headers, "method": "GET"})
+
+        if "method_override" in active:
+            method_hdrs = [
+                {"X-HTTP-Method-Override": "GET"},
+                {"X-Method-Override": "GET"},
+                {"X-HTTP-Method": "GET"},
+            ]
+            for hdr in method_hdrs:
+                probes.append({"label": f"Method override: {list(hdr.keys())[0]}", "url": url, "headers": {**base_headers, **hdr}, "method": "POST"})
+            probes.append({"label": "Method: HEAD", "url": url, "headers": base_headers, "method": "HEAD"})
+
+        if "protocol_headers" in active:
+            proto_hdrs = [
+                {"X-Forwarded-Proto": "https"},
+                {"X-Forwarded-Scheme": "https"},
+                {"X-Forwarded-Host": parsed.netloc},
+                {"X-Original-URL": path},
+                {"X-Rewrite-URL": path},
+            ]
+            for hdr in proto_hdrs:
+                probes.append({"label": f"Protocol header: {list(hdr.keys())[0]}", "url": url, "headers": {**base_headers, **hdr}, "method": "GET"})
+
+        # Baseline request
+        baseline_status = None
+        baseline_length = 0
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, verify=False) as client:
+                br = await client.get(url, headers=base_headers)
+                baseline_status = br.status_code
+                baseline_length = len(br.content)
+        except Exception as e:
+            return json.dumps({"error": f"Baseline request failed: {e}"}, indent=2)
+
+        results: List[Dict[str, Any]] = []
+
+        async def probe_one(p: Dict) -> Dict:
+            try:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, verify=False) as client:
+                    method = p.get("method", "GET")
+                    if method == "POST":
+                        resp = await client.post(p["url"], headers=p["headers"])
+                    elif method == "HEAD":
+                        resp = await client.head(p["url"], headers=p["headers"])
+                    else:
+                        resp = await client.get(p["url"], headers=p["headers"])
+                    return {
+                        "label": p["label"],
+                        "status": resp.status_code,
+                        "length": len(resp.content),
+                        "bypassed": resp.status_code not in (401, 403, 302) and resp.status_code < 400,
+                    }
+            except Exception as ex:
+                return {"label": p["label"], "status": "error", "length": 0, "bypassed": False, "error": str(ex)}
+
+        results = await _asyncio.gather(*[probe_one(p) for p in probes])
+
+        bypasses = [r for r in results if r.get("bypassed")]
+        return json.dumps({
+            "url": url,
+            "baseline_status": baseline_status,
+            "baseline_length": baseline_length,
+            "probes_run": len(probes),
+            "bypasses_found": len(bypasses),
+            "bypasses": bypasses,
+            "all_results": list(results),
+        }, indent=2)[:_tool_output_max_chars()]
+
+    async def test_request_smuggling(
+        self,
+        url: str,
+        technique: str = "all",
+        timeout: int = 20,
+    ) -> str:
+        """Probe for HTTP/1.1 request smuggling via timing-based CL.TE and TE.CL
+        detection, plus TE.TE obfuscation variants.
+
+        Uses raw TCP/TLS sockets to send precisely crafted requests that bypass
+        HTTP client normalization. Timing differences of >5 s indicate a
+        vulnerable desync condition.
+
+        Args:
+            url: Target base URL (scheme://host[:port]).
+            technique: cl_te | te_cl | te_te | all (default).
+            timeout: Socket timeout in seconds for the timing probe.
+        """
+        import asyncio as _asyncio
+        import ssl as _ssl
+        import time as _time
+        from urllib.parse import urlparse as _urlparse
+
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
+        parsed = _urlparse(url)
+        host = parsed.hostname or ""
+        use_tls = parsed.scheme == "https"
+        port = parsed.port or (443 if use_tls else 80)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+
+        active = {"cl_te", "te_cl", "te_te"} if technique == "all" else {technique}
+        findings: List[Dict[str, Any]] = []
+
+        async def raw_send(payload: bytes, label: str) -> Dict[str, Any]:
+            start = _time.monotonic()
+            try:
+                if use_tls:
+                    ctx = _ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = _ssl.CERT_NONE
+                    reader, writer = await _asyncio.wait_for(
+                        _asyncio.open_connection(host, port, ssl=ctx), timeout=timeout
+                    )
+                else:
+                    reader, writer = await _asyncio.wait_for(
+                        _asyncio.open_connection(host, port), timeout=timeout
+                    )
+                writer.write(payload)
+                await writer.drain()
+                try:
+                    data = await _asyncio.wait_for(reader.read(4096), timeout=timeout)
+                    elapsed = _time.monotonic() - start
+                    status_line = data.decode("utf-8", errors="replace").splitlines()[0] if data else ""
+                    writer.close()
+                    return {"label": label, "elapsed_s": round(elapsed, 2), "status_line": status_line, "timed_out": False}
+                except _asyncio.TimeoutError:
+                    elapsed = _time.monotonic() - start
+                    writer.close()
+                    return {"label": label, "elapsed_s": round(elapsed, 2), "status_line": "TIMEOUT", "timed_out": True}
+            except Exception as ex:
+                return {"label": label, "elapsed_s": round(_time.monotonic() - start, 2), "status_line": f"ERROR: {ex}", "timed_out": False}
+
+        if "cl_te" in active:
+            # CL.TE timing probe: CL says 4 bytes but body has incomplete chunked body.
+            # A TE-speaking backend will wait for the continuation → detectable timeout.
+            body = b"1\r\nZ\r\nQ"
+            req = (
+                f"POST {path} HTTP/1.1\r\n"
+                f"Host: {host}\r\n"
+                f"Content-Type: application/x-www-form-urlencoded\r\n"
+                f"Content-Length: 4\r\n"
+                f"Transfer-Encoding: chunked\r\n"
+                f"Connection: keep-alive\r\n\r\n"
+            ).encode() + body
+            r = await raw_send(req, "CL.TE timing probe")
+            r["technique"] = "CL.TE"
+            r["vulnerable"] = r["timed_out"]
+            r["note"] = ("Timeout indicates backend uses Transfer-Encoding — CL.TE desync likely."
+                         if r["timed_out"] else "No timeout detected for CL.TE.")
+            findings.append(r)
+
+        if "te_cl" in active:
+            # TE.CL timing probe: sends a 0-chunk then extra data; CL-speaking backend waits.
+            body = b"0\r\n\r\nX"
+            req = (
+                f"POST {path} HTTP/1.1\r\n"
+                f"Host: {host}\r\n"
+                f"Content-Type: application/x-www-form-urlencoded\r\n"
+                f"Content-Length: 6\r\n"
+                f"Transfer-Encoding: chunked\r\n"
+                f"Connection: keep-alive\r\n\r\n"
+            ).encode() + body
+            r = await raw_send(req, "TE.CL timing probe")
+            r["technique"] = "TE.CL"
+            r["vulnerable"] = r["timed_out"]
+            r["note"] = ("Timeout indicates backend uses Content-Length — TE.CL desync likely."
+                         if r["timed_out"] else "No timeout detected for TE.CL.")
+            findings.append(r)
+
+        if "te_te" in active:
+            # TE.TE: two Transfer-Encoding headers, one obfuscated; only one side de-obfuscates.
+            obfuscations = [
+                b"Transfer-Encoding: xchunked\r\n",
+                b"Transfer-Encoding : chunked\r\n",
+                b"Transfer-Encoding: chunked\r\nTransfer-encoding: x\r\n",
+                b"Transfer-Encoding:\tchunked\r\n",
+                b'Transfer-Encoding: "chunked"\r\n',
+            ]
+            for obf in obfuscations:
+                body = b"0\r\n\r\n"
+                req = (
+                    f"POST {path} HTTP/1.1\r\n"
+                    f"Host: {host}\r\n"
+                    f"Content-Type: application/x-www-form-urlencoded\r\n"
+                    f"Content-Length: 5\r\n"
+                ).encode() + b"Transfer-Encoding: chunked\r\n" + obf + b"\r\n" + body
+                label = f"TE.TE — {obf.decode('utf-8', errors='replace').strip()}"
+                r = await raw_send(req, label)
+                r["technique"] = "TE.TE"
+                r["vulnerable"] = r["timed_out"]
+                r["note"] = ("Timeout with TE.TE obfuscation — one side misparses the TE header."
+                             if r["timed_out"] else "No timeout for this TE.TE variant.")
+                findings.append(r)
+
+        vulnerable = [f for f in findings if f.get("vulnerable")]
+        return json.dumps({
+            "url": url,
+            "host": host,
+            "techniques_tested": list(active),
+            "probe_count": len(findings),
+            "vulnerable_probes": len(vulnerable),
+            "verdict": "LIKELY VULNERABLE" if vulnerable else "Not detected",
+            "findings": findings,
+            "next_steps": (
+                ["Confirm with a differential attack (poison a victim's next request).",
+                 "Use Burp Suite's HTTP Request Smuggler extension for deep confirmation.",
+                 "Test with execute_curl for response differential if timing is inconclusive."]
+                if vulnerable else
+                ["No timing-based desync detected. Target may use HTTP/2 or sanitize headers.",
+                 "Try HTTP/2 downgrade smuggling (H2.CL / H2.TE) if the site supports HTTP/2."]
+            ),
+        }, indent=2)[:_tool_output_max_chars()]
+
+    async def test_cache_poisoning(
+        self,
+        url: str,
+        probe_headers: Optional[List[str]] = None,
+        timeout: int = 15,
+    ) -> str:
+        """Probe for web cache poisoning via unkeyed header injection.
+
+        Sends requests with canary values in common unkeyed headers, then
+        re-fetches without those headers to check if the canary is reflected
+        in a cached response. Also checks for unkeyed query parameter and
+        fat GET attack vectors.
+
+        Args:
+            url: Target URL to probe.
+            probe_headers: List of header names to probe. Defaults to a
+                           comprehensive set of known unkeyed headers.
+            timeout: Per-request timeout in seconds.
+        """
+        import uuid as _uuid
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
+        canary = f"cp-{_uuid.uuid4().hex[:12]}"
+
+        default_headers = [
+            "X-Forwarded-Host",
+            "X-Host",
+            "X-HTTP-Host-Override",
+            "Forwarded",
+            "X-Forwarded-Scheme",
+            "X-Forwarded-Port",
+            "X-Forwarded-For",
+            "X-Original-URL",
+            "X-Rewrite-URL",
+            "X-Forwarded-Prefix",
+            "X-Forwarded-Proto",
+        ]
+        headers_to_probe = probe_headers or default_headers
+
+        results: List[Dict[str, Any]] = []
+
+        async def probe_header(header_name: str) -> Dict[str, Any]:
+            canary_value = f"{canary}.attacker.example.com" if "host" in header_name.lower() else canary
+            probe_hdrs = {header_name: canary_value, "Cache-Control": "no-cache", "Pragma": "no-cache"}
+            try:
+                async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
+                    # Poison probe
+                    r1 = await client.get(url, headers={**probe_hdrs, "User-Agent": "Mozilla/5.0 (Security Assessment)"})
+                    body1 = r1.text[:4000]
+                    reflected_in_poison = canary in body1 or canary_value in body1
+                    cache_status_poison = r1.headers.get("X-Cache", r1.headers.get("CF-Cache-Status", "unknown"))
+
+                    # Re-fetch without the probe header (would hit cache)
+                    r2 = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (Victim Simulation)"})
+                    body2 = r2.text[:4000]
+                    reflected_in_clean = canary in body2 or canary_value in body2
+                    cache_status_clean = r2.headers.get("X-Cache", r2.headers.get("CF-Cache-Status", "unknown"))
+
+                    poisoned = reflected_in_clean and reflected_in_poison
+                    return {
+                        "header": header_name,
+                        "canary_value": canary_value,
+                        "poison_status": r1.status_code,
+                        "poison_cache_status": cache_status_poison,
+                        "reflected_in_poison_response": reflected_in_poison,
+                        "clean_status": r2.status_code,
+                        "clean_cache_status": cache_status_clean,
+                        "reflected_in_clean_response": reflected_in_clean,
+                        "potentially_poisoned": poisoned,
+                        "note": (
+                            "CANARY REFLECTED IN CLEAN FETCH — cache may be poisoned!" if poisoned else
+                            "Canary reflected in poison response only — header is unkeyed but cache not confirmed." if reflected_in_poison else
+                            "Canary not reflected."
+                        ),
+                    }
+            except Exception as ex:
+                return {"header": header_name, "error": str(ex), "potentially_poisoned": False}
+
+        import asyncio as _asyncio
+        results = list(await _asyncio.gather(*[probe_header(h) for h in headers_to_probe]))
+
+        # Fat GET probe: inject query param into body for GET request
+        fat_get_result = None
+        try:
+            async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
+                r = await client.request("GET", url, content=f"utm_content={canary}",
+                                         headers={"Content-Length": str(len(f"utm_content={canary}")),
+                                                  "Content-Type": "application/x-www-form-urlencoded"})
+                fat_get_result = {"reflected": canary in r.text, "status": r.status_code}
+        except Exception:
+            fat_get_result = {"reflected": False, "status": "error"}
+
+        confirmed = [r for r in results if r.get("potentially_poisoned")]
+        candidates = [r for r in results if r.get("reflected_in_poison_response") and not r.get("potentially_poisoned")]
+
+        return json.dumps({
+            "url": url,
+            "canary": canary,
+            "headers_probed": len(headers_to_probe),
+            "confirmed_poisoning": len(confirmed),
+            "unkeyed_header_candidates": len(candidates),
+            "fat_get_canary_reflected": fat_get_result.get("reflected", False),
+            "confirmed": confirmed,
+            "candidates": candidates,
+            "all_results": results,
+            "verdict": (
+                "CONFIRMED CACHE POISONING" if confirmed else
+                "UNKEYED HEADERS FOUND — manual confirmation needed" if candidates else
+                "No cache poisoning indicators detected"
+            ),
+        }, indent=2)[:_tool_output_max_chars()]
+
+    async def test_race_condition(
+        self,
+        url: str,
+        method: str = "POST",
+        concurrency: int = 15,
+        body: Optional[Dict[str, Any]] = None,
+        auth_headers: Optional[Dict[str, str]] = None,
+        expected_unique_field: Optional[str] = None,
+        timeout: int = 30,
+    ) -> str:
+        """Fire N concurrent requests to detect race conditions (TOCTOU flaws).
+
+        Useful for testing: coupon/voucher single-use enforcement, balance
+        deductions, inventory limits, rate limit bypasses, and idempotency.
+
+        Args:
+            url: Target endpoint URL.
+            method: HTTP method (GET/POST/PUT/PATCH, default POST).
+            concurrency: Number of simultaneous requests (default 15, max 50).
+            body: JSON body dict to send with each request.
+            auth_headers: Authentication headers (Bearer token, Cookie, etc.).
+            expected_unique_field: JSON response field to check for uniqueness
+                                   across responses (e.g. "transaction_id").
+            timeout: Total timeout in seconds.
+        """
+        import asyncio as _asyncio
+        import time as _time
+
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
+        concurrency = max(2, min(50, int(concurrency or 15)))
+        method = (method or "POST").upper()
+        headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Race Condition Test)"}
+        if auth_headers:
+            headers.update(auth_headers)
+
+        responses: List[Dict[str, Any]] = []
+        start = _time.monotonic()
+
+        async def one_request(idx: int) -> Dict[str, Any]:
+            try:
+                async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
+                    req_start = _time.monotonic()
+                    if method in ("POST", "PUT", "PATCH"):
+                        resp = await client.request(method, url, json=body, headers=headers)
+                    else:
+                        resp = await client.get(url, headers=headers)
+                    elapsed = round(_time.monotonic() - req_start, 3)
+                    try:
+                        resp_body = resp.json()
+                    except Exception:
+                        resp_body = resp.text[:500]
+                    return {
+                        "idx": idx, "status": resp.status_code,
+                        "elapsed_s": elapsed, "body": resp_body,
+                        "unique_field": (resp_body.get(expected_unique_field) if isinstance(resp_body, dict) and expected_unique_field else None),
+                    }
+            except Exception as ex:
+                return {"idx": idx, "status": "error", "elapsed_s": 0.0, "body": str(ex), "unique_field": None}
+
+        # Fire all requests concurrently (Last Byte Sync — all requests start as close together as possible)
+        responses = list(await _asyncio.gather(*[one_request(i) for i in range(concurrency)]))
+        total_elapsed = round(_time.monotonic() - start, 2)
+
+        status_counter: Dict[str, int] = {}
+        for r in responses:
+            k = str(r["status"])
+            status_counter[k] = status_counter.get(k, 0) + 1
+
+        success_responses = [r for r in responses if isinstance(r["status"], int) and r["status"] < 300]
+
+        unique_field_values = [r["unique_field"] for r in responses if r.get("unique_field") is not None]
+        duplicate_field_values = len(unique_field_values) != len(set(str(v) for v in unique_field_values))
+
+        race_indicators = []
+        if len(success_responses) > 1:
+            race_indicators.append(f"{len(success_responses)}/{concurrency} requests succeeded (expected ≤1 for single-use resources).")
+        if duplicate_field_values and unique_field_values:
+            race_indicators.append(f"Duplicate values in '{expected_unique_field}' field — uniqueness constraint may be broken.")
+        if len(set(str(r["status"]) for r in responses)) > 2:
+            race_indicators.append("Inconsistent status codes across concurrent requests — non-deterministic state detected.")
+
+        return json.dumps({
+            "url": url,
+            "method": method,
+            "concurrency": concurrency,
+            "total_elapsed_s": total_elapsed,
+            "status_distribution": status_counter,
+            "success_count": len(success_responses),
+            "race_indicators": race_indicators,
+            "verdict": "RACE CONDITION INDICATORS FOUND" if race_indicators else "No race condition indicators detected",
+            "responses": responses,
+            "next_steps": (
+                ["Run with higher concurrency (30-50) to increase pressure.",
+                 "Try with last-byte-sync: pre-connect, send all but last byte, then flush simultaneously.",
+                 "Focus on state-changing endpoints: balance, coupon, invite, vote, order."]
+                if not race_indicators else
+                ["Confirm with a controlled experiment showing state inconsistency.",
+                 "Document the duplicated field values or multiple successes as evidence.",
+                 "Recommend atomic DB operations or distributed locks as remediation."]
+            ),
+        }, indent=2)[:_tool_output_max_chars()]
+
+    async def test_saml_sso(
+        self,
+        url: str,
+        categories: Optional[List[str]] = None,
+        saml_response_b64: Optional[str] = None,
+        timeout: int = 20,
+    ) -> str:
+        """Probe for SAML/SSO/OAuth misconfigurations and known attack vectors.
+
+        Performs passive endpoint discovery + active probing for common
+        authentication bypass techniques. Does NOT attempt credential theft.
+
+        Categories: xml_injection, signature_wrapping, oauth_bypass,
+                    jwt_confusion, oidc_misconfig, saml_endpoints.
+                    Omit to run all.
+
+        Args:
+            url: Base URL of the target application.
+            categories: Subset of test categories to run.
+            saml_response_b64: Optional base64-encoded SAMLResponse to
+                               analyze for signature validation weaknesses.
+            timeout: Per-request timeout in seconds.
+        """
+        import base64 as _b64
+        import xml.etree.ElementTree as _ET
+
+        url = url.strip().rstrip("/")
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
+        all_cats = {"xml_injection", "signature_wrapping", "oauth_bypass", "jwt_confusion", "oidc_misconfig", "saml_endpoints"}
+        active = set(categories or all_cats) & all_cats
+
+        findings: List[Dict[str, Any]] = []
+        probes_run = 0
+
+        # 1. SAML endpoint discovery
+        if "saml_endpoints" in active:
+            saml_paths = [
+                "/saml/consume", "/saml/acs", "/auth/saml/callback",
+                "/sso/saml", "/api/auth/saml", "/saml2/acs",
+                "/.well-known/openid-configuration", "/.well-known/oauth-authorization-server",
+                "/oauth/authorize", "/oauth2/authorize", "/connect/authorize",
+                "/auth/realms/", "/auth/oauth2/callback", "/login/oauth/callback",
+            ]
+            discovered_endpoints: List[str] = []
+            async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=False) as client:
+                for p in saml_paths:
+                    probes_run += 1
+                    try:
+                        r = await client.get(f"{url}{p}")
+                        if r.status_code not in (404, 410):
+                            discovered_endpoints.append(f"{p} → HTTP {r.status_code}")
+                    except Exception:
+                        pass
+            if discovered_endpoints:
+                findings.append({
+                    "category": "saml_endpoints",
+                    "severity": "info",
+                    "title": f"Discovered {len(discovered_endpoints)} auth-related endpoints",
+                    "detail": discovered_endpoints,
+                })
+
+        # 2. OAuth state parameter check
+        if "oauth_bypass" in active:
+            oauth_paths = ["/oauth/authorize", "/oauth2/authorize", "/connect/authorize", "/auth/realms/"]
+            async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=False) as client:
+                for p in oauth_paths:
+                    probes_run += 1
+                    try:
+                        r = await client.get(f"{url}{p}?response_type=code&client_id=test&redirect_uri=https://evil.example.com")
+                        if r.status_code in (200, 302, 400):
+                            location = r.headers.get("location", "")
+                            if "evil.example.com" in location:
+                                findings.append({
+                                    "category": "oauth_bypass",
+                                    "severity": "high",
+                                    "title": "Open OAuth Redirect — redirect_uri not validated",
+                                    "detail": f"Request to {p} redirected to attacker-controlled evil.example.com. Allows OAuth token theft.",
+                                    "evidence": f"Location: {location[:200]}",
+                                })
+                            elif r.status_code == 200 and "state" not in r.text.lower():
+                                findings.append({
+                                    "category": "oauth_bypass",
+                                    "severity": "medium",
+                                    "title": "OAuth authorize endpoint responded — verify state parameter enforcement",
+                                    "detail": f"{p} returned 200 without state parameter rejection.",
+                                })
+                    except Exception:
+                        pass
+
+        # 3. OIDC discovery misconfiguration
+        if "oidc_misconfig" in active:
+            probes_run += 1
+            try:
+                async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
+                    r = await client.get(f"{url}/.well-known/openid-configuration")
+                    if r.status_code == 200:
+                        try:
+                            oidc = r.json()
+                            issues: List[str] = []
+                            if oidc.get("claims_supported") and "email" in oidc.get("claims_supported", []):
+                                issues.append("email claim available — verify unique_claim enforcement to prevent account takeover via email match")
+                            algos = oidc.get("id_token_signing_alg_values_supported", [])
+                            if "none" in algos:
+                                issues.append("alg=none supported in id_token — JWT signature bypass possible")
+                            if "HS256" in algos:
+                                issues.append("HS256 supported alongside RS256 — test for algorithm confusion attack")
+                            if issues:
+                                findings.append({
+                                    "category": "oidc_misconfig",
+                                    "severity": "high",
+                                    "title": "OIDC Configuration Weaknesses Detected",
+                                    "detail": issues,
+                                    "oidc_url": f"{url}/.well-known/openid-configuration",
+                                })
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # 4. SAMLResponse analysis (if provided)
+        if "signature_wrapping" in active and saml_response_b64:
+            try:
+                decoded = _b64.b64decode(saml_response_b64).decode("utf-8", errors="replace")
+                saml_issues: List[str] = []
+                if "ds:Signature" not in decoded and "Signature" not in decoded:
+                    saml_issues.append("No XML Signature found — response may not be verified")
+                if decoded.count("<saml:Assertion") > 1:
+                    saml_issues.append("Multiple Assertion elements — possible XSW (XML Signature Wrapping) attack surface")
+                if "NotOnOrAfter" not in decoded:
+                    saml_issues.append("Missing NotOnOrAfter time constraint — token replay may be possible")
+                if "<ds:Reference" in decoded and 'URI=""' in decoded:
+                    saml_issues.append("Signature covers empty URI — may allow wrapping attack by adding unsigned assertion")
+                try:
+                    root = _ET.fromstring(decoded)
+                    ns_map = {v: k for k, v in dict(root.nsmap).items()} if hasattr(root, "nsmap") else {}
+                except Exception:
+                    ns_map = {}
+                if saml_issues:
+                    findings.append({
+                        "category": "signature_wrapping",
+                        "severity": "critical",
+                        "title": "SAMLResponse Signature Issues Found",
+                        "detail": saml_issues,
+                        "raw_length": len(decoded),
+                    })
+                else:
+                    findings.append({
+                        "category": "signature_wrapping",
+                        "severity": "info",
+                        "title": "SAMLResponse appears correctly signed",
+                        "detail": "No obvious signature wrapping indicators. Manual review recommended.",
+                    })
+            except Exception as ex:
+                findings.append({"category": "signature_wrapping", "severity": "info", "title": "SAMLResponse parse error", "detail": str(ex)})
+
+        # 5. JWT algorithm confusion discovery hint
+        if "jwt_confusion" in active:
+            findings.append({
+                "category": "jwt_confusion",
+                "severity": "info",
+                "title": "JWT Algorithm Confusion — Manual Test Required",
+                "detail": [
+                    "Capture a valid JWT from the application.",
+                    "Decode the header — note the 'alg' field (RS256, ES256, etc.).",
+                    "Fetch the public key from JWKS endpoint (/.well-known/jwks.json or /auth/keys).",
+                    "Re-sign the token using the public key as the HMAC-SHA256 secret (alg: HS256).",
+                    "If accepted, the server is vulnerable to algorithm confusion (CVE class).",
+                    "Tools: jwt_tool.py, python-jwt, or Burp JWT Editor extension.",
+                ],
+            })
+
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        findings.sort(key=lambda f: severity_order.get(f.get("severity", "info"), 5))
+
+        return json.dumps({
+            "url": url,
+            "categories_tested": list(active),
+            "probes_run": probes_run,
+            "findings_count": len(findings),
+            "high_or_critical": len([f for f in findings if f.get("severity") in ("critical", "high")]),
+            "findings": findings,
+        }, indent=2)[:_tool_output_max_chars()]
+
+    async def test_credential_spray(
+        self,
+        login_url: str,
+        usernames: List[str],
+        passwords: List[str],
+        username_field: str = "username",
+        password_field: str = "password",
+        max_attempts: int = 10,
+        delay_seconds: float = 2.0,
+        success_indicators: Optional[List[str]] = None,
+        failure_indicators: Optional[List[str]] = None,
+        authorized: bool = False,
+    ) -> str:
+        """Credential spray test — requires explicit authorization flag.
+
+        Sends login requests with provided credentials, stops at max_attempts
+        (hard cap: 20), detects lockout/rate-limiting, and reports hits.
+
+        LEGAL GUARDRAIL: authorized=True MUST be set; the tool refuses
+        otherwise. Only use against systems you have explicit written
+        permission to test.
+
+        Args:
+            login_url: URL of the login endpoint.
+            usernames: List of usernames to test.
+            passwords: List of passwords to spray (1 password per user is safer).
+            username_field: Form/JSON field name for username (default 'username').
+            password_field: Form/JSON field name for password (default 'password').
+            max_attempts: Hard stop — maximum total login attempts (capped at 20).
+            delay_seconds: Delay between each attempt in seconds (minimum 1.0).
+            success_indicators: Strings whose presence in the response indicates success.
+            failure_indicators: Strings that confirm a failed attempt.
+            authorized: MUST be True to proceed. Required legal guardrail.
+        """
+        import asyncio as _asyncio
+
+        if not authorized:
+            return json.dumps({
+                "error": "AUTHORIZATION REQUIRED",
+                "detail": (
+                    "test_credential_spray refused to run. You MUST set authorized=True and "
+                    "have explicit written permission to test this system. "
+                    "Unauthorized credential testing is illegal under the CFAA, CMA, and similar laws."
+                ),
+            }, indent=2)
+
+        login_url = login_url.strip()
+        if not login_url.startswith(("http://", "https://")):
+            login_url = f"https://{login_url}"
+
+        max_attempts = max(1, min(20, int(max_attempts or 10)))
+        delay_seconds = max(1.0, float(delay_seconds or 2.0))
+
+        default_success = ["dashboard", "logout", "welcome", "account", "/home", "token", "access_token"]
+        default_failure = ["invalid", "incorrect", "wrong", "failed", "error", "locked", "too many"]
+        success_ind = success_indicators or default_success
+        failure_ind = failure_indicators or default_failure
+
+        results: List[Dict[str, Any]] = []
+        attempts = 0
+        lockout_detected = False
+
+        for username in usernames:
+            for password in passwords:
+                if attempts >= max_attempts:
+                    results.append({"note": f"Hard stop reached at {max_attempts} attempts."})
+                    break
+                if lockout_detected:
+                    results.append({"note": "Lockout detected — stopping spray to avoid account lockout."})
+                    break
+                await _asyncio.sleep(delay_seconds)
+                try:
+                    payload = {username_field: username, password_field: password}
+                    async with httpx.AsyncClient(timeout=15, verify=False, follow_redirects=True) as client:
+                        resp = await client.post(login_url, json=payload,
+                                                 headers={"Content-Type": "application/json",
+                                                          "User-Agent": "Mozilla/5.0 (Authorized Security Test)"})
+                        body = resp.text[:2000]
+                        body_lower = body.lower()
+                        success = (resp.status_code in (200, 302) and
+                                   any(s.lower() in body_lower for s in success_ind) and
+                                   not any(f.lower() in body_lower for f in failure_ind))
+                        lockout = any(w in body_lower for w in ["locked", "too many", "rate limit", "blocked", "captcha"])
+                        if lockout:
+                            lockout_detected = True
+                        results.append({
+                            "username": username,
+                            "password": "***REDACTED***",
+                            "status": resp.status_code,
+                            "success": success,
+                            "lockout_indicator": lockout,
+                            "response_snippet": body[:300],
+                        })
+                        attempts += 1
+                except Exception as ex:
+                    results.append({"username": username, "error": str(ex), "success": False})
+                    attempts += 1
+            if attempts >= max_attempts or lockout_detected:
+                break
+
+        hits = [r for r in results if r.get("success")]
+        return json.dumps({
+            "login_url": login_url,
+            "authorized": authorized,
+            "attempts_made": attempts,
+            "max_attempts": max_attempts,
+            "lockout_detected": lockout_detected,
+            "successful_logins": len(hits),
+            "hits": [{"username": h["username"], "status": h["status"]} for h in hits],
+            "all_results": results,
+            "verdict": f"CREDENTIALS FOUND: {len(hits)} valid login(s)" if hits else ("LOCKOUT DETECTED — spray aborted" if lockout_detected else "No valid credentials found"),
+        }, indent=2)[:_tool_output_max_chars()]
 
     async def fireteam_dispatch(
         self,

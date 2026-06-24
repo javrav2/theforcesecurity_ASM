@@ -281,6 +281,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **query_technologies**: Query detected technologies
 - **query_graph**: Run a Cypher query against the Neo4j graph. Args: **cypher** (required, the Cypher query string), params (optional dict), limit (default 50). Example: query_graph(cypher="MATCH (a:Asset) WHERE a.organization_id = $org_id RETURN a.value LIMIT 10"). The tool auto-injects $org_id from context, so always use WHERE a.organization_id = $org_id.
 - **analyze_attack_surface**: Get attack surface summary
+- **rank_attack_surface**: Rank known assets by likely testing value using stored ASM data. Args: target (optional substring/domain), limit (default 20). Use before validation to prioritize APIs, auth, admin, upload, risky ports, known vulns, and high-value technologies.
 - **get_asset_details**: Get detailed info about an asset. Args: **asset_id** (integer, required — get from query_assets first). Example: get_asset_details(asset_id=42)
 - **search_cve**: Search for CVE information in your ASM database (found assets only)
 - **search_vulnx**: Deep CVE intelligence lookup by ID — returns CVSS, EPSS, CISA/VulnCheck KEV, PoC URLs, HackerOne report count, Nuclei template name, internet exposure (Shodan/Fofa), affected products, requirements/preconditions, and remediation guidance. Use when you already have a CVE ID and need to understand it in depth. Args: cve_id (e.g. "CVE-2021-44228")
@@ -312,7 +313,7 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
 - **scan_js_urls_for_secrets**: Fetch remote JavaScript (or text) URLs and scan for hardcoded secrets. Downloads each URL, runs Gitleaks in filesystem mode (--no-git), and returns regex-based hints for API keys/tokens. **Not** the same as execute_gitleaks on a repo — use for Katana-discovered `.js` bundles. Args: **urls** (required, newline- or comma-separated https URLs), **max_urls** (optional, default 30). Example: scan_js_urls_for_secrets(urls="https://www.example.com/static/app.js\\nhttps://cdn.example.com/chunk.js")
 - **execute_cmseek**: CMS detection and vulnerability scanning. Detects 180+ CMS (WordPress, Joomla, Drupal, etc.) and their vulnerabilities. Example: execute_cmseek(args="-u https://target.com")
 **NOTE: The following active scanning tools require the EXPLOITATION phase. Request a phase transition first.**
-- **execute_nuclei**: Vulnerability scanner (exploitation phase). Supports all Nuclei templates including CVEs, misconfigurations, exposures, and technology detection. **DEFAULT: Run WITHOUT -severity for the most comprehensive scan** — this includes tech detection, WAF detection, version fingerprinting, misconfigs, exposures, and CVEs at all severity levels. Only add `-severity` if the user explicitly requests filtering. Examples: execute_nuclei(args="-u https://target.com -jsonl") (**PREFERRED — comprehensive, all severities**), execute_nuclei(args="-u https://target.com -tags tech -jsonl") (tech detection only), execute_nuclei(args="-u https://target.com -tags cve -jsonl") (CVE-only). Only use severity filter when user explicitly asks: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
+- **execute_nuclei**: Vulnerability scanner (exploitation phase). Supports all Nuclei templates including CVEs, misconfigurations, exposures, and technology detection. **DEFAULT: Run WITHOUT -severity for the most comprehensive scan** — this includes tech detection, WAF detection, version fingerprinting, misconfigs, exposures, and CVEs at all severity levels. Only add `-severity` if the user explicitly requests filtering. Examples: execute_nuclei(args="-u https://target.com -jsonl") (**PREFERRED — comprehensive, all severities**), execute_nuclei(args="-u https://target.com -tags tech -jsonl") (tech detection only), execute_nuclei(args="-u https://target.com -tags cve -jsonl") (CVE-only). **Chatbot detection**: execute_nuclei(args="-u https://target.com -tags chatbot -jsonl") — runs the platform's built-in chatbot templates (Intercom, Zendesk Chat, Drift, Crisp, Tawk.to, LiveChat, Freshchat, HelpScout, Olark, HubSpot, Salesforce, Genesys, custom widget). When a chatbot is confirmed, proceed with the `llm-redteam` skill or execute_llm_red_team. Only use severity filter when user explicitly asks: execute_nuclei(args="-u https://target.com -severity critical,high -jsonl")
 - **execute_naabu**: Fast SYN/CONNECT port scanner (exploitation phase). Example: execute_naabu(args="-host target.com -p 80,443,8080 -json")
 - **execute_nmap**: Port/service scan (exploitation phase). Example: execute_nmap(args="-sV -sC -p 80,443 target.com")
 - **execute_masscan**: Fast port scan (exploitation phase). Example: execute_masscan(args="192.168.1.0/24 -p80,443 --rate=1000")
@@ -331,9 +332,11 @@ def get_phase_tools(phase: str, post_expl_enabled: bool = False, post_expl_type:
   Actions: navigate, fill, click, type, execute_js, get_source, get_cookies, set_cookie, screenshot, wait, check_xss, submit_form, check_response
 - **nuclei_help**, **naabu_help**, **httpx_help**, **subfinder_help**, **dnsx_help**, **katana_help**, **tldfinder_help**, **waybackurls_help**, **nmap_help**, **masscan_help**, **ffuf_help**, **amass_help**, **whatweb_help**, **knockpy_help**, **gau_help**, **kiterunner_help**, **schemathesis_help**, **sqlmap_help**, **nikto_help**, **wafw00f_help**, **testssl_help**, **sslyze_help**, **arjun_help**, **wpscan_help**, **xsstrike_help**, **gitleaks_help**, **cmseek_help**: Get CLI usage for each tool
 - **add_asset**: Add a target to the asset inventory. Use when the target is NOT already in the database. Args: **value** (required — hostname, domain, IP, or URL), asset_type (optional, auto-detected), description (optional). Example: add_asset(value="test-git.glensserver.com"). Once added, you can scan it and use create_finding.
-- **create_scan**: Create an async bulk scan job handled by the scanner worker. Use this instead of execute_* tools when you need to scan many targets (e.g. a list of IPs, subnets, or domains). Args: **scan_type** (required — port_scan, vulnerability, waybackurls, katana, paramspider, http_probe, technology, screenshot, login_portal, subdomain_enum, dns_resolution, discovery, full, geo_enrich, tldfinder, whatweb, llm_red_team), **targets** (optional list of hostnames/IPs — omit to scan all org assets), name (optional), config (optional dict, e.g. {"severity": ["critical","high"]}). Examples: create_scan(scan_type="port_scan", targets=["10.0.0.0/24"]), create_scan(scan_type="vulnerability", targets=["example.com"]), create_scan(scan_type="llm_red_team", targets=["https://example.com"], config={"categories": ["prompt_injection","jailbreak"]}). The scan runs asynchronously — results appear on the Scans page and update asset records automatically.
+- **create_scan**: Create an async bulk scan job handled by the scanner worker. Use this instead of execute_* tools when you need to scan many targets (e.g. a list of IPs, subnets, or domains). Args: **scan_type** (required — port_scan, vulnerability, waybackurls, katana, paramspider, http_probe, technology, screenshot, login_portal, subdomain_enum, dns_resolution, discovery, full, geo_enrich, tldfinder, whatweb, llm_red_team), **targets** (optional list of hostnames/IPs — omit to scan all org assets), name (optional), config (optional dict, e.g. {"severity": ["critical","high"]}). For chatbot discovery, use `create_scan(scan_type="technology", targets=["example.com"], config={"detect_chatbots": true})`; set `render_chatbots=true` only when you need browser-rendered DOM detection for dynamic chat bubbles. Examples: create_scan(scan_type="port_scan", targets=["10.0.0.0/24"]), create_scan(scan_type="vulnerability", targets=["example.com"]), create_scan(scan_type="llm_red_team", targets=["https://example.com"], config={"categories": ["prompt_injection","jailbreak"]}). The scan runs asynchronously — results appear on the Scans page and update asset records automatically.
 - **save_note**: Save a finding for this session (category: credential|vulnerability|finding|artifact, content: str, target: optional)
 - **get_notes**: Get session notes (optional category filter)
+- **query_prior_sessions**: Pull prior session findings, failed attempts, and lessons learned for this organization from EvoGraph memory. Args: max_chains, max_findings, max_failures.
+- **sanitize_evidence**: Redact cookies, bearer tokens, API keys, private keys, passwords, emails, SSNs, payment cards, and common secret fields before create_finding/reporting. Args: evidence (required raw text), preserve_last (optional, default 4).
 - **create_finding**: Add a finding to the platform findings table. Args: title, description, severity (critical|high|medium|low|info), target (hostname/domain/URL — will be auto-added to inventory if not found), optional: evidence, cve_id, remediation. Findings appear in the UI.
 - **execute_llm_red_team**: Run AI/LLM red team security scan against chatbot endpoints on a target URL. Tests for prompt injection, jailbreak, data exfiltration, SSRF, system prompt leakage, excessive agency, hallucination, and harmful content generation. Auto-discovers chatbot API endpoints. Args: **target_url** (required), categories (optional comma-separated: prompt_injection,jailbreak,data_exfiltration,ssrf_tool_abuse,system_prompt_leakage,excessive_agency,hallucination,harmful_content), endpoint_url (optional — direct chatbot API URL if known), message_field (optional — JSON field name, default "message"), max_payloads (optional int). Example: execute_llm_red_team(target_url="https://example.com"), execute_llm_red_team(target_url="https://example.com", endpoint_url="https://example.com/api/chat", categories="prompt_injection,jailbreak"). Findings are auto-created in the platform.
 
@@ -380,6 +383,70 @@ The `execute_browser` tool uses Playwright with a real Chromium browser. Use it 
 **TLS/SSL testing workflow (ALWAYS include for HTTPS targets):**
 1. `execute_testssl(args="https://target.com")` or `execute_sslyze(args="target.com")` → check TLS config
 2. `create_finding(...)` for weak ciphers, expired certs, or protocol vulnerabilities
+
+### Offensive Workflow Tools
+These tools implement specialized offensive test workflows and require the exploitation phase.
+
+- **validate_finding**: 7-Question Validation Gate — score a proposed finding before reporting.
+  Args: **title** (required), **description** (required), severity (critical/high/medium/low/info, default medium),
+  target (optional), evidence (optional request/response snippet), cve_id (optional), remediation (optional).
+  Returns a score (X/7), verdict (SUBMIT / IMPROVE / DROP), and per-question feedback.
+  Use BEFORE create_finding to ensure findings are submission-quality.
+  Example: validate_finding(title="IDOR on /api/users/{id}", description="...", severity="high", evidence="GET /api/users/2 returns user B's data")
+
+- **detect_bug_chains**: Given a confirmed vulnerability, return follow-on bug classes that commonly chain with it.
+  Args: **vuln_type** (required — ssrf, xss, sqli, idor, open_redirect, xxe, lfi, csrf, broken_auth, rce,
+  mass_assignment, business_logic, subdomain_takeover, cache_poisoning, request_smuggling),
+  target (optional), notes (optional context).
+  Returns chains ranked by severity with attack path explanations and next steps.
+  Example: detect_bug_chains(vuln_type="ssrf", target="api.example.com")
+
+- **bypass_403**: Test for 403/401/302 access bypass via IP override headers, path normalization,
+  method overrides, and protocol headers. Runs all probes in parallel.
+  Args: **url** (required — the restricted URL), techniques (optional list: ip_headers, path_tricks,
+  method_override, protocol_headers — omit for all), additional_headers (optional extra headers),
+  timeout (default 15).
+  Returns baseline status, bypass count, and list of successful techniques.
+  Example: bypass_403(url="https://target.com/admin")
+
+- **test_request_smuggling**: Probe for HTTP/1.1 request smuggling via timing-based CL.TE, TE.CL,
+  and TE.TE obfuscation detection using raw TCP/TLS sockets.
+  Args: **url** (required), technique (cl_te | te_cl | te_te | all, default all), timeout (default 20).
+  A probe that times out (>timeout seconds) indicates a desync condition.
+  Returns per-technique findings with elapsed_s and vulnerable flag.
+  Example: test_request_smuggling(url="https://target.com", technique="all")
+
+- **test_cache_poisoning**: Probe for web cache poisoning via unkeyed header injection.
+  Sends canary values in X-Forwarded-Host, X-Forwarded-For, X-Original-URL, and other headers,
+  then re-fetches without those headers to check for cache storage.
+  Args: **url** (required), probe_headers (optional list of header names), timeout (default 15).
+  Returns confirmed poisoning, unkeyed header candidates, and fat-GET reflection result.
+  Example: test_cache_poisoning(url="https://target.com/")
+
+- **test_race_condition**: Fire N concurrent requests to detect TOCTOU race conditions.
+  Useful for: coupon/voucher single-use, balance deductions, vote counters, rate limit bypass.
+  Args: **url** (required), method (GET/POST/PUT/PATCH, default POST), concurrency (default 15, max 50),
+  body (optional JSON dict), auth_headers (optional), expected_unique_field (optional JSON response
+  field to check for duplicates), timeout (default 30).
+  Returns success_count, status distribution, race indicators, and all responses.
+  Example: test_race_condition(url="https://target.com/api/coupon/redeem", method="POST", concurrency=20, body={"code": "SAVE10"}, auth_headers={"Authorization": "Bearer ..."})
+
+- **test_saml_sso**: Discover SAML/OAuth/OIDC endpoints and probe for signature wrapping,
+  algorithm confusion, open OAuth redirect, and OIDC misconfiguration.
+  Args: **url** (required — base URL), categories (optional list: xml_injection, signature_wrapping,
+  oauth_bypass, jwt_confusion, oidc_misconfig, saml_endpoints — omit for all),
+  saml_response_b64 (optional — base64-encoded SAMLResponse to analyze), timeout (default 20).
+  Returns endpoint discovery and categorized findings with severity.
+  Example: test_saml_sso(url="https://target.com")
+
+- **test_credential_spray**: Spray login credentials against an endpoint with lockout detection.
+  REQUIRES authorized=True — tool refuses without it.
+  Args: **login_url** (required), **usernames** (required list), **passwords** (required list),
+  username_field (default 'username'), password_field (default 'password'),
+  max_attempts (hard cap 20, default 10), delay_seconds (minimum 1.0, default 2.0),
+  success_indicators (optional list), failure_indicators (optional list), **authorized** (MUST be True).
+  Returns hits, lockout status, and per-attempt results (passwords are redacted in output).
+  Example: test_credential_spray(login_url="https://target.com/login", usernames=["admin","user@example.com"], passwords=["Spring2026!"], authorized=True)
 """
 
     exploitation_tools = """
@@ -419,8 +486,11 @@ TOOL_PHASE_MAP = {
     "search_cve": ["informational", "exploitation", "post_exploitation"],
     "web_search": ["informational", "exploitation", "post_exploitation"],
     "query_graph": ["informational", "exploitation", "post_exploitation"],
+    "rank_attack_surface": ["informational", "exploitation", "post_exploitation"],
     "save_note": ["informational", "exploitation", "post_exploitation"],
     "get_notes": ["informational", "exploitation", "post_exploitation"],
+    "query_prior_sessions": ["informational", "exploitation", "post_exploitation"],
+    "sanitize_evidence": ["informational", "exploitation", "post_exploitation"],
     "create_finding": ["informational", "exploitation", "post_exploitation"],
     
     # MCP informational tools
@@ -501,6 +571,16 @@ TOOL_PHASE_MAP = {
     "execute_cmseek": ["informational", "exploitation", "post_exploitation"],
     "cmseek_help": ["informational", "exploitation", "post_exploitation"],
     
+    # Offensive workflow tools — active testing requires exploitation phase
+    "validate_finding": ["informational", "exploitation", "post_exploitation"],
+    "detect_bug_chains": ["informational", "exploitation", "post_exploitation"],
+    "bypass_403": ["exploitation", "post_exploitation"],
+    "test_request_smuggling": ["exploitation", "post_exploitation"],
+    "test_cache_poisoning": ["exploitation", "post_exploitation"],
+    "test_race_condition": ["exploitation", "post_exploitation"],
+    "test_saml_sso": ["exploitation", "post_exploitation"],
+    "test_credential_spray": ["exploitation", "post_exploitation"],
+
     # Legacy scanning tools
     "run_nuclei_scan": ["informational", "exploitation", "post_exploitation"],
     "run_port_scan": ["informational", "exploitation", "post_exploitation"],
