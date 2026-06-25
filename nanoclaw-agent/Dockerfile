@@ -30,7 +30,8 @@ RUN go install -v github.com/owasp-amass/amass/v4/...@master \
     && go install -v github.com/tomnomnom/waybackurls@latest \
     && go install -v github.com/lc/gau/v2/cmd/gau@latest \
     && go install -v github.com/ffuf/ffuf/v2@latest \
-    && go install -v github.com/s0md3v/smap/cmd/smap@latest
+    && go install -v github.com/s0md3v/smap/cmd/smap@latest \
+    && go install -v github.com/BishopFox/jsluice/cmd/jsluice@latest
 
 # ── Aegis Vanguard: Atlas + Argus (Praetorian-backed) ───────────────
 # Atlas (pius binary):  organizational asset cartographer — 24+ OSINT

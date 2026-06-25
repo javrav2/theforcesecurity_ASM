@@ -1333,6 +1333,135 @@ def run_js_url_secret_scan(
 
 
 # =========================================================================
+# jsluice — JavaScript URL / Secret Extraction (BishopFox)
+# =========================================================================
+
+def run_jsluice(js_urls: List[str], bridge: ASMBridge,
+                fetch_timeout: int = 30, max_bytes: int = 5_000_000,
+                tool_timeout: int = 120) -> Dict[str, Any]:
+    """Fetch JavaScript files and extract URLs, paths, and secrets with jsluice.
+
+    Uses AST-based analysis (go-tree-sitter) to find URLs passed to fetch(),
+    XHR, document.location, etc., and scans for hardcoded secrets — more
+    accurate than regex-only approaches.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return {"success": False, "error": "httpx not installed", "urls_scanned": 0}
+
+    if not _tool_available("jsluice"):
+        return {"success": False, "error": "jsluice not installed", "urls_scanned": 0}
+
+    all_urls: List[Dict[str, Any]] = []
+    all_secrets: List[Dict[str, Any]] = []
+    download_results: List[Dict[str, Any]] = []
+
+    with tempfile.TemporaryDirectory(prefix="jsluice_") as tmp:
+        name_to_url: Dict[str, str] = {}
+
+        with httpx.Client(
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AegisVanguard/1.0)"},
+            follow_redirects=True,
+            timeout=fetch_timeout,
+        ) as client:
+            for url in js_urls:
+                try:
+                    resp = client.get(url)
+                    if resp.status_code != 200:
+                        download_results.append({"url": url, "ok": False, "error": f"HTTP {resp.status_code}"})
+                        continue
+                    if len(resp.content) > max_bytes:
+                        download_results.append({"url": url, "ok": False, "error": "too large"})
+                        continue
+                    safe_name = re.sub(r"[^\w.-]", "_", url.split("/")[-1] or "index") + ".js"
+                    # avoid name collisions
+                    safe_name = f"{hashlib.md5(url.encode()).hexdigest()[:8]}_{safe_name}"
+                    path = os.path.join(tmp, safe_name)
+                    with open(path, "wb") as fh:
+                        fh.write(resp.content)
+                    name_to_url[safe_name] = url
+                    download_results.append({"url": url, "ok": True, "bytes": len(resp.content)})
+                except Exception as exc:
+                    download_results.append({"url": url, "ok": False, "error": str(exc)})
+
+        for safe_name, source_url in name_to_url.items():
+            js_path = os.path.join(tmp, safe_name)
+
+            # Extract URLs
+            try:
+                proc = subprocess.run(
+                    ["jsluice", "urls", js_path],
+                    capture_output=True, text=True, timeout=tool_timeout,
+                )
+                for line in proc.stdout.strip().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        entry = {"url": line}
+                    entry["source_js"] = source_url
+                    all_urls.append(entry)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"jsluice urls timed out for {source_url}")
+            except Exception as exc:
+                logger.warning(f"jsluice urls error for {source_url}: {exc}")
+
+            # Extract secrets
+            try:
+                proc = subprocess.run(
+                    ["jsluice", "secrets", js_path],
+                    capture_output=True, text=True, timeout=tool_timeout,
+                )
+                for line in proc.stdout.strip().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        entry = {"raw": line}
+                    entry["source_js"] = source_url
+                    all_secrets.append(entry)
+
+                    # Submit secrets as findings
+                    host = urlparse(source_url).hostname or "unknown"
+                    kind = entry.get("kind") or entry.get("type") or "js-secret"
+                    severity = "high" if entry.get("severity") in ("high", "critical") else "medium"
+                    bridge.submit_vulnerability(
+                        host=host,
+                        title=f"JS secret detected: {kind}",
+                        severity=severity,
+                        source="jsluice",
+                        url=source_url,
+                        description=json.dumps({k: entry.get(k) for k in ("kind", "data", "severity", "context") if entry.get(k)}, default=str),
+                        tags=["javascript", "secret", "jsluice"],
+                    )
+            except subprocess.TimeoutExpired:
+                logger.warning(f"jsluice secrets timed out for {source_url}")
+            except Exception as exc:
+                logger.warning(f"jsluice secrets error for {source_url}: {exc}")
+
+    bridge.flush()
+
+    logger.info(
+        f"jsluice: {len(js_urls)} URLs → {len(all_urls)} endpoints, "
+        f"{len(all_secrets)} secrets from {sum(1 for d in download_results if d.get('ok'))} files"
+    )
+    return {
+        "success": True,
+        "urls_scanned": sum(1 for d in download_results if d.get("ok")),
+        "downloads": download_results,
+        "extracted_urls": all_urls,
+        "secrets": all_secrets,
+        "extracted_url_count": len(all_urls),
+        "secret_count": len(all_secrets),
+    }
+
+
+# =========================================================================
 # CMS Detection
 # =========================================================================
 

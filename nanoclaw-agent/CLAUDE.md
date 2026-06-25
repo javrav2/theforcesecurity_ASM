@@ -91,6 +91,7 @@ python3 run_pentest.py --target https://example.com --no-guardrails
 | `fingerprint_gitlab` | GitLab /help stylesheet hash fingerprinting and optional version correlation | safe |
 | `crawl_urls` | katana web crawling | safe |
 | `scan_js_urls_for_secrets` | fetch JS URLs + gitleaks + regex hints | safe |
+| `analyze_js_with_jsluice` | AST-based JS URL + secret extraction (BishopFox jsluice) | safe |
 | `discover_historical_urls` | waybackurls + gau | safe |
 | `reverse_whois_search` | WhoisXML reverse WHOIS OSINT pivot for related domains (preview by default) | low |
 | `fuzz_directories` | ffuf directory fuzzing | low |

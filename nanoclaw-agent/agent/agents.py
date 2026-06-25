@@ -205,6 +205,31 @@ def scan_js_urls_for_secrets(urls: str, max_urls: int = 30) -> str:
 
 
 @security_tool(category="recon", risk="safe")
+def analyze_js_with_jsluice(urls: str, max_urls: int = 20) -> str:
+    """Extract endpoints, paths, and hardcoded secrets from JavaScript files using jsluice (BishopFox).
+
+    Uses AST-based analysis rather than regex — accurately finds URLs passed to fetch(),
+    XHR, document.location, window.open(), etc., and detects hardcoded secrets with context.
+    Complements scan_js_urls_for_secrets (gitleaks) with deeper structural JS analysis.
+
+    Use after crawl_urls to analyse discovered .js bundles for hidden API endpoints and leaked credentials.
+
+    Args:
+        urls: Newline- or comma-separated JS file URLs to fetch and analyse
+        max_urls: Maximum number of URLs to process (default 20, max 50)
+    """
+    import scanners
+    raw = urls.replace(",", "\n")
+    parsed = [u.strip() for u in raw.splitlines() if u.strip().startswith("http")]
+    try:
+        limit = min(int(max_urls) if max_urls else 20, 50)
+    except (TypeError, ValueError):
+        limit = 20
+    result = scanners.run_jsluice(parsed[:limit], _get_bridge())
+    return json.dumps(result, default=str)
+
+
+@security_tool(category="recon", risk="safe")
 def discover_historical_urls(domain: str, timeout: int = 300) -> str:
     """Find historical URLs from Wayback Machine and other archives.
 
@@ -1194,6 +1219,7 @@ RECON_TOOLS = [
     "scan_ports_nmap", "fingerprint_tech", "detect_waf", "detect_cms",
     "fingerprint_gitlab", "crawl_urls", "crawl_urls_authenticated",
     "discover_historical_urls", "discover_api_surface", "scan_js_urls_for_secrets",
+    "analyze_js_with_jsluice",
     "fuzz_directories", "discover_parameters", "reverse_whois_search",
     "atlas_map_attack_surface",
     # Swagger/OpenAPI discovery
@@ -1203,7 +1229,7 @@ RECON_TOOLS = [
 VULN_TOOLS = [
     "scan_nuclei", "scan_nikto", "analyze_security_headers", "analyze_tls",
     "check_subdomain_takeover", "analyze_mail_security", "detect_third_party_vendors",
-    "scan_js_urls_for_secrets", "discover_api_surface", "fingerprint_gitlab",
+    "scan_js_urls_for_secrets", "analyze_js_with_jsluice", "discover_api_surface", "fingerprint_gitlab",
     # Praetorium tools — now wired so LLM can invoke them
     "janus_dast_baseline", "argus_scan_secrets", "hermes_scan_remote_secrets",
     # Swagger/OpenAPI endpoint testing
