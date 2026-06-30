@@ -1739,11 +1739,6 @@ func (t *checkExploitDBTool) Run(ctx context.Context, args map[string]any) (stri
 	}
 
 	type exploit struct {
-		File string `json:"file"`
-		URL  string `json:"url"`
-		Type string `json:"type,omitempty"`
-	}
-	type exploit struct {
 		File    string `json:"file"`
 		URL     string `json:"url"`
 		Type    string `json:"type,omitempty"`
