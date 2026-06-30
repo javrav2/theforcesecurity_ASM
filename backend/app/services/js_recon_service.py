@@ -131,6 +131,8 @@ class JSReconResult:
     endpoints_extracted: int = 0
     dep_confusion_candidates: int = 0
     dom_sinks: int = 0
+    js_paths_found: int = 0        # jsluice-extracted paths (have method/param data)
+    js_params_found: int = 0       # total query + body params across js_path findings
     findings: list[JSFinding] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
@@ -348,15 +350,23 @@ async def _run_jsluice(url: str, body: str) -> list[JSFinding]:
         u = obj.get("url")
         if not u:
             continue
+        # Use kind="js_path" for jsluice URL findings so we can carry
+        # query/body param data and persist them separately from plain
+        # regex-extracted endpoints.
         findings.append(JSFinding(
-            kind="endpoint",
+            kind="js_path",
             severity="info",
             hostname=host,
             source_url=url,
             match=u[:500],
             pattern_name="jsluice.url",
             evidence=json.dumps(obj)[:400],
-            extras={"method": obj.get("method"), "type": obj.get("type")},
+            extras={
+                "method": (obj.get("method") or "GET").upper(),
+                "type": obj.get("type"),
+                "query_params": obj.get("queryParams") or [],
+                "body_params": obj.get("bodyParams") or [],
+            },
         ))
 
     secrets_out = await _run("secrets")
@@ -584,9 +594,15 @@ async def run_js_recon(
     result.findings = all_findings
     result.secrets_found = sum(1 for f in all_findings if f.kind == "secret")
     result.source_maps_found = sum(1 for f in all_findings if f.kind == "sourcemap")
-    result.endpoints_extracted = sum(1 for f in all_findings if f.kind == "endpoint")
+    # endpoint (regex) + js_path (jsluice) both count as extracted endpoints
+    result.endpoints_extracted = sum(1 for f in all_findings if f.kind in ("endpoint", "js_path"))
     result.dep_confusion_candidates = sum(1 for f in all_findings if f.kind == "dep_confusion")
     result.dom_sinks = sum(1 for f in all_findings if f.kind == "dom_sink")
+    result.js_paths_found = sum(1 for f in all_findings if f.kind == "js_path")
+    result.js_params_found = sum(
+        len((f.extras or {}).get("query_params", [])) + len((f.extras or {}).get("body_params", []))
+        for f in all_findings if f.kind == "js_path"
+    )
     result.duration_seconds = (datetime.utcnow() - start).total_seconds()
 
     await _progress(95, "Finalising")
@@ -626,9 +642,10 @@ def persist_js_findings(
     }
 
     created = 0
-    # Keep endpoint findings out of vulnerabilities; they're recon data, not
-    # exploitable on their own. They still ride along in scan.results.
-    reportable_kinds = {"secret", "sourcemap", "dep_confusion", "dom_sink"}
+    # js_path findings (jsluice-sourced with param data) are persisted at INFO
+    # severity so analysts can enumerate attack-surface endpoints.
+    # Plain regex "endpoint" findings stay in scan.results only.
+    reportable_kinds = {"secret", "sourcemap", "dep_confusion", "dom_sink", "js_path"}
 
     for f in findings:
         if f.kind not in reportable_kinds:
@@ -652,6 +669,12 @@ def persist_js_findings(
             db.add(asset)
             db.flush()
 
+        # js_path with no param data is low-value; skip the DB row
+        if f.kind == "js_path" and not (
+            (f.extras or {}).get("query_params") or (f.extras or {}).get("body_params")
+        ):
+            continue
+
         template_id = f"js-recon-{f.kind}-{_slug(f.pattern_name)}-{_hash(f.match)}"
         existing = (
             db.query(Vulnerability)
@@ -662,7 +685,9 @@ def persist_js_findings(
             .first()
         )
         severity = sev_enum.get(_SEV_MAP.get(f.severity, "LOW"), Severity.LOW)
-        title = f"{f.kind.replace('_', ' ').title()}: {f.pattern_name}"
+        title = f"{f.kind.replace('_', ' ').title()}: {f.pattern_name}" if f.kind != "js_path" else (
+            f"JS Endpoint: {(f.extras or {}).get('method', 'GET')} {f.match[:100]}"
+        )
         description = _describe(f)
 
         meta = {
@@ -740,6 +765,18 @@ def _describe(f: JSFinding) -> str:
             f"reaching this sink is attacker-controlled, this may lead to DOM-based "
             f"cross-site scripting."
         )
+    if f.kind == "js_path":
+        ex = f.extras or {}
+        method = ex.get("method", "GET")
+        qp = ", ".join(ex.get("query_params") or []) or "none"
+        bp = ", ".join(ex.get("body_params") or []) or "none"
+        return (
+            f"jsluice discovered the endpoint `{method} {f.match}` in `{f.source_url}`.\n\n"
+            f"**Query parameters:** {qp}\n"
+            f"**Body parameters:** {bp}\n\n"
+            f"These parameters may be attack surface for injection, IDOR, or "
+            f"business-logic abuse."
+        )
     return f.pattern_name
 
 
@@ -765,5 +802,11 @@ def _remediation(f: JSFinding) -> str:
         return (
             "Replace direct HTML injection with `textContent` / DOM APIs, or sanitize "
             "with DOMPurify before insertion. Avoid `eval` / string-based `setTimeout`."
+        )
+    if f.kind == "js_path":
+        return (
+            "Review these endpoint parameters for injection, IDOR, or business-logic "
+            "vulnerabilities. Ensure proper input validation and server-side authorization "
+            "checks are in place for each parameter."
         )
     return "Review manually."

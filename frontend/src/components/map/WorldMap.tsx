@@ -3,10 +3,13 @@
 import React, { useMemo, useState } from 'react';
 import { ComposableMap, Geographies, Geography, Marker, ZoomableGroup } from 'react-simple-maps';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { MapPin, Globe, Building2 } from 'lucide-react';
+import { MapPin, Globe, Building2, ShieldAlert, Layers, Network } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 
 const geoUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+
+type ViewMode = 'type' | 'severity' | 'ports';
 
 interface GeoLocation {
   latitude: number;
@@ -16,11 +19,25 @@ interface GeoLocation {
   countryCode?: string;
 }
 
+interface OpenPort {
+  port: number;
+  service: string;
+  isRisky: boolean;
+}
+
 interface Asset {
   id: number;
   value: string;
   type?: string;
   findingsCount?: number;
+  maxSeverity?: 'critical' | 'high' | 'medium' | 'low' | 'info' | null;
+  // Port exposure
+  openPortsCount?: number;
+  riskyPortsCount?: number;
+  openPorts?: OpenPort[];
+  // Threat intel flags from new services
+  dnsThreat?: boolean;
+  urlhausMalicious?: boolean;
   geoLocation?: GeoLocation;
 }
 
@@ -47,6 +64,7 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
   const [hoveredCountry, setHoveredCountry] = useState<string | null>(null);
   const [position, setPosition] = useState({ coordinates: [0, 20] as [number, number], zoom: 1 });
   const [highlightedCountryCode, setHighlightedCountryCode] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('severity');
 
   const geoAssets = useMemo(
     () => assets.filter(asset => asset.geoLocation?.latitude && asset.geoLocation?.longitude),
@@ -113,18 +131,51 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
     return "hsl(199 50% 25%)";                   // Light cyan - few assets
   };
 
-  const getMarkerColor = (assetType?: string) => {
-    switch (assetType?.toLowerCase()) {
-      case 'domain':
-        return "hsl(142 76% 45%)"; // Green
-      case 'subdomain':
-        return "hsl(199 89% 48%)"; // Cyan
-      case 'ip_address':
-        return "hsl(280 80% 60%)"; // Purple
-      default:
-        return "hsl(48 96% 53%)"; // Yellow
+  const getMarkerColor = (asset: Asset): string => {
+    if (viewMode === 'ports') {
+      if ((asset.riskyPortsCount ?? 0) > 0) return "hsl(0 85% 52%)";     // red — risky ports open
+      if ((asset.openPortsCount ?? 0) >= 10) return "hsl(20 95% 55%)";    // orange — many open ports
+      if ((asset.openPortsCount ?? 0) >= 3) return "hsl(38 95% 55%)";     // amber — several open
+      if ((asset.openPortsCount ?? 0) >= 1) return "hsl(60 90% 55%)";     // yellow — a few open
+      return "hsl(142 76% 45%)";                                           // green — no open ports found
+    }
+    if (viewMode === 'severity') {
+      // Threat intel overrides — highest priority
+      if (asset.urlhausMalicious || asset.dnsThreat) return "hsl(0 90% 55%)"; // bright red
+      switch (asset.maxSeverity) {
+        case 'critical': return "hsl(0 85% 50%)";
+        case 'high':     return "hsl(20 95% 55%)";
+        case 'medium':   return "hsl(38 95% 55%)";
+        case 'low':      return "hsl(60 90% 55%)";
+        case 'info':     return "hsl(199 89% 48%)";
+        default:         return "hsl(142 76% 45%)";
+      }
+    }
+    // Type-based coloring (original)
+    switch (asset.type?.toLowerCase()) {
+      case 'domain':     return "hsl(142 76% 45%)";
+      case 'subdomain':  return "hsl(199 89% 48%)";
+      case 'ip_address': return "hsl(280 80% 60%)";
+      default:           return "hsl(48 96% 53%)";
     }
   };
+
+  // Severity / threat intel summary counts
+  const threatCounts = useMemo(() => ({
+    critical: geoAssets.filter(a => a.maxSeverity === 'critical' || a.maxSeverity === 'high').length,
+    medium:   geoAssets.filter(a => a.maxSeverity === 'medium').length,
+    threats:  geoAssets.filter(a => a.urlhausMalicious || a.dnsThreat).length,
+    clean:    geoAssets.filter(a => !a.maxSeverity && !a.urlhausMalicious && !a.dnsThreat).length,
+  }), [geoAssets]);
+
+  // Port exposure summary counts
+  const portCounts = useMemo(() => ({
+    risky:    geoAssets.filter(a => (a.riskyPortsCount ?? 0) > 0).length,
+    many:     geoAssets.filter(a => (a.openPortsCount ?? 0) >= 10).length,
+    some:     geoAssets.filter(a => (a.openPortsCount ?? 0) >= 1 && (a.openPortsCount ?? 0) < 10).length,
+    none:     geoAssets.filter(a => (a.openPortsCount ?? 0) === 0).length,
+    totalOpenPorts: geoAssets.reduce((sum, a) => sum + (a.openPortsCount ?? 0), 0),
+  }), [geoAssets]);
 
   const handleMoveEnd = (position: any) => {
     setPosition(position);
@@ -137,18 +188,87 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
           <Globe className="h-4 w-4 text-cyan-400" />
           Global Asset Distribution
         </CardTitle>
-        <div className="flex items-center gap-3 text-xs">
-          <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-green-500"></span>
-            <span className="text-muted-foreground">Domain</span>
+        <div className="flex items-center gap-4">
+          {/* View mode toggle */}
+          <div className="flex items-center gap-1 bg-slate-800 rounded-md p-0.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              className={`h-6 px-2 text-xs rounded ${viewMode === 'severity' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+              onClick={() => setViewMode('severity')}
+            >
+              <ShieldAlert className="h-3 w-3 mr-1" />
+              Severity
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className={`h-6 px-2 text-xs rounded ${viewMode === 'ports' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+              onClick={() => setViewMode('ports')}
+            >
+              <Network className="h-3 w-3 mr-1" />
+              Ports
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className={`h-6 px-2 text-xs rounded ${viewMode === 'type' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+              onClick={() => setViewMode('type')}
+            >
+              <Layers className="h-3 w-3 mr-1" />
+              Type
+            </Button>
           </div>
-          <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-            <span className="text-muted-foreground">Subdomain</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-            <span className="text-muted-foreground">IP</span>
+          {/* Legend */}
+          <div className="flex items-center gap-3 text-xs">
+            {viewMode === 'severity' && (
+              <>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                  <span className="text-muted-foreground">Critical/High</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                  <span className="text-muted-foreground">Medium</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                  <span className="text-muted-foreground">Clean</span>
+                </div>
+              </>
+            )}
+            {viewMode === 'ports' && (
+              <>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                  <span className="text-muted-foreground">Risky ports</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                  <span className="text-muted-foreground">Many open</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                  <span className="text-muted-foreground">No ports</span>
+                </div>
+              </>
+            )}
+            {viewMode === 'type' && (
+              <>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                  <span className="text-muted-foreground">Domain</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                  <span className="text-muted-foreground">Subdomain</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                  <span className="text-muted-foreground">IP</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </CardHeader>
@@ -200,41 +320,116 @@ export function WorldMap({ assets, onAssetClick }: WorldMapProps) {
                 </Geographies>
                 
                 {/* Asset markers */}
-                {geoAssets.map((asset) => (
-                  <Marker
-                    key={asset.id}
-                    coordinates={[asset.geoLocation!.longitude, asset.geoLocation!.latitude]}
-                    onClick={() => onAssetClick?.(asset)}
-                  >
-                    <g style={{ cursor: 'pointer' }}>
-                      <circle
-                        r={4 / position.zoom}
-                        fill={getMarkerColor(asset.type)}
-                        stroke="hsl(0 0% 100%)"
-                        strokeWidth={1 / position.zoom}
-                        opacity={0.9}
-                      />
-                      <title>
-                        {asset.value}
-                        {asset.geoLocation?.city && `\n📍 ${asset.geoLocation.city}, ${asset.geoLocation.country}`}
-                        {asset.type && `\n🏷️ ${asset.type}`}
-                      </title>
-                    </g>
-                  </Marker>
-                ))}
+                {geoAssets.map((asset) => {
+                  const color = getMarkerColor(asset);
+                  const isThreat = asset.urlhausMalicious || asset.dnsThreat;
+                  const isHighSeverity = asset.maxSeverity === 'critical' || asset.maxSeverity === 'high';
+                  const hasRiskyPorts = (asset.riskyPortsCount ?? 0) > 0;
+                  const showPulse =
+                    (viewMode === 'severity' && (isThreat || isHighSeverity)) ||
+                    (viewMode === 'ports' && hasRiskyPorts);
+                  const r = 4 / position.zoom;
+
+                  // Build a readable tooltip
+                  const portSummary = asset.openPorts?.length
+                    ? `\nPorts: ${asset.openPorts
+                        .slice(0, 8)
+                        .map(p => `${p.port}${p.service ? `/${p.service}` : ''}${p.isRisky ? '!' : ''}`)
+                        .join(', ')}${(asset.openPorts.length > 8) ? `… +${asset.openPorts.length - 8} more` : ''}`
+                    : '';
+
+                  return (
+                    <Marker
+                      key={asset.id}
+                      coordinates={[asset.geoLocation!.longitude, asset.geoLocation!.latitude]}
+                      onClick={() => onAssetClick?.(asset)}
+                    >
+                      <g style={{ cursor: 'pointer' }}>
+                        {/* Pulse ring for threats/critical/risky-ports */}
+                        {showPulse && (
+                          <circle
+                            r={r + 3}
+                            fill="none"
+                            stroke={color}
+                            strokeWidth={1 / position.zoom}
+                            opacity={0.35}
+                          />
+                        )}
+                        <circle
+                          r={r}
+                          fill={color}
+                          stroke="hsl(220 15% 10%)"
+                          strokeWidth={0.8 / position.zoom}
+                          opacity={0.92}
+                        />
+                        <title>
+                          {asset.value}
+                          {asset.geoLocation?.city && ` — ${asset.geoLocation.city}, ${asset.geoLocation.country}`}
+                          {asset.maxSeverity ? `\nSeverity: ${asset.maxSeverity.toUpperCase()} (${asset.findingsCount} findings)` : ''}
+                          {(asset.openPortsCount ?? 0) > 0 ? `\nOpen ports: ${asset.openPortsCount}${hasRiskyPorts ? ` (${asset.riskyPortsCount} risky)` : ''}` : ''}
+                          {portSummary}
+                          {isThreat ? '\nTHREAT INTEL MATCH' : ''}
+                        </title>
+                      </g>
+                    </Marker>
+                  );
+                })}
               </ZoomableGroup>
             </ComposableMap>
 
             {/* Stats overlay - bottom left */}
             <div className="absolute bottom-3 left-3 flex flex-col gap-2">
               <div className="text-xs bg-slate-900/90 backdrop-blur px-3 py-2 rounded-lg border border-slate-700">
-                <div className="flex items-center gap-2 text-slate-200 font-medium mb-1">
+                <div className="flex items-center gap-2 text-slate-200 font-medium mb-2">
                   <MapPin className="h-3 w-3 text-cyan-400" />
-                  {totalMappedAssets} Assets Mapped
+                  {totalMappedAssets} assets · {uniqueCountries} {uniqueCountries === 1 ? 'country' : 'countries'}
                 </div>
-                <div className="text-slate-400">
-                  across {uniqueCountries} {uniqueCountries === 1 ? 'country' : 'countries'}
-                </div>
+                {viewMode === 'severity' && (
+                  <div className="flex items-center gap-3">
+                    {threatCounts.threats > 0 && (
+                      <div className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-red-500 ring-1 ring-red-400/40"></span>
+                        <span className="text-red-400 font-medium">{threatCounts.threats} threat match</span>
+                      </div>
+                    )}
+                    {threatCounts.critical > 0 && (
+                      <div className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                        <span className="text-orange-400">{threatCounts.critical} crit/high</span>
+                      </div>
+                    )}
+                    {threatCounts.medium > 0 && (
+                      <div className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                        <span className="text-amber-400">{threatCounts.medium} medium</span>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                      <span className="text-green-400">{threatCounts.clean} clean</span>
+                    </div>
+                  </div>
+                )}
+                {viewMode === 'ports' && (
+                  <div className="flex items-center gap-3">
+                    {portCounts.risky > 0 && (
+                      <div className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-red-500 ring-1 ring-red-400/40"></span>
+                        <span className="text-red-400 font-medium">{portCounts.risky} w/ risky ports</span>
+                      </div>
+                    )}
+                    {portCounts.many > 0 && (
+                      <div className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                        <span className="text-orange-400">{portCounts.many} high-exposure</span>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                      <span className="text-slate-400">{portCounts.totalOpenPorts} total open ports</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

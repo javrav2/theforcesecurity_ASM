@@ -42,7 +42,12 @@ class ScanType(str, enum.Enum):
     SUBDOMAIN_TAKEOVER = "subdomain_takeover"  # CNAME-fingerprint + Nuclei takeover templates + optional Subjack
     GRAPHQL_SCAN = "graphql_scan"        # GraphQL endpoint discovery + introspection/misconfig audit
     JS_RECON = "js_recon"                # JS secret scan + source maps + dep-confusion + DOM sinks
+    JSLUICE_SCAN = "jsluice_scan"        # jsluice standalone: paths, query/body params, secrets from JS files
     TRUFFLEHOG_SCAN = "trufflehog_scan"  # TruffleHog deep secret scanner with active verification
+    EMAIL_BREACH = "email_breach"        # XposedOrNot email breach discovery for org domain
+    DNS_THREAT = "dns_threat"            # Spamhaus + multi-DNSBL threat check for discovered assets
+    URLHAUS_LOOKUP = "urlhaus_lookup"    # abuse.ch URLhaus active lookup for URLs/domains/hashes
+    BGP_LOOKUP = "bgp_lookup"           # RIPEstat BGP/ASN prefix lookup for discovered IPs
 
 
 class ScanStatus(str, enum.Enum):

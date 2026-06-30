@@ -1137,7 +1137,54 @@ class MCPServer:
             phase="exploitation",
             handler=None,  # Handled by ASMToolsManager directly
         ))
-    
+
+        # Garak LLM vulnerability scanner (NVIDIA)
+        self.registry.register(MCPTool(
+            name="execute_garak",
+            description=(
+                "Run garak (NVIDIA's LLM vulnerability scanner) against an LLM endpoint. "
+                "Probes for jailbreaks, DAN attacks, prompt injection, encoding exploits, "
+                "data leakage, package hallucination, toxicity, misleading content, and 200+ "
+                "additional vulnerability classes. Supports REST endpoints, OpenAI-compatible "
+                "APIs, Hugging Face models, and AWS Bedrock. Outputs structured JSONL reports."
+            ),
+            tool_type=ToolType.SCAN,
+            parameters={
+                "args": {
+                    "type": "string",
+                    "description": (
+                        "garak CLI arguments passed to `python -m garak`. "
+                        "Required: --target_type and --target_name (or --target_type rest with a URL). "
+                        "Useful flags: "
+                        "--probes <probe_list> (e.g. 'dan,promptinject,encoding,jailbreak,malwaregen'); "
+                        "--report_prefix /tmp/garak_report (set an output path for JSONL); "
+                        "--extended_detectors (broaden detection). "
+                        "REST example: '--target_type rest --target_name https://api.example.com/v1/chat "
+                        "--probes dan,promptinject,encoding --report_prefix /tmp/garak_out'. "
+                        "OpenAI example: '--target_type openai --target_name gpt-4o "
+                        "--probes dan,promptinject,jailbreak --report_prefix /tmp/garak_out'."
+                    ),
+                }
+            },
+            required_params=["args"],
+            phase="exploitation",
+            handler=self._execute_garak,
+        ))
+        self.registry.register(MCPTool(
+            name="garak_help",
+            description="Show garak CLI help and list available probes/detectors.",
+            tool_type=ToolType.UTILITY,
+            parameters={
+                "topic": {
+                    "type": "string",
+                    "description": "Help topic: 'probes' to list all probes, 'detectors' to list detectors, or omit for general help.",
+                }
+            },
+            required_params=[],
+            phase="recon",
+            handler=self._garak_help,
+        ))
+
     @staticmethod
     def _parse_args(args: str) -> List[str]:
         """Parse CLI args string safely (handles quoted values). Returns empty list if args empty."""
@@ -1218,7 +1265,24 @@ class MCPServer:
         """Execute Nuclei scanner."""
         cmd = ["nuclei"] + self._parse_args(args)
         return await self._run_command(cmd, timeout=600)
-    
+
+    async def _execute_garak(self, args: str) -> Dict[str, Any]:
+        """Execute garak LLM vulnerability scanner (NVIDIA)."""
+        cmd = ["python", "-m", "garak"] + self._parse_args(args)
+        # Garak probes can be slow; allow up to 30 min for broad sweeps.
+        return await self._run_command(cmd, timeout=1800)
+
+    async def _garak_help(self, topic: str = "") -> Dict[str, Any]:
+        """Show garak help or list probes/detectors."""
+        topic = (topic or "").strip().lower()
+        if topic == "probes":
+            cmd = ["python", "-m", "garak", "--list_probes"]
+        elif topic == "detectors":
+            cmd = ["python", "-m", "garak", "--list_detectors"]
+        else:
+            cmd = ["python", "-m", "garak", "--help"]
+        return await self._run_command(cmd, timeout=MCP_HELP_TIMEOUT)
+
     async def _nuclei_help(self) -> Dict[str, Any]:
         return await self._run_command(["nuclei", "-h"], timeout=MCP_HELP_TIMEOUT)
     

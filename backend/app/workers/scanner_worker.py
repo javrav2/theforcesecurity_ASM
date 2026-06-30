@@ -298,7 +298,12 @@ class ScannerWorker:
                 ScanType.SUBDOMAIN_TAKEOVER: 'SUBDOMAIN_TAKEOVER',
                 ScanType.GRAPHQL_SCAN: 'GRAPHQL_SCAN',
                 ScanType.JS_RECON: 'JS_RECON',
+                ScanType.JSLUICE_SCAN: 'JSLUICE_SCAN',
                 ScanType.TRUFFLEHOG_SCAN: 'TRUFFLEHOG_SCAN',
+                ScanType.EMAIL_BREACH: 'EMAIL_BREACH',
+                ScanType.DNS_THREAT: 'DNS_THREAT',
+                ScanType.URLHAUS_LOOKUP: 'URLHAUS_LOOKUP',
+                ScanType.BGP_LOOKUP: 'BGP_LOOKUP',
             }
             
             messages = []
@@ -688,8 +693,18 @@ class ScannerWorker:
                     await self.handle_graphql_scan(body)
                 elif job_type == 'JS_RECON':
                     await self.handle_js_recon(body)
+                elif job_type == 'JSLUICE_SCAN':
+                    await self.handle_jsluice_scan(body)
                 elif job_type == 'TRUFFLEHOG_SCAN':
                     await self.handle_trufflehog_scan(body)
+                elif job_type == 'EMAIL_BREACH':
+                    await self.handle_email_breach(body)
+                elif job_type == 'DNS_THREAT':
+                    await self.handle_dns_threat(body)
+                elif job_type == 'URLHAUS_LOOKUP':
+                    await self.handle_urlhaus_lookup(body)
+                elif job_type == 'BGP_LOOKUP':
+                    await self.handle_bgp_lookup(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -1901,10 +1916,11 @@ class ScannerWorker:
             port_scan = toggles.get('port_scan', True)
             http_probe = toggles.get('http_probe', True)
             resource_enum = toggles.get('resource_enum', True)
+            js_analysis = toggles.get('js_analysis', True)
             vuln_scan = toggles.get('vuln_scan', True)
         except Exception as e:
             logger.warning(f"Could not load scan_toggles, using defaults: {e}")
-            domain_discovery = port_scan = http_probe = resource_enum = vuln_scan = True
+            domain_discovery = port_scan = http_probe = resource_enum = js_analysis = vuln_scan = True
         finally:
             db.close()
         
@@ -2005,7 +2021,38 @@ class ScannerWorker:
                     'targets': [],
                     'config': config,
                 })
-            
+
+            if js_analysis:
+                _set_pipeline_step("JS analysis (jsluice)")
+                # Prefer Katana-discovered js_files stored on assets; fall back
+                # to running discovery against the original targets.
+                pipeline_js_urls: list[str] = []
+                d = self.get_db_session()
+                try:
+                    if d:
+                        for a in d.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.js_files.isnot(None),
+                        ).all():
+                            files = getattr(a, 'js_files', None) or []
+                            if isinstance(files, list):
+                                pipeline_js_urls.extend(files)
+                except Exception as e:
+                    logger.warning(f"Recon pipeline: could not read js_files for jsluice: {e}")
+                finally:
+                    if d:
+                        d.close()
+
+                await self.handle_jsluice_scan({
+                    'scan_id': scan_id,
+                    'organization_id': organization_id,
+                    'targets': targets or ([domain] if domain else []),
+                    'config': {
+                        'js_urls': list(dict.fromkeys(pipeline_js_urls))[:1000],
+                        **config,
+                    },
+                })
+
             if vuln_scan:
                 _set_pipeline_step("Vulnerability scan")
                 vuln_targets = []
@@ -5124,6 +5171,24 @@ class ScannerWorker:
                     "source_maps_found": result.source_maps_found,
                     "endpoints_extracted": result.endpoints_extracted,
                     "dep_confusion_candidates": result.dep_confusion_candidates,
+                    "js_paths_found": result.js_paths_found,
+                    "js_params_found": result.js_params_found,
+                    # Paths with parameter data — capped for JSON column size
+                    "jsluice_paths": [
+                        {
+                            "url": f.match,
+                            "method": (f.extras or {}).get("method", "GET"),
+                            "query_params": (f.extras or {}).get("query_params", []),
+                            "body_params": (f.extras or {}).get("body_params", []),
+                            "url_type": (f.extras or {}).get("type"),
+                            "source_js": f.source_url,
+                        }
+                        for f in result.findings
+                        if f.kind == "js_path" and (
+                            (f.extras or {}).get("query_params")
+                            or (f.extras or {}).get("body_params")
+                        )
+                    ][:200],
                 }
             db.commit()
 
@@ -5131,6 +5196,91 @@ class ScannerWorker:
 
         except Exception as e:
             logger.error(f"JS recon scan {scan_id} failed: {e}", exc_info=True)
+            self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
+    async def handle_jsluice_scan(self, job_data: dict):
+        """
+        jsluice standalone scan — extract URLs, paths, query/body params,
+        and secrets from JavaScript files.
+
+        Can be triggered:
+          1. Directly as ScanType.JSLUICE_SCAN with targets or js_urls in config.
+          2. From handle_recon_pipeline after Katana populates asset.js_files.
+
+        Config:
+            targets (list[str])          - URLs/hostnames to discover JS from
+            js_urls (list[str])          - Pre-discovered JS file URLs (skips
+                                           discovery; used by recon pipeline)
+            max_js (int, default 500)    - Max JS files to analyse
+            timeout (int, default 600)
+            concurrency (int, default 20)
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets') or []
+        config = job_data.get('config') or {}
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("No database connection for jsluice scan")
+            self._mark_scan_failed(scan_id, "No database connection")
+            return
+
+        try:
+            from app.services.jsluice_service import (
+                run_jsluice_scan,
+                persist_jsluice_findings,
+                build_results_summary,
+            )
+
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Running jsluice analysis"
+                scan.progress = 5
+                db.commit()
+
+            js_urls = config.get('js_urls') or []
+            clean_targets = [t.strip() for t in targets if t and isinstance(t, str)]
+
+            if not js_urls and not clean_targets:
+                self._mark_scan_failed(scan_id, "No targets or JS URLs provided for jsluice scan")
+                return
+
+            result = await run_jsluice_scan(
+                js_urls=js_urls,
+                targets=clean_targets,
+                max_js=int(config.get('max_js', 500)),
+                timeout=int(config.get('timeout', 600)),
+                concurrency=int(config.get('concurrency', 20)),
+            )
+
+            if scan:
+                scan.progress = 80
+                scan.current_step = "Persisting findings"
+                db.commit()
+
+            created = await asyncio.to_thread(
+                persist_jsluice_findings,
+                db, organization_id, scan_id, result,
+            )
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.vulnerabilities_found = created
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = build_results_summary(result)
+            db.commit()
+
+            trigger_graph_sync(organization_id)
+
+        except Exception as e:
+            logger.error(f"jsluice scan {scan_id} failed: {e}", exc_info=True)
             self._mark_scan_failed(scan_id, str(e))
         finally:
             db.close()
@@ -5253,6 +5403,349 @@ class ScannerWorker:
         except Exception as e:
             logger.error(f"TruffleHog scan {scan_id} failed: {e}", exc_info=True)
             self._mark_scan_failed(scan_id, str(e))
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # Email Breach handler
+    # ------------------------------------------------------------------
+
+    async def handle_email_breach(self, body: dict) -> None:
+        """
+        Check an org's domain against XposedOrNot for email breach exposure.
+
+        config keys:
+            domain  (str)  — org domain to check, e.g. "target.com"
+            emails  (list) — optional explicit email list to check individually
+        """
+        from app.services.email_breach_service import get_email_breach_service
+
+        scan_id = body.get("scan_id")
+        organization_id = body.get("organization_id")
+        config = body.get("config") or {}
+        db = SessionLocal()
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first() if scan_id else None
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.current_step = "Checking email breach exposure"
+                db.commit()
+
+            domain = config.get("domain") or (body.get("targets") or [""])[0]
+            explicit_emails: list[str] = config.get("emails") or []
+
+            service = get_email_breach_service()
+            results: dict = {}
+
+            # Domain-level check
+            if domain:
+                dom_result = await service.check_domain_breach_exposure(domain)
+                results["domain"] = dom_result.to_dict()
+
+            # Per-email checks (if provided or extracted from assets)
+            if not explicit_emails and organization_id:
+                # Pull discovered email-like assets from DB
+                email_assets = (
+                    db.query(Asset)
+                    .filter(
+                        Asset.organization_id == organization_id,
+                        Asset.asset_type == AssetType.OTHER,
+                        Asset.value.like("%@%"),
+                    )
+                    .limit(50)
+                    .all()
+                )
+                explicit_emails = [a.value for a in email_assets if "@" in a.value]
+
+            if explicit_emails:
+                email_results = await service.batch_check_emails(explicit_emails[:50])
+                results["emails"] = {
+                    email: r.to_dict() for email, r in email_results.items()
+                }
+
+            breached_count = sum(
+                1 for r in results.get("emails", {}).values() if r.get("breached")
+            )
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "domain": domain,
+                    "breached_emails": breached_count,
+                    "emails_checked": len(explicit_emails),
+                    "data": results,
+                }
+            db.commit()
+            logger.info(
+                "Email breach scan %s completed: %d/%d emails breached",
+                scan_id, breached_count, len(explicit_emails),
+            )
+
+        except Exception as exc:
+            logger.error("Email breach scan %s failed: %s", scan_id, exc, exc_info=True)
+            self._mark_scan_failed(scan_id, str(exc))
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # DNS Threat handler
+    # ------------------------------------------------------------------
+
+    async def handle_dns_threat(self, body: dict) -> None:
+        """
+        Run multi-DNSBL checks on all discovered IPs and domains for an org.
+
+        config keys:
+            targets  (list) — explicit targets; falls back to DB assets
+            max_assets (int) — cap on DB-sourced assets (default 200)
+        """
+        from app.services.dns_threat_service import get_dns_threat_service
+
+        scan_id = body.get("scan_id")
+        organization_id = body.get("organization_id")
+        config = body.get("config") or {}
+        db = SessionLocal()
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first() if scan_id else None
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.current_step = "Running DNS threat checks"
+                db.commit()
+
+            targets: list[str] = body.get("targets") or config.get("targets") or []
+            if not targets and organization_id:
+                max_assets = int(config.get("max_assets", 200))
+                assets = (
+                    db.query(Asset)
+                    .filter(
+                        Asset.organization_id == organization_id,
+                        Asset.asset_type.in_([AssetType.IP, AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                        Asset.status != AssetStatus.INACTIVE,
+                    )
+                    .limit(max_assets)
+                    .all()
+                )
+                targets = [a.value for a in assets if a.value]
+
+            service = get_dns_threat_service()
+            results = await service.check_bulk(targets, max_concurrent=15)
+
+            listed_targets = [t for t, r in results.items() if r.is_listed]
+            high_severity = [
+                t for t, r in results.items() if r.severity in ("high", "critical")
+            ]
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "targets_checked": len(targets),
+                    "listed_count": len(listed_targets),
+                    "high_severity_count": len(high_severity),
+                    "listed_targets": listed_targets[:50],
+                    "details": {t: r.to_dict() for t, r in results.items() if r.is_listed},
+                }
+            db.commit()
+            logger.info(
+                "DNS threat scan %s: %d/%d targets listed on DNSBLs",
+                scan_id, len(listed_targets), len(targets),
+            )
+
+        except Exception as exc:
+            logger.error("DNS threat scan %s failed: %s", scan_id, exc, exc_info=True)
+            self._mark_scan_failed(scan_id, str(exc))
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # URLhaus Lookup handler
+    # ------------------------------------------------------------------
+
+    async def handle_urlhaus_lookup(self, body: dict) -> None:
+        """
+        Query URLhaus for discovered URLs, domains, or IPs.
+
+        config keys:
+            targets (list) — URLs, domains, IPs, or hashes to query
+        """
+        from app.services.urlhaus_lookup_service import get_urlhaus_lookup_service
+
+        scan_id = body.get("scan_id")
+        organization_id = body.get("organization_id")
+        config = body.get("config") or {}
+        db = SessionLocal()
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first() if scan_id else None
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.current_step = "Querying URLhaus"
+                db.commit()
+
+            targets: list[str] = body.get("targets") or config.get("targets") or []
+            if not targets and organization_id:
+                # Pull HTTP assets as default targets
+                assets = (
+                    db.query(Asset)
+                    .filter(
+                        Asset.organization_id == organization_id,
+                        Asset.asset_type.in_([AssetType.URL, AssetType.DOMAIN, AssetType.SUBDOMAIN]),
+                        Asset.status != AssetStatus.INACTIVE,
+                    )
+                    .limit(100)
+                    .all()
+                )
+                targets = [a.value for a in assets if a.value]
+
+            service = get_urlhaus_lookup_service()
+
+            # Run lookups with concurrency limit
+            sem = asyncio.Semaphore(5)
+
+            async def _lookup(target: str) -> tuple[str, dict]:
+                async with sem:
+                    await asyncio.sleep(0.3)
+                    result = await service.lookup(target)
+                    return target, result
+
+            pairs = await asyncio.gather(*[_lookup(t) for t in targets[:100]])
+            results = dict(pairs)
+
+            malicious = {t: r for t, r in results.items() if r.get("is_malicious")}
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "targets_checked": len(targets),
+                    "malicious_count": len(malicious),
+                    "malicious_targets": list(malicious.keys()),
+                    "details": malicious,
+                }
+            db.commit()
+            logger.info(
+                "URLhaus scan %s: %d/%d targets flagged",
+                scan_id, len(malicious), len(targets),
+            )
+
+        except Exception as exc:
+            logger.error("URLhaus scan %s failed: %s", scan_id, exc, exc_info=True)
+            self._mark_scan_failed(scan_id, str(exc))
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # BGP Lookup handler
+    # ------------------------------------------------------------------
+
+    async def handle_bgp_lookup(self, body: dict) -> None:
+        """
+        Enrich discovered IPs with BGP/ASN context via RIPEstat.
+
+        config keys:
+            targets   (list) — IPs or ASNs to look up
+            enrich_db (bool) — if true, update asset metadata with BGP info
+        """
+        from app.services.ripestat_service import get_ripestat_service
+
+        scan_id = body.get("scan_id")
+        organization_id = body.get("organization_id")
+        config = body.get("config") or {}
+        db = SessionLocal()
+
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first() if scan_id else None
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.current_step = "Running BGP/ASN lookups"
+                db.commit()
+
+            targets: list[str] = body.get("targets") or config.get("targets") or []
+            if not targets and organization_id:
+                ip_assets = (
+                    db.query(Asset)
+                    .filter(
+                        Asset.organization_id == organization_id,
+                        Asset.asset_type == AssetType.IP,
+                        Asset.status != AssetStatus.INACTIVE,
+                    )
+                    .limit(200)
+                    .all()
+                )
+                targets = [a.value for a in ip_assets if a.value]
+
+            service = get_ripestat_service()
+            enrich_db = bool(config.get("enrich_db", True))
+
+            sem = asyncio.Semaphore(10)
+
+            async def _lookup(target: str):
+                async with sem:
+                    await asyncio.sleep(0.1)
+                    return target, await service.lookup_ip(target)
+
+            pairs = await asyncio.gather(*[_lookup(t) for t in targets[:200]])
+            results = {t: r for t, r in pairs}
+
+            # Optionally write BGP context back to asset metadata
+            if enrich_db and organization_id:
+                for target, result in results.items():
+                    if not result.success:
+                        continue
+                    asset = (
+                        db.query(Asset)
+                        .filter(
+                            Asset.organization_id == organization_id,
+                            Asset.value == target,
+                        )
+                        .first()
+                    )
+                    if asset:
+                        meta = asset.metadata or {}
+                        meta["bgp"] = {
+                            "asn": result.asn,
+                            "asn_name": result.asn_name,
+                            "prefix": result.covering_prefix,
+                            "block_name": result.block_name,
+                        }
+                        asset.metadata = meta
+                db.commit()
+
+            asn_summary: dict[str, int] = {}
+            for r in results.values():
+                if r.asn:
+                    asn_summary[r.asn] = asn_summary.get(r.asn, 0) + 1
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.progress = 100
+                scan.current_step = "Completed"
+                scan.results = {
+                    "targets_enriched": len([r for r in results.values() if r.success]),
+                    "unique_asns": len(asn_summary),
+                    "asn_distribution": asn_summary,
+                    "details": {t: r.to_dict() for t, r in results.items() if r.success},
+                }
+            db.commit()
+            trigger_graph_sync(organization_id)
+            logger.info(
+                "BGP lookup %s: %d IPs enriched across %d ASNs",
+                scan_id, len(results), len(asn_summary),
+            )
+
+        except Exception as exc:
+            logger.error("BGP lookup %s failed: %s", scan_id, exc, exc_info=True)
+            self._mark_scan_failed(scan_id, str(exc))
         finally:
             db.close()
 

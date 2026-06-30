@@ -34,6 +34,9 @@ import {
   FileText,
   AlertCircle,
   StopCircle,
+  Code2,
+  Link2,
+  Search,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -762,6 +765,191 @@ export default function ScanDetailPage() {
                   <p className="text-sm text-muted-foreground">Live Hosts</p>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* jsluice JS Endpoints & Parameters */}
+        {(scan.scan_type === 'js_recon' || scan.scan_type === 'jsluice_scan') &&
+          ((scan.results as any)?.js_paths_found > 0 ||
+           (scan.results as any)?.paths_found > 0 ||
+           ((scan.results as any)?.jsluice_paths?.length > 0)) && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Code2 className="h-5 w-5 text-violet-400" />
+                jsluice — JS Endpoints &amp; Parameters
+                <Badge variant="default" className="ml-2 bg-violet-500/20 text-violet-300 border-violet-500/30">
+                  {(scan.results as any)?.jsluice_paths?.length ?? 0} endpoints with params
+                </Badge>
+              </CardTitle>
+              <CardDescription>
+                Paths, query parameters, and body parameters extracted from JavaScript bundles via AST analysis.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Summary stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="text-center p-3 bg-secondary/50 rounded-lg">
+                  <p className="text-xl font-bold text-violet-400">
+                    {(scan.results as any)?.js_files_analyzed ??
+                     (scan.results as any)?.scripts_analyzed ?? 0}
+                  </p>
+                  <p className="text-xs text-muted-foreground">JS Files Analyzed</p>
+                </div>
+                <div className="text-center p-3 bg-secondary/50 rounded-lg">
+                  <p className="text-xl font-bold text-blue-400">
+                    {(scan.results as any)?.paths_found ??
+                     (scan.results as any)?.js_paths_found ?? 0}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Paths Found</p>
+                </div>
+                <div className="text-center p-3 bg-secondary/50 rounded-lg">
+                  <p className="text-xl font-bold text-green-400">
+                    {(scan.results as any)?.params_found ??
+                     (scan.results as any)?.js_params_found ?? 0}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Parameters Extracted</p>
+                </div>
+                <div className="text-center p-3 bg-secondary/50 rounded-lg">
+                  <p className="text-xl font-bold text-red-400">
+                    {(scan.results as any)?.secrets_found ?? 0}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Secrets Found</p>
+                </div>
+              </div>
+
+              {/* Endpoints with params table */}
+              {(scan.results as any)?.jsluice_paths?.length > 0 && (
+                <>
+                  <div className="flex items-center justify-between mt-2">
+                    <p className="text-sm font-medium text-muted-foreground">
+                      Endpoints with parameter data (
+                      {(scan.results as any).jsluice_paths.length} shown
+                      {(scan.results as any)?.paths_found > (scan.results as any).jsluice_paths.length &&
+                        ` of ${(scan.results as any).paths_found}`}
+                      )
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const rows = ((scan.results as any).jsluice_paths as any[])
+                          .map((p: any) =>
+                            `${p.method}\t${p.url}\t${(p.query_params || []).join(',')}\t${(p.body_params || []).join(',')}\t${p.source_js}`
+                          )
+                          .join('\n');
+                        navigator.clipboard.writeText('Method\tURL\tQuery Params\tBody Params\tSource JS\n' + rows);
+                        toast({ title: 'Copied', description: 'Endpoint data copied as TSV.' });
+                      }}
+                    >
+                      Copy as TSV
+                    </Button>
+                  </div>
+                  <div className="rounded border overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-20">Method</TableHead>
+                          <TableHead>Endpoint / Path</TableHead>
+                          <TableHead>Query Params</TableHead>
+                          <TableHead>Body Params</TableHead>
+                          <TableHead className="w-32">Call Type</TableHead>
+                          <TableHead>Source JS</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {((scan.results as any).jsluice_paths as any[]).map((p: any, i: number) => (
+                          <TableRow key={i}>
+                            <TableCell>
+                              <Badge
+                                variant="outline"
+                                className={
+                                  p.method === 'POST' ? 'text-orange-400 border-orange-500/40' :
+                                  p.method === 'PUT' || p.method === 'PATCH' ? 'text-yellow-400 border-yellow-500/40' :
+                                  p.method === 'DELETE' ? 'text-red-400 border-red-500/40' :
+                                  'text-blue-400 border-blue-500/40'
+                                }
+                              >
+                                {p.method || 'GET'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="font-mono text-xs max-w-xs truncate" title={p.url}>
+                              {p.url}
+                            </TableCell>
+                            <TableCell>
+                              {p.query_params?.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {(p.query_params as string[]).slice(0, 6).map((param: string, j: number) => (
+                                    <Badge key={j} variant="secondary" className="text-xs font-mono">
+                                      {param}
+                                    </Badge>
+                                  ))}
+                                  {p.query_params.length > 6 && (
+                                    <Badge variant="outline" className="text-xs">
+                                      +{p.query_params.length - 6}
+                                    </Badge>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground text-xs">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {p.body_params?.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {(p.body_params as string[]).slice(0, 6).map((param: string, j: number) => (
+                                    <Badge key={j} variant="outline" className="text-xs font-mono text-amber-400 border-amber-500/40">
+                                      {param}
+                                    </Badge>
+                                  ))}
+                                  {p.body_params.length > 6 && (
+                                    <Badge variant="outline" className="text-xs">
+                                      +{p.body_params.length - 6}
+                                    </Badge>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground text-xs">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {p.url_type || '—'}
+                            </TableCell>
+                            <TableCell className="font-mono text-xs max-w-[180px] truncate" title={p.source_js}>
+                              {p.source_js ? p.source_js.split('/').pop() : '—'}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
+              )}
+
+              {/* All paths (no param filter) — collapsible */}
+              {(scan.results as any)?.jsluice_all_paths?.length > 0 && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground flex items-center gap-2">
+                    <Search className="h-4 w-4" />
+                    All extracted paths ({(scan.results as any).jsluice_all_paths.length}) — including paths without parameters
+                  </summary>
+                  <div className="mt-2 max-h-64 overflow-auto rounded border bg-muted/30 p-2 font-mono text-xs space-y-1">
+                    {((scan.results as any).jsluice_all_paths as any[]).map((p: any, i: number) => (
+                      <div key={i} className="flex gap-2 items-center truncate">
+                        <span className={`shrink-0 w-14 text-center rounded px-1 py-0.5 text-xs font-semibold ${
+                          p.method === 'POST' ? 'bg-orange-500/20 text-orange-300' :
+                          p.method === 'DELETE' ? 'bg-red-500/20 text-red-300' :
+                          'bg-blue-500/20 text-blue-300'
+                        }`}>
+                          {p.method || 'GET'}
+                        </span>
+                        <span className="truncate" title={p.url}>{p.url}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </CardContent>
           </Card>
         )}

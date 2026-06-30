@@ -8,7 +8,7 @@
 //   - lookup_cve              — fetch CVE metadata + description from the store
 //   - get_asset               — fetch an asset record and its signals from inventory
 //   - check_epss_kev          — fetch EPSS score and CISA/VulnCheck KEV status
-//   - search_exploit_evidence — search for public PoCs, Exploit-DB, GHSA
+//   - search_exploit_evidence — search for public PoCs, GHSA advisory text
 //   - lookup_kb_pattern       — query the KB for matching CWE / dev patterns
 //   - get_open_findings       — list Oracle findings, optionally filtered
 //   - run_analysis            — execute the full Phase A → Phase B → OPES pipeline
@@ -20,6 +20,12 @@
 //   - check_regional_nvds     — JVN iPedia (JP) + BDU FSTEC (RU) national DB coverage
 //   - check_attack_mappings   — MITRE ATT&CK + Mappings Explorer CVE→TTP techniques
 //   - map_owasp               — static CWE→OWASP Top 10 2021 category mapping
+//   - check_osv               — OSV.dev: 20+ ecosystem CVE advisories by CVE ID or package name
+//   - check_openssf_malicious_packages — OpenSSF Malicious Packages: backdoor/supply chain flags
+//   - check_exploitdb         — Exploit-DB mirror: working exploit code lookup via GitHub index
+//   - check_cnw_kev           — CNW (EU CSIRTs network) KEV: exploitation type + reporting CSIRT
+//   - check_cisa_ics_advisory — CISA ICS-CERT CSAF advisories: affected ICS/OT products and vendors
+//   - check_ics_vendor_csaf   — NVD CPE + vendor PSIRT data: exact ICS product models, firmware versions, vendor advisory URLs
 package tools
 
 import (
@@ -83,6 +89,12 @@ func BuildRegistry(d Deps) *react.Registry {
 	reg.Register(&checkRegionalNVDsTool{})                             // JVN iPedia (JP) + BDU FSTEC (RU)
 	reg.Register(&checkATTACKMappingsTool{})                           // MITRE ATT&CK CVE→TTP mappings
 	reg.Register(&mapOWASPTool{})                                      // CWE → OWASP Top 10 (static)
+	reg.Register(&checkOSVTool{})                                      // OSV.dev: 20+ ecosystem CVE / package advisories
+	reg.Register(&checkOpenSSFMaliciousTool{})                         // OpenSSF malicious packages (supply chain)
+	reg.Register(&checkExploitDBTool{})                                // Exploit-DB working exploit code
+	reg.Register(&checkCNWKEVTool{})                                   // EU CSIRTs network KEV (ransomware type + reporting CSIRT)
+	reg.Register(&checkCISAICSAdvisoryTool{})                          // CISA ICS-CERT CSAF advisories (ICS/OT product context)
+	reg.Register(&checkICSVendorCSAFTool{})                            // NVD CPE + vendor PSIRT: exact ICS product models + advisory links
 	return reg
 }
 
@@ -675,23 +687,40 @@ func (t *searchExploitEvidenceTool) Run(ctx context.Context, args map[string]any
 		}
 	}
 
-	// GitHub Security Advisory API (public, no auth for read)
+	// GitHub Security Advisory API (public, no auth for read).
+	// We capture both summary (one-line) and description (full technical body)
+	// so the LLM can surface mechanism details and patch context to developers.
 	ghsaURL := fmt.Sprintf("https://api.github.com/advisories?cve_id=%s&per_page=3", cveID)
 	ghsaBody, err := httpGetWithTimeout(ctx, ghsaURL, 8*time.Second)
 	if err == nil {
 		var ghsa []struct {
-			GHSAID  string `json:"ghsa_id"`
-			Summary string `json:"summary"`
-			URL     string `json:"html_url"`
+			GHSAID      string `json:"ghsa_id"`
+			Summary     string `json:"summary"`
+			Description string `json:"description"`
+			URL         string `json:"html_url"`
 		}
 		if jsonErr := json.Unmarshal(ghsaBody, &ghsa); jsonErr == nil {
 			for _, g := range ghsa {
+				desc := g.Description
+				if len(desc) > 2000 {
+					desc = desc[:2000] + "…[truncated]"
+				}
 				results = append(results, advisory{
 					Source:  "GHSA",
 					CVEID:   cveID,
 					Summary: g.Summary,
 					URL:     g.URL,
 				})
+				// Append the full technical description as a separate advisory entry
+				// so the LLM sees the root-cause detail without confusing it with metadata.
+				if desc != "" && desc != g.Summary {
+					results = append(results, advisory{
+						Source:  "GHSA-detail",
+						CVEID:   cveID,
+						Summary: desc,
+						URL:     g.URL,
+					})
+				}
 			}
 		}
 	}
@@ -1295,6 +1324,1122 @@ func (t *mapOWASPTool) Run(_ context.Context, args map[string]any) (string, erro
 	}
 	result := enrichers.MapOWASP(cweIDs)
 	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_osv ──────────────────────────────────────
+
+// checkOSVTool queries the OSV (Open Source Vulnerabilities) database.
+// OSV aggregates advisories from 20+ ecosystems under a unified API:
+// npm, PyPI, Go, crates.io, RubyGems, Maven, Debian, Alpine, Ubuntu, AlmaLinux,
+// Rocky Linux, Bitnami, Drupal, Haskell, OCaml, OSS-Fuzz, RustSec, and more.
+//
+// Two query modes:
+//   - CVE ID:              GET /v1/vulns/{CVE-ID} — returns the OSV advisory cross-linked to that CVE
+//   - package + ecosystem: POST /v1/query          — returns all advisories for that package version
+//
+// This is the primary source for supply chain CVEs where NVD data is sparse
+// but the ecosystem advisory (e.g. RustSec, PySec) has detailed affected ranges
+// and patch versions. Also used by check_openssf_malicious_packages.
+type checkOSVTool struct{}
+
+func (t *checkOSVTool) Name() string { return "check_osv" }
+func (t *checkOSVTool) Description() string {
+	return "Query OSV.dev (Open Source Vulnerabilities) for advisories covering 20+ package " +
+		"ecosystems: npm, PyPI, Go, crates.io, RubyGems, Maven, Debian, Alpine, Ubuntu, " +
+		"AlmaLinux, Bitnami, RustSec, OSS-Fuzz, and more. " +
+		"Accepts a CVE ID to retrieve the cross-linked OSV advisory, or a package name + " +
+		"ecosystem for direct package-level vulnerability lookup with affected version ranges. " +
+		"Particularly valuable for supply chain CVEs where NVD data is sparse but the " +
+		"ecosystem-specific advisory has detailed patch and affected-range information."
+}
+func (t *checkOSVTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228 (optional if package provided)",
+			},
+			"package_name": map[string]any{
+				"type":        "string",
+				"description": "Exact package name, e.g. 'lodash', 'requests' (optional if cve_id provided)",
+			},
+			"ecosystem": map[string]any{
+				"type":        "string",
+				"description": "Package ecosystem: npm, PyPI, Go, crates.io, RubyGems, Maven, Debian, Alpine, etc.",
+			},
+		},
+	}
+}
+func (t *checkOSVTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	pkgName, _ := args["package_name"].(string)
+	ecosystem, _ := args["ecosystem"].(string)
+
+	if cveID == "" && pkgName == "" {
+		return "", fmt.Errorf("provide cve_id or package_name + ecosystem")
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	if cveID != "" {
+		cveID = strings.ToUpper(strings.TrimSpace(cveID))
+		body, err := httpGetWithTimeout(fetchCtx, "https://api.osv.dev/v1/vulns/"+cveID, 12*time.Second)
+		if err != nil {
+			return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"OSV: %s"}`, cveID, err.Error()), nil
+		}
+		return summariseOSVAdvisory(body, cveID), nil
+	}
+
+	// Package query.
+	queryBody, _ := json.Marshal(map[string]any{
+		"package": map[string]any{
+			"name":      pkgName,
+			"ecosystem": ecosystem,
+		},
+	})
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodPost, "https://api.osv.dev/v1/query", bytes.NewReader(queryBody))
+	if err != nil {
+		return "", fmt.Errorf("build OSV query: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"package":%q,"ecosystem":%q,"found":false,"note":"OSV API unavailable"}`, pkgName, ecosystem), nil
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("read OSV response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf(`{"package":%q,"ecosystem":%q,"found":false,"note":"OSV HTTP %d"}`, pkgName, ecosystem, resp.StatusCode), nil
+	}
+	return summariseOSVQueryResult(respBody, pkgName, ecosystem), nil
+}
+
+// summariseOSVAdvisory renders a single OSV advisory record into a compact
+// JSON string the LLM can read clearly.
+func summariseOSVAdvisory(body []byte, id string) string {
+	var adv map[string]any
+	if err := json.Unmarshal(body, &adv); err != nil {
+		return string(body)
+	}
+	aliases, _ := adv["aliases"].([]any)
+	aliasStrs := make([]string, 0, len(aliases))
+	for _, a := range aliases {
+		if s, ok := a.(string); ok {
+			aliasStrs = append(aliasStrs, s)
+		}
+	}
+	type affRow struct {
+		Package string `json:"package"`
+	}
+	var affected []affRow
+	if raw, ok := adv["affected"].([]any); ok {
+		for _, a := range raw {
+			if m, ok := a.(map[string]any); ok {
+				pkg := ""
+				if p, ok := m["package"].(map[string]any); ok {
+					name, _ := p["name"].(string)
+					eco, _ := p["ecosystem"].(string)
+					if eco != "" {
+						pkg = name + " (" + eco + ")"
+					} else {
+						pkg = name
+					}
+				}
+				affected = append(affected, affRow{Package: pkg})
+			}
+		}
+	}
+	out := map[string]any{
+		"id":       adv["id"],
+		"aliases":  aliasStrs,
+		"summary":  truncStr(adv["summary"], 300),
+		"details":  truncStr(adv["details"], 1500),
+		"affected": limitSlice(affected, 5),
+		"modified": adv["modified"],
+		"source":   "osv.dev",
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b)
+}
+
+// summariseOSVQueryResult renders a package advisory list into a compact
+// summary the LLM can scan without hitting token limits.
+func summariseOSVQueryResult(body []byte, pkgName, ecosystem string) string {
+	var result struct {
+		Vulns []map[string]any `json:"vulns"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return string(body)
+	}
+	if len(result.Vulns) == 0 {
+		return fmt.Sprintf(`{"package":%q,"ecosystem":%q,"found":false,"vuln_count":0,"note":"No OSV advisories found for this package."}`, pkgName, ecosystem)
+	}
+	type row struct {
+		ID      string   `json:"id"`
+		Aliases []string `json:"aliases,omitempty"`
+		Summary string   `json:"summary,omitempty"`
+	}
+	var rows []row
+	for _, v := range result.Vulns {
+		r := row{}
+		r.ID, _ = v["id"].(string)
+		if als, ok := v["aliases"].([]any); ok {
+			for _, a := range als {
+				if s, ok := a.(string); ok {
+					r.Aliases = append(r.Aliases, s)
+				}
+			}
+		}
+		sum, _ := v["summary"].(string)
+		if len(sum) > 150 {
+			sum = sum[:150] + "…"
+		}
+		r.Summary = sum
+		rows = append(rows, r)
+	}
+	out := map[string]any{
+		"package":    pkgName,
+		"ecosystem":  ecosystem,
+		"found":      true,
+		"vuln_count": len(rows),
+		"vulns":      rows,
+		"source":     "osv.dev",
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b)
+}
+
+// ─────────────────────────── check_openssf_malicious_packages ────────────────
+
+// checkOpenSSFMaliciousTool checks whether a package has been reported as
+// malicious by the OpenSSF Malicious Packages project
+// (github.com/ossf/malicious-packages). Malicious packages are confirmed
+// backdoors, typosquatters, dependency confusion payloads, and supply chain
+// injection attacks — distinct from ordinary CVEs (bugs). Advisories carry
+// IDs like MAL-2024-NNNN and are indexed by the OSV database.
+//
+// This is especially relevant for JS/npm recon where jsluice and similar
+// tools surface third-party package dependencies that may have been reported
+// as malicious after the fact.
+type checkOpenSSFMaliciousTool struct{}
+
+func (t *checkOpenSSFMaliciousTool) Name() string { return "check_openssf_malicious_packages" }
+func (t *checkOpenSSFMaliciousTool) Description() string {
+	return "Check whether a package has been flagged as malicious in the OpenSSF Malicious " +
+		"Packages dataset (github.com/ossf/malicious-packages). Covers confirmed backdoors, " +
+		"typosquatting, dependency confusion, and supply chain injection — distinct from CVEs. " +
+		"Returns advisory records with IDs like MAL-YYYY-NNNN. Especially valuable for npm, " +
+		"PyPI, crates.io, and Go packages encountered during JS recon or supply chain analysis. " +
+		"Provide the exact published package name and its ecosystem."
+}
+func (t *checkOpenSSFMaliciousTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"package_name": map[string]any{
+				"type":        "string",
+				"description": "Exact published package name, e.g. 'node-ipc', 'ctx', 'colors'",
+			},
+			"ecosystem": map[string]any{
+				"type":        "string",
+				"description": "Package ecosystem: npm, PyPI, crates.io, Go, RubyGems, Maven",
+			},
+		},
+		"required": []string{"package_name", "ecosystem"},
+	}
+}
+func (t *checkOpenSSFMaliciousTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	pkgName, _ := args["package_name"].(string)
+	ecosystem, _ := args["ecosystem"].(string)
+	if pkgName == "" || ecosystem == "" {
+		return "", fmt.Errorf("package_name and ecosystem are required")
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	// OSV includes the openssf/malicious-packages database. Malicious entries
+	// carry IDs starting with "MAL-". We query all advisories for the package
+	// and filter to those IDs.
+	queryBody, _ := json.Marshal(map[string]any{
+		"package": map[string]any{
+			"name":      pkgName,
+			"ecosystem": ecosystem,
+		},
+	})
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodPost, "https://api.osv.dev/v1/query", bytes.NewReader(queryBody))
+	if err != nil {
+		return "", fmt.Errorf("build OSV query: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"package":%q,"ecosystem":%q,"malicious":false,"note":"OSV API unavailable"}`, pkgName, ecosystem), nil
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return "", fmt.Errorf("read OSV response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf(`{"package":%q,"ecosystem":%q,"malicious":false,"note":"OSV HTTP %d"}`, pkgName, ecosystem, resp.StatusCode), nil
+	}
+
+	var result struct {
+		Vulns []map[string]any `json:"vulns"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return string(respBody), nil
+	}
+
+	type malEntry struct {
+		ID       string   `json:"id"`
+		Aliases  []string `json:"aliases,omitempty"`
+		Summary  string   `json:"summary,omitempty"`
+		Modified string   `json:"modified,omitempty"`
+	}
+	var malicious []malEntry
+	for _, v := range result.Vulns {
+		id, _ := v["id"].(string)
+		if !strings.HasPrefix(id, "MAL-") {
+			continue
+		}
+		e := malEntry{ID: id}
+		e.Modified, _ = v["modified"].(string)
+		if als, ok := v["aliases"].([]any); ok {
+			for _, a := range als {
+				if s, ok := a.(string); ok {
+					e.Aliases = append(e.Aliases, s)
+				}
+			}
+		}
+		sum, _ := v["summary"].(string)
+		if len(sum) > 200 {
+			sum = sum[:200] + "…"
+		}
+		e.Summary = sum
+		malicious = append(malicious, e)
+	}
+
+	out := map[string]any{
+		"package":         pkgName,
+		"ecosystem":       ecosystem,
+		"malicious":       len(malicious) > 0,
+		"malicious_count": len(malicious),
+		"advisories":      malicious,
+		"source":          "openssf/malicious-packages via osv.dev",
+	}
+	if len(malicious) == 0 {
+		out["note"] = "No malicious package reports found. Package has not been flagged by OpenSSF."
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_exploitdb ────────────────────────────────
+
+// checkExploitDBTool searches Exploit-DB (exploit-db.com) for working exploit
+// code against a CVE using the offensive-security/exploitdb GitHub mirror index.
+//
+// An Exploit-DB entry is a stronger weaponization signal than a raw PoC gist:
+// it represents a categorized, reviewable exploit in the most widely used
+// public exploit archive. The tool uses GitHub Code Search to find the CVE in
+// the exploitdb repository and classifies matches by exploit type
+// (remote / local / webapps / shellcode).
+type checkExploitDBTool struct{}
+
+func (t *checkExploitDBTool) Name() string { return "check_exploitdb" }
+func (t *checkExploitDBTool) Description() string {
+	return "Search Exploit-DB (exploit-db.com / offensive-security/exploitdb) for working exploit " +
+		"code against a CVE. An Exploit-DB entry is stronger than a raw PoC — it is a categorized, " +
+		"peer-reviewed exploit in the most widely used public exploit archive. " +
+		"Returns exploit file paths, URLs, and type (remote/local/webapps/shellcode). " +
+		"Uses the Exploit-DB GitHub mirror via Code Search — no API key required, " +
+		"though anonymous GitHub search is rate-limited to 10 req/min."
+}
+func (t *checkExploitDBTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkExploitDBTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	cveID = strings.ToUpper(strings.TrimSpace(cveID))
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	// GitHub Code Search within the exploitdb repository.
+	// The files_exploits.csv index includes a 'codes' column with CVE IDs;
+	// individual exploit source files also reference the CVE in header comments.
+	searchURL := "https://api.github.com/search/code?q=" + cveID + "+repo:offensive-security/exploitdb&per_page=10"
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub search unavailable"}`, cveID), nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusForbidden, http.StatusUnauthorized:
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub rate limit hit. Set GITHUB_TOKEN env var for higher limits."}`, cveID), nil
+	case http.StatusUnprocessableEntity:
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub search rejected query (422). CVE ID may be malformed."}`, cveID), nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub search HTTP %d"}`, cveID, resp.StatusCode), nil
+	}
+
+	var ghResult struct {
+		TotalCount int `json:"total_count"`
+		Items      []struct {
+			Name    string `json:"name"`
+			Path    string `json:"path"`
+			HTMLURL string `json:"html_url"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &ghResult); err != nil {
+		return string(body), nil
+	}
+	if ghResult.TotalCount == 0 {
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"exploit_count":0,"note":"No Exploit-DB entries found for this CVE."}`, cveID), nil
+	}
+
+	type exploit struct {
+		File string `json:"file"`
+		URL  string `json:"url"`
+		Type string `json:"type,omitempty"`
+	}
+	type exploit struct {
+		File    string `json:"file"`
+		URL     string `json:"url"`
+		Type    string `json:"type,omitempty"`
+		Preview string `json:"technique_preview,omitempty"`
+	}
+	var exploits []exploit
+	for _, item := range ghResult.Items {
+		// Skip the CSV index and documentation — we want actual exploit source files.
+		if strings.HasSuffix(item.Name, ".csv") || strings.HasSuffix(item.Name, ".md") {
+			continue
+		}
+		expType := ""
+		switch {
+		case strings.Contains(item.Path, "/remote/"):
+			expType = "remote"
+		case strings.Contains(item.Path, "/local/"):
+			expType = "local"
+		case strings.Contains(item.Path, "/webapps/"):
+			expType = "webapps"
+		case strings.HasPrefix(item.Path, "shellcodes/"):
+			expType = "shellcode"
+		case strings.HasPrefix(item.Path, "exploits/"):
+			expType = "exploit"
+		}
+		e := exploit{File: item.Path, URL: item.HTMLURL, Type: expType}
+
+		// Fetch the first 100 lines of the exploit source so the LLM can describe
+		// the technique to a developer. The raw URL for the exploitdb GitHub mirror
+		// is constructed from the path under the repo root.
+		rawURL := "https://raw.githubusercontent.com/offensive-security/exploitdb/main/" + item.Path
+		if src, fetchErr := httpGetWithTimeout(fetchCtx, rawURL, 6*time.Second); fetchErr == nil {
+			lines := strings.SplitN(string(src), "\n", 101)
+			if len(lines) > 100 {
+				lines = lines[:100]
+			}
+			preview := strings.Join(lines, "\n")
+			if len(preview) > 3000 {
+				preview = preview[:3000] + "\n…[truncated at 3000 chars]"
+			}
+			e.Preview = preview
+		}
+
+		exploits = append(exploits, e)
+	}
+
+	out := map[string]any{
+		"cve_id":        cveID,
+		"found":         len(exploits) > 0,
+		"exploit_count": ghResult.TotalCount,
+		"exploits":      exploits,
+		"source":        "exploit-db.com (offensive-security/exploitdb)",
+		"note":          "technique_preview contains the first 100 lines of exploit source — use it to explain the attack technique to developers",
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_cnw_kev ───────────────────────────────────
+
+// checkCNWKEVTool checks whether a CVE appears in the CNW (EU CSIRTs Network)
+// KEV catalog, maintained by the European network of national CERTs/CSIRTs
+// and exposed via the CIRCL vulnerability-lookup public API.
+//
+// This is distinct from CISA KEV and ENISA EUVD:
+//   - CISA KEV is US-centric and driven by CISA's own observations
+//   - ENISA EUVD confirms EU exploitation but lacks exploitation type metadata
+//   - CNW KEV is reported bottom-up by individual EU CSIRTs (CERT-PL, CERT Italia,
+//     CERT-FR, etc.) and includes exploitation type (ransomware, APT, mass-scanning)
+//     and the specific CSIRT that flagged it — useful signal for EU-exposed assets
+//
+// The catalog is small (~20–100 entries) but high-signal: every entry reflects
+// a CSIRT that has directly observed active exploitation in European infrastructure.
+// The full list is fetched and searched for the CVE ID.
+type checkCNWKEVTool struct{}
+
+func (t *checkCNWKEVTool) Name() string { return "check_cnw_kev" }
+func (t *checkCNWKEVTool) Description() string {
+	return "Check the CNW (EU CSIRTs Network) Known Exploited Vulnerabilities catalog via the " +
+		"CIRCL vulnerability-lookup public API. Distinct from CISA KEV and ENISA EUVD: entries are " +
+		"reported bottom-up by individual EU national CSIRTs (CERT-PL, CERT Italia, CERT-FR, etc.) " +
+		"and include exploitation type (ransomware, APT), the specific reporting CSIRT, and EUVD ID. " +
+		"Membership here means a European CSIRT has directly observed active exploitation — " +
+		"strong signal for assets with EU exposure. Small catalog, all entries are high-confidence."
+}
+func (t *checkCNWKEVTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2024-55591",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkCNWKEVTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	cveID = strings.ToUpper(strings.TrimSpace(cveID))
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	// The CNW KEV endpoint returns the full catalog as a paged list.
+	// The catalog is small enough to fetch in one call.
+	body, err := httpGetWithTimeout(fetchCtx, "https://vulnerability.circl.lu/api/cnw_kev/", 12*time.Second)
+	if err != nil {
+		return fmt.Sprintf(`{"cve_id":%q,"in_cnw_kev":false,"note":"CNW KEV API unavailable: %s"}`, cveID, err.Error()), nil
+	}
+
+	var response struct {
+		Metadata struct {
+			Count int `json:"count"`
+		} `json:"metadata"`
+		Data []struct {
+			CVE                   string `json:"CVE"`
+			EUVD                  string `json:"EUVD,omitempty"`
+			VendorProject         string `json:"vendorProject,omitempty"`
+			Product               string `json:"product,omitempty"`
+			DateReported          string `json:"dateReported,omitempty"`
+			OriginSource          string `json:"originSource,omitempty"`
+			ShortDescription      string `json:"shortDescription,omitempty"`
+			ExploitationType      string `json:"exploitationType,omitempty"`
+			ThreatActorsExploiting string `json:"threatActorsExploiting,omitempty"`
+			Notes                 string `json:"notes,omitempty"`
+			CWEs                  string `json:"cwes,omitempty"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return fmt.Sprintf(`{"cve_id":%q,"in_cnw_kev":false,"note":"CNW KEV parse error"}`, cveID), nil
+	}
+
+	for _, entry := range response.Data {
+		if strings.EqualFold(entry.CVE, cveID) {
+			// Omit dash-only placeholder values.
+			clean := func(s string) string {
+				if strings.TrimSpace(s) == "-" {
+					return ""
+				}
+				return s
+			}
+			result := map[string]any{
+				"cve_id":                 cveID,
+				"in_cnw_kev":             true,
+				"euvd_id":                clean(entry.EUVD),
+				"vendor_project":         clean(entry.VendorProject),
+				"product":                clean(entry.Product),
+				"date_reported":          clean(entry.DateReported),
+				"reporting_csirt":        clean(entry.OriginSource),
+				"exploitation_type":      clean(entry.ExploitationType),
+				"threat_actors":          clean(entry.ThreatActorsExploiting),
+				"short_description":      clean(entry.ShortDescription),
+				"csirt_advisory_url":     clean(entry.Notes),
+				"cwes":                   clean(entry.CWEs),
+				"source":                 "CNW (EU CSIRTs Network) KEV via vulnerability.circl.lu",
+				"catalog_size":           response.Metadata.Count,
+			}
+			b, _ := json.MarshalIndent(result, "", "  ")
+			return string(b), nil
+		}
+	}
+
+	return fmt.Sprintf(
+		`{"cve_id":%q,"in_cnw_kev":false,"catalog_size":%d,"note":"Not in EU CSIRTs Network KEV. Catalog has %d entries — absence does not rule out exploitation, only EU CSIRT-reported cases are listed.","source":"CNW KEV via vulnerability.circl.lu"}`,
+		cveID, response.Metadata.Count, response.Metadata.Count,
+	), nil
+}
+
+// ─────────────────────────── check_cisa_ics_advisory ─────────────────────────
+
+// checkCISAICSAdvisoryTool checks whether a CVE appears in CISA ICS-CERT CSAF
+// advisories (advisories.cisa.gov / github.com/cisagov/CSAF).
+//
+// These are distinct from CISA Vulnrichment (which enriches CVE records at the
+// metadata level). ICS-CERT advisories are published for CVEs that affect
+// specific industrial control system products: PLCs, HMIs, RTUs, SCADA
+// software, industrial networking equipment, and safety systems.
+//
+// An ICS advisory identifies EXACTLY which OT vendor products are vulnerable
+// (e.g. "Siemens SIMATIC S7-1500 PLC, firmware < 3.1.0") — context NVD does
+// not provide. Advisory IDs follow the pattern ICSA-YY-DDD-NN for ICS-CERT and
+// ICSMA-YY-DDD-NN for medical device advisories.
+//
+// Uses GitHub Code Search on the cisagov/CSAF repository — no API key needed.
+type checkCISAICSAdvisoryTool struct{}
+
+func (t *checkCISAICSAdvisoryTool) Name() string { return "check_cisa_ics_advisory" }
+func (t *checkCISAICSAdvisoryTool) Description() string {
+	return "Check CISA ICS-CERT CSAF advisories for a CVE. ICS advisories are distinct from " +
+		"CISA Vulnrichment: they identify specific industrial control system products affected — " +
+		"PLCs, HMIs, RTUs, SCADA software, industrial networking gear, and safety systems. " +
+		"An ICS advisory (ICSA-YY-DDD-NN) tells you WHICH OT vendor products are vulnerable " +
+		"(e.g. 'Siemens SIMATIC S7-1500 firmware < 3.1.0') — context NVD does not carry. " +
+		"Presence here is a strong ICS/OT relevance signal: CISA only publishes ICS advisories " +
+		"for vulnerabilities with confirmed industrial system impact. " +
+		"Uses the cisagov/CSAF GitHub repo via Code Search — no API key required."
+}
+func (t *checkCISAICSAdvisoryTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2023-46604",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkCISAICSAdvisoryTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	cveID = strings.ToUpper(strings.TrimSpace(cveID))
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	// Search the cisagov/CSAF repository for CSAF advisory files referencing
+	// this CVE. ICS-CERT advisories use the filename pattern icsa-* or icsma-*.
+	searchURL := "https://api.github.com/search/code?q=" + cveID + "+repo:cisagov/CSAF&per_page=10"
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub search unavailable"}`, cveID), nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusForbidden, http.StatusUnauthorized:
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub rate limit hit. Set GITHUB_TOKEN env var for higher limits."}`, cveID), nil
+	case http.StatusUnprocessableEntity:
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub search rejected query (422)."}`, cveID), nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"note":"GitHub search HTTP %d"}`, cveID, resp.StatusCode), nil
+	}
+
+	var ghResult struct {
+		TotalCount int `json:"total_count"`
+		Items      []struct {
+			Name    string `json:"name"`
+			Path    string `json:"path"`
+			HTMLURL string `json:"html_url"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &ghResult); err != nil {
+		return string(body), nil
+	}
+	if ghResult.TotalCount == 0 {
+		return fmt.Sprintf(`{"cve_id":%q,"found":false,"ics_advisory_count":0,"note":"No CISA ICS-CERT advisory found for this CVE. This does not rule out ICS impact — not all ICS CVEs receive a dedicated advisory."}`, cveID), nil
+	}
+
+	type advisory struct {
+		AdvisoryID string `json:"advisory_id"`
+		Type       string `json:"type"`
+		File       string `json:"file"`
+		URL        string `json:"url"`
+	}
+	var advisories []advisory
+	for _, item := range ghResult.Items {
+		// Only count actual CSAF advisory JSON files, not README or index files.
+		if !strings.HasSuffix(item.Name, ".json") {
+			continue
+		}
+		name := strings.ToLower(item.Name)
+		advType := "cisa"
+		switch {
+		case strings.HasPrefix(name, "icsa-"):
+			advType = "ICS-CERT"
+		case strings.HasPrefix(name, "icsma-"):
+			advType = "ICS-CERT Medical"
+		case strings.HasPrefix(name, "aa"):
+			advType = "CISA Alert"
+		}
+		// Derive a clean advisory ID from the filename (strip .json suffix).
+		advID := strings.TrimSuffix(item.Name, ".json")
+		advisories = append(advisories, advisory{
+			AdvisoryID: advID,
+			Type:       advType,
+			File:       item.Path,
+			URL:        item.HTMLURL,
+		})
+	}
+
+	icsFound := len(advisories) > 0
+	out := map[string]any{
+		"cve_id":           cveID,
+		"found":            icsFound,
+		"advisory_count":   ghResult.TotalCount,
+		"advisories":       advisories,
+		"source":           "CISA ICS-CERT (cisagov/CSAF)",
+		"ics_ot_relevant":  icsFound,
+	}
+	if icsFound {
+		out["note"] = "CISA published an ICS-CERT advisory for this CVE — it affects industrial control systems. Fetch the advisory URL for affected product details (vendor, model, firmware version)."
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_ics_vendor_csaf ───────────────────────────
+
+// icsVendorEntry maps a CPE vendor string prefix to display metadata for a
+// known ICS/OT vendor.
+type icsVendorEntry struct {
+	Name        string // Human-readable vendor name
+	AdvisoryURL string // Security advisory portal (may contain {CVE} placeholder)
+	CSAFIndex   string // CSAF index or provider-metadata URL, if published
+	PSIRTEmail  string // CNA source identifier email from NVD (if known)
+}
+
+// icsVendorMap is keyed by the lowercase CPE vendor string that NVD uses.
+// Entries with a PSIRTEmail will also match via the CVE's sourceIdentifier field,
+// catching cases where the CPE configurations section is sparse or missing.
+var icsVendorMap = map[string]icsVendorEntry{
+	"siemens": {
+		Name:        "Siemens ProductCERT",
+		AdvisoryURL: "https://cert-portal.siemens.com/productcert/html/search.html",
+		CSAFIndex:   "https://cert-portal.siemens.com/productcert/csaf/",
+		PSIRTEmail:  "productcert@siemens.com",
+	},
+	"rockwell_automation": {
+		Name:        "Rockwell Automation",
+		AdvisoryURL: "https://www.rockwellautomation.com/en-us/trust-center/security-advisories.html",
+		PSIRTEmail:  "secure@ra.rockwell.com",
+	},
+	"schneider-electric": {
+		Name:        "Schneider Electric",
+		AdvisoryURL: "https://www.se.com/ww/en/work/support/cybersecurity/security-notifications.jsp",
+		PSIRTEmail:  "cybersecurity@se.com",
+	},
+	"honeywell": {
+		Name:        "Honeywell Product Security",
+		AdvisoryURL: "https://www.honeywell.com/us/en/product-security",
+		PSIRTEmail:  "product.security@honeywell.com",
+	},
+	"abb": {
+		Name:        "ABB PSIRT",
+		AdvisoryURL: "https://new.abb.com/about/technology/cyber-security/alerts-and-notifications",
+		PSIRTEmail:  "cybersecurity@abb.com",
+	},
+	"beckhoff": {
+		Name:        "Beckhoff Automation",
+		AdvisoryURL: "https://cert.beckhoff.com/",
+		CSAFIndex:   "https://cert.beckhoff.com/.well-known/csaf/provider-metadata.json",
+		PSIRTEmail:  "security@beckhoff.com",
+	},
+	"phoenix_contact": {
+		Name:        "Phoenix Contact PSIRT",
+		AdvisoryURL: "https://cert.phoenix-contact.com/",
+		CSAFIndex:   "https://cert.phoenix-contact.com/.well-known/csaf/provider-metadata.json",
+		PSIRTEmail:  "product-security@phoenixcontact.com",
+	},
+	"moxa": {
+		Name:        "Moxa PSIRT",
+		AdvisoryURL: "https://www.moxa.com/en/support/product-support/security-advisory",
+		PSIRTEmail:  "security@moxa.com",
+	},
+	"advantech": {
+		Name:        "Advantech PSIRT",
+		AdvisoryURL: "https://www.advantech.com/en/support/details/cybersecurity-advisory",
+		PSIRTEmail:  "security@advantech.com.tw",
+	},
+	"ge_digital": {
+		Name:        "GE / GE Vernova Digital",
+		AdvisoryURL: "https://www.ge.com/digital/cybersecurity",
+	},
+	"emerson": {
+		Name:        "Emerson Electric PSIRT",
+		AdvisoryURL: "https://www.emerson.com/en-us/support/certificates-and-notifications",
+		PSIRTEmail:  "IPCS@Emerson.com",
+	},
+	"yokogawa": {
+		Name:        "Yokogawa PSIRT",
+		AdvisoryURL: "https://www.yokogawa.com/library/resources/white-papers/yokogawa-security-advisories/",
+		PSIRTEmail:  "security@yokogawa.com",
+	},
+	"mitsubishielectric": {
+		Name:        "Mitsubishi Electric PSIRT",
+		AdvisoryURL: "https://www.mitsubishielectric.com/en/psirt/vulnerability/index.html",
+		PSIRTEmail:  "Mitsubishi.CyberSecurity@mt.MitsubishiElectric.co.jp",
+	},
+	"codesys": {
+		Name:        "CODESYS PSIRT",
+		AdvisoryURL: "https://www.codesys.com/security/security-reports.html",
+		PSIRTEmail:  "security@codesys.com",
+	},
+	"wago": {
+		Name:        "WAGO CERT",
+		AdvisoryURL: "https://cert.wago.com/",
+	},
+	"pilz": {
+		Name:        "Pilz CERT",
+		AdvisoryURL: "https://cert.pilz.com/",
+	},
+	"sick_ag": {
+		Name:        "SICK AG Product Security",
+		AdvisoryURL: "https://www.sick.com/security",
+	},
+	"omron": {
+		Name:        "Omron PSIRT",
+		AdvisoryURL: "https://www.ia.omron.com/product/vulnerability/",
+	},
+	"fanuc": {
+		Name:        "FANUC Product Security",
+		AdvisoryURL: "https://www.fanuc.co.jp/en/product/cybersecurity/index.html",
+	},
+	"bosch": {
+		Name:        "Bosch PSIRT",
+		AdvisoryURL: "https://psirt.bosch.com/security-advisories/",
+		PSIRTEmail:  "cybersecurity@bosch.com",
+	},
+	"b-r_industrial_automation": {
+		Name:        "B&R Industrial Automation",
+		AdvisoryURL: "https://www.br-automation.com/en/downloads/software/safety-and-security/security-advisories/",
+	},
+	"pepperl-fuchs": {
+		Name:        "Pepperl+Fuchs",
+		AdvisoryURL: "https://www.pepperl-fuchs.com/global/en/security_advisories.htm",
+		CSAFIndex:   "https://cert.pepperl-fuchs.com/.well-known/csaf/provider-metadata.json",
+	},
+	"endress_hauser": {
+		Name:        "Endress+Hauser",
+		AdvisoryURL: "https://www.endress.com/en/support/cybersecurity",
+	},
+	"festo": {
+		Name:        "Festo SE",
+		AdvisoryURL: "https://www.festo.com/net/SupportPortal/Downloads/cybersecurity",
+	},
+	"nozomi_networks": {
+		Name:        "Nozomi Networks",
+		AdvisoryURL: "https://www.nozominetworks.com/security",
+	},
+}
+
+// checkICSVendorCSAFTool resolves ICS/OT vendor context for a CVE using the
+// NVD CVE 2.0 API. It extracts:
+//
+//  1. The CVE's sourceIdentifier (CNA email) to identify which ICS vendor
+//     PSIRT reported the vulnerability directly — the strongest ICS signal
+//     (e.g. productcert@siemens.com means Siemens assigned and owns this CVE).
+//
+//  2. CPE configuration vendor strings from the NVD configurations array,
+//     cross-referenced against 25+ known ICS/OT vendor prefixes.
+//
+//  3. Affected product details from the vendor CNA's "affected" block —
+//     exact product model names and firmware version ranges as the vendor
+//     reported them (e.g. "SIMATIC S7-1200 firmware < 4.0, Function State < 11").
+//
+//  4. Vendor advisory reference URLs from the NVD references array,
+//     filtered to vendor advisory and CSAF portal links.
+//
+// This surfaces the same product-level ICS context that platforms like
+// BreachSpider aggregate, without requiring paid API access.
+// Set NVD_API_KEY env var for higher rate limits (50 req/30s vs 5 req/30s).
+type checkICSVendorCSAFTool struct{}
+
+func (t *checkICSVendorCSAFTool) Name() string { return "check_ics_vendor_csaf" }
+func (t *checkICSVendorCSAFTool) Description() string {
+	return "Resolve ICS/OT vendor context for a CVE via the NVD API. Returns: " +
+		"(1) which ICS vendor PSIRT owns the CVE as CNA (e.g. Siemens ProductCERT, Rockwell, Schneider); " +
+		"(2) CPE-matched ICS vendors with links to their security advisory portals and CSAF indexes; " +
+		"(3) exact affected product models and firmware version ranges as reported by the vendor CNA; " +
+		"(4) direct vendor advisory reference URLs. " +
+		"An ICS PSIRT as CNA is the strongest OT relevance signal — it means the vendor " +
+		"discovered and assigned the CVE to their own industrial product. " +
+		"Covers 25+ vendors: Siemens, Rockwell, Schneider, Honeywell, ABB, Beckhoff, " +
+		"Phoenix Contact, Moxa, Advantech, Emerson, Yokogawa, Mitsubishi, CODESYS, and more. " +
+		"Set NVD_API_KEY env var for higher rate limits."
+}
+func (t *checkICSVendorCSAFTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2019-13945",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkICSVendorCSAFTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	cveID = strings.ToUpper(strings.TrimSpace(cveID))
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	nvdURL := "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=" + cveID
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, nvdURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build NVD request: %w", err)
+	}
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+	// Use NVD_API_KEY if configured for higher rate limits.
+	if key := os.Getenv("NVD_API_KEY"); key != "" {
+		req.Header.Set("apiKey", key)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"cve_id":%q,"ics_relevant":false,"note":"NVD API unavailable: %s"}`, cveID, err.Error()), nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20)) // 2 MB cap
+	if err != nil {
+		return "", fmt.Errorf("read NVD response: %w", err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		return fmt.Sprintf(`{"cve_id":%q,"ics_relevant":false,"note":"NVD rate limit hit. Set NVD_API_KEY for 50 req/30s."}`, cveID), nil
+	case http.StatusNotFound:
+		return fmt.Sprintf(`{"cve_id":%q,"ics_relevant":false,"note":"CVE not found in NVD."}`, cveID), nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf(`{"cve_id":%q,"ics_relevant":false,"note":"NVD HTTP %d"}`, cveID, resp.StatusCode), nil
+	}
+
+	// Parse the NVD response envelope.
+	var nvdResp struct {
+		TotalResults int `json:"totalResults"`
+		Vulnerabilities []struct {
+			CVE struct {
+				ID               string `json:"id"`
+				SourceIdentifier string `json:"sourceIdentifier"`
+				Affected         []struct {
+					Source      string `json:"source"`
+					AffectedData []struct {
+						Vendor   string `json:"vendor"`
+						Product  string `json:"product"`
+						Versions []struct {
+							Version string `json:"version"`
+							Status  string `json:"status"`
+						} `json:"versions"`
+					} `json:"affectedData"`
+				} `json:"affected"`
+				Configurations []struct {
+					Nodes []struct {
+						CPEMatch []struct {
+							Vulnerable bool   `json:"vulnerable"`
+							Criteria   string `json:"criteria"`
+						} `json:"cpeMatch"`
+					} `json:"nodes"`
+				} `json:"configurations"`
+				References []struct {
+					URL  string   `json:"url"`
+					Tags []string `json:"tags"`
+				} `json:"references"`
+			} `json:"cve"`
+		} `json:"vulnerabilities"`
+	}
+	if err := json.Unmarshal(body, &nvdResp); err != nil || nvdResp.TotalResults == 0 {
+		return fmt.Sprintf(`{"cve_id":%q,"ics_relevant":false,"note":"CVE not in NVD or parse error."}`, cveID), nil
+	}
+	cve := nvdResp.Vulnerabilities[0].CVE
+
+	// ── Step 1: CNA / sourceIdentifier check ───────────────────────────────
+	// If the CVE source email matches a known ICS PSIRT, this is a direct ICS CVE.
+	type matchedVendor struct {
+		Name        string `json:"name"`
+		MatchedVia  string `json:"matched_via"`
+		AdvisoryURL string `json:"advisory_url,omitempty"`
+		CSAFIndex   string `json:"csaf_index,omitempty"`
+	}
+	matchedVendors := make(map[string]matchedVendor) // keyed by vendor name to deduplicate
+
+	srcLower := strings.ToLower(cve.SourceIdentifier)
+	for cpeKey, info := range icsVendorMap {
+		if info.PSIRTEmail != "" && strings.EqualFold(cve.SourceIdentifier, info.PSIRTEmail) {
+			matchedVendors[cpeKey] = matchedVendor{
+				Name:        info.Name,
+				MatchedVia:  "CNA (sourceIdentifier: " + cve.SourceIdentifier + ")",
+				AdvisoryURL: info.AdvisoryURL,
+				CSAFIndex:   info.CSAFIndex,
+			}
+		}
+		_ = srcLower // used via strings.EqualFold above
+	}
+
+	// ── Step 2: CPE configuration vendor strings ────────────────────────────
+	cpeVendors := make(map[string]bool)
+	for _, config := range cve.Configurations {
+		for _, node := range config.Nodes {
+			for _, cpe := range node.CPEMatch {
+				// CPE format: cpe:2.3:{part}:{vendor}:{product}:...
+				parts := strings.Split(cpe.Criteria, ":")
+				if len(parts) >= 5 {
+					vendor := strings.ToLower(parts[3])
+					cpeVendors[vendor] = true
+				}
+			}
+		}
+	}
+	for cpeKey, info := range icsVendorMap {
+		if _, hit := cpeVendors[cpeKey]; hit {
+			if _, exists := matchedVendors[cpeKey]; !exists {
+				matchedVendors[cpeKey] = matchedVendor{
+					Name:        info.Name,
+					MatchedVia:  "CPE vendor string: " + cpeKey,
+					AdvisoryURL: info.AdvisoryURL,
+					CSAFIndex:   info.CSAFIndex,
+				}
+			}
+		}
+	}
+
+	// ── Step 3: Vendor CNA affected product details ─────────────────────────
+	type affectedProduct struct {
+		Vendor   string `json:"vendor"`
+		Product  string `json:"product"`
+		Versions string `json:"versions,omitempty"`
+	}
+	var products []affectedProduct
+	for _, aff := range cve.Affected {
+		for _, ad := range aff.AffectedData {
+			versionStr := ""
+			for _, v := range ad.Versions {
+				if versionStr != "" {
+					versionStr += "; "
+				}
+				versionStr += v.Version
+				if v.Status != "" && v.Status != "affected" {
+					versionStr += " (" + v.Status + ")"
+				}
+			}
+			products = append(products, affectedProduct{
+				Vendor:   ad.Vendor,
+				Product:  ad.Product,
+				Versions: versionStr,
+			})
+		}
+	}
+	// Cap at 10 products to avoid token explosion on wide CVEs.
+	if len(products) > 10 {
+		products = products[:10]
+	}
+
+	// ── Step 4: Vendor advisory reference URLs ─────────────────────────────
+	type advisoryRef struct {
+		URL  string   `json:"url"`
+		Tags []string `json:"tags,omitempty"`
+	}
+	var vendorRefs []advisoryRef
+	for _, ref := range cve.References {
+		for _, tag := range ref.Tags {
+			if strings.Contains(strings.ToLower(tag), "vendor") ||
+				strings.Contains(strings.ToLower(tag), "advisory") ||
+				strings.Contains(strings.ToLower(tag), "csaf") {
+				vendorRefs = append(vendorRefs, advisoryRef{URL: ref.URL, Tags: ref.Tags})
+				break
+			}
+		}
+	}
+
+	// ── Compose result ──────────────────────────────────────────────────────
+	icsRelevant := len(matchedVendors) > 0
+	vendorList := make([]matchedVendor, 0, len(matchedVendors))
+	for _, v := range matchedVendors {
+		vendorList = append(vendorList, v)
+	}
+
+	out := map[string]any{
+		"cve_id":              cveID,
+		"ics_relevant":        icsRelevant,
+		"source_identifier":   cve.SourceIdentifier,
+		"matched_ics_vendors": vendorList,
+		"affected_products":   products,
+		"vendor_advisories":   vendorRefs,
+		"source":              "NVD CVE 2.0 API (services.nvd.nist.gov)",
+	}
+	if !icsRelevant {
+		out["note"] = "No ICS/OT vendor CPE strings or PSIRT CNA email matched. This CVE does not appear to directly affect industrial control system products from the 25 monitored vendors. It may still affect IT components deployed in OT networks."
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
 	return string(b), nil
 }
 

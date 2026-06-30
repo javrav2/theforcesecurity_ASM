@@ -220,6 +220,85 @@ const LATERAL_MOVEMENT_META: Record<LateralMovementPotential, { label: string; c
 };
 
 // ═══════════════════════════════════════════════════════
+// Agent message renderer
+// ═══════════════════════════════════════════════════════
+
+const SECTION_LABELS = new Set([
+  'WHAT TO DO:', 'WHY:', 'PRECONDITIONS ON THIS ASSET:', 'VERIFICATION STEPS:',
+  'NEXT STEPS:', 'REMEDIATION:', 'DETECTION:',
+]);
+
+function AgentMessageContent({ content }: { content: string }) {
+  const VERDICT_RE = /^VERDICT:\s*(.+)$/;
+  const SECTION_RE = /^([A-Z][A-Z\s]+):$/;
+  const BULLET_RE = /^[•\-]\s/;
+  const STEP_RE = /^\d+\.\s/;
+  const CHECK_RE = /^[✓✗?]\s/;
+
+  const lines = content.split('\n');
+  const elements: React.ReactNode[] = [];
+  let key = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      elements.push(<div key={key++} className="h-1" />);
+      continue;
+    }
+
+    const verdictMatch = trimmed.match(VERDICT_RE);
+    if (verdictMatch) {
+      const rest = verdictMatch[1];
+      const cat = rest.match(/^(P[0-4])/)?.[1];
+      const catStyle = cat ? (CATEGORY_STYLES[cat] ?? '') : '';
+      elements.push(
+        <div key={key++} className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Verdict</span>
+          {cat && <span className={cn('px-2 py-0.5 rounded text-xs font-bold', catStyle)}>{cat}</span>}
+          <span className="text-sm font-semibold">{rest.replace(/^P[0-4]\s*—?\s*/, '')}</span>
+        </div>
+      );
+      continue;
+    }
+
+    const sectionMatch = trimmed.match(SECTION_RE);
+    if (sectionMatch && SECTION_LABELS.has(trimmed)) {
+      elements.push(
+        <p key={key++} className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mt-2">
+          {sectionMatch[1]}
+        </p>
+      );
+      continue;
+    }
+
+    if (BULLET_RE.test(trimmed) || STEP_RE.test(trimmed)) {
+      elements.push(
+        <p key={key++} className="text-sm pl-2">{trimmed}</p>
+      );
+      continue;
+    }
+
+    if (CHECK_RE.test(trimmed)) {
+      const icon = trimmed[0];
+      const iconColor = icon === '✓' ? 'text-green-400' : icon === '✗' ? 'text-red-400' : 'text-yellow-400';
+      elements.push(
+        <p key={key++} className="text-sm pl-2">
+          <span className={cn('font-bold', iconColor)}>{icon}</span>
+          <span>{trimmed.slice(1)}</span>
+        </p>
+      );
+      continue;
+    }
+
+    elements.push(<p key={key++} className="text-sm">{trimmed}</p>);
+  }
+
+  return <div className="space-y-0.5">{elements}</div>;
+}
+
+// ═══════════════════════════════════════════════════════
 // Oracle helper components
 // ═══════════════════════════════════════════════════════
 
@@ -1052,7 +1131,10 @@ export default function AgentPage() {
                   {messages.map((m) => (
                     <div key={m.id} className={`flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                       <div className={`rounded-lg px-3 py-2 max-w-[85%] ${m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted border'}`}>
-                        <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                        {m.role === 'agent'
+                          ? <AgentMessageContent content={m.content} />
+                          : <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                        }
                         {m.role === 'agent' && m.phase && <Badge variant="outline" className="mt-2 text-xs">{m.phase}</Badge>}
                         {m.role === 'agent' && m.taskComplete && (
                           <span className="ml-2 text-xs text-muted-foreground flex items-center gap-1">

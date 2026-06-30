@@ -158,7 +158,7 @@ func main() {
 		LLM:           provider,
 		Tools:         toolRegistry,
 		MaxIterations: 10,
-		MaxTokens:     2048,
+		MaxTokens:     3072, // structured final-answer format needs more room than a 1-3 sentence summary
 	})
 
 	// HTTP API.

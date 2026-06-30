@@ -184,26 +184,49 @@ export default function DashboardPage() {
   const mapAssets = useMemo(() => {
     return assets
       .filter((a: any) => {
-        // Handle both string and number lat/lng, exclude empty strings and null/undefined
         const lat = a.latitude;
         const lng = a.longitude;
         const hasValidLat = lat !== null && lat !== undefined && lat !== '' && !isNaN(parseFloat(lat));
         const hasValidLng = lng !== null && lng !== undefined && lng !== '' && !isNaN(parseFloat(lng));
         return hasValidLat && hasValidLng;
       })
-      .map((a: any) => ({
-        id: a.id,
-        value: a.name || a.value || '',
-        type: a.asset_type?.toLowerCase() || 'subdomain',
-        findingsCount: a.vulnerability_count || 0,
-        geoLocation: {
-          latitude: parseFloat(a.latitude),
-          longitude: parseFloat(a.longitude),
-          city: a.city,
-          country: a.country,
-          countryCode: a.country_code,
-        },
-      }));
+      .map((a: any) => {
+        // Derive max severity from per-severity counts already on the asset
+        const maxSeverity: 'critical' | 'high' | 'medium' | 'low' | null =
+          (a.critical_vuln_count ?? 0) > 0 ? 'critical' :
+          (a.high_vuln_count ?? 0) > 0 ? 'high' :
+          (a.medium_vuln_count ?? 0) > 0 ? 'medium' :
+          (a.low_vuln_count ?? 0) > 0 ? 'low' : null;
+
+        const openPorts = (a.port_services ?? [])
+          .filter((p: any) => p.state === 'open')
+          .map((p: any) => ({
+            port: p.port,
+            service: p.service ?? p.service_name ?? '',
+            isRisky: p.is_risky ?? false,
+          }));
+
+        return {
+          id: a.id,
+          value: a.name || a.value || '',
+          type: a.asset_type?.toLowerCase() || 'subdomain',
+          findingsCount: a.vulnerability_count || 0,
+          maxSeverity,
+          openPortsCount: a.open_ports_count ?? openPorts.length,
+          riskyPortsCount: a.risky_ports_count ?? openPorts.filter((p: any) => p.isRisky).length,
+          openPorts,
+          // Threat intel flags set after DNS-threat / URLhaus scans
+          dnsThreat: a.metadata_?.dns_threat_listed ?? false,
+          urlhausMalicious: a.metadata_?.urlhaus_malicious ?? false,
+          geoLocation: {
+            latitude: parseFloat(a.latitude),
+            longitude: parseFloat(a.longitude),
+            city: a.city,
+            country: a.country,
+            countryCode: a.country_code,
+          },
+        };
+      });
   }, [assets]);
 
   useEffect(() => {

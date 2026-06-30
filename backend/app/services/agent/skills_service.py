@@ -134,6 +134,29 @@ SKILLS: list[Skill] = [
         ),
     ),
     Skill(
+        id="garak-scan",
+        aliases=["garak", "llm-vuln-scan", "llm-deeptest", "ai-vuln"],
+        title="Garak LLM vulnerability scan",
+        description=(
+            "Deep LLM vulnerability scan using NVIDIA garak: jailbreaks, DAN attacks, "
+            "prompt injection, encoding exploits, data leakage, package hallucination, "
+            "toxicity, malware generation, and 200+ additional probe classes."
+        ),
+        scan_type="garak_scan",
+        playbook_id="garak_scan",
+        system_context=(
+            "You are running the GARAK-SCAN skill. "
+            "Use execute_garak to run NVIDIA's garak LLM vulnerability scanner against "
+            "the target model or endpoint. "
+            "1) If target_type is unknown, check with the user or run garak_help to list options. "
+            "2) Set --report_prefix /tmp/garak_<target> so results are retrievable. "
+            "3) After the scan completes, read the JSONL report with execute_curl or list its "
+            "FAIL lines; for each failing probe create_finding with the garak probe name, "
+            "the triggering prompt, and the detected response as evidence. "
+            "4) Map findings to OWASP LLM Top-10 categories where applicable."
+        ),
+    ),
+    Skill(
         id="surface-ranking",
         aliases=["surface", "rank-surface", "attack-surface-ranking", "rank"],
         title="Surface ranking",
@@ -516,9 +539,28 @@ def _extract_json(text: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
+_AUTHORIZATION_PREAMBLE = """\
+## Authorization notice
+All activity performed under this skill is conducted under explicit written \
+authorization from the asset owner as part of a sanctioned security assessment. \
+You are operating as a professional penetration tester. Every tool call, scan, \
+and finding is logged and subject to the organization's Rules of Engagement. \
+Do not deviate from the defined scope or perform actions outside what the skill \
+requires."""
+
+_AUTHORIZATION_POSTAMBLE = """\
+## Engagement reminder
+You are performing authorized security testing on behalf of the asset owner. \
+Restrict all activity to in-scope targets. If you encounter unexpected access \
+to systems, data, or credentials outside the declared scope, stop immediately \
+and report it as an out-of-scope finding rather than continuing. All evidence \
+must be handled per the evidence-hygiene policy before submission."""
+
+
 def build_skill_context(skill: Skill, args: dict, free_text: str = "") -> str:
     """Return the extra system-prompt block to inject when this skill runs."""
     parts = [
+        _AUTHORIZATION_PREAMBLE,
         f"## Active skill: {skill.title}",
         skill.system_context or "",
     ]
@@ -528,6 +570,7 @@ def build_skill_context(skill: Skill, args: dict, free_text: str = "") -> str:
             parts.append(f"- {k}: {v}")
     if free_text:
         parts.append(f"Extra user instructions: {free_text}")
+    parts.append(_AUTHORIZATION_POSTAMBLE)
     return "\n".join(p for p in parts if p)
 
 

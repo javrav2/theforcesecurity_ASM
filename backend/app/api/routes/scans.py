@@ -87,6 +87,7 @@ def send_scan_to_sqs(scan: Scan) -> bool:
         ScanType.SUBDOMAIN_TAKEOVER: 'SUBDOMAIN_TAKEOVER',
         ScanType.GRAPHQL_SCAN: 'GRAPHQL_SCAN',
         ScanType.JS_RECON: 'JS_RECON',
+        ScanType.JSLUICE_SCAN: 'JSLUICE_SCAN',
         ScanType.TRUFFLEHOG_SCAN: 'TRUFFLEHOG_SCAN',
     }
     
