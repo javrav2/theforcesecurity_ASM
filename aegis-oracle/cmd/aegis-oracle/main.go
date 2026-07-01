@@ -70,6 +70,15 @@ type Config struct {
 		Format string `yaml:"format"`
 	} `yaml:"log"`
 	Addr string `yaml:"addr"`
+
+	// Scheduler controls the background CVE freshness sync jobs.
+	// Omit or set to zero to use DefaultIntervals (1h NVD delta, 6h KEV, 12h EPSS).
+	Scheduler struct {
+		Disabled        bool          `yaml:"disabled"`         // set true to run on-demand only
+		NVDDeltaEvery   time.Duration `yaml:"nvd_delta_every"`  // default: 1h
+		CISAKEVEvery    time.Duration `yaml:"cisa_kev_every"`   // default: 6h
+		EPSSEvery       time.Duration `yaml:"epss_every"`       // default: 12h
+	} `yaml:"scheduler"`
 }
 
 func main() {
@@ -145,6 +154,20 @@ func main() {
 	// nightly merge pipeline) is fetched from vulnx/NVD on first use,
 	// persisted to oracle.cves, and analysed without manual seeding.
 	ingester := ingest.New(store, cfg.PDCPKey, cfg.NVDKey)
+
+	// Phase 2 background ingestion scheduler.
+	// Continuously keeps oracle.cves fresh: NVD delta (hourly), CISA KEV
+	// bulk-mark (every 6h), and EPSS score refresh (every 12h). Can be
+	// disabled in config for environments that prefer purely on-demand ingest.
+	if !cfg.Scheduler.Disabled {
+		intervals := ingest.SchedulerIntervals{
+			NVDDelta: cfg.Scheduler.NVDDeltaEvery,
+			CISAKEV:  cfg.Scheduler.CISAKEVEvery,
+			EPSS:     cfg.Scheduler.EPSSEvery,
+		}
+		scheduler := ingest.NewScheduler(store, cfg.NVDKey, intervals)
+		go scheduler.Start(ctx)
+	}
 
 	// ReAct loop — wires Oracle tools to the LLM for iterative reasoning.
 	toolRegistry := reacttools.BuildRegistry(reacttools.Deps{

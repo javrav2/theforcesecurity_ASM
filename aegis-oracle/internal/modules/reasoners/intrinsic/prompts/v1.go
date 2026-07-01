@@ -12,8 +12,10 @@
 package prompts
 
 // V1Version is the prompt version recorded on outputs produced with V1.
-// Bumped to intrinsic.v3 — adds attack_path_class and lateral_movement_potential.
-const V1Version = "intrinsic.v3"
+// Bumped to intrinsic.v4 — persists analyst_brief, attack_path_class, and
+// lateral_movement_potential to DB (schema fix; no prompt content change).
+// All v3 cached rows lacked analyst_brief and will now re-run to populate it.
+const V1Version = "intrinsic.v4"
 
 // V1 is the production prompt for Phase A intrinsic analysis.
 //

@@ -26,6 +26,7 @@
 //   - check_cnw_kev           — CNW (EU CSIRTs network) KEV: exploitation type + reporting CSIRT
 //   - check_cisa_ics_advisory — CISA ICS-CERT CSAF advisories: affected ICS/OT products and vendors
 //   - check_ics_vendor_csaf   — NVD CPE + vendor PSIRT data: exact ICS product models, firmware versions, vendor advisory URLs
+//   - check_ransomfeed        — RansomFeed.it: gang victim profile (sector, country, data volume) for financial impact scoring
 package tools
 
 import (
@@ -95,6 +96,7 @@ func BuildRegistry(d Deps) *react.Registry {
 	reg.Register(&checkCNWKEVTool{})                                   // EU CSIRTs network KEV (ransomware type + reporting CSIRT)
 	reg.Register(&checkCISAICSAdvisoryTool{})                          // CISA ICS-CERT CSAF advisories (ICS/OT product context)
 	reg.Register(&checkICSVendorCSAFTool{})                            // NVD CPE + vendor PSIRT: exact ICS product models + advisory links
+	reg.Register(&checkRansomfeedTool{})                               // RansomFeed.it: gang activity profile + recent victim intelligence
 	return reg
 }
 
@@ -2436,6 +2438,217 @@ func (t *checkICSVendorCSAFTool) Run(ctx context.Context, args map[string]any) (
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	return string(b), nil
+}
+
+// ─────────────────────────── check_ransomfeed ────────────────────────────────
+//
+// checkRansomfeedTool queries the RansomFeed.it live feed to surface recent
+// ransomware victim activity for a specific gang or domain.
+//
+// Use case in CVE analysis: when another tool (check_epss_kev, check_cnw_kev,
+// check_vulncheck_exploits) identifies a ransomware group actively exploiting
+// a CVE, this tool answers "how active and financially impactful is that group
+// right now?" — victim count, sectors targeted, countries hit, and data volumes
+// published — all strong predictors of breach cost per the FIRE report.
+//
+// API: https://api.ransomfeed.it/ returns ~100 most-recent victim events as a
+// flat JSON array. Filtering by gang is performed client-side.
+
+type checkRansomfeedTool struct{}
+
+func (t *checkRansomfeedTool) Name() string { return "check_ransomfeed" }
+
+func (t *checkRansomfeedTool) Description() string {
+	return `Query the RansomFeed.it live feed for ransomware gang activity and victim intelligence.
+
+Provide EITHER:
+  gang_name — look up recent victims attributed to a specific ransomware group (e.g. "lockbit3", "qilin", "akira")
+  domain     — check whether a specific company domain appears as a recent victim
+
+Returns: victim count, top targeted sectors, top countries, average data volume published,
+and up to 5 recent notable victims. Use this AFTER check_epss_kev or check_cnw_kev
+identifies a gang known to exploit the CVE under analysis — the profile tells you how
+prolific and financially impactful that group is, which directly informs OPES prioritisation.`
+}
+
+func (t *checkRansomfeedTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"gang_name": map[string]any{
+				"type":        "string",
+				"description": "Ransomware group name (case-insensitive partial match, e.g. 'lockbit', 'akira', 'qilin').",
+			},
+			"domain": map[string]any{
+				"type":        "string",
+				"description": "Company domain to look up as a potential victim (e.g. 'example.com').",
+			},
+		},
+	}
+}
+
+func (t *checkRansomfeedTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	gangName, _ := args["gang_name"].(string)
+	domain, _ := args["domain"].(string)
+
+	if gangName == "" && domain == "" {
+		return `{"error":"Provide either gang_name or domain."}`, nil
+	}
+
+	// Fetch the RansomFeed live event feed.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ransomfeed.it/", nil)
+	if err != nil {
+		return "", fmt.Errorf("ransomfeed: build request: %w", err)
+	}
+	req.Header.Set("User-Agent", "aegis-oracle/1.0")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"error":"RansomFeed API unreachable: %s"}`, err), nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf(`{"error":"RansomFeed API HTTP %d"}`, resp.StatusCode), nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", fmt.Errorf("ransomfeed: read: %w", err)
+	}
+
+	type rfEvent struct {
+		ID          int    `json:"id"`
+		Date        string `json:"date"`
+		Victim      string `json:"victim"`
+		Gang        string `json:"gang"`
+		Country     string `json:"country"`
+		Website     string `json:"website"`
+		Description string `json:"description"`
+		WorkSector  string `json:"work_sector"`
+		DatasetPub  string `json:"dataset_pub"` // GB of data published, if any
+	}
+	var events []rfEvent
+	if err := json.Unmarshal(body, &events); err != nil {
+		return fmt.Sprintf(`{"error":"RansomFeed parse failed: %s"}`, err), nil
+	}
+
+	gangLower := strings.ToLower(gangName)
+	domainLower := strings.ToLower(domain)
+
+	// Filter events.
+	var matched []rfEvent
+	for _, e := range events {
+		if gangLower != "" && strings.Contains(strings.ToLower(e.Gang), gangLower) {
+			matched = append(matched, e)
+		} else if domainLower != "" &&
+			(strings.Contains(strings.ToLower(e.Website), domainLower) ||
+				strings.Contains(strings.ToLower(e.Victim), domainLower)) {
+			matched = append(matched, e)
+		}
+	}
+
+	if len(matched) == 0 {
+		query := gangName
+		if domain != "" {
+			query = domain
+		}
+		return fmt.Sprintf(`{"query":%q,"found":false,"note":"No recent RansomFeed events matched. The gang may be inactive in the current feed window, or the domain has not been listed as a public victim."}`, query), nil
+	}
+
+	// Aggregate statistics.
+	sectorCount := map[string]int{}
+	countryCount := map[string]int{}
+	var dataPoints []string
+
+	type recentVictim struct {
+		Date    string `json:"date"`
+		Victim  string `json:"victim"`
+		Gang    string `json:"gang"`
+		Country string `json:"country"`
+		Sector  string `json:"sector,omitempty"`
+	}
+	var recent []recentVictim
+
+	for _, e := range matched {
+		if e.WorkSector != "" {
+			sectorCount[e.WorkSector]++
+		}
+		if e.Country != "" {
+			countryCount[e.Country]++
+		}
+		if e.DatasetPub != "" && e.DatasetPub != "0" {
+			dataPoints = append(dataPoints, e.DatasetPub+" GB ("+e.Victim+")")
+		}
+		if len(recent) < 5 {
+			recent = append(recent, recentVictim{
+				Date:    e.Date,
+				Victim:  e.Victim,
+				Gang:    e.Gang,
+				Country: e.Country,
+				Sector:  e.WorkSector,
+			})
+		}
+	}
+
+	topSectors := topN(sectorCount, 5)
+	topCountries := topN(countryCount, 5)
+
+	out := map[string]any{
+		"query":         gangName + domain,
+		"match_type":    func() string {
+			if gangLower != "" {
+				return "gang"
+			}
+			return "domain"
+		}(),
+		"event_count":   len(matched),
+		"top_sectors":   topSectors,
+		"top_countries": topCountries,
+		"recent_victims": recent,
+		"source":        "RansomFeed.it live feed (api.ransomfeed.it)",
+		"note": fmt.Sprintf(
+			"Feed reflects the ~100 most recent publicly posted ransomware events. "+
+				"%d events matched '%s'. Use for sector/impact profiling of ransomware groups "+
+				"known to exploit the CVE under analysis.",
+			len(matched), gangName+domain,
+		),
+	}
+	if len(dataPoints) > 0 {
+		out["published_data_samples"] = dataPoints
+	}
+
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b), nil
+}
+
+// topN returns up to n keys from a frequency map, sorted by count descending.
+func topN(m map[string]int, n int) []map[string]any {
+	type kv struct {
+		k string
+		v int
+	}
+	var pairs []kv
+	for k, v := range m {
+		if k != "" {
+			pairs = append(pairs, kv{k, v})
+		}
+	}
+	// Simple insertion sort — small maps (<100 keys).
+	for i := 1; i < len(pairs); i++ {
+		for j := i; j > 0 && pairs[j].v > pairs[j-1].v; j-- {
+			pairs[j], pairs[j-1] = pairs[j-1], pairs[j]
+		}
+	}
+	if n > len(pairs) {
+		n = len(pairs)
+	}
+	out := make([]map[string]any, n)
+	for i := 0; i < n; i++ {
+		out[i] = map[string]any{"name": pairs[i].k, "count": pairs[i].v}
+	}
+	return out
 }
 
 // ─────────────────────────── exec helpers ───────────────────────────────────

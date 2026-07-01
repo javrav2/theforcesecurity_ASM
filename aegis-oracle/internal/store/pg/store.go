@@ -352,7 +352,10 @@ func (s *Store) GetIntrinsicAnalysis(ctx context.Context, cveID string) (*schema
 		remote_triggerability, exploit_complexity, attacker_capability,
 		preconditions, cvss_reconciliation, attack_chain_summary,
 		detection_signals, rationale, confidence,
-		prompt_version, llm_model
+		prompt_version, llm_model,
+		COALESCE(attack_path_class, ''),
+		COALESCE(lateral_movement_potential, ''),
+		COALESCE(analyst_brief, '{}'::jsonb)
 		FROM %s.cve_intrinsic_analyses
 		WHERE cve_id = $1
 		ORDER BY created_at DESC LIMIT 1`, s.cfg.OracleSchema)
@@ -363,14 +366,18 @@ func (s *Store) GetIntrinsicAnalysis(ctx context.Context, cveID string) (*schema
 		precondsRaw    []byte
 		reconcileRaw   []byte
 		detectionRaw   []byte
+		briefRaw       []byte
 		promptVersion  *string
 		llmModel       *string
+		attackPath     string
+		lateralMov     string
 	)
 	err := row.Scan(
 		&a.RemoteTriggerability, &a.ExploitComplexity, &a.AttackerCapability,
 		&precondsRaw, &reconcileRaw, &a.AttackChainSummary,
 		&detectionRaw, &a.Rationale, &a.Confidence,
 		&promptVersion, &llmModel,
+		&attackPath, &lateralMov, &briefRaw,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -384,9 +391,12 @@ func (s *Store) GetIntrinsicAnalysis(ctx context.Context, cveID string) (*schema
 	if llmModel != nil {
 		a.LLMModel = *llmModel
 	}
+	a.AttackPathClass = schema.AttackPathClass(attackPath)
+	a.LateralMovementPotential = schema.LateralMovementPotential(lateralMov)
 	_ = json.Unmarshal(precondsRaw, &a.Preconditions)
 	_ = json.Unmarshal(reconcileRaw, &a.CVSSReconciliation)
 	_ = json.Unmarshal(detectionRaw, &a.DetectionSignals)
+	_ = json.Unmarshal(briefRaw, &a.AnalystBrief)
 	a.CVEID = cveID
 	return &a, nil
 }
@@ -398,21 +408,26 @@ func (s *Store) UpsertIntrinsicAnalysis(ctx context.Context, cveID, inputHash st
 	precondsJSON, _ := json.Marshal(a.Preconditions)
 	reconcileJSON, _ := json.Marshal(a.CVSSReconciliation)
 	detectionJSON, _ := json.Marshal(a.DetectionSignals)
+	briefJSON, _ := json.Marshal(a.AnalystBrief)
 
 	q := fmt.Sprintf(`INSERT INTO %s.cve_intrinsic_analyses
 		(cve_id, input_hash, prompt_version, llm_provider, llm_model,
 		 remote_triggerability, exploit_complexity, attacker_capability,
 		 preconditions, cvss_reconciliation, attack_chain_summary,
-		 detection_signals, rationale, confidence, cost_usd)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		 detection_signals, rationale, confidence, cost_usd,
+		 attack_path_class, lateral_movement_potential, analyst_brief)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT DO NOTHING`, s.cfg.OracleSchema)
 
 	provider := providerFromModel(a.LLMModel)
+	attackPath := nullableText(string(a.AttackPathClass))
+	lateralMov := nullableText(string(a.LateralMovementPotential))
 	_, err := s.pool.Exec(ctx, q,
 		cveID, inputHash, a.PromptVersion, provider, a.LLMModel,
 		string(a.RemoteTriggerability), string(a.ExploitComplexity), string(a.AttackerCapability),
 		precondsJSON, reconcileJSON, a.AttackChainSummary,
 		detectionJSON, a.Rationale, string(a.Confidence), costUSD,
+		attackPath, lateralMov, briefJSON,
 	)
 	return err
 }
@@ -445,6 +460,8 @@ func (s *Store) UpsertFinding(ctx context.Context, f *schema.Finding) error {
 	contribsJSON, _ := json.Marshal(f.OPES.TopContributors)
 	reconcileJSON, _ := json.Marshal(f.CVSSReconciliation)
 	briefJSON, _ := json.Marshal(f.AnalystBrief)
+	attackPath := nullableText(string(f.AttackPathClass))
+	lateralMov := nullableText(string(f.LateralMovementPotential))
 
 	insertQ := fmt.Sprintf(`INSERT INTO %s.findings
 		(finding_id, cve_id, asset_id,
@@ -454,8 +471,9 @@ func (s *Store) UpsertFinding(ctx context.Context, f *schema.Finding) error {
 		 opes_top_contributors, opes_dampener, opes_override,
 		 confidence, priority_rationale, recommendation_text,
 		 cvss_reconciliation, analyst_brief,
+		 attack_path_class, lateral_movement_potential,
 		 status, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now(),now())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,now(),now())
 		ON CONFLICT (cve_id, asset_id, intrinsic_input_hash, asset_signals_hash, evaluator_version)
 		DO NOTHING`, s.cfg.OracleSchema)
 
@@ -467,6 +485,7 @@ func (s *Store) UpsertFinding(ctx context.Context, f *schema.Finding) error {
 		contribsJSON, f.OPES.Dampener, f.OPES.Override,
 		string(f.OPES.Confidence), "", f.RecommendationText,
 		reconcileJSON, briefJSON,
+		attackPath, lateralMov,
 		string(schema.StatusOpen),
 	)
 	if err != nil {
@@ -498,7 +517,12 @@ func (s *Store) GetOpenFindings(ctx context.Context, cveID, assetID string) ([]*
 	q := fmt.Sprintf(`SELECT
 		finding_id, cve_id, asset_id,
 		opes_score, opes_category, opes_label, opes_dampener, opes_override,
-		confidence, recommendation_text, status, created_at, updated_at
+		confidence, recommendation_text, status, created_at, updated_at,
+		COALESCE(cvss_reconciliation, '{}'::jsonb),
+		COALESCE(analyst_brief, '{}'::jsonb),
+		COALESCE(attack_path_class, ''),
+		COALESCE(lateral_movement_potential, ''),
+		COALESCE(preconditions_evaluated, '[]'::jsonb)
 		FROM %s.findings WHERE status = 'open'`, s.cfg.OracleSchema)
 	args := []any{}
 	n := 1
@@ -525,10 +549,13 @@ func (s *Store) GetOpenFindings(ctx context.Context, cveID, assetID string) ([]*
 	for rows.Next() {
 		var f schema.Finding
 		var dampener, override *string
+		var reconcileRaw, briefRaw, precsRaw []byte
+		var attackPath, lateralMov string
 		err := rows.Scan(
 			&f.ID, &f.CVEID, &f.AssetID,
 			&f.OPES.Value, &f.OPES.Category, &f.OPES.Label, &dampener, &override,
 			&f.OPES.Confidence, &f.RecommendationText, &f.Status, &f.CreatedAt, &f.UpdatedAt,
+			&reconcileRaw, &briefRaw, &attackPath, &lateralMov, &precsRaw,
 		)
 		if err != nil {
 			return nil, err
@@ -539,7 +566,74 @@ func (s *Store) GetOpenFindings(ctx context.Context, cveID, assetID string) ([]*
 		if override != nil {
 			f.OPES.Override = *override
 		}
+		f.AttackPathClass = schema.AttackPathClass(attackPath)
+		f.LateralMovementPotential = schema.LateralMovementPotential(lateralMov)
+		_ = json.Unmarshal(reconcileRaw, &f.CVSSReconciliation)
+		_ = json.Unmarshal(briefRaw, &f.AnalystBrief)
+		_ = json.Unmarshal(precsRaw, &f.PreconditionsEvaluated)
 		out = append(out, &f)
+	}
+	return out, rows.Err()
+}
+
+// ─────────────────────────── Scheduler support ──────────────────────────────
+
+// BulkMarkKEV sets in_kev=true and kev_added_on for every CVE ID that already
+// exists in oracle.cves. IDs that are not yet in the store are silently
+// skipped — they will be marked on first on-demand ingest. Callers pass
+// parallel slices: cveIDs[i] corresponds to addedOns[i].
+func (s *Store) BulkMarkKEV(ctx context.Context, cveIDs []string, addedOns []time.Time) error {
+	if len(cveIDs) == 0 {
+		return nil
+	}
+	q := fmt.Sprintf(`UPDATE %s.cves
+		SET in_kev      = true,
+		    kev_added_on = COALESCE(%s.cves.kev_added_on, u.added_on),
+		    updated_at  = now()
+		FROM unnest($1::text[], $2::timestamptz[]) AS u(cve_id, added_on)
+		WHERE %s.cves.cve_id = u.cve_id`,
+		s.cfg.OracleSchema, s.cfg.OracleSchema, s.cfg.OracleSchema)
+
+	_, err := s.pool.Exec(ctx, q, cveIDs, addedOns)
+	if err != nil {
+		return fmt.Errorf("bulk mark kev: %w", err)
+	}
+	return nil
+}
+
+// UpdateEPSS sets epss_score and epss_percentile for a single CVE without
+// touching any other column. No-ops if the CVE is not in oracle.cves.
+func (s *Store) UpdateEPSS(ctx context.Context, cveID string, score, percentile float64) error {
+	q := fmt.Sprintf(`UPDATE %s.cves
+		SET epss_score      = $2,
+		    epss_percentile = $3,
+		    updated_at      = now()
+		WHERE cve_id = $1`, s.cfg.OracleSchema)
+	_, err := s.pool.Exec(ctx, q, cveID, score, percentile)
+	if err != nil {
+		return fmt.Errorf("update epss %s: %w", cveID, err)
+	}
+	return nil
+}
+
+// ListCVEIDsSince returns all CVE IDs in oracle.cves whose updated_at is
+// more recent than since. Used by the background EPSS refresh job to bound
+// its refresh window to recently active rows.
+func (s *Store) ListCVEIDsSince(ctx context.Context, since time.Time) ([]string, error) {
+	q := fmt.Sprintf(`SELECT cve_id FROM %s.cves WHERE updated_at > $1 ORDER BY updated_at DESC`,
+		s.cfg.OracleSchema)
+	rows, err := s.pool.Query(ctx, q, since)
+	if err != nil {
+		return nil, fmt.Errorf("list cve ids since: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan cve id: %w", err)
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }
@@ -555,4 +649,13 @@ func providerFromModel(model string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// nullableText returns nil for empty strings (maps to SQL NULL) so that
+// optional text columns like attack_path_class store NULL rather than "".
+func nullableText(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
