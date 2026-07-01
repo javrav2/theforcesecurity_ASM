@@ -651,11 +651,3 @@ func providerFromModel(model string) string {
 	}
 }
 
-// nullableText returns nil for empty strings (maps to SQL NULL) so that
-// optional text columns like attack_path_class store NULL rather than "".
-func nullableText(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
