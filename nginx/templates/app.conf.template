@@ -80,9 +80,11 @@ server {
     client_max_body_size 100M;
 
     # ----- Backend API (FastAPI) -----
-    # Backend mounts everything under /api/v1, plus /health, /docs, /openapi.json
+    # Use variables for proxy_pass so Docker's resolver re-resolves after container
+    # restarts (prevents stale-IP 502s when backend gets a new Docker IP).
     location /api/ {
-        proxy_pass http://asm_backend;
+        set $backend http://backend:8000;
+        proxy_pass $backend;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -95,7 +97,6 @@ server {
         proxy_set_header Connection $http_connection;
 
         # Long timeouts: AI agent calls + LLM tool loops can take minutes
-        # (matches DEPLOYMENT.md "504 Gateway Timeout (Agent)" guidance)
         proxy_read_timeout    600s;
         proxy_send_timeout    600s;
         proxy_connect_timeout  60s;
@@ -106,7 +107,8 @@ server {
 
     # Backend health, OpenAPI docs, raw schema
     location ~ ^/(health|docs|redoc|openapi\.json)$ {
-        proxy_pass http://asm_backend;
+        set $backend http://backend:8000;
+        proxy_pass $backend;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -116,14 +118,17 @@ server {
 
     # ----- Frontend (Next.js) -----
     location / {
-        proxy_pass http://asm_frontend;
+        set $frontend http://frontend:3000;
+        proxy_pass $frontend;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Next.js Server Actions require the Origin header to be forwarded
+        proxy_set_header Origin            $scheme://$host;
 
-        # Next.js HMR + WebSocket upgrades (also covers any future ws:// from app)
+        # Next.js HMR + WebSocket upgrades
         proxy_set_header Upgrade    $http_upgrade;
         proxy_set_header Connection "upgrade";
 
