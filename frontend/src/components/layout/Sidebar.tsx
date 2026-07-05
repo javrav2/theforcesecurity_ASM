@@ -69,10 +69,10 @@ export function Sidebar() {
         {!collapsed && (
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 flex items-center justify-center">
-              <img src="/logo.svg" alt="Logo" className="w-full h-full" style={{ filter: 'invert(1)' }} />
+              <img src="/logo.png" alt="Judah Security" className="w-full h-full object-contain" />
             </div>
             <div className="flex flex-col">
-              <span className="font-bold text-sm tracking-wide">THE FORCE</span>
+              <span className="font-bold text-sm tracking-wide">JUDAH</span>
               <span className="text-[10px] text-blue-400 tracking-widest">SECURITY</span>
             </div>
           </div>

@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://stat.ripe.net/data"
 _TIMEOUT = 20.0
-_SOURCE_APP = "theforcesecurity-asm"  # RIPEstat asks apps to identify themselves
+_SOURCE_APP = "judahsecurity-asm"  # RIPEstat asks apps to identify themselves
 
 
 # ---------------------------------------------------------------------------

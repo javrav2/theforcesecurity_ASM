@@ -409,7 +409,7 @@ class ASMExportFormat(BaseModel):
     version: str = Field(default="1.0", description="Schema version")
     format: str = Field(default="asm-unified", description="Format identifier")
     generated_at: datetime = Field(default_factory=datetime.utcnow)
-    generator: str = Field(default="TheForce ASM Platform")
+    generator: str = Field(default="Judah Security ASM Platform")
     
     # Organization context
     organization: Optional[str] = Field(None, description="Organization name")

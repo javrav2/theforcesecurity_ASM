@@ -31,7 +31,7 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="""
-# The Force Security - Attack Surface Management API
+# Judah Security - Attack Surface Management API
 
 A comprehensive platform for discovering and managing your organization's external attack surface.
 
@@ -466,7 +466,7 @@ def apply_oracle_migrations():
 
 def ensure_default_admin():
     """Ensure a known-good admin account exists and is usable."""
-    default_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@theforce.security")
+    default_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@judahsecurity.com")
     default_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
     default_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
 

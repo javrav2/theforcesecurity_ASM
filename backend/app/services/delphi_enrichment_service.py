@@ -76,7 +76,7 @@ def _cache_dir() -> str:
 
 
 def _http_get(url: str, *, timeout: int = 60) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "theforce-asm-delphi/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "judahsecurity-asm-delphi/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec - static public URLs
         return resp.read()
 

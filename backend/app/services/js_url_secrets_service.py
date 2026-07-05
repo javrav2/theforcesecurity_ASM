@@ -159,7 +159,7 @@ def scan_js_urls_for_secrets(
     with tempfile.TemporaryDirectory(prefix="js_secrets_") as tmp:
         files_dir = f"{tmp}/files"
         os.makedirs(files_dir, exist_ok=True)
-        with httpx.Client(headers={"User-Agent": "TheForceSecurity-JS-Secrets/1.0"}) as client:
+        with httpx.Client(headers={"User-Agent": "JudahSecurity-JS-Secrets/1.0"}) as client:
             for url in parsed:
                 body, err = _fetch_url(client, url, max_bytes, timeout)
                 if err or body is None:

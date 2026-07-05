@@ -55,12 +55,12 @@ export default function LoginPage() {
       <Card className="w-full max-w-md relative z-10 border-blue-900/50 bg-[#0f1d32]/90 backdrop-blur-sm">
         <CardHeader className="text-center space-y-4">
           <div className="mx-auto w-20 h-20 flex items-center justify-center">
-            <img src="/logo.svg" alt="The Force Security" className="w-full h-full text-white" style={{ filter: 'invert(1)' }} />
+            <img src="/logo.png" alt="Judah Security" className="w-full h-full object-contain" />
           </div>
           <div>
-            <CardTitle className="text-2xl font-bold tracking-wide">THE FORCE</CardTitle>
+            <CardTitle className="text-2xl font-bold tracking-wide">JUDAH SECURITY</CardTitle>
             <CardDescription className="text-blue-300/80 tracking-widest text-sm">
-              SECURITY
+              ASM PLATFORM
             </CardDescription>
             <p className="text-xs text-muted-foreground mt-2">Attack Surface Management Platform</p>
           </div>
