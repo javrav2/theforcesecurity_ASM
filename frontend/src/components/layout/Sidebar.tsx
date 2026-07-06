@@ -65,28 +65,38 @@ export function Sidebar() {
       )}
     >
       {/* Logo */}
-      <div className="flex items-center justify-between h-16 px-4 border-b border-border">
-        <div className="flex items-center gap-3">
-          {/* Lion head crop — shows only the top ~60% of the PNG, hiding the text below */}
-          <div className="w-9 h-9 overflow-hidden rounded-sm shrink-0">
-            <img
-              src="/logo.png"
-              alt="Judah Security"
-              style={{ width: '250%', marginLeft: '-75%' }}
-            />
+      <div className="flex items-center justify-between h-16 px-3 border-b border-border">
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Lion head — using pre-cropped favicon.png (clean square, no text) */}
+          <div className="relative shrink-0">
+            <div className="w-9 h-9 rounded-lg overflow-hidden ring-1 ring-primary/40 shadow-[0_0_14px_hsl(213,100%,62%,0.35)]">
+              <img
+                src="/favicon.png"
+                alt="Judah Security"
+                className="w-full h-full object-cover"
+              />
+            </div>
+            {/* Online indicator dot */}
+            <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-primary border-2 border-background shadow-[0_0_6px_hsl(213,100%,62%,0.8)]" />
           </div>
+
           {!collapsed && (
-            <div className="flex flex-col">
-              <span className="font-bold text-sm tracking-wide">JUDAH</span>
-              <span className="text-[10px] text-primary tracking-widest">SECURITY</span>
+            <div className="flex flex-col min-w-0">
+              <span className="font-bold text-sm tracking-wider leading-tight page-title">
+                JUDAH SECURITY
+              </span>
+              <span className="text-[9px] text-muted-foreground tracking-[0.2em] uppercase leading-tight">
+                ASM Platform
+              </span>
             </div>
           )}
         </div>
+
         <Button
           variant="ghost"
           size="icon"
           onClick={() => setCollapsed(!collapsed)}
-          className="ml-auto shrink-0"
+          className="ml-auto shrink-0 h-8 w-8"
         >
           {collapsed ? (
             <ChevronRight className="h-4 w-4" />
