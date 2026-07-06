@@ -65,23 +65,28 @@ export function Sidebar() {
       )}
     >
       {/* Logo */}
-      <div className="flex items-center justify-between h-16 px-4 border-b border-blue-900/50">
-        {!collapsed && (
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 flex items-center justify-center">
-              <img src="/logo.png" alt="Judah Security" className="w-full h-full object-contain" />
-            </div>
+      <div className="flex items-center justify-between h-16 px-4 border-b border-border">
+        <div className="flex items-center gap-3">
+          {/* Lion head crop — shows only the top ~60% of the PNG, hiding the text below */}
+          <div className="w-9 h-9 overflow-hidden rounded-sm shrink-0">
+            <img
+              src="/logo.png"
+              alt="Judah Security"
+              style={{ width: '250%', marginLeft: '-75%' }}
+            />
+          </div>
+          {!collapsed && (
             <div className="flex flex-col">
               <span className="font-bold text-sm tracking-wide">JUDAH</span>
-              <span className="text-[10px] text-blue-400 tracking-widest">SECURITY</span>
+              <span className="text-[10px] text-primary tracking-widest">SECURITY</span>
             </div>
-          </div>
-        )}
+          )}
+        </div>
         <Button
           variant="ghost"
           size="icon"
           onClick={() => setCollapsed(!collapsed)}
-          className="ml-auto"
+          className="ml-auto shrink-0"
         >
           {collapsed ? (
             <ChevronRight className="h-4 w-4" />
