@@ -109,10 +109,10 @@ export function Sidebar() {
                 'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
                 isActive
                   ? 'bg-primary/15 text-primary border border-primary/25 shadow-[0_0_12px_hsl(213,100%,62%,0.12)]'
-                  : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-transparent'
+                  : 'text-foreground/70 hover:bg-muted/80 hover:text-foreground border border-transparent'
               )}
             >
-              <item.icon className={cn('h-5 w-5 shrink-0', isActive ? 'text-primary drop-shadow-[0_0_6px_hsl(213,100%,62%,0.8)]' : '')} />
+              <item.icon className={cn('h-5 w-5 shrink-0', isActive ? 'text-primary drop-shadow-[0_0_6px_hsl(213,100%,62%,0.8)]' : 'text-foreground/50')} />
               {!collapsed && <span>{item.name}</span>}
             </Link>
           );
@@ -122,7 +122,7 @@ export function Sidebar() {
           <>
             <div className={cn('pt-4 pb-2', !collapsed && 'px-3')}>
               {!collapsed && (
-                <span className="text-xs font-semibold uppercase text-muted-foreground">
+                <span className="text-xs font-semibold uppercase text-muted-foreground tracking-widest">
                   Admin
                 </span>
               )}
@@ -138,10 +138,10 @@ export function Sidebar() {
                     'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
                     isActive
                       ? 'bg-primary/15 text-primary border border-primary/25 shadow-[0_0_12px_hsl(213,100%,62%,0.12)]'
-                      : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-transparent'
+                      : 'text-foreground/70 hover:bg-muted/80 hover:text-foreground border border-transparent'
                   )}
                 >
-                  <item.icon className={cn('h-5 w-5 shrink-0', isActive ? 'text-primary drop-shadow-[0_0_6px_hsl(213,100%,62%,0.8)]' : '')} />
+                  <item.icon className={cn('h-5 w-5 shrink-0', isActive ? 'text-primary drop-shadow-[0_0_6px_hsl(213,100%,62%,0.8)]' : 'text-foreground/50')} />
                   {!collapsed && <span>{item.name}</span>}
                 </Link>
               );
