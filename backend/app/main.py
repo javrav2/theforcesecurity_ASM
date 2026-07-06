@@ -67,16 +67,18 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(SQLAlchemyError)
-async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
-    logger.error("Database error on %s: %s", request.url.path, exc)
-    return JSONResponse(status_code=500, content={"detail": "A database error occurred."})
-
-
 @app.exception_handler(Exception)
 async def generic_error_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error on %s", request.url.path)
     return JSONResponse(status_code=500, content={"detail": "An internal server error occurred."})
+
+
+# Register more-specific handlers AFTER the generic one so Starlette's
+# reverse-registration lookup finds these first for their exact types.
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
+    logger.error("Database error on %s: %s", request.url.path, exc)
+    return JSONResponse(status_code=500, content={"detail": "A database error occurred."})
 
 
 # Include routers
@@ -449,6 +451,24 @@ def apply_oracle_migrations():
             updated_at  timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (module_name, key)
         )""",
+
+        # ── Oracle enrichment columns on the ASM vulnerabilities table ───────
+        # Promoted from metadata_["oracle"] JSON for efficient querying/sorting.
+        # Each statement uses ADD COLUMN IF NOT EXISTS so it's safe to re-run.
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_opes_score      FLOAT",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_opes_category   VARCHAR(50)",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_opes_label      VARCHAR(100)",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_opes_confidence VARCHAR(20)",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_attack_path     VARCHAR(100)",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_lateral_mvmt    VARCHAR(50)",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_mode            VARCHAR(30)",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_enriched_at     TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_analysis_status VARCHAR(30)",
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_finding_id      VARCHAR(100)",
+        "CREATE INDEX IF NOT EXISTS ix_vuln_oracle_opes_score    ON vulnerabilities (oracle_opes_score)",
+        "CREATE INDEX IF NOT EXISTS ix_vuln_oracle_opes_category ON vulnerabilities (oracle_opes_category)",
+        "CREATE INDEX IF NOT EXISTS ix_vuln_oracle_mode          ON vulnerabilities (oracle_mode)",
+        "CREATE INDEX IF NOT EXISTS ix_vuln_oracle_enriched_at   ON vulnerabilities (oracle_enriched_at)",
     ]
 
     try:

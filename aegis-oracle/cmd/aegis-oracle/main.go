@@ -335,14 +335,26 @@ func buildMux(
 				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
-			writeError(w, http.StatusInternalServerError, err.Error())
+			// Degrade gracefully on LLM/pipeline failures: return 200 with
+			// analysis_status="failed" so the ASM platform can persist the
+			// error state and show actionable information to the analyst —
+			// rather than an opaque 500 that surfaces as "An internal server
+			// error occurred." in the UI.
+			writeJSON(w, http.StatusOK, map[string]any{
+				"finding":         nil,
+				"analysis_status": "failed",
+				"analysis_error":  "Analysis pipeline could not be completed: " + err.Error(),
+				"llm_model":       "",
+				"elapsed_ms":      int64(0),
+			})
 			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"finding":    result.Finding,
-			"llm_model":  result.LLMModel,
-			"elapsed_ms": result.ElapsedMS,
+			"finding":         result.Finding,
+			"analysis_status": "complete",
+			"llm_model":       result.LLMModel,
+			"elapsed_ms":      result.ElapsedMS,
 		})
 	})
 

@@ -225,18 +225,21 @@ def oracle_enrich_one(
     returned as a summary. Pass `force=true` to bypass the
     {ttl}h freshness window.
     """.format(ttl=ENRICH_TTL_HOURS)
-    vuln = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
-    if not vuln:
-        raise HTTPException(status_code=404, detail="vulnerability not found")
-
-    # Scope check — non-superusers may only enrich their own org's vulns.
-    if not current_user.is_superuser:
-        asset = vuln.asset
-        if not asset or asset.organization_id != current_user.organization_id:
-            raise HTTPException(status_code=403, detail="not authorised for this vulnerability")
-
     try:
+        vuln = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
+        if not vuln:
+            raise HTTPException(status_code=404, detail="vulnerability not found")
+
+        # Scope check — non-superusers may only enrich their own org's vulns.
+        if not current_user.is_superuser:
+            asset = vuln.asset
+            if not asset or asset.organization_id != current_user.organization_id:
+                raise HTTPException(status_code=403, detail="not authorised for this vulnerability")
+
         payload = enrich_vulnerability(db, vuln, force=force)
+
+    except HTTPException:
+        raise
     except OracleInputError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except OracleUnavailable as e:
@@ -248,7 +251,7 @@ def oracle_enrich_one(
     return EnrichResponse(
         vulnerability_id=vuln.id,
         cve_id=vuln.cve_id,
-        mode=payload.get("mode", ""),
+        mode=payload.get("mode") or "",
         enriched_at=payload.get("enriched_at"),
         opes_score=payload.get("opes_score"),
         opes_category=payload.get("opes_category"),

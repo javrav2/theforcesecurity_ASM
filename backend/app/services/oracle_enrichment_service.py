@@ -454,7 +454,14 @@ def _detect_waf(asset: Asset) -> str:
 
 def _call_analyze(cve_id: str, asset_payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST /analyze — full Phase A + Phase B + OPES pipeline with the
-    asset supplied inline. Oracle never touches the ASM's asset DB."""
+    asset supplied inline. Oracle never touches the ASM's asset DB.
+
+    Oracle returns HTTP 200 in all non-input-error cases:
+      • Normal path: analysis_status="complete", finding populated
+      • Degraded path: analysis_status="failed", finding=nil, analysis_error set
+        (LLM timeout, provider error, etc.)
+    HTTP 4xx signals a permanent input problem; other errors are transient.
+    """
     payload = {"cve_id": cve_id, "asset": asset_payload}
     try:
         with httpx.Client(base_url=ORACLE_URL, timeout=ORACLE_TIMEOUT) as client:
@@ -471,7 +478,14 @@ def _call_analyze(cve_id: str, asset_payload: Dict[str, Any]) -> Dict[str, Any]:
         raise OracleUnavailable(f"oracle unreachable: {e}") from e
 
     finding = data.get("finding") or {}
-    return _build_payload(mode="full", finding=finding, intrinsic=None, exploitation=None)
+    return _build_payload(
+        mode="full",
+        finding=finding,
+        intrinsic=None,
+        exploitation=None,
+        analysis_status=data.get("analysis_status"),
+        analysis_error=data.get("analysis_error"),
+    )
 
 
 def _call_intrinsic(cve_id: str) -> Dict[str, Any]:
