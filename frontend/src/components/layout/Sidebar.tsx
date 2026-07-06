@@ -106,13 +106,13 @@ export function Sidebar() {
               key={item.name}
               href={item.href}
               className={cn(
-                'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
                 isActive
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  ? 'bg-primary/15 text-primary border border-primary/25 shadow-[0_0_12px_hsl(213,100%,62%,0.12)]'
+                  : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-transparent'
               )}
             >
-              <item.icon className={cn('h-5 w-5 shrink-0', isActive && 'text-primary')} />
+              <item.icon className={cn('h-5 w-5 shrink-0', isActive ? 'text-primary drop-shadow-[0_0_6px_hsl(213,100%,62%,0.8)]' : '')} />
               {!collapsed && <span>{item.name}</span>}
             </Link>
           );
@@ -135,13 +135,13 @@ export function Sidebar() {
                   key={item.name}
                   href={item.href}
                   className={cn(
-                    'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                    'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
                     isActive
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      ? 'bg-primary/15 text-primary border border-primary/25 shadow-[0_0_12px_hsl(213,100%,62%,0.12)]'
+                      : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground border border-transparent'
                   )}
                 >
-                  <item.icon className={cn('h-5 w-5 shrink-0', isActive && 'text-primary')} />
+                  <item.icon className={cn('h-5 w-5 shrink-0', isActive ? 'text-primary drop-shadow-[0_0_6px_hsl(213,100%,62%,0.8)]' : '')} />
                   {!collapsed && <span>{item.name}</span>}
                 </Link>
               );

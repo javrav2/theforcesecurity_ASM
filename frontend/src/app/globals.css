@@ -4,24 +4,24 @@
 
 @layer base {
   :root {
-    --background: 222 67% 5%;
-    --foreground: 210 40% 96%;
-    --card: 222 47% 8%;
-    --card-foreground: 210 40% 96%;
-    --popover: 222 47% 8%;
-    --popover-foreground: 210 40% 96%;
+    --background: 222 67% 4%;
+    --foreground: 210 30% 98%;
+    --card: 222 50% 7%;
+    --card-foreground: 210 30% 98%;
+    --popover: 222 50% 7%;
+    --popover-foreground: 210 30% 98%;
     --primary: 213 100% 62%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 222 30% 13%;
-    --secondary-foreground: 210 40% 96%;
-    --muted: 222 30% 13%;
-    --muted-foreground: 215 16% 55%;
-    --accent: 222 47% 12%;
-    --accent-foreground: 210 40% 96%;
+    --secondary: 222 35% 12%;
+    --secondary-foreground: 210 30% 98%;
+    --muted: 222 35% 12%;
+    --muted-foreground: 215 20% 62%;
+    --accent: 222 50% 11%;
+    --accent-foreground: 210 30% 98%;
     --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 96%;
-    --border: 222 30% 16%;
-    --input: 222 30% 13%;
+    --destructive-foreground: 210 30% 98%;
+    --border: 222 35% 14%;
+    --input: 222 35% 12%;
     --ring: 213 100% 62%;
     --radius: 0.5rem;
   }
@@ -120,5 +120,33 @@
 .threat-exposure-rotate {
   transform-origin: 260px 200px;
   animation: threat-exposure-rotate 20s linear infinite;
+}
+
+/* Brand blue glow */
+.glow-blue {
+  box-shadow: 0 0 24px hsl(213 100% 62% / 0.35);
+}
+
+/* Page title – gradient from brand blue to white */
+.page-title {
+  background: linear-gradient(90deg, hsl(213 100% 72%), hsl(210 30% 98%));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Card with primary-color left accent border */
+.card-accent {
+  border-left: 2px solid hsl(var(--primary));
+}
+
+/* Pulse glow animation for alerts/highlights */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px hsl(213 100% 62% / 0.2); }
+  50%       { box-shadow: 0 0 24px hsl(213 100% 62% / 0.5); }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2.5s ease-in-out infinite;
 }
 

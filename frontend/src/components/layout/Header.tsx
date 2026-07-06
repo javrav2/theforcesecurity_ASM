@@ -12,9 +12,12 @@ interface HeaderProps {
 export function Header({ title, subtitle }: HeaderProps) {
   return (
     <header className="flex items-center justify-between h-16 px-6 border-b border-border bg-card/50 backdrop-blur-sm">
-      <div>
-        <h1 className="text-xl font-semibold">{title}</h1>
-        {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
+      <div className="flex items-center gap-3">
+        <div className="w-1 h-7 rounded-full bg-primary shadow-[0_0_8px_hsl(213,100%,62%,0.7)]" />
+        <div>
+          <h1 className="text-xl font-bold page-title">{title}</h1>
+          {subtitle && <p className="text-xs text-muted-foreground mt-0.5 tracking-wide">{subtitle}</p>}
+        </div>
       </div>
 
       <div className="flex items-center gap-4">
