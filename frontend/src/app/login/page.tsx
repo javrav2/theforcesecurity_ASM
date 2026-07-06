@@ -45,14 +45,14 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0a1628] p-4">
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
       {/* Background decorations */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-blue-600/10 rounded-full blur-3xl" />
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-600/5 rounded-full blur-3xl" />
       </div>
 
-      <Card className="w-full max-w-md relative z-10 border-blue-900/50 bg-[#0f1d32]/90 backdrop-blur-sm">
+      <Card className="w-full max-w-md relative z-10 border-border bg-card/90 backdrop-blur-sm">
         <CardHeader className="text-center space-y-4">
           <div className="mx-auto w-20 h-20 flex items-center justify-center">
             <img src="/logo.png" alt="Judah Security" className="w-full h-full object-contain" />
