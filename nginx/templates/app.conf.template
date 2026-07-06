@@ -103,6 +103,10 @@ server {
 
         proxy_buffering off;
         proxy_request_buffering off;
+
+        # Rewrite any http:// redirect Location headers to https:// so browsers
+        # behind TLS termination don't get blocked by Mixed Content policy.
+        proxy_redirect http:// https://;
     }
 
     # Backend health, OpenAPI docs, raw schema

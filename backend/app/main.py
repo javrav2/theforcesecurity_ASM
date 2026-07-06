@@ -5,6 +5,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,7 +15,9 @@ from app.core.security import get_password_hash
 from app.models.user import User, UserRole
 from app.models.netblock import Netblock  # Import to ensure table creation
 from app.models.finding_exception import FindingException  # Required for Vulnerability relationship resolution
+from app.models.jira_integration import JiraIntegration, JiraTicket  # noqa: F401 — ensure tables are created
 from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, oracle, agent
+from app.api.routes import integrations
 
 # Configure logging
 logging.basicConfig(
@@ -56,6 +59,12 @@ Track and report on exposed services with structured data:
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json"
 )
+
+# Trust proxy headers from nginx so FastAPI knows requests arrive over HTTPS.
+# Without this, Starlette generates http:// redirect Location headers (307) which
+# browsers block as Mixed Content when the page is served over HTTPS.
+from starlette.middleware.proxy_headers import ProxyHeadersMiddleware
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 # Configure CORS
 app.add_middleware(
@@ -103,6 +112,7 @@ app.include_router(scan_config.router, prefix=settings.API_PREFIX)
 app.include_router(acquisitions.router, prefix=settings.API_PREFIX)
 app.include_router(oracle.router, prefix=settings.API_PREFIX)
 app.include_router(agent.router, prefix=settings.API_PREFIX)
+app.include_router(integrations.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")
