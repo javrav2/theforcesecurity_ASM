@@ -150,6 +150,7 @@ class ExternalService:
     WAYBACK = "wayback"
     RAPIDDNS = "rapiddns"
     CRTSH = "crtsh"
+    SHODAN_CTL = "shodan_ctl"
     COMMONCRAWL = "commoncrawl"
     M365 = "m365"
 
@@ -165,6 +166,7 @@ DEFAULT_RATE_LIMITS = {
     ExternalService.SECURITYTRAILS: {"per_second": 2, "per_day": 50},
     ExternalService.WAYBACK: {"per_second": 1, "per_day": None},
     ExternalService.RAPIDDNS: {"per_second": 1, "per_day": None},
+    ExternalService.SHODAN_CTL: {"per_second": 1, "per_day": None},
     ExternalService.M365: {"per_second": 1, "per_day": None},
 }
 

@@ -220,6 +220,35 @@ class NucleiFindingsService:
                 self.db.flush()
                 result["created"] = True
                 result["vulnerability_id"] = vulnerability.id
+
+                # Delphi enrichment: attach CISA KEV + EPSS signals for new
+                # CVE-backed findings. Best-effort — failures never block scan
+                # ingestion. Mirrors the same hook in ingestion_service.
+                if nuclei_result.cve_id:
+                    try:
+                        from app.core.config import settings as _settings
+                        if getattr(_settings, "DELPHI_AUTO_ENRICH_ON_INGEST", True):
+                            from app.services.delphi_enrichment_service import get_delphi_service
+                            get_delphi_service().enrich_vulnerability(vulnerability)
+                    except Exception as exc:
+                        logger.debug(
+                            "Delphi auto-enrich skipped for %s: %s",
+                            nuclei_result.cve_id, exc
+                        )
+
+                # Oracle enrichment: non-blocking background LLM analysis when
+                # ORACLE_AUTO_ENRICH_ON_INGEST is enabled.
+                if nuclei_result.cve_id and vulnerability.id is not None:
+                    try:
+                        from app.core.config import settings as _settings
+                        if getattr(_settings, "ORACLE_AUTO_ENRICH_ON_INGEST", False):
+                            from app.services.oracle_enrichment_service import enqueue_background_enrichment
+                            enqueue_background_enrichment(vulnerability.id)
+                    except Exception as exc:
+                        logger.debug(
+                            "Oracle auto-enrich skipped for %s: %s",
+                            nuclei_result.cve_id, exc
+                        )
         
         # Add labels to asset
         if create_labels:
@@ -389,6 +418,7 @@ class NucleiFindingsService:
             description=description,
             severity=severity,
             cvss_score=nuclei_result.cvss_score,
+            cvss_vector=nuclei_result.cvss_vector,
             cve_id=nuclei_result.cve_id,
             cwe_id=nuclei_result.cwe_id,
             references=references,

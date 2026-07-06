@@ -44,6 +44,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -159,6 +160,44 @@ def get_oracle_payload(vuln: Vulnerability) -> Optional[Dict[str, Any]]:
         return None
     payload = vuln.metadata_.get("oracle") if isinstance(vuln.metadata_, dict) else None
     return payload if isinstance(payload, dict) else None
+
+
+def enqueue_background_enrichment(vuln_id: int) -> None:
+    """Fire-and-forget Oracle enrichment for a single vulnerability.
+
+    Opens its own database session so the caller's ingest session is not
+    shared across thread boundaries. Safe to call during ingest — the thread
+    is daemonised so it will not block process shutdown.
+
+    The call is a no-op when:
+      • Oracle is unreachable (logged at WARNING, no exception propagated)
+      • The vulnerability already has a fresh enrichment (TTL cache)
+      • The vulnerability cannot be found by ID
+    """
+
+    def _run(vid: int) -> None:
+        try:
+            from app.database import SessionLocal  # type: ignore[import]
+            db: Session = SessionLocal()
+            try:
+                vuln = db.query(Vulnerability).filter(Vulnerability.id == vid).first()
+                if vuln is None:
+                    logger.debug("oracle background enrich: vuln %s not found", vid)
+                    return
+                enrich_vulnerability(db, vuln)
+            except OracleUnavailable as exc:
+                logger.warning("oracle background enrich: service unavailable for vuln %s: %s", vid, exc)
+            except OracleInputError as exc:
+                logger.info("oracle background enrich: skipped vuln %s: %s", vid, exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("oracle background enrich: unexpected error for vuln %s: %s", vid, exc)
+            finally:
+                db.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("oracle background enrich: session setup failed for vuln %s: %s", vid, exc)
+
+    t = threading.Thread(target=_run, args=(vuln_id,), daemon=True, name=f"oracle-enrich-{vuln_id}")
+    t.start()
 
 
 # ─────────────────────────── Internals ─────────────────────────────────────

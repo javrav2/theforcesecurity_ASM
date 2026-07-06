@@ -11,7 +11,7 @@ from app.models.organization import Organization
 from app.models.asset import Asset
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.vulnerability import Vulnerability, Severity
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.project_settings import ProjectSettings, ALL_MODULES, get_default_config
 from app.schemas.organization import (
     OrganizationCreate,
@@ -63,8 +63,9 @@ def list_organizations(
 ):
     """List all organizations (admin sees all, others see their own)."""
     query = db.query(Organization).filter(Organization.is_active == True)
-    
-    if not current_user.is_superuser:
+
+    is_admin = current_user.is_superuser or current_user.role == UserRole.ADMIN
+    if not is_admin:
         if current_user.organization_id:
             query = query.filter(Organization.id == current_user.organization_id)
         else:

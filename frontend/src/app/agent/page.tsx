@@ -22,10 +22,12 @@ import {
 import {
   MessageSquare, Send, Loader2, AlertCircle, CheckCircle, CheckCircle2,
   Wifi, WifiOff, Clock, Trash2, Plus, History, Crosshair, Eye,
-  ShieldAlert, HelpCircle, XCircle, AlertTriangle, Flame, TrendingUp,
+  ShieldAlert, HelpCircle, XCircle, AlertTriangle, Flame,
   RefreshCw, BookOpen, Globe, BarChart2, Code2, ShieldCheck, Mail,
   ArrowRightLeft, Key, Package, MoveRight, Search, ChevronDown, ChevronUp,
 } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useRouter } from 'next/navigation';
 import { AttackScenarioPanel, ChainData } from '@/components/agent/AttackScenarioPanel';
 import { api, getApiErrorMessage } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -643,6 +645,16 @@ function CveLookupResult({ data }: { data: { cve: any; analysis: any; exploitati
 
 export default function AgentPage() {
   const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // ── Tab state ────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<'chat' | 'cve' | 'findings'>('chat');
+
+  const handleTabChange = (value: string) => {
+    const tab = value as 'chat' | 'cve' | 'findings';
+    setActiveTab(tab);
+    router.push(`/agent?tab=${tab}`, { scroll: false } as Parameters<typeof router.push>[1]);
+  };
 
   // ── Agent state ─────────────────────────────────────────────────
   const [question, setQuestion] = useState('');
@@ -673,8 +685,6 @@ export default function AgentPage() {
   const [findings, setFindings] = useState<OracleFinding[]>([]);
   const [findingsLoading, setFindingsLoading] = useState(false);
   const [filterCat, setFilterCat] = useState<string>('all');
-  const [showCveLookup, setShowCveLookup] = useState(false);
-  const [showFindings, setShowFindings] = useState(false);
   const [cveLookupId, setCveLookupId] = useState('');
   const [cveLookup, setCveLookup] = useState<{ cve: unknown; analysis: unknown; exploitation: unknown; analysis_status?: string; analysis_error?: string } | null>(null);
   const [cveLookupLoading, setCveLookupLoading] = useState(false);
@@ -688,11 +698,14 @@ export default function AgentPage() {
     const t = searchParams.get('target');
     const p = searchParams.get('playbook');
     const q = searchParams.get('question');
+    const tab = searchParams.get('tab');
     if (t != null && t !== '') setTarget(decodeURIComponent(t));
     if (p != null && p !== '') setSelectedPlaybookId(decodeURIComponent(p));
     if (q != null && q !== '') { setQuestion(decodeURIComponent(q)); setUrlPrefilled(true); }
-    // Open findings panel if ?view=oracle
-    if (searchParams.get('view') === 'oracle') setShowFindings(true);
+    // Handle tab param
+    if (tab === 'cve' || tab === 'findings') setActiveTab(tab);
+    // Open findings tab if ?view=oracle (legacy redirect)
+    if (searchParams.get('view') === 'oracle') setActiveTab('findings');
   }, [searchParams]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1012,331 +1025,379 @@ export default function AgentPage() {
           subtitle="AI security agent — run scans, query assets, and analyze vulnerabilities"
         />
 
-        <div className="flex-1 overflow-auto p-6 space-y-4">
+        <div className="flex-1 overflow-auto p-6">
+          <Tabs value={activeTab} onValueChange={handleTabChange} className="h-full flex flex-col space-y-0">
 
-          {/* Oracle OPES strip — only visible once there are findings */}
-          {findings.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap rounded-lg border bg-card/50 px-4 py-2.5">
-              <span className="text-xs text-muted-foreground font-medium shrink-0">Oracle findings:</span>
-              {(['P0', 'P1', 'P2', 'P3', 'P4'] as const).map((cat) => {
-                const count = countByCategory(cat);
-                if (count === 0) return null;
-                return (
-                  <button
-                    key={cat}
-                    onClick={() => { setFilterCat(cat); setShowFindings(true); }}
-                    className="flex items-center gap-1 hover:opacity-80 transition-opacity"
-                  >
-                    <CategoryBadge cat={cat} />
-                    <span className="text-xs font-semibold">{count}</span>
-                  </button>
-                );
-              })}
-              <button
-                onClick={() => { setShowFindings(!showFindings); setFilterCat('all'); }}
-                className="ml-auto text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
-              >
-                {showFindings ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                {showFindings ? 'Hide findings' : 'View all'}
-              </button>
-            </div>
-          )}
-
-          {/* Agent unavailable warning */}
-          {agentAvailable === false && (
-            <Card className="border-amber-500/50 bg-amber-500/5">
-              <CardContent className="pt-4 flex flex-col gap-2">
-                <p className="text-sm flex items-center gap-2">
-                  <AlertCircle className="h-5 w-5 text-amber-500 shrink-0" />
-                  Agent is not available.
-                </p>
-                {agentStatusHint && <p className="text-sm text-muted-foreground pl-7">{agentStatusHint}</p>}
-                {!agentStatusHint && (
-                  <p className="text-sm text-muted-foreground pl-7">
-                    Configure <code className="bg-muted px-1 rounded">OPENAI_API_KEY</code> or <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> in the backend .env, then restart.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Main agent area */}
-          <div className="flex gap-4">
-            {/* Conversation history sidebar */}
-            {showHistory && (
-              <Card className="w-72 shrink-0">
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm flex items-center gap-1.5"><History className="h-4 w-4" /> History</CardTitle>
-                    <Button variant="ghost" size="sm" onClick={startNewConversation} className="h-7 px-2">
-                      <Plus className="h-3.5 w-3.5 mr-1" /> New
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-2 max-h-[60vh] overflow-y-auto space-y-1">
-                  {conversations.length === 0 && <p className="text-xs text-muted-foreground p-2">No conversations yet.</p>}
-                  {conversations.map((c) => (
-                    <div
-                      key={c.session_id}
-                      className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 cursor-pointer text-sm hover:bg-muted/60 transition-colors ${c.session_id === sessionId ? 'bg-muted' : ''}`}
-                      onClick={() => loadConversation(c.session_id)}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="truncate font-medium text-xs">{c.title || c.session_id.slice(0, 8)}</p>
-                        <p className="text-[10px] text-muted-foreground">{new Date(c.updated_at).toLocaleDateString()} · {c.message_count} msgs</p>
-                      </div>
-                      <Badge variant="outline" className="text-[10px] shrink-0">{c.current_phase}</Badge>
-                      <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 opacity-50 hover:opacity-100"
-                        onClick={(e) => { e.stopPropagation(); deleteConversation(c.session_id); }}>
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Chat card */}
-            <Card className="flex-1">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2">
-                    <MessageSquare className="h-5 w-5" />
-                    AI Security Agent
-                  </CardTitle>
-                  <div className="flex items-center gap-2">
-                    {connectionBadge()}
-                    <Button variant="ghost" size="sm" onClick={() => setShowScenario(!showScenario)}
-                      className={`h-8 px-2 ${showScenario ? 'bg-muted' : ''}`} title="Toggle attack scenario panel">
-                      <Crosshair className="h-4 w-4 mr-1" />
-                      <span className="text-xs">{showScenario ? 'Hide' : 'Scenario'}</span>
-                    </Button>
-                    <Button variant="ghost" size="sm"
-                      onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadConversations(); }}
-                      className="h-8 px-2">
-                      <Clock className="h-4 w-4 mr-1" />
-                      <span className="text-xs">{showHistory ? 'Hide' : 'History'}</span>
-                    </Button>
-                  </div>
-                </div>
-                <CardDescription>
-                  Query assets, scan targets, and analyze your attack surface. Use the CVE Lookup and Findings sections below for exploitability intelligence.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="rounded-lg border bg-muted/30 max-h-[50vh] overflow-y-auto p-4 space-y-3">
-                  {messages.length === 0 && (
-                    <p className="text-muted-foreground text-sm">Send a message to start. The agent can run scans and discovery for your organization.</p>
+            {/* ── Tab bar ── */}
+            <div className="flex items-center justify-between gap-4 mb-5">
+              <TabsList className="grid grid-cols-3 w-full max-w-md">
+                <TabsTrigger value="chat" className="flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4" />
+                  Chat
+                </TabsTrigger>
+                <TabsTrigger value="cve" className="flex items-center gap-2">
+                  <Search className="h-4 w-4" />
+                  CVE Lookup
+                </TabsTrigger>
+                <TabsTrigger value="findings" className="flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4" />
+                  Findings
+                  {findings.length > 0 && (
+                    <Badge variant="secondary" className="h-4 px-1 text-[10px] ml-1">{findings.length}</Badge>
                   )}
-                  {messages.map((m) => (
-                    <div key={m.id} className={`flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                      <div className={`rounded-lg px-3 py-2 max-w-[85%] ${m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted border'}`}>
-                        {m.role === 'agent'
-                          ? <AgentMessageContent content={m.content} />
-                          : <p className="text-sm whitespace-pre-wrap">{m.content}</p>
-                        }
-                        {m.role === 'agent' && m.phase && <Badge variant="outline" className="mt-2 text-xs">{m.phase}</Badge>}
-                        {m.role === 'agent' && m.taskComplete && (
-                          <span className="ml-2 text-xs text-muted-foreground flex items-center gap-1">
-                            <CheckCircle className="h-3 w-3" /> Task complete
-                          </span>
-                        )}
-                        {m.role === 'agent' && m.traceSummary && (
-                          <details className="mt-2">
-                            <summary className="text-xs cursor-pointer text-muted-foreground">Execution trace</summary>
-                            <pre className="text-xs mt-1 p-2 rounded bg-background overflow-x-auto whitespace-pre-wrap">{m.traceSummary}</pre>
-                          </details>
-                        )}
+                </TabsTrigger>
+              </TabsList>
+
+              {/* Connection badge always visible */}
+              <div className="shrink-0">{connectionBadge()}</div>
+            </div>
+
+            {/* ══════════════════════════════════════════════════
+                TAB 1 — CHAT
+            ══════════════════════════════════════════════════ */}
+            <TabsContent value="chat" className="flex-1 space-y-4 mt-0">
+
+              {/* Agent unavailable warning */}
+              {agentAvailable === false && (
+                <Card className="border-amber-500/50 bg-amber-500/5">
+                  <CardContent className="pt-4 flex flex-col gap-2">
+                    <p className="text-sm flex items-center gap-2">
+                      <AlertCircle className="h-5 w-5 text-amber-500 shrink-0" />
+                      Agent is not available.
+                    </p>
+                    {agentStatusHint && <p className="text-sm text-muted-foreground pl-7">{agentStatusHint}</p>}
+                    {!agentStatusHint && (
+                      <p className="text-sm text-muted-foreground pl-7">
+                        Configure <code className="bg-muted px-1 rounded">OPENAI_API_KEY</code> or <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> in the backend .env, then restart.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Main chat area */}
+              <div className="flex gap-4">
+                {/* Conversation history sidebar */}
+                {showHistory && (
+                  <Card className="w-72 shrink-0">
+                    <CardHeader className="pb-2">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm flex items-center gap-1.5"><History className="h-4 w-4" /> History</CardTitle>
+                        <Button variant="ghost" size="sm" onClick={startNewConversation} className="h-7 px-2">
+                          <Plus className="h-3.5 w-3.5 mr-1" /> New
+                        </Button>
                       </div>
-                      {m.role === 'agent' && m.awaitingApproval && m.approvalRequest && (
-                        <div className="flex flex-wrap gap-2 mt-1">
-                          <Button size="sm" onClick={() => handleApprove('approve')} disabled={loading}>Approve</Button>
-                          <Button size="sm" variant="outline" onClick={() => handleApprove('abort')} disabled={loading}>Abort</Button>
+                    </CardHeader>
+                    <CardContent className="p-2 max-h-[60vh] overflow-y-auto space-y-1">
+                      {conversations.length === 0 && <p className="text-xs text-muted-foreground p-2">No conversations yet.</p>}
+                      {conversations.map((c) => (
+                        <div
+                          key={c.session_id}
+                          className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 cursor-pointer text-sm hover:bg-muted/60 transition-colors ${c.session_id === sessionId ? 'bg-muted' : ''}`}
+                          onClick={() => loadConversation(c.session_id)}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p className="truncate font-medium text-xs">{c.title || c.session_id.slice(0, 8)}</p>
+                            <p className="text-[10px] text-muted-foreground">{new Date(c.updated_at).toLocaleDateString()} · {c.message_count} msgs</p>
+                          </div>
+                          <Badge variant="outline" className="text-[10px] shrink-0">{c.current_phase}</Badge>
+                          <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 opacity-50 hover:opacity-100"
+                            onClick={(e) => { e.stopPropagation(); deleteConversation(c.session_id); }}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Chat card */}
+                <Card className="flex-1">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <MessageSquare className="h-5 w-5 text-primary" />
+                        AI Security Agent
+                      </CardTitle>
+                      <div className="flex items-center gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => setShowScenario(!showScenario)}
+                          className={`h-8 px-2 ${showScenario ? 'bg-muted' : ''}`} title="Toggle attack scenario panel">
+                          <Crosshair className="h-4 w-4 mr-1" />
+                          <span className="text-xs">{showScenario ? 'Hide' : 'Scenario'}</span>
+                        </Button>
+                        <Button variant="ghost" size="sm"
+                          onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadConversations(); }}
+                          className={`h-8 px-2 ${showHistory ? 'bg-muted' : ''}`}>
+                          <Clock className="h-4 w-4 mr-1" />
+                          <span className="text-xs">{showHistory ? 'Hide' : 'History'}</span>
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={startNewConversation} className="h-8 px-2" title="Start new conversation">
+                          <Plus className="h-4 w-4 mr-1" />
+                          <span className="text-xs">New</span>
+                        </Button>
+                      </div>
+                    </div>
+                    <CardDescription>
+                      Query assets, scan targets, and analyze your attack surface. Switch to the CVE Lookup or Findings tabs for exploitability intelligence.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="rounded-lg border bg-muted/30 max-h-[50vh] overflow-y-auto p-4 space-y-3">
+                      {messages.length === 0 && (
+                        <p className="text-muted-foreground text-sm">Send a message to start. The agent can run scans and discovery for your organization.</p>
+                      )}
+                      {messages.map((m) => (
+                        <div key={m.id} className={`flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                          <div className={`rounded-lg px-3 py-2 max-w-[85%] ${m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted border'}`}>
+                            {m.role === 'agent'
+                              ? <AgentMessageContent content={m.content} />
+                              : <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                            }
+                            {m.role === 'agent' && m.phase && <Badge variant="outline" className="mt-2 text-xs">{m.phase}</Badge>}
+                            {m.role === 'agent' && m.taskComplete && (
+                              <span className="ml-2 text-xs text-muted-foreground flex items-center gap-1">
+                                <CheckCircle className="h-3 w-3" /> Task complete
+                              </span>
+                            )}
+                            {m.role === 'agent' && m.traceSummary && (
+                              <details className="mt-2">
+                                <summary className="text-xs cursor-pointer text-muted-foreground">Execution trace</summary>
+                                <pre className="text-xs mt-1 p-2 rounded bg-background overflow-x-auto whitespace-pre-wrap">{m.traceSummary}</pre>
+                              </details>
+                            )}
+                          </div>
+                          {m.role === 'agent' && m.awaitingApproval && m.approvalRequest && (
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              <Button size="sm" onClick={() => handleApprove('approve')} disabled={loading}>Approve</Button>
+                              <Button size="sm" variant="outline" onClick={() => handleApprove('abort')} disabled={loading}>Abort</Button>
+                            </div>
+                          )}
+                          {m.role === 'agent' && m.awaitingQuestion && m.questionRequest && (
+                            <p className="text-xs text-muted-foreground mt-1">Type your answer below and press Send.</p>
+                          )}
+                        </div>
+                      ))}
+                      {loading && renderLiveStatus()}
+                      {loading && !liveStatus && (
+                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Agent is thinking and may run tools…
                         </div>
                       )}
-                      {m.role === 'agent' && m.awaitingQuestion && m.questionRequest && (
-                        <p className="text-xs text-muted-foreground mt-1">Type your answer below and press Send.</p>
+                      <div ref={messagesEndRef} />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="mode-select">Mode</Label>
+                        <Select value={mode} onValueChange={(v) => setMode(v as 'assist' | 'agent')}>
+                          <SelectTrigger id="mode-select"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="assist">Assist (approval required between phases)</SelectItem>
+                            <SelectItem value="agent">Agent (autonomous; no approval)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">Agent mode runs without asking for approval between phases.</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="playbook-select">Preset</Label>
+                        <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
+                          <SelectTrigger id="playbook-select"><SelectValue placeholder="Custom" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="custom">Custom (free-form question)</SelectItem>
+                            {playbooks.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {selectedPlaybookId !== 'custom' && (
+                        <div className="space-y-1.5">
+                          <Label htmlFor="target-input">Target (optional)</Label>
+                          <Input id="target-input" placeholder="e.g. example.com" value={target}
+                            onChange={(e) => setTarget(e.target.value)} disabled={loading || agentAvailable === false} />
+                        </div>
                       )}
                     </div>
-                  ))}
-                  {loading && renderLiveStatus()}
-                  {loading && !liveStatus && (
-                    <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Agent is thinking and may run tools…
+
+                    {urlPrefilled && <p className="text-sm text-muted-foreground">Pre-filled from link. Click Send to start.</p>}
+
+                    <div className="flex gap-2">
+                      <Textarea
+                        placeholder={
+                          pendingAnswer ? 'Type your answer to the agent…'
+                            : selectedPlaybookId === 'custom' ? 'Ask a question (e.g. run a port scan on example.com)'
+                            : 'Add a note or leave blank to run the preset'
+                        }
+                        value={question}
+                        onChange={(e) => setQuestion(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                        rows={2} className="resize-none"
+                        disabled={loading || agentAvailable === false}
+                      />
+                      <Button
+                        onClick={handleSend}
+                        disabled={loading || agentAvailable === false || (selectedPlaybookId === 'custom' ? !question.trim() : false)}
+                        size="icon" className="shrink-0 h-auto py-3"
+                      >
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                      </Button>
                     </div>
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
+                    {sessionId && <p className="text-xs text-muted-foreground">Session: {sessionId.slice(0, 8)}…</p>}
+                  </CardContent>
+                </Card>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="mode-select">Mode</Label>
-                    <Select value={mode} onValueChange={(v) => setMode(v as 'assist' | 'agent')}>
-                      <SelectTrigger id="mode-select"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="assist">Assist (approval required between phases)</SelectItem>
-                        <SelectItem value="agent">Agent (autonomous; no approval)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">Agent mode runs without asking for approval between phases.</p>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="playbook-select">Preset</Label>
-                    <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
-                      <SelectTrigger id="playbook-select"><SelectValue placeholder="Custom" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="custom">Custom (free-form question)</SelectItem>
-                        {playbooks.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {selectedPlaybookId !== 'custom' && (
-                    <div className="space-y-1.5">
-                      <Label htmlFor="target-input">Target (optional)</Label>
-                      <Input id="target-input" placeholder="e.g. example.com" value={target}
-                        onChange={(e) => setTarget(e.target.value)} disabled={loading || agentAvailable === false} />
-                    </div>
-                  )}
-                </div>
-
-                {urlPrefilled && <p className="text-sm text-muted-foreground">Pre-filled from link. Click Send to start.</p>}
-
-                <div className="flex gap-2">
-                  <Textarea
-                    placeholder={
-                      pendingAnswer ? 'Type your answer to the agent…'
-                        : selectedPlaybookId === 'custom' ? 'Ask a question (e.g. run a port scan on example.com)'
-                        : 'Add a note or leave blank to run the preset'
-                    }
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                    rows={2} className="resize-none"
-                    disabled={loading || agentAvailable === false}
+                {/* Attack scenario panel */}
+                {showScenario && (
+                  <AttackScenarioPanel
+                    chainData={chainData} loading={loading}
+                    collapsed={scenarioCollapsed}
+                    onToggleCollapse={() => setScenarioCollapsed(!scenarioCollapsed)}
                   />
-                  <Button
-                    onClick={handleSend}
-                    disabled={loading || agentAvailable === false || (selectedPlaybookId === 'custom' ? !question.trim() : false)}
-                    size="icon" className="shrink-0 h-auto py-3"
-                  >
-                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                  </Button>
-                </div>
-                {sessionId && <p className="text-xs text-muted-foreground">Session: {sessionId.slice(0, 8)}…</p>}
-              </CardContent>
-            </Card>
-
-            {/* Attack scenario panel */}
-            {showScenario && (
-              <AttackScenarioPanel
-                chainData={chainData} loading={loading}
-                collapsed={scenarioCollapsed}
-                onToggleCollapse={() => setScenarioCollapsed(!scenarioCollapsed)}
-              />
-            )}
-          </div>
-
-          {/* ── CVE Quick Lookup (collapsible) ── */}
-          <div className="rounded-lg border bg-card">
-            <button
-              onClick={() => setShowCveLookup(!showCveLookup)}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/40 transition-colors rounded-lg"
-            >
-              <span className="flex items-center gap-2">
-                <Search className="h-4 w-4 text-muted-foreground" />
-                CVE Quick Lookup
-                <span className="text-xs text-muted-foreground font-normal">— exploitability intel without an asset</span>
-              </span>
-              {showCveLookup ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-            </button>
-
-            {showCveLookup && (
-              <div className="px-4 pb-4 space-y-4 border-t pt-4">
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="CVE-2026-0300"
-                    value={cveLookupId}
-                    onChange={(e) => setCveLookupId(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCveLookup(); } }}
-                    disabled={cveLookupLoading}
-                    className="font-mono"
-                  />
-                  <Button onClick={handleCveLookup} disabled={cveLookupLoading || !cveLookupId.trim()} className="shrink-0">
-                    {cveLookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                    <span className="ml-1.5">Analyze</span>
-                  </Button>
-                </div>
-
-                {cveLookupError && (
-                  <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-3 text-sm text-red-400 flex items-start gap-2">
-                    <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                    <div><p className="font-medium">Lookup failed</p><p className="text-xs opacity-90">{cveLookupError}</p></div>
-                  </div>
-                )}
-
-                {cveLookupLoading && cveLookupStatus && (
-                  <div className="rounded-lg border bg-muted/30 p-3 text-sm flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                    <p className="text-muted-foreground">{cveLookupStatus}</p>
-                  </div>
-                )}
-
-                {cveLookup && <CveLookupResult data={cveLookup as Parameters<typeof CveLookupResult>[0]['data']} />}
-
-                {!cveLookup && !cveLookupError && !cveLookupLoading && (
-                  <p className="text-xs text-muted-foreground">
-                    Enter a CVE id to get an analyst brief, attack path, exploitation evidence, and preconditions.
-                  </p>
                 )}
               </div>
-            )}
-          </div>
+            </TabsContent>
 
-          {/* ── Open Findings (collapsible) ── */}
-          <div className="rounded-lg border bg-card">
-            <button
-              onClick={() => { setShowFindings(!showFindings); if (!showFindings) loadFindings(); }}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/40 transition-colors rounded-lg"
-            >
-              <span className="flex items-center gap-2">
-                <ShieldAlert className="h-4 w-4 text-muted-foreground" />
-                Open Findings
-                {findings.length > 0 && (
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{findings.length}</Badge>
-                )}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost" size="sm" className="h-6 w-6 p-0"
-                  onClick={(e) => { e.stopPropagation(); loadFindings(); }}
-                  disabled={findingsLoading}
-                  title="Refresh findings"
-                >
-                  <RefreshCw className={cn('h-3.5 w-3.5 text-muted-foreground', findingsLoading && 'animate-spin')} />
-                </Button>
-                {showFindings ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-              </div>
-            </button>
-
-            {showFindings && (
-              <div className="px-4 pb-4 border-t pt-4 space-y-3">
-                <div className="flex gap-2 flex-wrap">
-                  {['all', 'P0', 'P1', 'P2', 'P3', 'P4'].map((c) => (
-                    <Button key={c} size="sm" variant={filterCat === c ? 'default' : 'outline'}
-                      onClick={() => setFilterCat(c)} className="h-7 px-2.5 text-xs">
-                      {c === 'all' ? 'All' : <><CategoryBadge cat={c} /><span className="ml-1">{countByCategory(c)}</span></>}
+            {/* ══════════════════════════════════════════════════
+                TAB 2 — CVE LOOKUP
+            ══════════════════════════════════════════════════ */}
+            <TabsContent value="cve" className="flex-1 mt-0">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Search className="h-5 w-5 text-primary" />
+                    CVE Quick Lookup
+                  </CardTitle>
+                  <CardDescription>
+                    Get exploitability intelligence for any CVE — analyst brief, attack path classification, exploitation evidence, and preconditions.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="CVE-2026-0300"
+                      value={cveLookupId}
+                      onChange={(e) => setCveLookupId(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCveLookup(); } }}
+                      disabled={cveLookupLoading}
+                      className="font-mono"
+                    />
+                    <Button onClick={handleCveLookup} disabled={cveLookupLoading || !cveLookupId.trim()} className="shrink-0">
+                      {cveLookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                      <span className="ml-1.5">Analyze</span>
                     </Button>
-                  ))}
-                </div>
-                <OpenFindingsTable
-                  findings={filteredFindings.sort((a, b) => b.opes.score - a.opes.score)}
-                  onSelect={() => {}}
-                />
-              </div>
-            )}
-          </div>
+                  </div>
 
+                  {cveLookupError && (
+                    <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-3 text-sm text-red-400 flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                      <div><p className="font-medium">Lookup failed</p><p className="text-xs opacity-90">{cveLookupError}</p></div>
+                    </div>
+                  )}
+
+                  {cveLookupLoading && cveLookupStatus && (
+                    <div className="rounded-lg border bg-muted/30 p-3 text-sm flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                      <p className="text-muted-foreground">{cveLookupStatus}</p>
+                    </div>
+                  )}
+
+                  {cveLookup && <CveLookupResult data={cveLookup as Parameters<typeof CveLookupResult>[0]['data']} />}
+
+                  {!cveLookup && !cveLookupError && !cveLookupLoading && (
+                    <div className="rounded-lg border border-dashed bg-muted/10 p-8 text-center space-y-2">
+                      <Search className="h-8 w-8 text-muted-foreground mx-auto" />
+                      <p className="text-sm font-medium text-muted-foreground">Enter a CVE ID above to get started</p>
+                      <p className="text-xs text-muted-foreground">
+                        Returns an analyst brief, attack path, exploitation evidence, and preconditions. First lookup for a new CVE may take 30–60 s.
+                      </p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* ══════════════════════════════════════════════════
+                TAB 3 — FINDINGS
+            ══════════════════════════════════════════════════ */}
+            <TabsContent value="findings" className="flex-1 mt-0">
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <ShieldAlert className="h-5 w-5 text-primary" />
+                        Open Findings
+                        {findings.length > 0 && (
+                          <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{findings.length}</Badge>
+                        )}
+                      </CardTitle>
+                      <CardDescription className="mt-1">
+                        Oracle-enriched CVE findings across your assets, ranked by OPES exploitability score.
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {/* Oracle OPES category strip */}
+                      {findings.length > 0 && (
+                        <div className="hidden sm:flex items-center gap-1.5">
+                          {(['P0', 'P1', 'P2', 'P3', 'P4'] as const).map((cat) => {
+                            const count = countByCategory(cat);
+                            if (count === 0) return null;
+                            return (
+                              <button
+                                key={cat}
+                                onClick={() => setFilterCat(cat)}
+                                className="flex items-center gap-1 hover:opacity-80 transition-opacity"
+                              >
+                                <CategoryBadge cat={cat} />
+                                <span className="text-xs font-semibold">{count}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <Button
+                        variant="outline" size="sm" className="h-8 gap-1.5"
+                        onClick={loadFindings}
+                        disabled={findingsLoading}
+                      >
+                        <RefreshCw className={cn('h-3.5 w-3.5', findingsLoading && 'animate-spin')} />
+                        Refresh
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Category filter buttons */}
+                  <div className="flex gap-2 flex-wrap">
+                    {['all', 'P0', 'P1', 'P2', 'P3', 'P4'].map((c) => (
+                      <Button key={c} size="sm" variant={filterCat === c ? 'default' : 'outline'}
+                        onClick={() => setFilterCat(c)} className="h-7 px-2.5 text-xs">
+                        {c === 'all' ? `All (${findings.length})` : <><CategoryBadge cat={c} /><span className="ml-1">{countByCategory(c)}</span></>}
+                      </Button>
+                    ))}
+                  </div>
+
+                  {findingsLoading && findings.length === 0 ? (
+                    <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <span className="text-sm">Loading findings…</span>
+                    </div>
+                  ) : findings.length === 0 ? (
+                    <div className="rounded-lg border border-dashed bg-muted/10 p-8 text-center space-y-2">
+                      <ShieldAlert className="h-8 w-8 text-muted-foreground mx-auto" />
+                      <p className="text-sm font-medium text-muted-foreground">No findings yet</p>
+                      <p className="text-xs text-muted-foreground">Oracle enrichment runs automatically after scans complete.</p>
+                    </div>
+                  ) : (
+                    <OpenFindingsTable
+                      findings={filteredFindings.sort((a, b) => b.opes.score - a.opes.score)}
+                      onSelect={() => {}}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+          </Tabs>
         </div>
       </div>
     </MainLayout>

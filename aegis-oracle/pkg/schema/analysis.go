@@ -220,6 +220,39 @@ type AnalystBrief struct {
 	ExploitabilityTier string `json:"exploitability_tier"`
 }
 
+// PatchBypass describes evidence that this CVE is a documented bypass of the
+// fix applied for a predecessor vulnerability. When BypassConfirmed is true,
+// defenders who applied the patch for PredecessorCVE may incorrectly believe
+// they are protected — this is the highest-priority finding type.
+//
+// The LLM populates this when the advisory text, references, or CWE profile
+// contains language such as "incomplete fix", "bypass of CVE-…", "regression",
+// or "variant of". The OSV related[] alias list is pre-loaded into the prompt
+// context so the model has signal beyond the description alone.
+type PatchBypass struct {
+	// PredecessorCVE is the CVE ID whose patch this CVE circumvents.
+	// Empty string when no bypass is detected.
+	PredecessorCVE string `json:"predecessor_cve,omitempty"`
+
+	// BypassMechanism is a concise technical explanation of how the prior
+	// patch failed to fully remediate the issue. E.g. "parse_url returns
+	// false for triple-slash paths, skipping the is_string check".
+	BypassMechanism string `json:"bypass_mechanism,omitempty"`
+
+	// BypassConfirmed is true when the LLM has high confidence that this CVE
+	// is an explicit, documented patch bypass (not a related-but-distinct vuln).
+	BypassConfirmed bool `json:"bypass_confirmed"`
+
+	// BypassSource is the reference URL that most clearly describes the bypass
+	// relationship — typically the GHSA advisory or vendor security page.
+	BypassSource string `json:"bypass_source,omitempty"`
+
+	// BypassSummary is 1-2 sentences suitable for a warning callout in reports
+	// and UI: "CVE-2026-45034 bypasses the phar:// wrapper check introduced in
+	// 1.29.0 to fix CVE-2026-34084 by using three slashes after the scheme."
+	BypassSummary string `json:"bypass_summary,omitempty"`
+}
+
 // IntrinsicAnalysis is the Phase A reasoner's structured output.
 // Same input → same output (deterministic via prompt versioning + caching).
 // Phase B and OPES consume this; humans audit it.
@@ -233,7 +266,7 @@ type IntrinsicAnalysis struct {
 	// etc.). Consumed by OPES reachability to correctly weight the real-world
 	// attack surface — a phishing-delivered exploit is not automatable the
 	// same way a scanner-reachable service exploit is.
-	AttackPathClass          AttackPathClass          `json:"attack_path_class"`
+	AttackPathClass AttackPathClass `json:"attack_path_class"`
 	// LateralMovementPotential describes what an attacker gains in terms of
 	// pivot / lateral movement capability after successful exploitation.
 	// High potential (credential stores, AD, pivot gateways) materially
@@ -245,10 +278,15 @@ type IntrinsicAnalysis struct {
 	// AnalystBrief is the human-readable vulnerability intelligence writeup
 	// rendered in the UI to help analysts and developers understand the
 	// vulnerability, attack vector, and real-world exploitation likelihood.
-	AnalystBrief             AnalystBrief             `json:"analyst_brief"`
-	DetectionSignals         []string                 `json:"detection_signals,omitempty"`
-	Rationale                string                   `json:"rationale"`
-	Confidence               Confidence               `json:"confidence"`
+	AnalystBrief AnalystBrief `json:"analyst_brief"`
+	// PatchBypass is populated when this CVE is a documented bypass of a
+	// predecessor patch. When PatchBypass.BypassConfirmed is true, the finding
+	// should be surfaced with maximum urgency — defenders holding the prior
+	// patch believe they are protected but are not.
+	PatchBypass      *PatchBypass `json:"patch_bypass,omitempty"`
+	DetectionSignals []string     `json:"detection_signals,omitempty"`
+	Rationale        string       `json:"rationale"`
+	Confidence       Confidence   `json:"confidence"`
 
 	PromptVersion string `json:"prompt_version,omitempty"`
 	LLMModel      string `json:"llm_model,omitempty"`

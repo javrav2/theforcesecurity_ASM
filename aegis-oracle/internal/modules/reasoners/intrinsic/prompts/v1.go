@@ -12,10 +12,10 @@
 package prompts
 
 // V1Version is the prompt version recorded on outputs produced with V1.
-// Bumped to intrinsic.v4 — persists analyst_brief, attack_path_class, and
-// lateral_movement_potential to DB (schema fix; no prompt content change).
-// All v3 cached rows lacked analyst_brief and will now re-run to populate it.
-const V1Version = "intrinsic.v4"
+// Bumped to intrinsic.v5 — adds patch_bypass detection. CVEs that bypass a
+// prior patch now carry predecessor_cve, bypass_mechanism, and bypass_summary.
+// All v4 cached rows lacked patch_bypass; they will re-run when force=true.
+const V1Version = "intrinsic.v5"
 
 // V1 is the production prompt for Phase A intrinsic analysis.
 //
@@ -132,6 +132,13 @@ Return ONLY a JSON object — no prose before or after — matching:
     "not_affected_if":       "1-3 sentences: mitigating configurations or patterns that exclude the risk entirely, short of patching. Omit or leave empty if there are no reliable mitigations — do NOT invent them.",
     "exploitability_score":  "Number 1.0–5.0. See Exploitability Index rubric below.",
     "exploitability_tier":   "Exactly one of: 'push_button' | 'opportunistic' | 'moderate' | 'targeted' | 'theoretical'"
+  },
+  "patch_bypass": {
+    "predecessor_cve":  "CVE-YYYY-NNNNN or empty string",
+    "bypass_mechanism": "technical explanation of how the prior fix was circumvented — empty string if none",
+    "bypass_confirmed": true | false,
+    "bypass_source":    "URL of the advisory or reference that documents the bypass — empty string if none",
+    "bypass_summary":   "1-2 sentence warning suitable for a report callout — empty string if none"
   },
   "detection_signals":    ["log/network indicators if exploited"],
   "rationale":            "your overall reasoning, suitable for an analyst to audit",
@@ -267,6 +274,35 @@ The final score must be consistent with real_world_likelihood — do not assign
 push_button if real_world_likelihood describes complex preconditions, and
 do not assign theoretical if KEV is listed.
 
+# Patch bypass detection
+
+Inspect the description, references, and related advisory aliases below for
+evidence that this CVE is a **bypass of a prior patch**. This is the most
+dangerous finding class — a defender who applied the earlier patch may
+incorrectly believe they are protected.
+
+Signal phrases that indicate a bypass:
+  "incomplete fix", "incomplete patch", "bypass of CVE-", "bypass of the fix",
+  "regresses", "variant of CVE-", "re-introduction of", "patch bypass",
+  "not fully addressed", "incorrectly fixed", "the previous fix for"
+
+If any such signal is present:
+  1. Set bypass_confirmed = true.
+  2. Set predecessor_cve to the CVE ID being bypassed (e.g. "CVE-2026-34084").
+  3. Explain bypass_mechanism concisely — what the prior patch checked and how
+     this CVE's input path avoids that check. Be specific: name the function,
+     the condition, and the bypass technique.
+  4. Set bypass_source to the URL of the reference that most clearly documents
+     the bypass relationship.
+  5. Write bypass_summary as 1-2 sentences for a non-expert report reader.
+
+If there is no bypass relationship, set bypass_confirmed = false and leave all
+other patch_bypass fields as empty strings.
+
+Do NOT invent a predecessor CVE if none is mentioned. If you are uncertain
+whether a relationship is a bypass vs. an independent related bug, set
+bypass_confirmed = false.
+
 # General authoring rules
 
 - If a precondition can only be verified by inside-the-box inspection,
@@ -331,6 +367,17 @@ Preconditions:
 {{end}}
 {{end}}
 
+## Related / predecessor advisories
+{{if .RelatedAdvisories}}
+The following aliases and related advisories were resolved from OSV/GHSA.
+A "related" source kind indicates a predecessor or linked advisory — check
+these for patch-bypass evidence.
+
+{{range .RelatedAdvisories}}- {{.Alias}} → {{.URL}}
+{{end}}
+{{else}}No related advisories found in OSV.
+{{end}}
+
 ## References
 {{range .References}}
 ### {{.SourceKind}} — {{.URL}}
@@ -357,9 +404,22 @@ type V1Inputs struct {
 	KEVRansomware  bool
 	POCSummary     string
 
+	// RelatedAdvisories are alias and related CVE/GHSA IDs sourced from the
+	// OSV.dev API. They prime the LLM's patch-bypass detection by surfacing
+	// predecessor advisory relationships that may not appear in the description.
+	RelatedAdvisories []V1RelatedAdvisory
+
 	CWEProfiles []V1CWEProfile
 	DevPatterns []V1DevPattern
 	References  []V1Reference
+}
+
+// V1RelatedAdvisory is a single alias or related advisory from OSV.
+type V1RelatedAdvisory struct {
+	// Alias is the identifier (CVE-YYYY-NNNN or GHSA-XXXX-XXXX-XXXX).
+	Alias string
+	// URL is the canonical advisory or detail page for this alias.
+	URL string
 }
 
 type V1CVSSVector struct {
@@ -417,7 +477,7 @@ const V1OutputSchema = `{
     "remote_triggerability","exploit_complexity","attacker_capability",
     "attack_path_class","lateral_movement_potential",
     "preconditions","cvss_reconciliation","attack_chain_summary",
-    "analyst_brief","rationale","confidence"
+    "analyst_brief","patch_bypass","rationale","confidence"
   ],
   "properties": {
     "remote_triggerability": { "type": "string", "enum": ["yes","no","conditional"] },
@@ -503,6 +563,18 @@ const V1OutputSchema = `{
           "type": "string",
           "enum": ["push_button","opportunistic","moderate","targeted","theoretical"]
         }
+      }
+    },
+    "patch_bypass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bypass_confirmed"],
+      "properties": {
+        "predecessor_cve":  { "type": "string" },
+        "bypass_mechanism": { "type": "string" },
+        "bypass_confirmed": { "type": "boolean" },
+        "bypass_source":    { "type": "string" },
+        "bypass_summary":   { "type": "string" }
       }
     },
     "detection_signals":    { "type": "array", "items": { "type": "string" } },

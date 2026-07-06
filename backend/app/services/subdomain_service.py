@@ -328,6 +328,16 @@ class SubdomainService:
                 logger.warning(f"[Depth {depth}] crt.sh failed for {domain}: {exc}")
                 return "crt.sh", []
 
+        async def _from_shodan_ctl() -> tuple[str, list[str]]:
+            if not use_crtsh:
+                return "shodan_ctl", []
+            logger.info(f"[Depth {depth}] Querying Shodan CTL for {domain}")
+            try:
+                return "shodan_ctl", await self._query_shodan_ctl(domain)
+            except Exception as exc:
+                logger.warning(f"[Depth {depth}] Shodan CTL failed for {domain}: {exc}")
+                return "shodan_ctl", []
+
         async def _from_subcat() -> tuple[str, list[str]]:
             if not self.use_subcat:
                 return "subcat", []
@@ -342,6 +352,7 @@ class SubdomainService:
             _from_chaos(),
             _from_subfinder(),
             _from_crtsh(),
+            _from_shodan_ctl(),
             _from_subcat(),
         )
 
@@ -768,6 +779,35 @@ class SubdomainService:
         except Exception as e:
             logger.warning(f"crt.sh query failed for {domain}: {e}")
         
+        return list(subdomains)
+
+    async def _query_shodan_ctl(self, domain: str) -> list[str]:
+        """Query Shodan's Certificate Transparency Logs mirror for hostnames.
+
+        Returns a flat deduplicated list of every hostname seen across all CT
+        logs for the given domain — free, no API key required.
+        """
+        subdomains = set()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"https://ctl.shodan.io/api/v1/domain/{domain}/hostnames",
+                    follow_redirects=True,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, list):
+                        for hostname in data:
+                            if not isinstance(hostname, str):
+                                continue
+                            hostname = hostname.strip().lower()
+                            if hostname.startswith("*."):
+                                hostname = hostname[2:]
+                            if hostname.endswith(f".{domain}") or hostname == domain:
+                                subdomains.add(hostname)
+        except Exception as e:
+            logger.warning(f"Shodan CTL query failed for {domain}: {e}")
+
         return list(subdomains)
     
     async def _check_subdomain_exists(self, subdomain: str) -> SubdomainResult:

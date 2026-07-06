@@ -121,6 +121,7 @@ class NucleiResult:
     description: Optional[str] = None
     reference: list[str] = field(default_factory=list)
     cvss_score: Optional[float] = None
+    cvss_vector: Optional[str] = None
     cve_id: Optional[str] = None
     cwe_id: Optional[str] = None
     tags: list[str] = field(default_factory=list)
@@ -160,8 +161,11 @@ class NucleiResult:
         if not isinstance(classification, dict):
             classification = {}
         
+        cvss_vector = None
         if classification:
             cvss_metrics = classification.get("cvss-metrics", "")
+            if cvss_metrics and isinstance(cvss_metrics, str) and cvss_metrics.startswith("CVSS:"):
+                cvss_vector = cvss_metrics
             cvss_score_str = classification.get("cvss-score")
             if cvss_score_str:
                 try:
@@ -209,6 +213,7 @@ class NucleiResult:
             description=info.get("description", ""),
             reference=reference,
             cvss_score=cvss_score,
+            cvss_vector=cvss_vector,
             cve_id=cve_id or extracted_cve_id,
             cwe_id=extracted_cwe_id,
             tags=tags,

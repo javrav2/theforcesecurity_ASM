@@ -115,6 +115,13 @@ class Settings(BaseSettings):
     DELPHI_REFRESH_HOURS: int = 24  # Re-fetch KEV + EPSS after this many hours
     DELPHI_AUTO_ENRICH_ON_INGEST: bool = True  # Enrich CVEs during ingestion pipeline
 
+    # Oracle (LLM analyst-grade analysis) — background enrichment at ingest.
+    # Disabled by default: the Oracle call can take up to 180 s per finding and
+    # requires the aegis-oracle service to be running. Enable in production once
+    # Oracle is stable. When enabled, each new CVE-backed finding enqueues a
+    # non-blocking background Oracle analysis immediately after Delphi runs.
+    ORACLE_AUTO_ENRICH_ON_INGEST: bool = False
+
     # Custom Nuclei templates shipped with the platform.
     # Relative to the backend/ directory; resolved to an absolute path at runtime.
     # Set to an empty string or override via env to disable custom templates.

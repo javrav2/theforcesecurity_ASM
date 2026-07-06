@@ -11,6 +11,7 @@ Integrates multiple external intelligence sources for comprehensive asset discov
 - Common Crawl - Web crawl data
 - Microsoft 365 - Federated domain discovery
 - ASN Discovery - BGP/ASN data for organizations
+- Shodan CTL - Certificate Transparency Logs hostname discovery (free, no key)
 
 Based on ASM Recon discovery methodology.
 """
@@ -673,6 +674,56 @@ class ExternalDiscoveryService:
         return result
 
     # =========================================================================
+    # Shodan CTL - Certificate Transparency Logs
+    # =========================================================================
+
+    async def discover_shodan_ctl(self, domain: str) -> DiscoveryResult:
+        """
+        Discover hostnames from Shodan's Certificate Transparency Logs mirror.
+
+        Queries https://ctl.shodan.io/api/v1/domain/{domain}/hostnames which
+        returns a deduplicated flat list of every hostname seen across all CT
+        logs for the given domain — no API key required.
+
+        Args:
+            domain: Root domain to search (e.g. "example.com")
+        """
+        start_time = time.time()
+        result = DiscoveryResult(source=ExternalService.SHODAN_CTL, success=False)
+
+        url = f"https://ctl.shodan.io/api/v1/domain/{domain}/hostnames"
+
+        try:
+            success, data = await self._make_request(url, timeout=30)
+
+            if not success:
+                result.error = f"Shodan CTL error: {data}"
+                return result
+
+            # Response is a plain JSON array of hostname strings
+            if isinstance(data, list):
+                all_subdomains = set()
+                for hostname in data:
+                    if not isinstance(hostname, str):
+                        continue
+                    hostname = hostname.strip().lower()
+                    if hostname.startswith("*."):
+                        hostname = hostname[2:]
+                    if hostname.endswith(f".{domain}") or hostname == domain:
+                        all_subdomains.add(hostname)
+
+                result.success = True
+                result.subdomains = list(all_subdomains)
+            else:
+                result.error = "Unexpected response format from Shodan CTL"
+
+        except Exception as e:
+            result.error = str(e)
+
+        result.elapsed_time = time.time() - start_time
+        return result
+
+    # =========================================================================
     # Common Crawl - Web Crawl Data
     # =========================================================================
     
@@ -964,6 +1015,7 @@ class ExternalDiscoveryService:
             tasks.append(("wayback", self.discover_wayback(domain)))
             tasks.append(("rapiddns", self.discover_rapiddns(domain)))
             tasks.append(("crtsh", self.discover_crtsh(domain)))
+            tasks.append(("shodan_ctl", self.discover_shodan_ctl(domain)))
             tasks.append(("m365", self.discover_m365(domain)))
             
             # Use comprehensive CC search if org_name or keywords provided

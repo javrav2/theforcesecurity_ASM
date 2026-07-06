@@ -265,6 +265,67 @@
             font-size: 9px;
             font-weight: 600;
         }
+
+        .oracle-section {
+            border-left: 3px solid #0066cc;
+            padding: 12px 15px;
+            margin-bottom: 15px;
+            background: #f0f6ff;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .oracle-section .section-title {
+            color: #0047a8;
+        }
+
+        .opes-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            margin-right: 8px;
+        }
+
+        .opes-p0 { background: #7b2d8b; color: white; }
+        .opes-p1 { background: #dc3545; color: white; }
+        .opes-p2 { background: #fd7e14; color: white; }
+        .opes-p3 { background: #ffc107; color: #333; }
+        .opes-p4 { background: #6c757d; color: white; }
+
+        .delphi-bar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 5px;
+        }
+
+        .delphi-pill {
+            display: inline-block;
+            padding: 3px 9px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        .kev-pill { background: #dc3545; color: white; }
+        .epss-pill { background: #495057; color: white; }
+        .ransomware-pill { background: #7b2d8b; color: white; }
+
+        .patch-bypass-warning {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-left: 4px solid #dc3545;
+            border-radius: 4px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            font-size: 11px;
+        }
+
+        .patch-bypass-warning strong {
+            color: #dc3545;
+        }
         
         .asset-details {
             background: #f8f9fa;
@@ -432,6 +493,150 @@
             </div>
         </div>
         <div class="finding-body">
+            <!-- Patch Bypass Warning -->
+            {% if finding.oracle and finding.oracle.patch_bypass and finding.oracle.patch_bypass.bypass_confirmed %}
+            <div class="patch-bypass-warning">
+                <strong>Patch Bypass Detected</strong> — This vulnerability bypasses the fix for
+                {{ finding.oracle.patch_bypass.predecessor_cve }}.
+                {{ finding.oracle.patch_bypass.bypass_summary }}
+            </div>
+            {% endif %}
+
+            <!-- Delphi Priority Intelligence -->
+            {% if finding.delphi %}
+            <div class="finding-section oracle-section">
+                <div class="section-title">Threat Intelligence</div>
+                <div class="delphi-bar">
+                    {% if finding.delphi.kev %}
+                    <span class="delphi-pill kev-pill">CISA KEV</span>
+                    {% if finding.delphi.kev.known_ransomware_use and finding.delphi.kev.known_ransomware_use != 'Unknown' %}
+                    <span class="delphi-pill ransomware-pill">Ransomware Associated</span>
+                    {% endif %}
+                    {% endif %}
+                    {% if finding.delphi.epss %}
+                    <span class="delphi-pill epss-pill">
+                        EPSS {{ "%.1f"|format(finding.delphi.epss.score * 100) }}%
+                        ({{ finding.delphi.epss.percentile }}th percentile)
+                    </span>
+                    {% endif %}
+                    {% if finding.delphi.priority %}
+                    <span class="delphi-pill" style="background:#343a40;color:white;">
+                        Delphi Priority: {{ finding.delphi.priority|upper }}
+                    </span>
+                    {% endif %}
+                </div>
+                {% if finding.delphi.kev %}
+                <div style="margin-top:8px;font-size:11px;color:#444;">
+                    {% if finding.delphi.kev.required_action %}
+                    <strong>Required Action:</strong> {{ finding.delphi.kev.required_action }}<br>
+                    {% endif %}
+                    {% if finding.delphi.kev.due_date %}
+                    <strong>CISA Due Date:</strong> {{ finding.delphi.kev.due_date }}
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% if finding.delphi.priority_reason %}
+                <div style="margin-top:6px;font-size:11px;color:#555;">{{ finding.delphi.priority_reason }}</div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Oracle OPES Score + Analyst Brief -->
+            {% if finding.oracle %}
+            {% set oracle = finding.oracle %}
+            <div class="finding-section oracle-section">
+                <div class="section-title">Oracle Analysis</div>
+
+                <!-- OPES verdict -->
+                {% if oracle.opes_category %}
+                <div style="margin-bottom:10px;">
+                    <span class="opes-badge opes-{{ oracle.opes_category|lower }}">
+                        {{ oracle.opes_category|upper }}
+                    </span>
+                    {% if oracle.opes_score is not none %}
+                    <span style="font-size:12px;font-weight:600;">OPES {{ "%.1f"|format(oracle.opes_score) }}/10</span>
+                    {% endif %}
+                    {% if oracle.opes_label %}
+                    <span style="font-size:11px;color:#555;margin-left:6px;">— {{ oracle.opes_label }}</span>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                <!-- Attack path + lateral movement -->
+                {% if oracle.attack_path_class or oracle.lateral_movement_potential %}
+                <div style="font-size:11px;color:#444;margin-bottom:8px;">
+                    {% if oracle.attack_path_class %}
+                    <strong>Attack Path:</strong> {{ oracle.attack_path_class|replace('_', ' ')|title }}
+                    {% endif %}
+                    {% if oracle.lateral_movement_potential %}
+                    &nbsp;&nbsp;<strong>Lateral Movement:</strong> {{ oracle.lateral_movement_potential|title }}
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                <!-- Analyst brief prose -->
+                {% if oracle.analyst_brief %}
+                {% set brief = oracle.analyst_brief %}
+                {% if brief.what_is_it %}
+                <div style="margin-bottom:8px;">
+                    <div class="section-title" style="margin-bottom:3px;">What Is It</div>
+                    <div style="font-size:11px;">{{ brief.what_is_it }}</div>
+                </div>
+                {% endif %}
+                {% if brief.attack_scenario %}
+                <div style="margin-bottom:8px;">
+                    <div class="section-title" style="margin-bottom:3px;">Attack Scenario</div>
+                    <div style="font-size:11px;">{{ brief.attack_scenario }}</div>
+                </div>
+                {% endif %}
+                {% if brief.real_world_likelihood %}
+                <div style="margin-bottom:8px;">
+                    <div class="section-title" style="margin-bottom:3px;">Real-World Likelihood</div>
+                    <div style="font-size:11px;">{{ brief.real_world_likelihood }}</div>
+                </div>
+                {% endif %}
+                {% if brief.affected_if %}
+                <div style="margin-bottom:8px;">
+                    <div class="section-title" style="margin-bottom:3px;">You Are Affected If</div>
+                    <div style="font-size:11px;">{{ brief.affected_if }}</div>
+                </div>
+                {% endif %}
+                {% if brief.not_affected_if %}
+                <div style="margin-bottom:8px;">
+                    <div class="section-title" style="margin-bottom:3px;">Not Affected If</div>
+                    <div style="font-size:11px;">{{ brief.not_affected_if }}</div>
+                </div>
+                {% endif %}
+                {% if brief.exploitability_tier %}
+                <div style="font-size:11px;">
+                    <strong>Exploitability:</strong>
+                    {{ brief.exploitability_tier|replace('_', ' ')|title }}
+                    {% if brief.exploitability_score %}({{ brief.exploitability_score }}/5.0){% endif %}
+                </div>
+                {% endif %}
+                {% endif %}
+
+                <!-- CVSS reconciliation note -->
+                {% if oracle.cvss_reconciliation and oracle.cvss_reconciliation.disagreements %}
+                <div style="margin-top:10px;font-size:10px;color:#666;border-top:1px solid #cce0ff;padding-top:8px;">
+                    <strong>CVSS Reconciliation:</strong>
+                    {{ oracle.cvss_reconciliation.correct_vector }}
+                    ({{ oracle.cvss_reconciliation.rationale }})
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Oracle Recommendation -->
+            {% if oracle.recommendation_text %}
+            <div class="finding-section">
+                <div class="section-title">Recommendation</div>
+                <div class="remediation-box" style="background:#d4edda;border-color:#c3e6cb;">
+                    {{ oracle.recommendation_text }}
+                </div>
+            </div>
+            {% endif %}
+            {% endif %}
+
             <!-- Status and Meta Info -->
             <div class="finding-section">
                 <div class="info-grid">

@@ -223,6 +223,18 @@ def _upsert_vulnerability(
         except Exception as exc:
             logger.debug("Delphi auto-enrich skipped for %s: %s", finding.cve_id, exc)
 
+    # Oracle enrichment: queue a non-blocking background LLM analysis for new
+    # CVE findings when ORACLE_AUTO_ENRICH_ON_INGEST is enabled. The call opens
+    # its own DB session and runs in a daemon thread — it never blocks ingest.
+    if finding.cve_id and vuln.id is not None:
+        try:
+            from app.core.config import settings as _settings
+            if getattr(_settings, "ORACLE_AUTO_ENRICH_ON_INGEST", False):
+                from app.services.oracle_enrichment_service import enqueue_background_enrichment
+                enqueue_background_enrichment(vuln.id)
+        except Exception as exc:
+            logger.debug("Oracle auto-enrich skipped for %s: %s", finding.cve_id, exc)
+
     return vuln, "created"
 
 

@@ -21,10 +21,10 @@ type Store interface {
 
 // Ingester orchestrates on-demand CVE ingestion. EnsureCVE returns a
 // canonical record either from the store (cache hit) or by fetching from
-// vulnx (preferred) or NVD (fallback), upserting, and returning the fresh
-// row.
+// vulnx (preferred), NVD (second fallback), or OSV.dev (third fallback),
+// upserting, and returning the fresh row.
 //
-// Concurrency: safe for concurrent EnsureCVE calls; vulnx/NVD calls are
+// Concurrency: safe for concurrent EnsureCVE calls; vulnx/NVD/OSV calls are
 // stateless, and the store handles its own locking on upsert. We do not
 // deduplicate in-flight fetches for the same CVE in the same process —
 // the upstream APIs cache aggressively and a duplicate call is harmless.
@@ -32,10 +32,12 @@ type Ingester struct {
 	store Store
 	vulnx *VulnxClient
 	nvd   *NVDClient
+	osv   *OSVClient
 }
 
 // New constructs an Ingester. pdcpKey is the optional ProjectDiscovery
 // Cloud Platform key for vulnx; nvdKey is the optional NVD API key.
+// The OSV.dev client requires no credentials.
 func New(store Store, pdcpKey, nvdKey string) *Ingester {
 	if nvdKey == "" {
 		nvdKey = os.Getenv("NVD_API_KEY")
@@ -44,6 +46,7 @@ func New(store Store, pdcpKey, nvdKey string) *Ingester {
 		store: store,
 		vulnx: NewVulnxClient(pdcpKey),
 		nvd:   NewNVDClient(nvdKey),
+		osv:   NewOSVClient(),
 	}
 }
 
@@ -89,11 +92,23 @@ func (i *Ingester) EnsureCVE(ctx context.Context, cveID string) (*schema.CVE, bo
 	return cve, true, nil
 }
 
-// fetch tries vulnx first, then NVD. Returns the CVE plus the source name
-// used (for observability). Errors from one source do not abort the
-// chain — we only return an error if both sources fail.
+// fetch tries sources in priority order: vulnx → NVD → OSV.dev.
+//
+// Rationale for the ordering:
+//   - vulnx: richest merged payload (CVSS from multiple sources, EPSS, KEV,
+//     PoC count, Nuclei template). Preferred whenever available.
+//   - NVD 2.0: official NIST record; usually available within hours of
+//     CVE assignment. Leaner than vulnx but more authoritative for base
+//     CVSS and CPE data.
+//   - OSV.dev: covers day-zero CVEs that NVD has not yet indexed, by
+//     resolving the underlying GHSA advisory directly. Returns alias and
+//     related advisory IDs which the patch-bypass enricher uses to detect
+//     predecessor CVEs.
+//
+// Errors from one source do not abort the chain; we only return an error if
+// all three sources fail with a non-nil error.
 func (i *Ingester) fetch(ctx context.Context, cveID string) (*schema.CVE, string, error) {
-	var firstErr error
+	var errs []error
 
 	if i.vulnx != nil {
 		cve, err := i.vulnx.FetchCVE(ctx, cveID)
@@ -101,7 +116,7 @@ func (i *Ingester) fetch(ctx context.Context, cveID string) (*schema.CVE, string
 			return cve, "vulnx", nil
 		}
 		if err != nil {
-			firstErr = err
+			errs = append(errs, err)
 			slog.Warn("vulnx fetch failed; trying nvd",
 				"cve", cveID, "error", err)
 		}
@@ -113,15 +128,26 @@ func (i *Ingester) fetch(ctx context.Context, cveID string) (*schema.CVE, string
 			return cve, "nvd", nil
 		}
 		if err != nil {
-			if firstErr != nil {
-				return nil, "", errors.Join(firstErr, err)
-			}
-			return nil, "", err
+			errs = append(errs, err)
+			slog.Warn("nvd fetch failed; trying osv",
+				"cve", cveID, "error", err)
 		}
 	}
 
-	if firstErr != nil {
-		return nil, "", firstErr
+	if i.osv != nil {
+		cve, err := i.osv.FetchCVE(ctx, cveID)
+		if err == nil && cve != nil {
+			return cve, "osv", nil
+		}
+		if err != nil {
+			errs = append(errs, err)
+			slog.Warn("osv fetch failed; all sources exhausted",
+				"cve", cveID, "error", err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return nil, "", errors.Join(errs...)
 	}
 	return nil, "", nil
 }

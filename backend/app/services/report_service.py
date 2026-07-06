@@ -53,7 +53,11 @@ class ReportService:
         """Prepare finding data for template rendering."""
         severity_value = finding.severity.value if hasattr(finding.severity, 'value') else str(finding.severity)
         status_value = finding.status.value if hasattr(finding.status, 'value') else str(finding.status)
-        
+
+        metadata = finding.metadata_ or {}
+        oracle = metadata.get("oracle") if isinstance(metadata, dict) else None
+        delphi = metadata.get("delphi") if isinstance(metadata, dict) else None
+
         return {
             "id": finding.id,
             "title": finding.title,
@@ -76,6 +80,8 @@ class ReportService:
             "affected_component": getattr(finding, 'affected_component', None),
             "steps_to_reproduce": getattr(finding, 'steps_to_reproduce', None),
             "tags": finding.tags or [],
+            "oracle": oracle,
+            "delphi": delphi,
         }
     
     def _prepare_asset_data(self, asset: Asset) -> Dict[str, Any]:
