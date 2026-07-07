@@ -1672,6 +1672,111 @@ class ApiClient {
     }, { timeout: 300000 });
     return response.data;
   }
+
+  // ── Jira Integration ─────────────────────────────────────────────────────
+
+  async getJiraIntegration(): Promise<{
+    id: number;
+    organization_id: number;
+    hostname: string;
+    email: string;
+    default_project_key?: string;
+    default_issue_type?: string;
+    is_active: boolean;
+    last_tested_at?: string;
+    last_test_ok?: boolean;
+    created_at: string;
+    updated_at: string;
+  }> {
+    const response = await this.client.get('/integrations/jira');
+    return response.data;
+  }
+
+  async createJiraIntegration(payload: {
+    hostname: string;
+    email: string;
+    api_token: string;
+    default_project_key?: string;
+    default_issue_type?: string;
+  }): Promise<{ id: number; hostname: string; last_test_ok?: boolean }> {
+    const response = await this.client.post('/integrations/jira', payload);
+    return response.data;
+  }
+
+  async updateJiraIntegration(payload: {
+    hostname?: string;
+    email?: string;
+    api_token?: string;
+    default_project_key?: string;
+    default_issue_type?: string;
+    is_active?: boolean;
+  }): Promise<{ id: number; hostname: string; last_test_ok?: boolean }> {
+    const response = await this.client.put('/integrations/jira', payload);
+    return response.data;
+  }
+
+  async deleteJiraIntegration(): Promise<void> {
+    await this.client.delete('/integrations/jira');
+  }
+
+  async testJiraConnection(): Promise<{ ok: boolean; message: string; display_name?: string }> {
+    const response = await this.client.post('/integrations/jira/test');
+    return response.data;
+  }
+
+  async getJiraProjects(): Promise<{ projects: { key: string; name: string; project_type?: string }[] }> {
+    const response = await this.client.get('/integrations/jira/projects');
+    return response.data;
+  }
+
+  async getJiraIssueTypes(projectKey: string): Promise<{
+    issue_types: { id: string; name: string; description?: string }[];
+  }> {
+    const response = await this.client.get(`/integrations/jira/projects/${projectKey}/issue-types`);
+    return response.data;
+  }
+
+  async createJiraTicket(
+    vulnerabilityId: number,
+    payload: {
+      project_key: string;
+      issue_type: string;
+      include_description?: boolean;
+      include_evidence?: boolean;
+      include_remediation?: boolean;
+      include_references?: boolean;
+      include_enrichment?: boolean;
+      assignee_account_id?: string;
+      extra_labels?: string[];
+    },
+  ): Promise<{
+    id: number;
+    vulnerability_id: number;
+    jira_issue_key: string;
+    jira_issue_url: string;
+    jira_project_key: string;
+    jira_issue_type?: string;
+    created_at: string;
+  }> {
+    const response = await this.client.post(
+      `/integrations/jira/vulnerabilities/${vulnerabilityId}/ticket`,
+      payload,
+    );
+    return response.data;
+  }
+
+  async getJiraTicketsForVulnerability(vulnerabilityId: number): Promise<{
+    id: number;
+    jira_issue_key: string;
+    jira_issue_url: string;
+    jira_project_key: string;
+    created_at: string;
+  }[]> {
+    const response = await this.client.get(
+      `/integrations/jira/vulnerabilities/${vulnerabilityId}/tickets`,
+    );
+    return response.data;
+  }
 }
 
 export const api = new ApiClient();
