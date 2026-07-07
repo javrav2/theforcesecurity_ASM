@@ -18,6 +18,8 @@ from app.models.finding_exception import FindingException  # Required for Vulner
 from app.models.jira_integration import JiraIntegration, JiraTicket  # noqa: F401 — ensure tables are created
 from app.api.routes import auth, users, organizations, assets, vulnerabilities, scans, discovery, nuclei, ports, screenshots, external_discovery, waybackurls, netblocks, labels, scan_schedules, tools, sni_discovery, scan_config, acquisitions, oracle, agent
 from app.api.routes import integrations
+from app.api.routes import scoring as scoring_router
+from app.api.routes import threat_intel as threat_intel_router
 
 # Configure logging
 logging.basicConfig(
@@ -63,8 +65,15 @@ Track and report on exposed services with structured data:
 # Trust proxy headers from nginx so FastAPI knows requests arrive over HTTPS.
 # Without this, Starlette generates http:// redirect Location headers (307) which
 # browsers block as Mixed Content when the page is served over HTTPS.
-from starlette.middleware.proxy_headers import ProxyHeadersMiddleware
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+try:
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware as _ProxyHeadersMiddleware
+    app.add_middleware(_ProxyHeadersMiddleware, trusted_hosts="*")
+except ImportError:
+    try:
+        from starlette.middleware.proxy_headers import ProxyHeadersMiddleware as _ProxyHeadersMiddleware  # type: ignore[no-redef]
+        app.add_middleware(_ProxyHeadersMiddleware, trusted_hosts="*")
+    except ImportError:
+        pass  # Neither middleware available in this env; nginx handles SSL termination
 
 # Configure CORS
 app.add_middleware(
@@ -113,6 +122,44 @@ app.include_router(acquisitions.router, prefix=settings.API_PREFIX)
 app.include_router(oracle.router, prefix=settings.API_PREFIX)
 app.include_router(agent.router, prefix=settings.API_PREFIX)
 app.include_router(integrations.router, prefix=settings.API_PREFIX)
+app.include_router(scoring_router.router, prefix=settings.API_PREFIX)
+app.include_router(threat_intel_router.router, prefix=settings.API_PREFIX)
+
+
+# ── Scoring pipeline lifecycle ────────────────────────────────────────────────
+# The pipeline must start AFTER all models are imported (Base.metadata.create_all
+# runs above) so SQLAlchemy event hooks see the fully-loaded Vulnerability class.
+
+@app.on_event("startup")
+def start_scoring_pipeline() -> None:
+    """
+    Start the universal vulnerability scoring pipeline on application startup.
+
+    Registers SQLAlchemy event hooks so every new Vulnerability is automatically
+    scored — regardless of which scanner, API path, or service created it.
+    Then starts the worker thread pool to drain the queue.
+    """
+    try:
+        from app.services.scoring_pipeline import register_hooks, get_scoring_pipeline
+        # Register hooks first (attaches to SQLAlchemy class-level events)
+        register_hooks()
+        # Then start workers so the queue is drained as soon as items arrive
+        get_scoring_pipeline().start()
+        logger.info("Scoring pipeline started and hooks registered")
+    except Exception as exc:
+        # Pipeline failure must never prevent the API from starting — findings
+        # can still be created; scoring will be unavailable until next restart.
+        logger.error("Scoring pipeline failed to start: %s", exc, exc_info=True)
+
+
+@app.on_event("shutdown")
+def stop_scoring_pipeline() -> None:
+    """Drain the queue and stop worker threads on graceful shutdown."""
+    try:
+        from app.services.scoring_pipeline import get_scoring_pipeline
+        get_scoring_pipeline().stop(timeout=15.0)
+    except Exception as exc:
+        logger.warning("Scoring pipeline stop error: %s", exc)
 
 
 @app.get("/")
@@ -416,7 +463,7 @@ def apply_oracle_migrations():
             evaluator_version       text NOT NULL DEFAULT '',
             preconditions_evaluated jsonb NOT NULL DEFAULT '[]',
             opes_score              numeric(3,1) NOT NULL DEFAULT 0,
-            opes_category           text NOT NULL DEFAULT 'P4',
+            opes_category           text NOT NULL DEFAULT 'informational',
             opes_label              text NOT NULL DEFAULT '',
             opes_components         jsonb NOT NULL DEFAULT '{}',
             opes_top_contributors   jsonb NOT NULL DEFAULT '[]',
@@ -465,6 +512,7 @@ def apply_oracle_migrations():
         # ── Oracle enrichment columns on the ASM vulnerabilities table ───────
         # Promoted from metadata_["oracle"] JSON for efficient querying/sorting.
         # Each statement uses ADD COLUMN IF NOT EXISTS so it's safe to re-run.
+        "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS detection_confidence   VARCHAR(50) DEFAULT 'unknown'",
         "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_opes_score      FLOAT",
         "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_opes_category   VARCHAR(50)",
         "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS oracle_opes_label      VARCHAR(100)",
