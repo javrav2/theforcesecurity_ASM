@@ -8,6 +8,8 @@ import httpx
 
 from app.models.jira_integration import JiraIntegration
 from app.models.vulnerability import Vulnerability
+from app.services.remediation_playbook_service import RemediationPlaybookService
+from app.services.cwe_service import get_cwe_service
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +151,108 @@ def _adf_rule() -> Dict:
     return {"type": "rule"}
 
 
+def _adf_ordered_list(items: List[Dict]) -> Dict:
+    """Ordered list where each item is a list of ADF block nodes."""
+    return {
+        "type": "orderedList",
+        "content": [
+            {"type": "listItem", "content": blocks}
+            for blocks in items
+        ],
+    }
+
+
+def _adf_strong(text: str) -> Dict:
+    return {"type": "text", "text": text, "marks": [{"type": "strong"}]}
+
+
+def _adf_para_nodes(nodes: List[Dict]) -> Dict:
+    return {"type": "paragraph", "content": nodes}
+
+
+def _build_playbook_blocks(playbook: Dict) -> List[Dict]:
+    """Convert a RemediationPlaybook dict into ADF block nodes."""
+    blocks: List[Dict] = []
+
+    blocks.append(_adf_heading("Remediation Playbook", 2))
+
+    # Metadata summary
+    meta_lines = [
+        f"Summary: {playbook.get('summary', '')}",
+        f"Estimated Time: {playbook.get('estimated_time', 'unknown')}",
+        f"Effort: {playbook.get('effort', 'unknown').title()}",
+        f"Priority: {playbook.get('priority', 'unknown').upper()}",
+    ]
+    access_list = playbook.get("required_access", [])
+    if access_list:
+        meta_lines.append(f"Required Access: {', '.join(a.replace('_', ' ').title() for a in access_list)}")
+    blocks.append(_adf_bullet_list(meta_lines))
+
+    impact = playbook.get("impact_if_not_fixed", "")
+    if impact:
+        blocks.append(_adf_para(f"⚠️ Impact if Not Fixed: {impact}"))
+
+    # Numbered steps
+    steps = playbook.get("steps", [])
+    if steps:
+        blocks.append(_adf_rule())
+        blocks.append(_adf_heading("Remediation Steps", 3))
+
+        step_items: List[List[Dict]] = []
+        for step in steps:
+            item_blocks: List[Dict] = []
+
+            # Step title + description
+            label = f"Step {step['order']}: {step['title']}"
+            if not step.get("is_required", True):
+                label += " (optional)"
+            elif step.get("is_alternative", False):
+                label += " (alternative)"
+            item_blocks.append(_adf_para_nodes([_adf_strong(label)]))
+            item_blocks.append(_adf_para(step["description"]))
+
+            # CLI command
+            if step.get("command"):
+                item_blocks.append(_adf_code_block(step["command"].strip(), "bash"))
+
+            # Code snippet
+            if step.get("code_snippet"):
+                item_blocks.append(_adf_code_block(step["code_snippet"].strip()))
+
+            # Notes/warnings
+            if step.get("notes"):
+                item_blocks.append(_adf_para(f"📝 Note: {step['notes']}"))
+
+            step_items.append(item_blocks)
+
+        blocks.append(_adf_ordered_list(step_items))
+
+    # Verification steps
+    verification = playbook.get("verification", [])
+    if verification:
+        blocks.append(_adf_rule())
+        blocks.append(_adf_heading("Verification Steps", 3))
+        verify_items: List[List[Dict]] = []
+        for v in verification:
+            item_blocks = [
+                _adf_para_nodes([_adf_strong(f"Step {v['order']}: {v['description']}")]),
+                _adf_para(f"Expected: {v['expected_result']}"),
+            ]
+            if v.get("command"):
+                item_blocks.append(_adf_code_block(v["command"].strip(), "bash"))
+            verify_items.append(item_blocks)
+        blocks.append(_adf_ordered_list(verify_items))
+
+    # Common mistakes
+    common_mistakes = playbook.get("common_mistakes", [])
+    if common_mistakes:
+        blocks.append(_adf_rule())
+        blocks.append(_adf_heading("Common Mistakes to Avoid", 3))
+        blocks.append(_adf_bullet_list(common_mistakes))
+
+    return blocks
+
+
 def _build_description(
     vuln: Vulnerability,
     include_description: bool,
@@ -156,6 +260,8 @@ def _build_description(
     include_remediation: bool,
     include_references: bool,
     include_enrichment: bool,
+    playbook: Optional[Dict] = None,
+    cwe_info: Optional[Dict] = None,
 ) -> Dict:
     """Build an Atlassian Document Format description for the Jira issue."""
     blocks: List[Dict] = []
@@ -201,11 +307,26 @@ def _build_description(
         blocks.append(_adf_heading("Steps to Reproduce", 3))
         blocks.append(_adf_para(vuln.steps_to_reproduce))
 
-    # Remediation
-    if include_remediation and vuln.remediation:
-        blocks.append(_adf_rule())
-        blocks.append(_adf_heading("Remediation", 2))
-        blocks.append(_adf_para(vuln.remediation))
+    # Remediation — structured playbook takes priority over the raw remediation text
+    if include_remediation:
+        if playbook:
+            blocks.append(_adf_rule())
+            blocks.extend(_build_playbook_blocks(playbook))
+        elif vuln.remediation:
+            blocks.append(_adf_rule())
+            blocks.append(_adf_heading("Remediation", 2))
+            blocks.append(_adf_para(vuln.remediation))
+
+        # CWE-based guidance (appended regardless of playbook presence)
+        if cwe_info:
+            blocks.append(_adf_heading("CWE Guidance", 3))
+            cwe_lines = [f"{cwe_info.get('cwe_id', '')}: {cwe_info.get('name', '')}"]
+            if cwe_info.get("description"):
+                cwe_lines.append(cwe_info["description"][:300])
+            mitigations = cwe_info.get("mitigations", [])
+            if mitigations:
+                cwe_lines.append("Mitigations: " + "; ".join(str(m) for m in mitigations[:3]))
+            blocks.append(_adf_bullet_list(cwe_lines))
 
     # Enrichment (Delphi + Oracle)
     if include_enrichment and vuln.metadata_ and isinstance(vuln.metadata_, dict):
@@ -298,6 +419,30 @@ async def create_jira_ticket(
     if extra_labels:
         labels.extend(extra_labels)
 
+    # Fetch structured remediation playbook + CWE guidance
+    playbook_dict: Optional[Dict] = None
+    cwe_info: Optional[Dict] = None
+    if include_remediation:
+        try:
+            playbook_obj = RemediationPlaybookService.get_playbook_for_finding(
+                title=vuln.title,
+                template_id=vuln.template_id,
+                port=vuln.metadata_.get("port") if vuln.metadata_ else None,
+                tags=vuln.tags or [],
+                cwe_id=vuln.cwe_id,
+                cve_id=vuln.cve_id,
+            )
+            if playbook_obj:
+                playbook_dict = playbook_obj.to_dict()
+        except Exception:
+            logger.warning("Could not fetch remediation playbook for vuln %s", vuln.id)
+
+        if vuln.cwe_id:
+            try:
+                cwe_info = get_cwe_service().get_dict(vuln.cwe_id)
+            except Exception:
+                logger.warning("Could not fetch CWE info for %s", vuln.cwe_id)
+
     description_adf = _build_description(
         vuln=vuln,
         include_description=include_description,
@@ -305,6 +450,8 @@ async def create_jira_ticket(
         include_remediation=include_remediation,
         include_references=include_references,
         include_enrichment=include_enrichment,
+        playbook=playbook_dict,
+        cwe_info=cwe_info,
     )
 
     fields: Dict[str, Any] = {
