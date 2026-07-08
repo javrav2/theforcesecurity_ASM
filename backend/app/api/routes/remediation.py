@@ -46,27 +46,6 @@ def list_playbooks(
     }
 
 
-@router.get("/playbooks/{playbook_id}")
-def get_playbook(
-    playbook_id: str,
-    current_user: User = Depends(get_current_active_user)
-):
-    """
-    Get a specific remediation playbook by ID.
-    
-    Returns the full playbook with all steps, verification, and references.
-    """
-    playbook = RemediationPlaybookService.get_playbook(playbook_id)
-    
-    if not playbook:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Playbook '{playbook_id}' not found"
-        )
-    
-    return playbook.to_dict()
-
-
 @router.get("/playbooks/search")
 def search_playbooks(
     query: str = Query(..., min_length=2),
@@ -94,6 +73,27 @@ def search_playbooks(
         ],
         "total": len(results),
     }
+
+
+@router.get("/playbooks/{playbook_id}")
+def get_playbook(
+    playbook_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get a specific remediation playbook by ID.
+    
+    Returns the full playbook with all steps, verification, and references.
+    """
+    playbook = RemediationPlaybookService.get_playbook(playbook_id)
+    
+    if not playbook:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Playbook '{playbook_id}' not found"
+        )
+    
+    return playbook.to_dict()
 
 
 @router.get("/cwe/{cwe_id}")

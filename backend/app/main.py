@@ -22,6 +22,22 @@ from app.api.routes import integrations
 from app.api.routes import scoring as scoring_router
 from app.api.routes import threat_intel as threat_intel_router
 from app.api.routes import custom_templates as custom_templates_router
+from app.api.routes import remediation as remediation_router
+from app.api.routes import exceptions as exceptions_router
+from app.api.routes import github_secrets as github_secrets_router
+from app.api.routes import agent_knowledge as agent_knowledge_router
+from app.api.routes import agent_confirmations as agent_confirmations_router
+from app.api.routes import agent_skills as agent_skills_router
+from app.api.routes import roe as roe_router
+from app.api.routes import delphi as delphi_router
+from app.api.routes import ingestion as ingestion_router
+from app.api.routes import graph as graph_router
+from app.api.routes import reports as reports_router
+from app.api.routes import pentest as pentest_router
+from app.api.routes import app_structure as app_structure_router
+from app.api.routes import mcp as mcp_router
+from app.api.routes import mitre as mitre_router
+from app.api.routes import llm_red_team as llm_red_team_router
 
 # Configure logging
 logging.basicConfig(
@@ -127,6 +143,22 @@ app.include_router(integrations.router, prefix=settings.API_PREFIX)
 app.include_router(scoring_router.router, prefix=settings.API_PREFIX)
 app.include_router(threat_intel_router.router, prefix=settings.API_PREFIX)
 app.include_router(custom_templates_router.router, prefix=settings.API_PREFIX)
+app.include_router(remediation_router.router, prefix=settings.API_PREFIX)
+app.include_router(exceptions_router.router, prefix=settings.API_PREFIX)
+app.include_router(github_secrets_router.router, prefix=settings.API_PREFIX)
+app.include_router(agent_knowledge_router.router, prefix=settings.API_PREFIX)
+app.include_router(agent_confirmations_router.router, prefix=settings.API_PREFIX)
+app.include_router(agent_skills_router.router, prefix=settings.API_PREFIX)
+app.include_router(roe_router.router, prefix=settings.API_PREFIX)
+app.include_router(delphi_router.router, prefix=settings.API_PREFIX)
+app.include_router(ingestion_router.router, prefix=settings.API_PREFIX)
+app.include_router(graph_router.router, prefix=settings.API_PREFIX)
+app.include_router(reports_router.router, prefix=settings.API_PREFIX)
+app.include_router(pentest_router.router, prefix=settings.API_PREFIX)
+app.include_router(app_structure_router.router, prefix=settings.API_PREFIX)
+app.include_router(mcp_router.router, prefix=settings.API_PREFIX)
+app.include_router(mitre_router.router, prefix=settings.API_PREFIX)
+app.include_router(llm_red_team_router.router, prefix=settings.API_PREFIX)
 
 
 # ── Scoring pipeline lifecycle ────────────────────────────────────────────────

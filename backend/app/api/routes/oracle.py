@@ -226,7 +226,7 @@ def oracle_enrich_one(
 
     Picks the strongest path automatically:
       • If the linked asset has an Oracle asset id → full /analyze
-      • Else → /cve/{id} Phase-A analysis
+      • Else → /cve/{{id}} Phase-A analysis
 
     The result is persisted to `Vulnerability.metadata_["oracle"]` and
     returned as a summary. Pass `force=true` to bypass the
