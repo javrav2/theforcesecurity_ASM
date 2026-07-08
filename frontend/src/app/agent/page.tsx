@@ -25,6 +25,7 @@ import {
   ShieldAlert, HelpCircle, XCircle, AlertTriangle, Flame,
   RefreshCw, BookOpen, Globe, BarChart2, Code2, ShieldCheck, Mail,
   ArrowRightLeft, Key, Package, MoveRight, Search, ChevronDown, ChevronUp,
+  Terminal, Brain, Zap, ShieldQuestion,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useRouter } from 'next/navigation';
@@ -672,7 +673,9 @@ export default function AgentPage() {
   const [mode, setMode] = useState<'assist' | 'agent'>('assist');
   const [urlPrefilled, setUrlPrefilled] = useState(false);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('connecting');
-  const [liveStatus, setLiveStatus] = useState<StatusUpdate | null>(null);
+  const [liveSteps, setLiveSteps] = useState<StatusUpdate[]>([]);
+  const [modifyInput, setModifyInput] = useState('');
+  const [showModifyInput, setShowModifyInput] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const wsAuthenticatedRef = useRef(false);
   const wsFailCountRef = useRef(0);
@@ -711,7 +714,7 @@ export default function AgentPage() {
   }, [searchParams]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  useEffect(() => { scrollToBottom(); }, [messages, liveStatus]);
+  useEffect(() => { scrollToBottom(); }, [messages, liveSteps]);
 
   // ── Agent status + playbooks + conversations ───────────────────
   useEffect(() => {
@@ -767,11 +770,11 @@ export default function AgentPage() {
     if (msgType === 'authenticated') {
       wsAuthenticatedRef.current = true; setConnectionMode('websocket');
     } else if (['thinking', 'tool_start', 'tool_complete'].includes(msgType)) {
-      setLiveStatus(data as unknown as StatusUpdate);
+      setLiveSteps(prev => [...prev, data as unknown as StatusUpdate]);
     } else if (msgType === 'attack_scenario_update') {
       if (data.chain) setChainData(data.chain as ChainData);
     } else if (msgType === 'response') {
-      setLiveStatus(null); setLoading(false);
+      setLiveSteps([]); setLoading(false);
       appendAgentMessage({
         answer: data.answer as string,
         current_phase: data.current_phase as string,
@@ -786,7 +789,7 @@ export default function AgentPage() {
       loadConversations();
       if (sid) api.getAgentSessionChain(sid, true).then(setChainData).catch(() => {});
     } else if (msgType === 'error') {
-      setLiveStatus(null); setLoading(false);
+      setLiveSteps([]); setLoading(false);
       const errMsg = (data.message as string) || 'Unknown error';
       toast({ variant: 'destructive', title: 'Agent error', description: errMsg });
       appendAgentMessage({ answer: `Error: ${errMsg}` });
@@ -811,7 +814,7 @@ export default function AgentPage() {
   useEffect(() => {
     if (loading) {
       loadingTimeoutRef.current = setTimeout(() => {
-        setLoading(false); setLiveStatus(null);
+        setLoading(false); setLiveSteps([]);
         toast({ variant: 'destructive', title: 'Timeout', description: 'No response from the agent after 3 minutes.' });
         appendAgentMessage({ answer: 'Error: No response received within 3 minutes. Please try again.' });
       }, 180_000);
@@ -856,7 +859,7 @@ export default function AgentPage() {
 
     setMessages((prev) => [...prev, { id: `user-${Date.now()}`, role: 'user', content: displayContent }]);
     if (!usePreset) setQuestion('');
-    setUrlPrefilled(false); setLoading(true); setLiveStatus(null);
+    setUrlPrefilled(false); setLoading(true); setLiveSteps([]);
 
     const sid = sessionId || crypto.randomUUID();
     if (!sessionId) setSessionId(sid);
@@ -897,7 +900,7 @@ export default function AgentPage() {
 
   const handleApprove = async (decision: 'approve' | 'modify' | 'abort', modification?: string) => {
     if (!sessionId || loading) return;
-    setLoading(true); setLiveStatus(null);
+    setLoading(true); setLiveSteps([]); setShowModifyInput(false); setModifyInput('');
     const sent = sendViaWs({ type: 'approval', decision, modification });
     if (!sent) {
       try {
@@ -938,7 +941,8 @@ export default function AgentPage() {
   };
 
   const startNewConversation = () => {
-    setMessages([]); setPendingAnswer(false); setLiveStatus(null); setShowHistory(false); setChainData(null);
+    setMessages([]); setPendingAnswer(false); setLiveSteps([]); setShowHistory(false); setChainData(null);
+    setShowModifyInput(false); setModifyInput('');
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     wsAuthenticatedRef.current = false; wsFailCountRef.current = 0;
     setSessionId(crypto.randomUUID()); setConnectionMode('connecting');
@@ -986,36 +990,140 @@ export default function AgentPage() {
     }
   };
 
-  const renderLiveStatus = () => {
-    if (!liveStatus) return null;
-    const { type, iteration, phase, thought, tool_name, success, output_summary } = liveStatus;
-    if (type === 'thinking') return (
-      <div className="flex items-start gap-2 text-muted-foreground text-sm animate-pulse">
-        <Loader2 className="h-4 w-4 animate-spin mt-0.5 shrink-0" />
-        <div>
-          <span className="font-medium">Step {iteration}</span>
-          {phase && <Badge variant="outline" className="ml-2 text-xs">{phase}</Badge>}
-          {thought && <p className="text-xs mt-0.5 opacity-80">{thought}</p>}
+  // Neo-style live step timeline — accumulates all agent steps as they stream in
+  const renderLiveSteps = () => {
+    if (!loading && liveSteps.length === 0) return null;
+
+    const toolStepCount = liveSteps.filter(s => s.type === 'tool_start').length;
+    const completedCount = liveSteps.filter(s => s.type === 'tool_complete' && s.success).length;
+    const latestStep = liveSteps[liveSteps.length - 1];
+
+    return (
+      <div className="rounded-lg border border-primary/20 bg-primary/5 overflow-hidden">
+        {/* Header bar */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-primary/20 bg-primary/10">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+          <span className="text-xs font-semibold text-primary">Agent working</span>
+          {liveSteps.length > 0 && (
+            <div className="ml-auto flex items-center gap-3 text-[10px] text-muted-foreground">
+              {toolStepCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <Terminal className="h-3 w-3" /> {completedCount}/{toolStepCount} tools
+                </span>
+              )}
+              <span>{liveSteps.filter(s => s.type === 'thinking').length} thoughts</span>
+            </div>
+          )}
         </div>
-      </div>
-    );
-    if (type === 'tool_start') return (
-      <div className="flex items-start gap-2 text-muted-foreground text-sm">
-        <Loader2 className="h-4 w-4 animate-spin mt-0.5 shrink-0" />
-        <div><span className="font-medium">Running tool:</span>{' '}<code className="bg-muted px-1 rounded text-xs">{tool_name}</code></div>
-      </div>
-    );
-    if (type === 'tool_complete') return (
-      <div className="flex items-start gap-2 text-muted-foreground text-sm">
-        {success ? <CheckCircle className="h-4 w-4 text-green-500 mt-0.5 shrink-0" /> : <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />}
-        <div>
-          <code className="bg-muted px-1 rounded text-xs">{tool_name}</code>{' '}
-          <span className="text-xs">{success ? 'completed' : 'failed'}</span>
-          {output_summary && <p className="text-xs mt-0.5 opacity-70">{output_summary}</p>}
+
+        {/* Step feed */}
+        <div className="max-h-[220px] overflow-y-auto">
+          {liveSteps.length === 0 && (
+            <div className="flex items-center gap-2 px-3 py-2.5 text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              <span className="text-xs">Initialising…</span>
+            </div>
+          )}
+          {liveSteps.map((step, i) => {
+            const isLatest = i === liveSteps.length - 1;
+            const isPast = !isLatest;
+            return (
+              <div
+                key={i}
+                className={cn(
+                  'flex items-start gap-2.5 px-3 py-2 border-b border-border/40 last:border-b-0',
+                  isLatest ? 'bg-muted/50' : 'opacity-50'
+                )}
+              >
+                {/* Step icon */}
+                <div className="mt-0.5 shrink-0">
+                  {step.type === 'thinking' && (
+                    isLatest
+                      ? <Brain className="h-3.5 w-3.5 text-blue-400 animate-pulse" />
+                      : <Brain className="h-3.5 w-3.5 text-blue-400/60" />
+                  )}
+                  {step.type === 'tool_start' && (
+                    isLatest
+                      ? <Terminal className="h-3.5 w-3.5 text-violet-400 animate-pulse" />
+                      : <Terminal className="h-3.5 w-3.5 text-violet-400/60" />
+                  )}
+                  {step.type === 'tool_complete' && (
+                    step.success
+                      ? <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                      : <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+                  )}
+                </div>
+
+                {/* Step content */}
+                <div className="flex-1 min-w-0">
+                  {step.type === 'thinking' && (
+                    <>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[11px] font-semibold text-foreground/80">
+                          {step.iteration != null ? `Step ${step.iteration}` : 'Thinking'}
+                        </span>
+                        {step.phase && (
+                          <Badge variant="outline" className="text-[9px] h-4 px-1.5" style={{ borderColor: '#6366f1', color: '#6366f1' }}>
+                            {step.phase.replace(/_/g, ' ')}
+                          </Badge>
+                        )}
+                      </div>
+                      {step.thought && (
+                        <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
+                          {step.thought}
+                        </p>
+                      )}
+                    </>
+                  )}
+                  {step.type === 'tool_start' && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] text-foreground/70">Running</span>
+                      <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded font-mono text-violet-300">
+                        {step.tool_name}
+                      </code>
+                    </div>
+                  )}
+                  {step.type === 'tool_complete' && (
+                    <>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <code className="text-[10px] bg-muted px-1.5 py-0.5 rounded font-mono text-foreground/80">
+                          {step.tool_name}
+                        </code>
+                        <span className={cn('text-[11px]', step.success ? 'text-green-400' : 'text-red-400')}>
+                          {step.success ? 'completed' : 'failed'}
+                        </span>
+                      </div>
+                      {step.output_summary && (
+                        <p className="text-[10px] text-muted-foreground mt-0.5 line-clamp-1">
+                          {step.output_summary}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
+
+        {/* Latest step highlight at bottom if loading */}
+        {loading && latestStep && (
+          <div className="px-3 py-1.5 bg-muted/30 border-t border-primary/20 flex items-center gap-1.5">
+            <Zap className="h-3 w-3 text-primary shrink-0" />
+            <span className="text-[10px] text-muted-foreground truncate">
+              {latestStep.type === 'thinking' && latestStep.thought
+                ? latestStep.thought
+                : latestStep.type === 'tool_start'
+                ? `Running ${latestStep.tool_name}…`
+                : latestStep.type === 'tool_complete'
+                ? `${latestStep.tool_name} ${latestStep.success ? 'done' : 'failed'}`
+                : 'Working…'
+              }
+            </span>
+          </div>
+        )}
       </div>
     );
-    return null;
   };
 
   // ── Render ────────────────────────────────────────────────────
@@ -1168,24 +1276,75 @@ export default function AgentPage() {
                               </details>
                             )}
                           </div>
-                          {m.role === 'agent' && m.awaitingApproval && m.approvalRequest && (
-                            <div className="flex flex-wrap gap-2 mt-1">
-                              <Button size="sm" onClick={() => handleApprove('approve')} disabled={loading}>Approve</Button>
-                              <Button size="sm" variant="outline" onClick={() => handleApprove('abort')} disabled={loading}>Abort</Button>
-                            </div>
-                          )}
                           {m.role === 'agent' && m.awaitingQuestion && m.questionRequest && (
                             <p className="text-xs text-muted-foreground mt-1">Type your answer below and press Send.</p>
                           )}
                         </div>
                       ))}
-                      {loading && renderLiveStatus()}
-                      {loading && !liveStatus && (
-                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Agent is thinking and may run tools…
-                        </div>
-                      )}
+                      {/* Approval gate — shown when agent is paused waiting for human sign-off */}
+                      {messages.some(m => m.awaitingApproval && m.approvalRequest) && !loading && (() => {
+                        const approvalMsg = [...messages].reverse().find(m => m.awaitingApproval && m.approvalRequest);
+                        if (!approvalMsg) return null;
+                        const req = approvalMsg.approvalRequest!;
+                        return (
+                          <div className="rounded-lg border border-amber-500/50 bg-amber-500/8 p-4 space-y-3">
+                            <div className="flex items-center gap-2">
+                              <ShieldQuestion className="h-5 w-5 text-amber-400 shrink-0" />
+                              <div>
+                                <p className="text-sm font-semibold text-amber-300">Agent awaiting your approval</p>
+                                <p className="text-xs text-muted-foreground">Review the proposed action before the agent continues.</p>
+                              </div>
+                            </div>
+                            {req.action && (
+                              <div className="rounded-md bg-muted/40 border border-border px-3 py-2">
+                                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-0.5">Proposed action</p>
+                                <p className="text-sm text-foreground/90">{String(req.action)}</p>
+                              </div>
+                            )}
+                            {req.description && (
+                              <p className="text-xs text-muted-foreground pl-1">{String(req.description)}</p>
+                            )}
+                            {showModifyInput && (
+                              <div className="space-y-1.5">
+                                <p className="text-xs text-muted-foreground">Describe what you&apos;d like changed:</p>
+                                <div className="flex gap-2">
+                                  <input
+                                    className="flex-1 rounded-md border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                    placeholder="e.g. Only scan ports 80 and 443"
+                                    value={modifyInput}
+                                    onChange={e => setModifyInput(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') handleApprove('modify', modifyInput); }}
+                                    autoFocus
+                                  />
+                                  <Button size="sm" onClick={() => handleApprove('modify', modifyInput)} disabled={!modifyInput.trim() || loading}
+                                    className="h-8 shrink-0">
+                                    Submit
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex gap-2 flex-wrap">
+                              <Button size="sm" onClick={() => handleApprove('approve')} disabled={loading}
+                                className="h-8 gap-1.5 bg-green-600 hover:bg-green-700 text-white border-0">
+                                <CheckCircle className="h-3.5 w-3.5" /> Approve &amp; continue
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => { setShowModifyInput(!showModifyInput); setModifyInput(''); }}
+                                disabled={loading}
+                                className="h-8 gap-1.5 border-amber-500/40 text-amber-400 hover:bg-amber-500/10">
+                                Modify
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => handleApprove('abort')} disabled={loading}
+                                className="h-8 gap-1.5 border-red-500/40 text-red-400 hover:bg-red-500/10 ml-auto">
+                                <XCircle className="h-3.5 w-3.5" /> Abort
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Live step timeline */}
+                      {renderLiveSteps()}
+
                       <div ref={messagesEndRef} />
                     </div>
 
