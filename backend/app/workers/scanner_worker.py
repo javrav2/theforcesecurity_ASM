@@ -4094,12 +4094,13 @@ class ScannerWorker:
             )
 
             # ----------------------------------------------------------------
-            # Run the live CDX service for each target domain
+            # Build service + shared config
             # ----------------------------------------------------------------
             years = config.get('years', 'last1')
             max_per_year = int(config.get('max_per_year', 1))
             timeout = float(config.get('timeout', 120.0))
             max_results = int(config.get('max_results_per_release', 100_000))
+            use_keyword_search = bool(config.get('use_keyword_search', True))
 
             service = CommonCrawlLiveService(
                 years=years,
@@ -4108,68 +4109,159 @@ class ScannerWorker:
                 max_results_per_release=max_results,
             )
 
-            total_subdomains: set[str] = set()
             releases_used: list[str] = []
 
-            for domain in targets[:10]:  # cap to 10 root domains per scan
+            # ----------------------------------------------------------------
+            # MODE 1 — Subdomain enumeration (*.domain per known root domain)
+            # ----------------------------------------------------------------
+            if scan:
+                scan.current_step = "Mode 1: CommonCrawl subdomain enumeration"
+                db.commit()
+
+            total_subdomains: set[str] = set()
+
+            for domain in targets[:20]:  # cap to 20 root domains per scan
                 domain = domain.strip().lower()
                 if not domain:
                     continue
                 if scan:
-                    scan.current_step = f"Querying CommonCrawl for {domain}"
+                    scan.current_step = f"CC subdomain enum: {domain}"
                     db.commit()
 
-                result = await service.search_domain(domain)
-
-                if result.error:
-                    logger.warning(
-                        f"CommonCrawl enum error for {domain}: {result.error}"
-                    )
+                sub_result = await service.search_domain(domain)
+                if sub_result.error:
+                    logger.warning(f"CC subdomain error for {domain}: {sub_result.error}")
                     continue
-
-                total_subdomains.update(result.subdomains)
-                for r in result.releases_queried:
+                total_subdomains.update(sub_result.subdomains)
+                for r in sub_result.releases_queried:
                     if r not in releases_used:
                         releases_used.append(r)
 
             # ----------------------------------------------------------------
-            # Persist discovered subdomains as Asset records
+            # MODE 2 — Brand / keyword discovery
+            #
+            # Sources (in order):
+            #   1. org.commoncrawl_org_name  (e.g. "Rockwell Automation")
+            #   2. org.commoncrawl_keywords  (e.g. ["factorytalk", "ab.com"])
+            #
+            # Strips spaces and lowercases before querying.  Hostnames whose
+            # root domain is already in the org's inventory are counted as
+            # subdomains; entirely new roots are flagged for review.
             # ----------------------------------------------------------------
-            created = 0
-            for subdomain in sorted(total_subdomains):
-                subdomain = subdomain.strip().lower()
-                if not subdomain or not self._is_valid_domain(subdomain):
-                    continue
+            keyword_hostnames: set[str] = set()
+            keywords_used: list[str] = []
 
-                existing = db.query(Asset).filter(
-                    Asset.organization_id == organization_id,
-                    Asset.value == subdomain,
+            if use_keyword_search:
+                if scan:
+                    scan.current_step = "Mode 2: CommonCrawl brand keyword sweep"
+                    db.commit()
+
+                org = db.query(Organization).filter(
+                    Organization.id == organization_id
                 ).first()
-                if existing:
-                    continue
 
-                root = self._extract_root_domain(subdomain)
+                raw_keywords: list[str] = []
+                if org:
+                    if org.commoncrawl_org_name:
+                        raw_keywords.append(org.commoncrawl_org_name)
+                    if org.commoncrawl_keywords:
+                        raw_keywords.extend(org.commoncrawl_keywords)
+
+                # Normalise: strip spaces, lowercase, deduplicate, drop blanks
+                seen_kw: set[str] = set()
+                keywords_norm: list[str] = []
+                for kw in raw_keywords:
+                    kw_norm = kw.strip().lower().replace(" ", "")
+                    if kw_norm and kw_norm not in seen_kw:
+                        seen_kw.add(kw_norm)
+                        keywords_norm.append(kw_norm)
+                        keywords_used.append(kw.strip())
+
+                if keywords_norm:
+                    logger.info(
+                        f"CC keyword sweep for org {organization_id}: {keywords_norm}"
+                    )
+                    kw_result = await service.search_keywords(
+                        keywords=keywords_norm,
+                        known_root_domains=targets,
+                    )
+                    if kw_result.error:
+                        logger.warning(f"CC keyword sweep error: {kw_result.error}")
+                    else:
+                        keyword_hostnames.update(kw_result.hostnames)
+                        for r in kw_result.releases_queried:
+                            if r not in releases_used:
+                                releases_used.append(r)
+                        logger.info(
+                            f"CC keyword sweep: {len(keyword_hostnames)} hostnames "
+                            f"from {len(keywords_norm)} keyword(s)"
+                        )
+                else:
+                    logger.info(
+                        f"CC keyword sweep skipped: no commoncrawl_org_name or "
+                        f"commoncrawl_keywords set for org {organization_id}"
+                    )
+
+            # ----------------------------------------------------------------
+            # Persist discovered assets
+            # ----------------------------------------------------------------
+            if scan:
+                scan.current_step = "Persisting CommonCrawl discoveries"
+                db.commit()
+
+            # Build a set of known root domains for classification
+            known_roots: set[str] = {t.strip().lower() for t in targets if t.strip()}
+
+            def _persist_hostname(hostname: str, source_tag: str) -> bool:
+                """Upsert a discovered hostname as an Asset. Returns True if created."""
+                hostname = hostname.strip().lower()
+                if not hostname or not self._is_valid_domain(hostname):
+                    return False
+                if db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.value == hostname,
+                ).first():
+                    return False
+
+                root = self._extract_root_domain(hostname)
                 parent = None
-                if root and root != subdomain:
+                if root and root != hostname:
                     parent = db.query(Asset).filter(
                         Asset.organization_id == organization_id,
                         Asset.value == root,
                     ).first()
 
-                asset_type = (
-                    AssetType.SUBDOMAIN if (root and root != subdomain) else AssetType.DOMAIN
-                )
-                new_asset = Asset(
+                if root and root != hostname:
+                    asset_type = AssetType.SUBDOMAIN
+                else:
+                    asset_type = AssetType.DOMAIN
+
+                db.add(Asset(
                     organization_id=organization_id,
-                    name=subdomain,
-                    value=subdomain,
+                    name=hostname,
+                    value=hostname,
                     asset_type=asset_type,
-                    root_domain=root or subdomain,
+                    root_domain=root or hostname,
                     parent_id=parent.id if parent else None,
-                    discovery_source='commoncrawl',
-                )
-                db.add(new_asset)
-                created += 1
+                    discovery_source=source_tag,
+                ))
+                return True
+
+            created = 0
+            for hostname in sorted(total_subdomains):
+                if _persist_hostname(hostname, 'commoncrawl'):
+                    created += 1
+
+            # Keyword hits: subdomains of known roots → 'commoncrawl'
+            #               unknown roots              → 'commoncrawl-keyword'
+            kw_created = 0
+            for hostname in sorted(keyword_hostnames):
+                if hostname in total_subdomains:
+                    continue  # already persisted above
+                root = self._extract_root_domain(hostname)
+                tag = 'commoncrawl' if (root in known_roots) else 'commoncrawl-keyword'
+                if _persist_hostname(hostname, tag):
+                    kw_created += 1
 
             db.commit()
 
@@ -4177,20 +4269,24 @@ class ScannerWorker:
                 scan.status = ScanStatus.COMPLETED
                 scan.completed_at = datetime.utcnow()
                 scan.current_step = None
-                scan.assets_discovered = created
+                scan.assets_discovered = created + kw_created
                 scan.results = {
                     'targets': targets,
                     'releases_queried': releases_used,
-                    'subdomains_found': len(total_subdomains),
-                    'assets_created': created,
+                    'mode1_subdomains_found': len(total_subdomains),
+                    'mode1_assets_created': created,
+                    'mode2_keyword_hostnames_found': len(keyword_hostnames),
+                    'mode2_assets_created': kw_created,
+                    'keywords_used': keywords_used,
                     'years': years,
                     'max_per_year': max_per_year,
                 }
                 db.commit()
 
             logger.info(
-                f"CommonCrawl enum complete: {len(total_subdomains)} subdomains, "
-                f"{created} new assets across {len(targets)} domain(s)"
+                f"CommonCrawl enum complete — "
+                f"Mode 1: {len(total_subdomains)} subdomains ({created} new) | "
+                f"Mode 2: {len(keyword_hostnames)} keyword hits ({kw_created} new)"
             )
             trigger_graph_sync(organization_id)
 

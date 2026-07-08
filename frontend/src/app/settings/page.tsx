@@ -156,6 +156,7 @@ export default function SettingsPage() {
   const [ccYears, setCcYears] = useState('last1');
   const [ccMaxPerYear, setCcMaxPerYear] = useState('1');
   const [ccTimeout, setCcTimeout] = useState('120');
+  const [ccKeywordSearch, setCcKeywordSearch] = useState(true);
   const [ccSettingsLoaded, setCcSettingsLoaded] = useState(false);
   
   const { toast } = useToast();
@@ -260,6 +261,7 @@ export default function SettingsPage() {
       setCcYears(data.years ?? 'last1');
       setCcMaxPerYear(String(data.max_per_year ?? 1));
       setCcTimeout(String(data.timeout ?? 120));
+      setCcKeywordSearch(data.use_keyword_search ?? true);
       setCcSettingsLoaded(true);
     } catch {
       setCcSettingsLoaded(true);
@@ -275,6 +277,7 @@ export default function SettingsPage() {
         years: ccYears,
         max_per_year: parseInt(ccMaxPerYear),
         timeout: parseInt(ccTimeout),
+        use_keyword_search: ccKeywordSearch,
       });
       toast({ title: 'Saved', description: 'CommonCrawl settings updated' });
     } catch (error: any) {
@@ -790,6 +793,40 @@ export default function SettingsPage() {
                       onChange={(e) => setCcTimeout(e.target.value)}
                     />
                   </div>
+
+                  {/* Brand / keyword discovery toggle */}
+                  <div className="flex items-start justify-between gap-4 pt-2 border-t">
+                    <div className="space-y-1">
+                      <p className="font-medium text-sm">Brand keyword discovery</p>
+                      <p className="text-xs text-muted-foreground">
+                        Also search CommonCrawl for hostnames containing your brand or product names
+                        (e.g. "rockwellautomation", "factorytalk", "allen-bradley"). Surfaces unknown
+                        domains — partner portals, shadow IT, acquired-brand sites — that subdomains
+                        alone won't find. Keywords are pulled from{' '}
+                        <span className="text-foreground font-medium">Discovery Settings</span>{' '}
+                        (CommonCrawl Org Name + Keywords fields).
+                      </p>
+                    </div>
+                    <Switch
+                      checked={ccKeywordSearch}
+                      onCheckedChange={setCcKeywordSearch}
+                      className="mt-0.5 shrink-0"
+                    />
+                  </div>
+
+                  {ccKeywordSearch && (
+                    <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-start gap-3 text-xs">
+                      <Globe className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
+                      <p className="text-muted-foreground">
+                        Set your brand keywords in{' '}
+                        <a href="/discovery" className="text-amber-400 hover:underline font-medium">
+                          Discovery → Advanced Options
+                        </a>{' '}
+                        under "CommonCrawl Org Name" and "CommonCrawl Keywords". Without keywords
+                        configured, only Mode 1 subdomain enumeration will run.
+                      </p>
+                    </div>
+                  )}
 
                   {/* Coverage summary badge */}
                   <div className="p-3 rounded-lg bg-muted/50 flex items-start gap-3">

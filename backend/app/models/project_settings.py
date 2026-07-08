@@ -332,7 +332,10 @@ def default_rules_of_engagement_config():
 
 def default_commoncrawl_config():
     """
-    CommonCrawl CDX subdomain enumeration settings.
+    CommonCrawl CDX subdomain enumeration + brand keyword discovery settings.
+
+    Mode 1 — Subdomain enumeration (*.domain queries on known root domains)
+    Mode 2 — Brand keyword sweep (*keyword* queries to find unknown domains)
 
     years options:
       "last1"      – last 1 calendar year (default, fastest)
@@ -345,16 +348,18 @@ def default_commoncrawl_config():
     """
     return {
         "enabled": True,
-        # How many calendar years of crawl data to query on org creation.
-        # Increase for broader historical coverage at the cost of scan time.
+        # How many calendar years of crawl data to query.
         "years": "last1",
         # Datasets queried per year. 1 is the most recent snapshot (fastest).
-        # Higher values add coverage but proportionally increase runtime.
         "max_per_year": 1,
         # Seconds to wait for a single CDX API response before giving up.
         "timeout": 120,
         # Upper bound on URLs fetched per release per domain.
         "max_results_per_release": 100000,
+        # Mode 2: also sweep CC for hostnames containing brand/product keywords.
+        # Keywords are sourced from org.commoncrawl_org_name and
+        # org.commoncrawl_keywords (set via Discovery Settings).
+        "use_keyword_search": True,
     }
 
 
