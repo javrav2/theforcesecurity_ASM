@@ -4213,14 +4213,35 @@ class ScannerWorker:
             known_roots: set[str] = {t.strip().lower() for t in targets if t.strip()}
 
             def _persist_hostname(hostname: str, source_tag: str) -> bool:
-                """Upsert a discovered hostname as an Asset. Returns True if created."""
+                """
+                Insert a newly discovered hostname as an Asset if it is not
+                already in the inventory.
+
+                Rules:
+                  - Asset already exists + in_scope=False → skip silently.
+                    CommonCrawl never re-enables out-of-scope assets.
+                  - Asset already exists + in_scope=True  → skip (already known).
+                  - Asset does not exist → create it.  in_scope is intentionally
+                    NOT set here so the model default (True) applies; we do not
+                    override any value an analyst may have set previously.
+
+                Returns True only when a new asset row is inserted.
+                """
                 hostname = hostname.strip().lower()
                 if not hostname or not self._is_valid_domain(hostname):
                     return False
-                if db.query(Asset).filter(
+
+                existing = db.query(Asset).filter(
                     Asset.organization_id == organization_id,
                     Asset.value == hostname,
-                ).first():
+                ).first()
+
+                if existing is not None:
+                    if not existing.in_scope:
+                        logger.debug(
+                            f"CC discovery: skipping '{hostname}' — "
+                            f"already in inventory and marked out of scope"
+                        )
                     return False
 
                 root = self._extract_root_domain(hostname)
@@ -4231,10 +4252,7 @@ class ScannerWorker:
                         Asset.value == root,
                     ).first()
 
-                if root and root != hostname:
-                    asset_type = AssetType.SUBDOMAIN
-                else:
-                    asset_type = AssetType.DOMAIN
+                asset_type = AssetType.SUBDOMAIN if (root and root != hostname) else AssetType.DOMAIN
 
                 db.add(Asset(
                     organization_id=organization_id,
@@ -4244,6 +4262,8 @@ class ScannerWorker:
                     root_domain=root or hostname,
                     parent_id=parent.id if parent else None,
                     discovery_source=source_tag,
+                    # in_scope is deliberately omitted — the column default (True)
+                    # applies to genuinely new assets; we never touch existing rows.
                 ))
                 return True
 
