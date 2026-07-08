@@ -307,6 +307,7 @@ class ScheduleWorker:
             "waybackurls": ScanType.WAYBACKURLS,
             "katana": ScanType.KATANA,
             "tldfinder": ScanType.TLDFINDER,
+            "commoncrawl_enum": ScanType.COMMONCRAWL_ENUM,
             "cleanup": ScanType.CLEANUP,
         }
         
@@ -356,18 +357,115 @@ class ScheduleWorker:
         else:
             logger.info(f"Created scan {scan.id} for schedule {schedule.name}, {len(targets)} targets (database polling)")
     
+    async def run_daily_commoncrawl_refresh(self):
+        """
+        Queue a CommonCrawl subdomain enumeration scan for every active organization
+        that has the commoncrawl module enabled and whose primary domain is set.
+
+        Runs once per day from the main loop. Skips orgs that already have a
+        CommonCrawl scan queued or running, and respects each org's saved
+        ProjectSettings (years, max_per_year, timeout).
+        """
+        from app.models.organization import Organization
+        from app.models.project_settings import ProjectSettings, MODULE_COMMONCRAWL
+
+        db = self.get_db_session()
+        if not db:
+            return
+
+        try:
+            orgs = db.query(Organization).filter(Organization.is_active == True).all()
+            queued = 0
+
+            for org in orgs:
+                if not org.domain or not org.domain.strip():
+                    continue
+
+                # Read per-org CommonCrawl settings
+                cc_cfg = ProjectSettings.get_config(db, org.id, MODULE_COMMONCRAWL)
+                if not cc_cfg.get("enabled", True):
+                    logger.debug(f"CommonCrawl disabled for org {org.id} ({org.name}), skipping")
+                    continue
+
+                # Skip if a CC scan is already queued or running for this org
+                active = db.query(Scan).filter(
+                    Scan.organization_id == org.id,
+                    Scan.scan_type == ScanType.COMMONCRAWL_ENUM,
+                    Scan.status.in_([ScanStatus.PENDING, ScanStatus.RUNNING]),
+                ).first()
+                if active:
+                    logger.debug(
+                        f"CommonCrawl scan already active for org {org.id} ({org.name}), skipping"
+                    )
+                    continue
+
+                domain = org.domain.strip().lower()
+                scan = Scan(
+                    name=f"[Daily] CommonCrawl subdomain refresh: {domain}",
+                    scan_type=ScanType.COMMONCRAWL_ENUM,
+                    organization_id=org.id,
+                    targets=[domain],
+                    config={
+                        "years": cc_cfg.get("years", "last1"),
+                        "max_per_year": cc_cfg.get("max_per_year", 1),
+                        "timeout": cc_cfg.get("timeout", 120),
+                        "max_results_per_release": cc_cfg.get("max_results_per_release", 100_000),
+                        "triggered_by": "daily_scheduler",
+                    },
+                    started_by="scheduler",
+                    status=ScanStatus.PENDING,
+                )
+                db.add(scan)
+                db.flush()
+                db.refresh(scan)
+
+                if send_scan_to_sqs(scan):
+                    logger.info(
+                        f"Queued daily CommonCrawl scan {scan.id} for org {org.id} ({org.name})"
+                    )
+                else:
+                    logger.info(
+                        f"Queued daily CommonCrawl scan {scan.id} for org {org.id} ({org.name}) "
+                        f"(database polling)"
+                    )
+                queued += 1
+
+            db.commit()
+            logger.info(f"Daily CommonCrawl refresh complete: {queued}/{len(orgs)} org(s) queued")
+
+        except Exception as exc:
+            logger.error(f"Daily CommonCrawl refresh failed: {exc}", exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        finally:
+            db.close()
+
     async def run(self):
         """Main worker loop."""
         logger.info("Starting schedule worker...")
-        
+
+        # Track when we last ran the daily CommonCrawl refresh so we fire it
+        # once every 24 hours regardless of how often the loop ticks.
+        last_daily_cc_run: Optional[datetime] = None
+
         while not shutdown_requested:
             try:
                 await self.check_and_run_schedules()
+
+                # Daily CommonCrawl refresh — fire once per 24-hour window
+                now = datetime.now(timezone.utc)
+                if last_daily_cc_run is None or (now - last_daily_cc_run) >= timedelta(hours=24):
+                    logger.info("Running daily CommonCrawl subdomain refresh…")
+                    await self.run_daily_commoncrawl_refresh()
+                    last_daily_cc_run = now
+
                 await asyncio.sleep(CHECK_INTERVAL)
             except Exception as e:
                 logger.error(f"Error in schedule worker loop: {e}")
                 await asyncio.sleep(CHECK_INTERVAL)
-        
+
         logger.info("Schedule worker shutting down...")
 
 

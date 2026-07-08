@@ -34,6 +34,7 @@ import {
   Flame,
   TrendingUp,
   RefreshCw,
+  Search,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
@@ -149,6 +150,13 @@ export default function SettingsPage() {
   // Registration emails for Whoxy
   const [regEmails, setRegEmails] = useState<string[]>([]);
   const [newRegEmail, setNewRegEmail] = useState('');
+
+  // CommonCrawl enumeration settings
+  const [ccEnabled, setCcEnabled] = useState(true);
+  const [ccYears, setCcYears] = useState('last1');
+  const [ccMaxPerYear, setCcMaxPerYear] = useState('1');
+  const [ccTimeout, setCcTimeout] = useState('120');
+  const [ccSettingsLoaded, setCcSettingsLoaded] = useState(false);
   
   const { toast } = useToast();
 
@@ -245,13 +253,50 @@ export default function SettingsPage() {
     }
   };
 
+  const fetchCcSettings = async (orgId: number) => {
+    try {
+      const data = await api.getProjectSettings(orgId, 'commoncrawl');
+      setCcEnabled(data.enabled ?? true);
+      setCcYears(data.years ?? 'last1');
+      setCcMaxPerYear(String(data.max_per_year ?? 1));
+      setCcTimeout(String(data.timeout ?? 120));
+      setCcSettingsLoaded(true);
+    } catch {
+      setCcSettingsLoaded(true);
+    }
+  };
+
+  const handleSaveCcSettings = async () => {
+    if (!selectedOrg) return;
+    setSaving('commoncrawl');
+    try {
+      await api.updateProjectSettingsModule(parseInt(selectedOrg), 'commoncrawl', {
+        enabled: ccEnabled,
+        years: ccYears,
+        max_per_year: parseInt(ccMaxPerYear),
+        timeout: parseInt(ccTimeout),
+      });
+      toast({ title: 'Saved', description: 'CommonCrawl settings updated' });
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error?.response?.data?.detail || 'Failed to save CommonCrawl settings',
+        variant: 'destructive',
+      });
+    } finally {
+      setSaving(null);
+    }
+  };
+
   useEffect(() => {
     if (selectedOrg) {
       // Clear current state and fetch new config
       // The reset happens in fetchApiConfigs after data loads
       setApiKeys({});
       setApiUsers({});
+      setCcSettingsLoaded(false);
       fetchApiConfigs(parseInt(selectedOrg));
+      fetchCcSettings(parseInt(selectedOrg));
     }
   }, [selectedOrg]);
 
@@ -653,6 +698,148 @@ export default function SettingsPage() {
                 <p className="text-xs text-muted-foreground">Federated domain discovery</p>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* CommonCrawl Enumeration Settings */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Search className="h-5 w-5" />
+              CommonCrawl Subdomain Enumeration
+            </CardTitle>
+            <CardDescription>
+              Controls how far back into CommonCrawl's petabyte-scale web archive we search for
+              historically observed subdomains when an organization is created or a scan is triggered.
+              Wider ranges yield more coverage but take longer to complete.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {!ccSettingsLoaded ? (
+              <div className="flex items-center gap-2 text-muted-foreground text-sm py-4">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading settings…
+              </div>
+            ) : (
+              <>
+                {/* Enable / disable */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium">Enable CommonCrawl enumeration</p>
+                    <p className="text-sm text-muted-foreground">
+                      Automatically query the CommonCrawl CDX API when an organization is seeded
+                    </p>
+                  </div>
+                  <Switch checked={ccEnabled} onCheckedChange={setCcEnabled} />
+                </div>
+
+                <div className={`space-y-5 ${!ccEnabled ? 'opacity-40 pointer-events-none' : ''}`}>
+                  {/* Year range */}
+                  <div className="space-y-2">
+                    <Label>Year range</Label>
+                    <p className="text-xs text-muted-foreground">
+                      How many years of crawl data to query. "Last 1 year" is the default — fast and
+                      covers recent infrastructure. Extend for acquisitions or older assets.
+                    </p>
+                    <Select value={ccYears} onValueChange={setCcYears}>
+                      <SelectTrigger className="w-64">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="last1">Last 1 year (default — fastest)</SelectItem>
+                        <SelectItem value="last2">Last 2 years</SelectItem>
+                        <SelectItem value="last3">Last 3 years</SelectItem>
+                        <SelectItem value="last5">Last 5 years</SelectItem>
+                        <SelectItem value="all">All available years (slowest, most complete)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Datasets per year */}
+                  <div className="space-y-2">
+                    <Label>Datasets per year</Label>
+                    <p className="text-xs text-muted-foreground">
+                      CommonCrawl publishes multiple crawl snapshots per year. 1 uses only the most
+                      recent snapshot for each year (recommended). Higher values add breadth at the
+                      cost of longer scan times.
+                    </p>
+                    <Select value={ccMaxPerYear} onValueChange={setCcMaxPerYear}>
+                      <SelectTrigger className="w-64">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 dataset / year (recommended)</SelectItem>
+                        <SelectItem value="2">2 datasets / year</SelectItem>
+                        <SelectItem value="3">3 datasets / year</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Timeout */}
+                  <div className="space-y-2">
+                    <Label>Request timeout (seconds)</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Maximum wait time for each CDX API response. Increase if scans fail on slow
+                      connections or large domains.
+                    </p>
+                    <Input
+                      type="number"
+                      min={30}
+                      max={600}
+                      className="w-32"
+                      value={ccTimeout}
+                      onChange={(e) => setCcTimeout(e.target.value)}
+                    />
+                  </div>
+
+                  {/* Coverage summary badge */}
+                  <div className="p-3 rounded-lg bg-muted/50 flex items-start gap-3">
+                    <Globe className="h-4 w-4 text-cyan-400 mt-0.5 shrink-0" />
+                    <div className="text-xs text-muted-foreground space-y-0.5">
+                      <p className="font-medium text-foreground">Current coverage estimate</p>
+                      <p>
+                        Querying{' '}
+                        <span className="text-foreground font-medium">
+                          {ccYears === 'all'
+                            ? 'all available years'
+                            : ccYears.startsWith('last')
+                            ? `the last ${ccYears.replace('last', '')} year${parseInt(ccYears.replace('last', '')) > 1 ? 's' : ''}`
+                            : ccYears}
+                        </span>{' '}
+                        × {ccMaxPerYear} dataset{parseInt(ccMaxPerYear) > 1 ? 's' : ''} per year ={' '}
+                        <span className="text-foreground font-medium">
+                          {ccYears === 'all'
+                            ? `up to ~${parseInt(ccMaxPerYear) * 18}+ CDX requests`
+                            : `up to ${parseInt(ccYears.replace('last', '') || '1') * parseInt(ccMaxPerYear)} CDX request${
+                                parseInt(ccYears.replace('last', '') || '1') * parseInt(ccMaxPerYear) > 1 ? 's' : ''
+                              }`}
+                        </span>{' '}
+                        per domain at scan time.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t">
+                  <Button onClick={handleSaveCcSettings} disabled={saving === 'commoncrawl'}>
+                    {saving === 'commoncrawl' ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Saving…
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="h-4 w-4 mr-2" />
+                        Save CommonCrawl Settings
+                      </>
+                    )}
+                  </Button>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    These settings take effect the next time a CommonCrawl enumeration scan is queued
+                    for this organization.
+                  </p>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 

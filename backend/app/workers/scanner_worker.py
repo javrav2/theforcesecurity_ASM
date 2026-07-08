@@ -289,6 +289,7 @@ class ScannerWorker:
                 ScanType.WHATWEB: 'WHATWEB_SCAN',
                 ScanType.GEO_ENRICH: 'GEO_ENRICH',
                 ScanType.TLDFINDER: 'TLDFINDER',
+                ScanType.COMMONCRAWL_ENUM: 'COMMONCRAWL_ENUM',
                 ScanType.LLM_RED_TEAM: 'LLM_RED_TEAM',
                 ScanType.ATLAS_DISCOVERY: 'ATLAS_DISCOVERY',
                 ScanType.ARGUS_SECRETS: 'ARGUS_SECRETS',
@@ -673,6 +674,8 @@ class ScannerWorker:
                     await self.handle_geo_enrichment(body)
                 elif job_type == 'TLDFINDER':
                     await self.handle_tldfinder_scan(body)
+                elif job_type == 'COMMONCRAWL_ENUM':
+                    await self.handle_commoncrawl_enum_scan(body)
                 elif job_type == 'RECON_PIPELINE':
                     await self.handle_recon_pipeline(body)
                 elif job_type == 'LLM_RED_TEAM':
@@ -4000,6 +4003,191 @@ class ScannerWorker:
             if db:
                 db.close()
     
+    async def handle_commoncrawl_enum_scan(self, job_data: dict):
+        """
+        CommonCrawl CDX subdomain enumeration (CCrawlDNS-style).
+
+        Queries the live CommonCrawl CDX API to discover subdomains that have
+        been crawled by CommonCrawl over the selected years/datasets.  Results
+        are stored as SUBDOMAIN (or DOMAIN) Asset records identical to every
+        other discovery source.
+
+        Config keys (all optional):
+            years          – "last2" (default), "last3", "lastN", "all",
+                             "2025", or "2025,2024" (comma-separated years)
+            max_per_year   – datasets per year, default 1 (most efficient)
+            timeout        – per-release request timeout seconds, default 120
+            triggered_by   – informational tag set by the caller
+        """
+        scan_id = job_data.get('scan_id')
+        organization_id = job_data.get('organization_id')
+        targets = job_data.get('targets', [])
+        config = job_data.get('config', {})
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("handle_commoncrawl_enum_scan: no database connection")
+            return
+
+        scan = None
+        try:
+            from app.services.commoncrawl_live_service import CommonCrawlLiveService
+            from app.models.organization import Organization
+
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.RUNNING
+                scan.started_at = datetime.utcnow()
+                scan.current_step = "Querying CommonCrawl CDX API for subdomains"
+                db.commit()
+
+            # ----------------------------------------------------------------
+            # Resolve targets: use job targets, then org primary domain, then
+            # root domains already in the asset inventory.
+            # ----------------------------------------------------------------
+            if not targets:
+                org = db.query(Organization).filter(
+                    Organization.id == organization_id
+                ).first()
+                if org and org.domain:
+                    targets = [org.domain.strip().lower()]
+
+            if not targets:
+                from sqlalchemy import distinct as sa_distinct
+                rows = db.query(sa_distinct(Asset.root_domain)).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.root_domain.isnot(None),
+                    Asset.root_domain != '',
+                ).limit(20).all()
+                targets = [r[0] for r in rows if r[0]]
+
+            if not targets:
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    scan.completed_at = datetime.utcnow()
+                    scan.results = {'message': 'No domains to query CommonCrawl for'}
+                    db.commit()
+                return
+
+            # ----------------------------------------------------------------
+            # Run the live CDX service for each target domain
+            # ----------------------------------------------------------------
+            years = config.get('years', 'last1')
+            max_per_year = int(config.get('max_per_year', 1))
+            timeout = float(config.get('timeout', 120.0))
+            max_results = int(config.get('max_results_per_release', 100_000))
+
+            service = CommonCrawlLiveService(
+                years=years,
+                max_per_year=max_per_year,
+                timeout=timeout,
+                max_results_per_release=max_results,
+            )
+
+            total_subdomains: set[str] = set()
+            releases_used: list[str] = []
+
+            for domain in targets[:10]:  # cap to 10 root domains per scan
+                domain = domain.strip().lower()
+                if not domain:
+                    continue
+                if scan:
+                    scan.current_step = f"Querying CommonCrawl for {domain}"
+                    db.commit()
+
+                result = await service.search_domain(domain)
+
+                if result.error:
+                    logger.warning(
+                        f"CommonCrawl enum error for {domain}: {result.error}"
+                    )
+                    continue
+
+                total_subdomains.update(result.subdomains)
+                for r in result.releases_queried:
+                    if r not in releases_used:
+                        releases_used.append(r)
+
+            # ----------------------------------------------------------------
+            # Persist discovered subdomains as Asset records
+            # ----------------------------------------------------------------
+            created = 0
+            for subdomain in sorted(total_subdomains):
+                subdomain = subdomain.strip().lower()
+                if not subdomain or not self._is_valid_domain(subdomain):
+                    continue
+
+                existing = db.query(Asset).filter(
+                    Asset.organization_id == organization_id,
+                    Asset.value == subdomain,
+                ).first()
+                if existing:
+                    continue
+
+                root = self._extract_root_domain(subdomain)
+                parent = None
+                if root and root != subdomain:
+                    parent = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == root,
+                    ).first()
+
+                asset_type = (
+                    AssetType.SUBDOMAIN if (root and root != subdomain) else AssetType.DOMAIN
+                )
+                new_asset = Asset(
+                    organization_id=organization_id,
+                    name=subdomain,
+                    value=subdomain,
+                    asset_type=asset_type,
+                    root_domain=root or subdomain,
+                    parent_id=parent.id if parent else None,
+                    discovery_source='commoncrawl',
+                )
+                db.add(new_asset)
+                created += 1
+
+            db.commit()
+
+            if scan:
+                scan.status = ScanStatus.COMPLETED
+                scan.completed_at = datetime.utcnow()
+                scan.current_step = None
+                scan.assets_discovered = created
+                scan.results = {
+                    'targets': targets,
+                    'releases_queried': releases_used,
+                    'subdomains_found': len(total_subdomains),
+                    'assets_created': created,
+                    'years': years,
+                    'max_per_year': max_per_year,
+                }
+                db.commit()
+
+            logger.info(
+                f"CommonCrawl enum complete: {len(total_subdomains)} subdomains, "
+                f"{created} new assets across {len(targets)} domain(s)"
+            )
+            trigger_graph_sync(organization_id)
+
+        except Exception as exc:
+            logger.error(f"CommonCrawl enum scan failed: {exc}", exc_info=True)
+            if db and scan_id:
+                try:
+                    db.rollback()
+                    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+                    if scan:
+                        scan.status = ScanStatus.FAILED
+                        scan.error_message = str(exc)[:500]
+                        scan.completed_at = datetime.utcnow()
+                        db.commit()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if db:
+                db.close()
+
     async def handle_atlas_discovery(self, job_data: dict):
         """
         Atlas - org-wide attack-surface mapping (wraps Praetorian pius).

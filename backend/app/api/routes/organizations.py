@@ -12,7 +12,7 @@ from app.models.asset import Asset
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.vulnerability import Vulnerability, Severity
 from app.models.user import User, UserRole
-from app.models.project_settings import ProjectSettings, ALL_MODULES, get_default_config
+from app.models.project_settings import ProjectSettings, ALL_MODULES, get_default_config, MODULE_COMMONCRAWL
 from app.schemas.organization import (
     OrganizationCreate,
     OrganizationUpdate,
@@ -100,6 +100,7 @@ def create_organization(
     # After this runs, subdomain enumeration and other processes can use the discovered domains.
     if new_org.domain and new_org.domain.strip():
         domain = new_org.domain.strip().lower()
+
         tld_scan = Scan(
             name=f"TLD discovery: {domain}",
             scan_type=ScanType.TLDFINDER,
@@ -117,6 +118,29 @@ def create_organization(
         db.commit()
         db.refresh(tld_scan)
         send_scan_to_sqs(tld_scan)
+
+        # CommonCrawl CDX enumeration — read per-org settings so operators can
+        # tune the year range and dataset count without touching code.
+        cc_settings = ProjectSettings.get_config(db, new_org.id, MODULE_COMMONCRAWL)
+        cc_scan = Scan(
+            name=f"CommonCrawl subdomain discovery: {domain}",
+            scan_type=ScanType.COMMONCRAWL_ENUM,
+            organization_id=new_org.id,
+            targets=[domain],
+            config={
+                "years": cc_settings.get("years", "last1"),
+                "max_per_year": cc_settings.get("max_per_year", 1),
+                "timeout": cc_settings.get("timeout", 120),
+                "max_results_per_release": cc_settings.get("max_results_per_release", 100000),
+                "triggered_by": "organization_created",
+            },
+            started_by=current_user.username,
+            status=ScanStatus.PENDING,
+        )
+        db.add(cc_scan)
+        db.commit()
+        db.refresh(cc_scan)
+        send_scan_to_sqs(cc_scan)
 
     return build_org_response(db, new_org)
 

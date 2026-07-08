@@ -209,6 +209,16 @@ class ApiClient {
     return response.data;
   }
 
+  async getProjectSettings(organizationId: number, module: string) {
+    const response = await this.client.get(`/organizations/${organizationId}/settings/${module}`);
+    return response.data;
+  }
+
+  async updateProjectSettingsModule(organizationId: number, module: string, config: Record<string, any>) {
+    const response = await this.client.put(`/organizations/${organizationId}/settings/${module}`, { config });
+    return response.data;
+  }
+
   // Assets
   async getAssets(params?: { 
     organization_id?: number; 

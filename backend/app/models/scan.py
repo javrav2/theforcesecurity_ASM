@@ -32,6 +32,7 @@ class ScanType(str, enum.Enum):
     FULL = "full"                      # Complete discovery + all scans
     GEO_ENRICH = "geo_enrich"          # Geo-location enrichment for all assets
     TLDFINDER = "tldfinder"            # TLD/domain discovery via ProjectDiscovery tldfinder
+    COMMONCRAWL_ENUM = "commoncrawl_enum"  # CommonCrawl CDX subdomain enumeration
     LLM_RED_TEAM = "llm_red_team"      # AI/LLM red team testing of chatbot endpoints
     PENTEST = "pentest"                  # Autonomous AI penetration test with PoC validation
     ATLAS_DISCOVERY = "atlas_discovery"  # Atlas (Praetorian pius) - org-wide domain + CIDR mapping

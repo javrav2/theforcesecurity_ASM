@@ -28,6 +28,7 @@ MODULE_SECURITY_CHECKS = "security_checks"
 MODULE_AGENT = "agent"
 MODULE_SCAN_TOGGLES = "scan_toggles"
 MODULE_RULES_OF_ENGAGEMENT = "rules_of_engagement"
+MODULE_COMMONCRAWL = "commoncrawl"
 
 ALL_MODULES = [
     MODULE_TARGET,
@@ -45,6 +46,7 @@ ALL_MODULES = [
     MODULE_AGENT,
     MODULE_SCAN_TOGGLES,
     MODULE_RULES_OF_ENGAGEMENT,
+    MODULE_COMMONCRAWL,
 ]
 
 
@@ -328,6 +330,34 @@ def default_rules_of_engagement_config():
     }
 
 
+def default_commoncrawl_config():
+    """
+    CommonCrawl CDX subdomain enumeration settings.
+
+    years options:
+      "last1"      – last 1 calendar year (default, fastest)
+      "last2"      – last 2 calendar years
+      "last3"      – last 3 calendar years
+      "lastN"      – last N calendar years
+      "all"        – every available release (slowest, most complete)
+      "2025"       – a single specific year
+      "2025,2024"  – multiple specific years (comma-separated)
+    """
+    return {
+        "enabled": True,
+        # How many calendar years of crawl data to query on org creation.
+        # Increase for broader historical coverage at the cost of scan time.
+        "years": "last1",
+        # Datasets queried per year. 1 is the most recent snapshot (fastest).
+        # Higher values add coverage but proportionally increase runtime.
+        "max_per_year": 1,
+        # Seconds to wait for a single CDX API response before giving up.
+        "timeout": 120,
+        # Upper bound on URLs fetched per release per domain.
+        "max_results_per_release": 100000,
+    }
+
+
 def get_default_config(module: str) -> dict:
     """Return default config for a module."""
     defaults = {
@@ -346,6 +376,7 @@ def get_default_config(module: str) -> dict:
         MODULE_AGENT: default_agent_config,
         MODULE_SCAN_TOGGLES: default_scan_toggles_config,
         MODULE_RULES_OF_ENGAGEMENT: default_rules_of_engagement_config,
+        MODULE_COMMONCRAWL: default_commoncrawl_config,
     }
     fn = defaults.get(module)
     return fn() if fn else {}
