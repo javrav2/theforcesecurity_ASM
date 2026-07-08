@@ -2690,7 +2690,18 @@ class ScannerWorker:
                         assets_flagged += 1
                         logger.info(f"Flagged {host} with {len(host_portals)} login portals")
                     else:
-                        # Create host asset so one record per subdomain with endpoints in Application Map
+                        # Create host asset so one record per subdomain with endpoints in Application Map.
+                        # Skip if a previous record for this host was marked out of scope.
+                        existing_host = db.query(Asset).filter(
+                            Asset.organization_id == organization_id,
+                            Asset.value == host,
+                        ).first()
+                        if existing_host is not None:
+                            if not existing_host.in_scope:
+                                logger.debug(
+                                    f"Login portal: skipping '{host}' — out of scope"
+                                )
+                            continue
                         root = target if host != target else None
                         new_asset = Asset(
                             organization_id=organization_id,
@@ -3946,26 +3957,31 @@ class ScannerWorker:
                     Asset.organization_id == organization_id,
                     Asset.value == domain,
                 ).first()
-                if not existing:
-                    root = self._extract_root_domain(domain)
-                    parent = None
-                    if root and root != domain:
-                        parent = db.query(Asset).filter(
-                            Asset.organization_id == organization_id,
-                            Asset.value == root,
-                        ).first()
-                    asset_type = AssetType.SUBDOMAIN if (root and root != domain) else AssetType.DOMAIN
-                    new_asset = Asset(
-                        organization_id=organization_id,
-                        name=domain,
-                        value=domain,
-                        asset_type=asset_type,
-                        root_domain=root or domain,
-                        parent_id=parent.id if parent else None,
-                        discovery_source='tldfinder',
-                    )
-                    db.add(new_asset)
-                    created += 1
+                if existing is not None:
+                    if not existing.in_scope:
+                        logger.debug(
+                            f"TLDFinder: skipping '{domain}' — out of scope"
+                        )
+                    continue
+                root = self._extract_root_domain(domain)
+                parent = None
+                if root and root != domain:
+                    parent = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == root,
+                    ).first()
+                asset_type = AssetType.SUBDOMAIN if (root and root != domain) else AssetType.DOMAIN
+                new_asset = Asset(
+                    organization_id=organization_id,
+                    name=domain,
+                    value=domain,
+                    asset_type=asset_type,
+                    root_domain=root or domain,
+                    parent_id=parent.id if parent else None,
+                    discovery_source='tldfinder',
+                )
+                db.add(new_asset)
+                created += 1
             
             db.commit()
             
@@ -4456,7 +4472,11 @@ class ScannerWorker:
                         Asset.organization_id == organization_id,
                         Asset.value == value,
                     ).first()
-                    if existing:
+                    if existing is not None:
+                        if not existing.in_scope:
+                            logger.debug(
+                                f"Atlas: skipping domain '{value}' — out of scope"
+                            )
                         continue
                     root = self._extract_root_domain(value)
                     parent = None
@@ -4482,7 +4502,11 @@ class ScannerWorker:
                         Asset.organization_id == organization_id,
                         Asset.value == value,
                     ).first()
-                    if existing:
+                    if existing is not None:
+                        if not existing.in_scope:
+                            logger.debug(
+                                f"Atlas: skipping IP '{value}' — out of scope"
+                            )
                         continue
                     source_plugin = f.source.replace('atlas:', '') if f.source else 'atlas'
                     db.add(Asset(
