@@ -347,7 +347,8 @@ def _build_generation_prompt(req: GenerateRequest, cve_ctx: dict) -> str:
             parts.append(f"Tags: {', '.join(cve_ctx['tags'][:10])}")
         if cve_ctx.get("affected_products"):
             prods = cve_ctx["affected_products"][:3]
-            parts.append(f"Affected Products: {', '.join(f\"{p.get('vendor','')}/{p.get('product','')}\" for p in prods)}")
+            prod_strs = [p.get('vendor', '') + '/' + p.get('product', '') for p in prods]
+            parts.append(f"Affected Products: {', '.join(prod_strs)}")
         if cve_ctx.get("is_remote"):
             parts.append("Remotely exploitable: yes")
         if cve_ctx.get("is_poc"):
