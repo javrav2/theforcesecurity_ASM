@@ -399,12 +399,14 @@ class ScheduleWorker:
                     )
                     continue
 
-                domain = org.domain.strip().lower()
+                # Pass no explicit targets — the scanner handler will sweep
+                # ALL DOMAIN-type assets in the inventory (rockwellautomation.com,
+                # ab.com, factorytalk.com, etc.) before falling back to org.domain.
                 scan = Scan(
-                    name=f"[Daily] CommonCrawl subdomain refresh: {domain}",
+                    name=f"[Daily] CommonCrawl subdomain refresh: {org.name}",
                     scan_type=ScanType.COMMONCRAWL_ENUM,
                     organization_id=org.id,
-                    targets=[domain],
+                    targets=[],
                     config={
                         "years": cc_cfg.get("years", "last1"),
                         "max_per_year": cc_cfg.get("max_per_year", 1),

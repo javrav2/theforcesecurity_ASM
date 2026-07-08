@@ -4042,9 +4042,37 @@ class ScannerWorker:
                 db.commit()
 
             # ----------------------------------------------------------------
-            # Resolve targets: use job targets, then org primary domain, then
-            # root domains already in the asset inventory.
+            # Resolve targets: build the full set of root domains to query.
+            #
+            # Priority:
+            #   1. DOMAIN-type assets in the org's inventory (covers every root
+            #      domain that TLDFINDER / other discovery has found, e.g.
+            #      rockwellautomation.com, ab.com, factorytalk.com …)
+            #   2. Any explicit targets passed in the job (e.g. on first run
+            #      before discovery has populated the inventory)
+            #   3. The org's primary domain as a final fallback
             # ----------------------------------------------------------------
+            domain_assets: list[str] = []
+            domain_asset_rows = db.query(Asset.value).filter(
+                Asset.organization_id == organization_id,
+                Asset.asset_type == AssetType.DOMAIN,
+                Asset.value.isnot(None),
+                Asset.value != '',
+            ).all()
+            domain_assets = [r[0].strip().lower() for r in domain_asset_rows if r[0]]
+
+            # Merge explicit targets (e.g. primary domain at org creation) with
+            # inventory domains, then deduplicate while preserving order.
+            seed_targets = [t.strip().lower() for t in (targets or []) if t.strip()]
+            seen: set[str] = set()
+            combined: list[str] = []
+            for d in seed_targets + domain_assets:
+                if d and d not in seen:
+                    seen.add(d)
+                    combined.append(d)
+            targets = combined
+
+            # Last resort: org primary domain
             if not targets:
                 org = db.query(Organization).filter(
                     Organization.id == organization_id
@@ -4053,21 +4081,17 @@ class ScannerWorker:
                     targets = [org.domain.strip().lower()]
 
             if not targets:
-                from sqlalchemy import distinct as sa_distinct
-                rows = db.query(sa_distinct(Asset.root_domain)).filter(
-                    Asset.organization_id == organization_id,
-                    Asset.root_domain.isnot(None),
-                    Asset.root_domain != '',
-                ).limit(20).all()
-                targets = [r[0] for r in rows if r[0]]
-
-            if not targets:
                 if scan:
                     scan.status = ScanStatus.COMPLETED
                     scan.completed_at = datetime.utcnow()
                     scan.results = {'message': 'No domains to query CommonCrawl for'}
                     db.commit()
                 return
+
+            logger.info(
+                f"CommonCrawl enum: querying {len(targets)} domain(s) for org {organization_id}: "
+                + ", ".join(targets[:10]) + ("…" if len(targets) > 10 else "")
+            )
 
             # ----------------------------------------------------------------
             # Run the live CDX service for each target domain
