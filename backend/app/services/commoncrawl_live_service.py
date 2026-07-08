@@ -221,6 +221,32 @@ class CommonCrawlLiveService:
             logger.warning(f"CC {release} subdomain query error ({domain}): {exc}")
         return found
 
+    @staticmethod
+    def _keyword_patterns(keyword: str) -> List[tuple[str, str]]:
+        """
+        Return all CDX URL patterns to query for a keyword, paired with the
+        hostname filter string to apply when parsing results.
+
+        Three patterns are generated per keyword:
+
+          1. ``*keyword*``   — any URL where the HOSTNAME contains the keyword
+                               (partner portals, hyphenated brand names, …)
+          2. ``keyword.*``   — URLs where the hostname STARTS WITH the keyword
+                               (finds rockwellautomation.net, .de, .io, …)
+          3. ``*.keyword.*`` — subdomains of any TLD domain starting with
+                               keyword  (e.g. mail.rockwellautomation.de)
+
+        Returns a list of (cdx_pattern, hostname_must_contain) tuples.
+        The second element is used to filter CDX results to hostnames that
+        genuinely match the brand, not just pages that mention it in a path.
+        """
+        kw = keyword.lower().replace(" ", "")
+        return [
+            (f"*{kw}*",    kw),       # contains anywhere in hostname
+            (f"{kw}.*",    kw),       # starts with keyword (any TLD)
+            (f"*.{kw}.*",  kw),       # subdomains of keyword.TLD
+        ]
+
     async def _query_release_keyword(
         self,
         client: httpx.AsyncClient,
@@ -228,48 +254,60 @@ class CommonCrawlLiveService:
         keyword: str,
     ) -> Set[str]:
         """
-        Mode 2: ``*keyword*`` → any hostname whose label contains the keyword.
+        Mode 2: run all CDX patterns for ``keyword`` and collect unique hostnames.
 
-        We query the CDX API with a broad wildcard and then filter server-side
-        by checking that the HOSTNAME (not just the URL path) contains the
-        keyword.  This avoids noise like vendor.com/docs/rockwellautomation/.
+        Patterns used per keyword (see ``_keyword_patterns``):
+          • ``*rockwellautomation*``  — hostname contains keyword
+          • ``rockwellautomation.*``  — hostname starts with keyword (any TLD)
+          • ``*.rockwellautomation.*``— subdomains of keyword.TLD domains
         """
         found: Set[str] = set()
-        kw_lower = keyword.lower().replace(" ", "")
-        try:
-            response = await client.get(
-                CCRAWL_INDEX_URL.format(release=release),
-                params={
-                    "url": f"*{kw_lower}*",
-                    "output": "json",
-                    "fl": "url",
-                    "limit": self.max_results_per_release,
-                },
-                timeout=self.timeout,
-            )
-            if response.status_code == 404:
-                return found
-            response.raise_for_status()
+        patterns = self._keyword_patterns(keyword)
 
-            for line in response.text.splitlines():
-                line = line.strip()
-                if not line:
+        for cdx_pattern, must_contain in patterns:
+            try:
+                response = await client.get(
+                    CCRAWL_INDEX_URL.format(release=release),
+                    params={
+                        "url": cdx_pattern,
+                        "output": "json",
+                        "fl": "url",
+                        "limit": self.max_results_per_release,
+                    },
+                    timeout=self.timeout,
+                )
+                if response.status_code == 404:
                     continue
-                try:
-                    record = json.loads(line)
-                    hostname = self._extract_hostname(record.get("url", ""))
-                    # Only keep hostnames that actually contain the keyword —
-                    # discard URLs where the keyword only appears in the path.
-                    if hostname and kw_lower in hostname and _is_valid_hostname(hostname):
-                        found.add(hostname)
-                except Exception:
-                    continue
+                response.raise_for_status()
 
-            logger.info(f"CC {release} keyword '{keyword}': {len(found)} hostname hits")
-        except httpx.TimeoutException:
-            logger.warning(f"CC {release} timed out for keyword '{keyword}'")
-        except Exception as exc:
-            logger.warning(f"CC {release} keyword query error ('{keyword}'): {exc}")
+                for line in response.text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        hostname = self._extract_hostname(record.get("url", ""))
+                        # Only keep hostnames that actually contain the keyword —
+                        # discards URLs where the brand only appears in the path.
+                        if hostname and must_contain in hostname and _is_valid_hostname(hostname):
+                            found.add(hostname)
+                    except Exception:
+                        continue
+
+                logger.debug(
+                    f"CC {release} pattern '{cdx_pattern}': {len(found)} cumulative hits"
+                )
+
+                # Brief pause between patterns on the same release
+                if self.rate_limit_delay > 0:
+                    await asyncio.sleep(self.rate_limit_delay * 0.5)
+
+            except httpx.TimeoutException:
+                logger.warning(f"CC {release} timed out for pattern '{cdx_pattern}'")
+            except Exception as exc:
+                logger.warning(f"CC {release} pattern '{cdx_pattern}' error: {exc}")
+
+        logger.info(f"CC {release} keyword '{keyword}': {len(found)} unique hostname hits")
         return found
 
     # ------------------------------------------------------------------

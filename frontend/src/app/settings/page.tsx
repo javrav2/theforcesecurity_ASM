@@ -799,12 +799,22 @@ export default function SettingsPage() {
                     <div className="space-y-1">
                       <p className="font-medium text-sm">Brand keyword discovery</p>
                       <p className="text-xs text-muted-foreground">
-                        Also search CommonCrawl for hostnames containing your brand or product names
-                        (e.g. "rockwellautomation", "factorytalk", "allen-bradley"). Surfaces unknown
-                        domains — partner portals, shadow IT, acquired-brand sites — that subdomains
-                        alone won't find. Keywords are pulled from{' '}
-                        <span className="text-foreground font-medium">Discovery Settings</span>{' '}
-                        (CommonCrawl Org Name + Keywords fields).
+                        Also sweep CommonCrawl for hostnames matching brand or product name patterns.
+                        For each keyword, three CDX query patterns are run automatically:
+                      </p>
+                      <div className="mt-1.5 space-y-1 font-mono text-xs text-muted-foreground pl-2 border-l-2 border-muted">
+                        <p><span className="text-foreground">*keyword*</span> — hostname contains the term (partner portals, hyphenated names)</p>
+                        <p><span className="text-foreground">keyword.*</span> — domain starts with keyword in any TLD (.net, .de, .io, …)</p>
+                        <p><span className="text-foreground">*.keyword.*</span> — subdomains of any keyword.TLD domain</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground pt-1">
+                        Tip: add both the full name <em>and</em> common short forms as separate keywords
+                        (e.g. <code className="bg-muted px-1 rounded">rockwellautomation</code> +{' '}
+                        <code className="bg-muted px-1 rounded">rockwell</code> +{' '}
+                        <code className="bg-muted px-1 rounded">factorytalk</code> +{' '}
+                        <code className="bg-muted px-1 rounded">allen-bradley</code>).
+                        Keywords are set in{' '}
+                        <span className="text-foreground font-medium">Discovery → Advanced Options</span>.
                       </p>
                     </div>
                     <Switch
@@ -818,12 +828,12 @@ export default function SettingsPage() {
                     <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-start gap-3 text-xs">
                       <Globe className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
                       <p className="text-muted-foreground">
-                        Set your brand keywords in{' '}
+                        Configure keywords in{' '}
                         <a href="/discovery" className="text-amber-400 hover:underline font-medium">
                           Discovery → Advanced Options
                         </a>{' '}
-                        under "CommonCrawl Org Name" and "CommonCrawl Keywords". Without keywords
-                        configured, only Mode 1 subdomain enumeration will run.
+                        → "CommonCrawl Org Name" and "CommonCrawl Keywords". Without keywords set,
+                        only Mode 1 subdomain enumeration will run.
                       </p>
                     </div>
                   )}
