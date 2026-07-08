@@ -11,6 +11,7 @@ from app.db.database import get_db
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.port_service import PortService, PortState
 from app.models.scan import Scan, ScanType, ScanStatus
+from app.models.vulnerability import Vulnerability, VulnerabilityStatus
 from app.models.user import User
 from app.schemas.asset import (
     AssetCreate, AssetUpdate, AssetResponse, 
@@ -29,6 +30,39 @@ def check_org_access(user: User, org_id: int) -> bool:
     if user.is_superuser:
         return True
     return user.organization_id == org_id
+
+
+def _close_findings_for_asset(db: Session, asset_id: int) -> int:
+    """
+    Auto-resolve all open findings on an asset that is being marked out of scope.
+
+    Sets status → ACCEPTED with a standard note so the finding is preserved for
+    audit/compliance but no longer surfaces in the active findings queue.
+
+    Returns the number of findings closed.
+    """
+    open_statuses = [
+        VulnerabilityStatus.OPEN,
+        VulnerabilityStatus.IN_PROGRESS,
+    ]
+    findings = db.query(Vulnerability).filter(
+        Vulnerability.asset_id == asset_id,
+        Vulnerability.status.in_(open_statuses),
+    ).all()
+
+    now = datetime.utcnow()
+    for f in findings:
+        f.status = VulnerabilityStatus.ACCEPTED
+        f.resolved_at = now
+        f.updated_at = now
+        if not f.metadata_:
+            f.metadata_ = {}
+        f.metadata_["out_of_scope_closed_at"] = now.isoformat()
+        f.metadata_["out_of_scope_closed_reason"] = (
+            "Asset marked out of scope — finding auto-accepted"
+        )
+
+    return len(findings)
 
 
 def build_asset_response(asset: Asset) -> dict:
@@ -593,14 +627,23 @@ def update_asset(
     
     # Update fields
     update_data = asset_data.model_dump(exclude_unset=True)
+    going_out_of_scope = (
+        "in_scope" in update_data
+        and update_data["in_scope"] is False
+        and asset.in_scope is True
+    )
     for field, value in update_data.items():
         setattr(asset, field, value)
-    
+
     asset.last_seen = datetime.utcnow()
-    
+
+    # Auto-close open findings when the asset is being removed from scope
+    if going_out_of_scope:
+        _close_findings_for_asset(db, asset.id)
+
     db.commit()
     db.refresh(asset)
-    
+
     return asset
 
 
@@ -1901,11 +1944,14 @@ def update_asset_investigation_notes(
         asset.tags = list(set(existing_tags + tags))
     
     if in_scope is not None:
+        going_out_of_scope = (in_scope is False and asset.in_scope is True)
         asset.in_scope = in_scope
-    
+        if going_out_of_scope:
+            _close_findings_for_asset(db, asset.id)
+
     if is_owned is not None:
         asset.is_owned = is_owned
-    
+
     asset.updated_at = datetime.utcnow()
     db.commit()
     
@@ -2333,35 +2379,46 @@ def set_asset_scope_with_cascade(
     # Update the main asset
     asset.in_scope = in_scope
     asset.updated_at = datetime.utcnow()
-    
+
     cascaded_count = 0
     cascaded_assets = []
-    
+    findings_closed = 0
+
+    # Auto-close open findings when going out of scope
+    if not in_scope:
+        findings_closed += _close_findings_for_asset(db, asset.id)
+
     # If this is a domain and cascade is enabled, update subdomains too
     if cascade_to_subdomains and asset.asset_type == AssetType.DOMAIN:
-        # Find all subdomains that belong to this root domain
         subdomains = db.query(Asset).filter(
             Asset.organization_id == asset.organization_id,
             Asset.asset_type == AssetType.SUBDOMAIN,
             Asset.root_domain == asset.value
         ).all()
-        
+
         for sub in subdomains:
             sub.in_scope = in_scope
             sub.updated_at = datetime.utcnow()
             cascaded_count += 1
             cascaded_assets.append({"id": sub.id, "value": sub.value})
-    
+            if not in_scope:
+                findings_closed += _close_findings_for_asset(db, sub.id)
+
     db.commit()
-    
+
     return {
         "id": asset.id,
         "value": asset.value,
         "in_scope": asset.in_scope,
         "cascaded_to_subdomains": cascade_to_subdomains,
         "subdomains_updated": cascaded_count,
-        "updated_subdomains": cascaded_assets[:20],  # Show first 20
-        "message": f"Updated scope for {asset.value}" + (f" and {cascaded_count} subdomains" if cascaded_count > 0 else "")
+        "findings_closed": findings_closed,
+        "updated_subdomains": cascaded_assets[:20],
+        "message": (
+            f"Updated scope for {asset.value}"
+            + (f" and {cascaded_count} subdomains" if cascaded_count else "")
+            + (f"; {findings_closed} finding(s) auto-accepted" if findings_closed else "")
+        ),
     }
 
 
@@ -2452,6 +2509,7 @@ def bulk_set_scope_with_cascade(
     """
     updated_count = 0
     cascaded_count = 0
+    findings_closed = 0
     errors = []
     
     # Get all requested assets
@@ -2474,28 +2532,39 @@ def bulk_set_scope_with_cascade(
         asset.in_scope = in_scope
         asset.updated_at = datetime.utcnow()
         updated_count += 1
-        
+
+        # Auto-close open findings when going out of scope
+        if not in_scope:
+            findings_closed += _close_findings_for_asset(db, asset.id)
+
         # Cascade to subdomains if this is a domain
         if cascade_to_subdomains and asset.asset_type == AssetType.DOMAIN:
-            cascade_updated = db.query(Asset).filter(
+            subdomains = db.query(Asset).filter(
                 Asset.organization_id == asset.organization_id,
                 Asset.asset_type == AssetType.SUBDOMAIN,
-                Asset.root_domain == asset.value
-            ).update(
-                {Asset.in_scope: in_scope, Asset.updated_at: datetime.utcnow()},
-                synchronize_session=False
-            )
-            cascaded_count += cascade_updated
-    
+                Asset.root_domain == asset.value,
+            ).all()
+            for sub in subdomains:
+                sub.in_scope = in_scope
+                sub.updated_at = datetime.utcnow()
+                cascaded_count += 1
+                if not in_scope:
+                    findings_closed += _close_findings_for_asset(db, sub.id)
+
     db.commit()
-    
+
     return {
         "updated": updated_count,
         "cascaded_subdomains": cascaded_count,
+        "findings_closed": findings_closed,
         "total_affected": updated_count + cascaded_count,
         "in_scope": in_scope,
         "errors": errors[:10] if errors else [],
-        "message": f"Updated {updated_count} assets" + (f" and {cascaded_count} subdomains" if cascaded_count > 0 else "")
+        "message": (
+            f"Updated {updated_count} assets"
+            + (f" and {cascaded_count} subdomains" if cascaded_count else "")
+            + (f"; {findings_closed} finding(s) auto-accepted" if findings_closed else "")
+        ),
     }
 
 

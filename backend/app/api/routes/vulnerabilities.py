@@ -68,20 +68,33 @@ def list_vulnerabilities(
     status: Optional[VulnerabilityStatus] = None,
     asset_id: Optional[int] = None,
     cve_id: Optional[str] = None,
+    include_out_of_scope: bool = Query(
+        False,
+        description="Include findings on assets that have been marked out of scope"
+    ),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """List vulnerabilities with filtering options."""
+    """List vulnerabilities with filtering options.
+
+    By default only returns findings for in-scope assets.  Pass
+    ``include_out_of_scope=true`` to include findings on assets that have
+    been marked out of scope (useful for audit/compliance review).
+    """
     query = db.query(Vulnerability).join(Asset).options(joinedload(Vulnerability.asset))
-    
+
     # Organization filter
     if not current_user.is_superuser:
         if not current_user.organization_id:
             return []
         query = query.filter(Asset.organization_id == current_user.organization_id)
-    
+
+    # Exclude out-of-scope asset findings by default
+    if not include_out_of_scope:
+        query = query.filter(Asset.in_scope == True)
+
     # Apply filters
     if severity:
         query = query.filter(Vulnerability.severity == severity)
@@ -91,10 +104,9 @@ def list_vulnerabilities(
         query = query.filter(Vulnerability.asset_id == asset_id)
     if cve_id:
         query = query.filter(Vulnerability.cve_id == cve_id)
-    
+
     vulns = query.order_by(Vulnerability.severity.desc(), Vulnerability.created_at.desc()).offset(skip).limit(limit).all()
-    
-    # Build response with computed fields
+
     return [build_vuln_response(v) for v in vulns]
 
 
@@ -336,22 +348,26 @@ def bulk_update_vulnerabilities(
 
 @router.get("/stats/summary")
 def get_vulnerabilities_summary(
+    include_out_of_scope: bool = Query(False, description="Include findings on out-of-scope assets"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
     """Get vulnerability statistics summary.
-    
+
     Note: 'total' count excludes informational findings.
-    Informational findings are still included in by_severity for reference.
+    By default only counts findings on in-scope assets.
     """
     query = db.query(Vulnerability).join(Asset)
-    
+
     # Organization filter
     if not current_user.is_superuser:
         if not current_user.organization_id:
             return {"total": 0, "by_severity": {}, "by_status": {}, "info_count": 0}
         query = query.filter(Asset.organization_id == current_user.organization_id)
-    
+
+    if not include_out_of_scope:
+        query = query.filter(Asset.in_scope == True)
+
     vulns = query.all()
     
     # Calculate stats
