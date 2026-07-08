@@ -21,6 +21,74 @@ from app.services.nuclei_service import NucleiResult, NucleiScanResult
 logger = logging.getLogger(__name__)
 
 
+# ── Detection confidence ─────────────────────────────────────────────────────
+# Mirrors schema.DetectionConfidence in aegis-oracle/pkg/schema/vulnerability.go
+DETECTION_CONFIDENCE_EXPLOIT_CONFIRMED  = "exploit_confirmed"
+DETECTION_CONFIDENCE_ENDPOINT_CONFIRMED = "endpoint_confirmed"
+DETECTION_CONFIDENCE_VERSION_ONLY       = "version_only"
+DETECTION_CONFIDENCE_UNKNOWN            = "unknown"
+
+# Template ID path segments / tags that indicate a working exploit was fired.
+_EXPLOIT_TEMPLATE_PATTERNS = (
+    "/cves/", "/exploits/", "/rce/", "/sqli/", "/ssrf/", "/lfi/", "/rfi/",
+    "-rce", "-sqli", "-ssrf", "-blind", "-oast", "-injection",
+)
+# Template ID path segments / tags that indicate an endpoint probe (no payload).
+_ENDPOINT_TEMPLATE_PATTERNS = (
+    "detect", "exposure", "misconfiguration", "default-login", "login-panel",
+    "config-detect", "status-check", "open-redirect", "directory-listing",
+    "backup-files", "spring-actuator", "debug", "phpinfo", "info-disclosure",
+    "service-detect",
+)
+# Template ID path segments indicating version/banner detection only.
+_VERSION_TEMPLATE_PATTERNS = (
+    "version", "tech-detect", "fingerprint", "headers", "banner",
+)
+
+
+def classify_nuclei_detection_confidence(
+    template_id: str,
+    tags: list,
+    evidence: str,
+    extracted_results: list,
+    matcher_name: str = "",
+) -> str:
+    """
+    Classify Nuclei detection confidence from template and result signals.
+
+    Returns one of: exploit_confirmed | endpoint_confirmed | version_only | unknown
+    """
+    tid = (template_id or "").lower()
+    tags_str = " ".join(tags or []).lower()
+    evid = (evidence or "").lower()
+
+    # Exploit confirmed — evidence of a working payload (OOB callback, data extraction)
+    if extracted_results:
+        return DETECTION_CONFIDENCE_EXPLOIT_CONFIRMED
+    if any(kw in evid for kw in ("dns callback", "dnslog", "oast", "out-of-band",
+                                  "canary token", "data extracted", "blind injection",
+                                  "rce confirmed", "reverse shell", "code execution")):
+        return DETECTION_CONFIDENCE_EXPLOIT_CONFIRMED
+    if any(pat in tid for pat in _EXPLOIT_TEMPLATE_PATTERNS) and evidence:
+        return DETECTION_CONFIDENCE_EXPLOIT_CONFIRMED
+
+    # Version / tech detection templates — only indicate presence, not feature reachability
+    if any(pat in tid for pat in _VERSION_TEMPLATE_PATTERNS):
+        return DETECTION_CONFIDENCE_VERSION_ONLY
+    if "tech" in tags_str or "version-detection" in tags_str:
+        return DETECTION_CONFIDENCE_VERSION_ONLY
+
+    # Endpoint confirmed — template probed a feature and got a live response
+    if any(pat in tid for pat in _ENDPOINT_TEMPLATE_PATTERNS):
+        return DETECTION_CONFIDENCE_ENDPOINT_CONFIRMED
+    if any(tag in tags_str for tag in ("exposure", "misconfiguration", "default-login", "auth-bypass")):
+        return DETECTION_CONFIDENCE_ENDPOINT_CONFIRMED
+    if evidence:
+        return DETECTION_CONFIDENCE_ENDPOINT_CONFIRMED
+
+    return DETECTION_CONFIDENCE_UNKNOWN
+
+
 # Map Nuclei severity to our Severity enum
 NUCLEI_SEVERITY_MAP = {
     "critical": Severity.CRITICAL,
@@ -236,18 +304,18 @@ class NucleiFindingsService:
                             nuclei_result.cve_id, exc
                         )
 
-                # Oracle enrichment: non-blocking background LLM analysis when
-                # ORACLE_AUTO_ENRICH_ON_INGEST is enabled.
-                if nuclei_result.cve_id and vulnerability.id is not None:
+                # Oracle enrichment: non-blocking background LLM analysis for
+                # all new findings when ORACLE_AUTO_ENRICH_ON_INGEST is enabled.
+                if vulnerability.id is not None:
                     try:
                         from app.core.config import settings as _settings
-                        if getattr(_settings, "ORACLE_AUTO_ENRICH_ON_INGEST", False):
+                        if getattr(_settings, "ORACLE_AUTO_ENRICH_ON_INGEST", True):
                             from app.services.oracle_enrichment_service import enqueue_background_enrichment
                             enqueue_background_enrichment(vulnerability.id)
                     except Exception as exc:
                         logger.debug(
-                            "Oracle auto-enrich skipped for %s: %s",
-                            nuclei_result.cve_id, exc
+                            "Oracle auto-enrich skipped for vuln %s: %s",
+                            vulnerability.id, exc
                         )
         
         # Add labels to asset
@@ -413,6 +481,14 @@ class NucleiFindingsService:
             references.append(f"https://nvd.nist.gov/vuln/detail/{nuclei_result.cve_id}")
             references.append(f"https://cve.mitre.org/cgi-bin/cvename.cgi?name={nuclei_result.cve_id}")
         
+        dc = classify_nuclei_detection_confidence(
+            template_id=nuclei_result.template_id,
+            tags=nuclei_result.tags or [],
+            evidence=evidence,
+            extracted_results=nuclei_result.extracted_results or [],
+            matcher_name=nuclei_result.matcher_name or "",
+        )
+
         vulnerability = Vulnerability(
             title=title,
             description=description,
@@ -427,6 +503,7 @@ class NucleiFindingsService:
             detected_by="nuclei",
             template_id=nuclei_result.template_id,
             matcher_name=nuclei_result.matcher_name,
+            detection_confidence=dc,
             status=VulnerabilityStatus.OPEN,
             evidence=evidence,
             tags=tags,

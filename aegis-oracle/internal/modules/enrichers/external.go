@@ -128,6 +128,20 @@ type ExternalEnrichment struct {
 	// Threat intelligence
 	ATTACK ATTACKResult `json:"attack"`
 	OWASP  OWASPResult  `json:"owasp"` // populated by Apply using CWE data; no network call
+
+	// FIRE / ICE static lookups — no network; results from embedded CVE lists.
+	// See fire_ice.go for data sources and update instructions.
+	FIRE          FIREResult          `json:"fire"`
+	MandiantMTrends MandiantMTrendsResult `json:"mandiant_mtrends"`
+	CrowdStrikeGTR  CrowdStrikeGTRResult  `json:"crowdstrike_gtr"`
+
+	// Discoverability — attacker-perspective detectability from the outside.
+	// Synthesises AlienVault OTX (threat-intel pulse count, no API key needed),
+	// Nuclei template classification (exploit vs detect vs version), and Tenable
+	// plugin family (remote/no-auth vs credentialed/agent). Only
+	// remote/unauthenticated signals are attacker-relevant; credentialed checks
+	// are defender signals and actually raise attacker difficulty.
+	Discoverability AttackerDiscoverabilityResult `json:"discoverability"`
 }
 
 // ─────────────────────────── FetchAll ────────────────────────────────────────
@@ -209,6 +223,18 @@ func FetchAllWithVulnCheck(ctx context.Context, cveID, vulnCheckToken string) Ex
 		go func() { defer wg.Done(); j.fn() }()
 	}
 	wg.Wait()
+
+	// FIRE/ICE static lookups — no network; run synchronously after goroutines
+	// complete since they're instant map lookups.
+	result.FIRE = LookupFIRE(cveID)
+	result.MandiantMTrends = LookupMandiantMTrends(cveID)
+	result.CrowdStrikeGTR = LookupCrowdStrikeGTR(cveID)
+
+	// Attacker discoverability — concurrent OTX + Nuclei classify + Tenable.
+	// Runs after the main batch; all three sub-fetches run concurrently inside
+	// FetchAttackerDiscoverability so total added latency is ~15 s max.
+	result.Discoverability = FetchAttackerDiscoverability(ctx, cveID)
+
 	return result
 }
 
@@ -263,6 +289,39 @@ func Apply(ext ExternalEnrichment, ev *schema.ExploitationEvidence) {
 	// CISA SSVC triage decision
 	if ext.Vulnrichment.Found && ext.Vulnrichment.SSVCDecision != "" {
 		ev.CISASSVCDecision = ext.Vulnrichment.SSVCDecision
+	}
+
+	// FIRE — financial loss confirmed via insurance carrier data
+	if ext.FIRE.Found {
+		ev.FireLinked = true
+		ev.FireSources = appendUniqueAll(ev.FireSources, ext.FIRE.Sources)
+	}
+
+	// ICE additional sources — annual breach-investigation and threat reports
+	if ext.MandiantMTrends.Found {
+		ev.MandiantMTrends = true
+		ev.BreachConfirmed = true
+		ev.BreachSources = appendUnique(ev.BreachSources, "mandiant_mtrends")
+	}
+	if ext.CrowdStrikeGTR.Found {
+		ev.CrowdStrikeGTR = true
+		ev.BreachSources = appendUnique(ev.BreachSources, "crowdstrike_gtr")
+	}
+
+	// Attacker discoverability — only propagate when a meaningful tier was
+	// determined (not "unknown"). Credentialed-only is explicitly propagated
+	// because it increases OPES difficulty (defender signal, not attacker signal).
+	d := ext.Discoverability
+	if d.Tier != "" && d.Tier != "unknown" {
+		ev.AttackerDiscoverabilityTier = d.Tier
+		ev.AttackerDiscoverabilityScore = d.Score
+	}
+	// OTX active campaign: 20+ pulses = widely deployed attacker tooling
+	if d.OTX.Found && d.OTX.PulseCount >= 20 {
+		ev.OTXActiveCampaign = true
+		ev.OTXPulseCount = d.OTX.PulseCount
+	} else if d.OTX.Found && d.OTX.PulseCount > 0 {
+		ev.OTXPulseCount = d.OTX.PulseCount
 	}
 }
 

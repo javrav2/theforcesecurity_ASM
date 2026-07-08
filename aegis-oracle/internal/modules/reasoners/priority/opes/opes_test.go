@@ -12,8 +12,8 @@ import (
 // TestOPES_CVE_2025_55130_TenantContainer reproduces the analyst's
 // reference reasoning. With both blocker preconditions Unknown (we can't
 // verify Node permission flags or in-process JS execution from external
-// signals), OPES should land in P3 "Conditional - Verification Required"
-// — not P0 Critical (NVD's reading) and not P4 Not Exploitable
+// signals), OPES should land in Low "Low - Verification Required"
+// — not Critical (NVD's reading) and not Informational Not Exploitable
 // (premature dismissal).
 //
 // See knowledgebase/patterns/nodejs.permissions-symlink-escape.yaml for
@@ -22,11 +22,11 @@ func TestOPES_CVE_2025_55130_TenantContainer(t *testing.T) {
 	in := cve202555130Input()
 	score := Compute(in, DefaultConfig())
 
-	if score.Category != schema.PriorityP3 {
-		t.Errorf("category: got %s, want %s", score.Category, schema.PriorityP3)
+	if score.Category != schema.PriorityLow {
+		t.Errorf("category: got %s, want %s", score.Category, schema.PriorityLow)
 	}
 	if score.Value < 3.5 || score.Value > 5.5 {
-		t.Errorf("score: got %.2f, want 3.5..5.5 (P3 territory)", score.Value)
+		t.Errorf("score: got %.2f, want 3.5..5.5 (Low territory)", score.Value)
 	}
 	if score.Confidence != schema.ConfidenceMedium {
 		t.Errorf("confidence: got %s, want medium (unknown blockers)", score.Confidence)
@@ -63,7 +63,7 @@ func TestOPES_CVE_2025_55130_TenantContainer(t *testing.T) {
 // TestOPES_CVE_2025_55130_PermissionsNotInUse demonstrates the
 // blocker-unsatisfied override. When verification confirms the Node
 // permissions model is NOT in use, the exploit becomes impossible and
-// the finding drops to P4 with score 0 — no LLM call required.
+// the finding drops to Informational with score 0 — no LLM call required.
 func TestOPES_CVE_2025_55130_PermissionsNotInUse(t *testing.T) {
 	in := cve202555130Input()
 	for i, e := range in.Preconditions {
@@ -78,8 +78,8 @@ func TestOPES_CVE_2025_55130_PermissionsNotInUse(t *testing.T) {
 	if score.Value != 0.0 {
 		t.Errorf("score: got %.2f, want 0.0", score.Value)
 	}
-	if score.Category != schema.PriorityP4 {
-		t.Errorf("category: got %s, want P4", score.Category)
+	if score.Category != schema.PriorityInformational {
+		t.Errorf("category: got %s, want informational", score.Category)
 	}
 	if score.Override != "blocker_unsatisfied" {
 		t.Errorf("override: got %q, want blocker_unsatisfied", score.Override)
@@ -90,7 +90,7 @@ func TestOPES_CVE_2025_55130_PermissionsNotInUse(t *testing.T) {
 }
 
 // TestOPES_CVE_2025_55130_KEVListed proves the KEV floor. If CISA
-// catalogs the CVE as actively exploited, OPES floors at P0 regardless
+// catalogs the CVE as actively exploited, OPES floors at Critical regardless
 // of unknown preconditions — verification becomes urgent rather than
 // optional.
 func TestOPES_CVE_2025_55130_KEVListed(t *testing.T) {
@@ -100,8 +100,8 @@ func TestOPES_CVE_2025_55130_KEVListed(t *testing.T) {
 
 	score := Compute(in, DefaultConfig())
 
-	if score.Category != schema.PriorityP0 {
-		t.Errorf("category: got %s, want P0 (KEV floor)", score.Category)
+	if score.Category != schema.PriorityCritical {
+		t.Errorf("category: got %s, want critical (KEV floor)", score.Category)
 	}
 	if score.Value < 8.5 {
 		t.Errorf("score: got %.2f, want >= 8.5 (KEV floor)", score.Value)
@@ -143,6 +143,9 @@ func TestOPES_IsolatedAsset(t *testing.T) {
 
 	if score.Value != 0.0 {
 		t.Errorf("score: got %.2f, want 0.0 (isolated)", score.Value)
+	}
+	if score.Category != schema.PriorityInformational {
+		t.Errorf("category: got %s, want informational (unreachable)", score.Category)
 	}
 	if score.Override != "unreachable" {
 		t.Errorf("override: got %q, want unreachable", score.Override)

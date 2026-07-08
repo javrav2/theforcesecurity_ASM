@@ -11,11 +11,11 @@ import (
 // combine takes the six component scores and produces the final OPESScore,
 // applying overrides and dampeners in this order:
 //
-//  1. Blocker-unsatisfied override → score 0, P4 "Not Exploitable"
-//  2. Reachability-zero override   → score 0, P4 "Not Reachable"
+//  1. Blocker-unsatisfied override → score 0, Informational "Not Exploitable"
+//  2. Reachability-zero override   → score 0, Informational "Not Reachable"
 //  3. Weighted sum                 → raw 0–10
-//  4. KEV-floor override (X high)  → floor at KEVFloorScore, P0
-//  5. Unknown-blocker dampener     → cap at UnknownBlockerCap (P3-territory)
+//  4. KEV-floor override (X high)  → floor at KEVFloorScore, Critical
+//  5. Unknown-blocker dampener     → cap at UnknownBlockerCap (Low-territory)
 //
 // Order matters: an unsatisfied blocker beats KEV listing (the exploit
 // genuinely cannot happen), but KEV beats unknown blockers (we know
@@ -24,7 +24,7 @@ func combine(in Input, c schema.OPESComponents, cfg Config) schema.OPESScore {
 	if in.Preconditions.AnyBlocker(schema.PreconditionUnsatisfied) {
 		return schema.OPESScore{
 			Value:            0.0,
-			Category:         schema.PriorityP4,
+			Category:         schema.PriorityInformational,
 			Label:            "Not Exploitable",
 			Confidence:       schema.ConfidenceHigh,
 			Components:       c,
@@ -37,7 +37,7 @@ func combine(in Input, c schema.OPESComponents, cfg Config) schema.OPESScore {
 	if c.R == 0 {
 		return schema.OPESScore{
 			Value:            0.0,
-			Category:         schema.PriorityP4,
+			Category:         schema.PriorityInformational,
 			Label:            "Not Reachable",
 			Confidence:       schema.ConfidenceHigh,
 			Components:       c,
@@ -59,7 +59,7 @@ func combine(in Input, c schema.OPESComponents, cfg Config) schema.OPESScore {
 			raw = cfg.Dampeners.KEVFloorScore
 		}
 		score := buildScore(raw, c, in, cfg)
-		score.Category = schema.PriorityP0
+		score.Category = schema.PriorityCritical
 		score.Label = "Actively Exploited"
 		score.Override = "kev_floor"
 		return score
@@ -70,7 +70,7 @@ func combine(in Input, c schema.OPESComponents, cfg Config) schema.OPESScore {
 		if raw > cfg.Dampeners.UnknownBlockerCap {
 			raw = cfg.Dampeners.UnknownBlockerCap
 			dampener = fmt.Sprintf(
-				"Unknown-blocker dampener applied: %d blocker precondition(s) unverifiable from current asset signals; capped at P3 until verified",
+				"Unknown-blocker dampener applied: %d blocker precondition(s) unverifiable from current asset signals; capped at Low until verified",
 				in.Preconditions.CountBlockers(schema.PreconditionUnknown),
 			)
 		}
@@ -100,16 +100,16 @@ func buildScore(raw float64, c schema.OPESComponents, in Input, cfg Config) sche
 
 func bucketize(v float64, cfg Config) (schema.Priority, string) {
 	switch {
-	case v >= cfg.Bucketing.P0:
-		return schema.PriorityP0, "Critical - Actively Exploitable"
-	case v >= cfg.Bucketing.P1:
-		return schema.PriorityP1, "High - Likely Exploitable"
-	case v >= cfg.Bucketing.P2:
-		return schema.PriorityP2, "Medium - Conditionally Exploitable"
-	case v >= cfg.Bucketing.P3:
-		return schema.PriorityP3, "Conditional - Verification Required"
+	case v >= cfg.Bucketing.Critical:
+		return schema.PriorityCritical, "Critical - Actively Exploitable"
+	case v >= cfg.Bucketing.High:
+		return schema.PriorityHigh, "High - Likely Exploitable"
+	case v >= cfg.Bucketing.Medium:
+		return schema.PriorityMedium, "Medium - Conditionally Exploitable"
+	case v >= cfg.Bucketing.Low:
+		return schema.PriorityLow, "Low - Verification Required"
 	default:
-		return schema.PriorityP4, "Low - Unlikely to be Exploited"
+		return schema.PriorityInformational, "Informational - Unlikely to be Exploited"
 	}
 }
 

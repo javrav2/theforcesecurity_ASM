@@ -53,7 +53,7 @@ interface OPESComponents { E: number; R: number; P: number; X: number; C: number
 
 interface OPESScore {
   score: number;
-  category: 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
+  category: 'urgent' | 'critical' | 'high' | 'medium' | 'low' | 'informational';
   label: string;
   confidence: 'high' | 'medium' | 'low';
   components: OPESComponents;
@@ -175,12 +175,14 @@ type ConnectionMode = 'connecting' | 'websocket' | 'rest' | 'disconnected';
 // Oracle helper constants
 // ═══════════════════════════════════════════════════════
 
+// "urgent" is manual-only and will never be emitted by the OPES engine.
 const CATEGORY_STYLES: Record<string, string> = {
-  P0: 'bg-red-600 text-white',
-  P1: 'bg-orange-500 text-white',
-  P2: 'bg-yellow-500 text-black',
-  P3: 'bg-blue-500 text-white',
-  P4: 'bg-muted text-muted-foreground',
+  urgent:        'bg-purple-600 text-white',
+  critical:      'bg-red-600 text-white',
+  high:          'bg-orange-500 text-white',
+  medium:        'bg-yellow-500 text-black',
+  low:           'bg-blue-500 text-white',
+  informational: 'bg-muted text-muted-foreground',
 };
 
 const STATUS_ICON: Record<string, React.ReactNode> = {
@@ -1338,7 +1340,7 @@ export default function AgentPage() {
                       {/* Oracle OPES category strip */}
                       {findings.length > 0 && (
                         <div className="hidden sm:flex items-center gap-1.5">
-                          {(['P0', 'P1', 'P2', 'P3', 'P4'] as const).map((cat) => {
+                          {(['urgent', 'critical', 'high', 'medium', 'low', 'informational'] as const).map((cat) => {
                             const count = countByCategory(cat);
                             if (count === 0) return null;
                             return (
@@ -1368,7 +1370,7 @@ export default function AgentPage() {
                 <CardContent className="space-y-4">
                   {/* Category filter buttons */}
                   <div className="flex gap-2 flex-wrap">
-                    {['all', 'P0', 'P1', 'P2', 'P3', 'P4'].map((c) => (
+                    {['all', 'urgent', 'critical', 'high', 'medium', 'low', 'informational'].map((c) => (
                       <Button key={c} size="sm" variant={filterCat === c ? 'default' : 'outline'}
                         onClick={() => setFilterCat(c)} className="h-7 px-2.5 text-xs">
                         {c === 'all' ? `All (${findings.length})` : <><CategoryBadge cat={c} /><span className="ml-1">{countByCategory(c)}</span></>}

@@ -491,15 +491,15 @@ func nextSteps(score schema.OPESScore, set schema.PreconditionEvalSet) []string 
 		}
 	}
 	switch score.Category {
-	case schema.PriorityP0:
+	case schema.PriorityCritical:
 		steps = append(steps, "Patch on emergency cadence; if no patch, apply vendor mitigations and isolate the asset until patched.")
-	case schema.PriorityP1:
+	case schema.PriorityHigh:
 		steps = append(steps, "Patch in the next change window; deploy compensating controls (WAF rule, network ACL) in the interim.")
-	case schema.PriorityP2:
+	case schema.PriorityMedium:
 		steps = append(steps, "Patch in routine maintenance; verify preconditions to confirm the conditional risk is real.")
-	case schema.PriorityP3:
+	case schema.PriorityLow:
 		steps = append(steps, "Verify outstanding preconditions before re-prioritizing; patch in routine cycle once verified.")
-	case schema.PriorityP4:
+	case schema.PriorityInformational:
 		steps = append(steps, "No urgent action; track for awareness and handle on routine patching cadence.")
 	}
 	return steps

@@ -145,7 +145,12 @@ class ExternalService:
     SECURITYTRAILS = "securitytrails"
     BINARYEDGE = "binaryedge"
     PASSIVETOTAL = "passivetotal"
-    
+
+    # Vulnerability intelligence / exploit signals
+    VULNCHECK = "vulncheck"        # VulnCheck KEV + exploit intelligence
+    PDCP = "pdcp"                  # ProjectDiscovery Cloud Platform (vulnx, Nuclei templates)
+    NVD = "nvd"                    # NVD API key (raises rate limits)
+
     # Free services (no API key required)
     WAYBACK = "wayback"
     RAPIDDNS = "rapiddns"
@@ -168,7 +173,58 @@ DEFAULT_RATE_LIMITS = {
     ExternalService.RAPIDDNS: {"per_second": 1, "per_day": None},
     ExternalService.SHODAN_CTL: {"per_second": 1, "per_day": None},
     ExternalService.M365: {"per_second": 1, "per_day": None},
+    ExternalService.VULNCHECK: {"per_second": 10, "per_day": None},
+    ExternalService.PDCP: {"per_second": 10, "per_day": None},
+    ExternalService.NVD: {"per_second": 5, "per_day": None},
 }
+
+
+# ── Env-var fallbacks for each service ───────────────────────────────────────
+# When no DB record exists, these env vars are checked as a fallback.
+SERVICE_ENV_FALLBACK: dict[str, str] = {
+    ExternalService.VULNCHECK: "VULNCHECK_API_TOKEN",
+    ExternalService.PDCP:      "PDCP_API_KEY",
+    ExternalService.NVD:       "NVD_API_KEY",
+    ExternalService.OTX:       "OTX_API_KEY",
+    ExternalService.SHODAN:    "SUBCAT_SHODAN_KEY",
+    ExternalService.VIRUSTOTAL: "SUBCAT_VIRUSTOTAL_KEY",
+    ExternalService.SECURITYTRAILS: "SUBCAT_SECURITYTRAILS_KEY",
+    ExternalService.BINARYEDGE: "SUBCAT_BINARYEDGE_KEY",
+}
+
+
+def resolve_api_key(db, service: str, organization_id: int | None = None) -> str | None:
+    """
+    Resolve an API key for `service` using a two-step lookup:
+
+    1. DB (api_configs table) — scoped to `organization_id` if given, otherwise
+       returns the first active record for the service across all orgs.
+    2. Environment variable fallback (SERVICE_ENV_FALLBACK map).
+
+    This lets admins configure keys via the Settings UI without needing to
+    touch the server's `.env` file. The env-var fallback ensures existing
+    deployments keep working without a DB migration step.
+    """
+    try:
+        query = db.query(APIConfig).filter(
+            APIConfig.service_name == service,
+            APIConfig.is_active == True,
+        )
+        if organization_id is not None:
+            query = query.filter(APIConfig.organization_id == organization_id)
+        config = query.first()
+        if config:
+            key = config.get_api_key()
+            if key:
+                return key
+    except Exception:
+        pass
+
+    # Fall back to environment variable
+    env_var = SERVICE_ENV_FALLBACK.get(service)
+    if env_var:
+        return os.environ.get(env_var) or None
+    return None
 
 
 

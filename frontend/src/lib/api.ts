@@ -1071,6 +1071,14 @@ class ApiClient {
     return this.client.post(url, data);
   }
 
+  async put(url: string, data?: any) {
+    return this.client.put(url, data);
+  }
+
+  async delete(url: string) {
+    return this.client.delete(url);
+  }
+
   // Generic request method for flexible API calls
   async request(url: string, options?: { 
     method?: string; 

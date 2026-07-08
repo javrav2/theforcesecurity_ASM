@@ -81,15 +81,21 @@ interface DelphiKEV {
 interface DelphiEPSS {
   score: number;
   percentile: number;
-  bucket: string;
+  /** display_label replaced 'bucket' — informational only, not used in scoring */
+  display_label?: string;
+  /** Legacy field kept for backward-compat with old enrichment records */
+  bucket?: string;
   date?: string;
+  informational_only?: boolean;
+  scoring_note?: string;
 }
 
 interface DelphiEnrichment {
   kev?: DelphiKEV | null;
   epss?: DelphiEPSS | null;
-  priority?: 'critical' | 'high' | 'medium' | 'low' | 'none';
+  priority?: 'critical' | 'high' | 'elevated' | 'moderate' | 'low' | 'none';
   priority_reason?: string;
+  priority_signals?: string[];
   enriched_at?: string;
 }
 
@@ -141,7 +147,7 @@ interface OracleEnrichment {
   analysis_error?: string;
   finding_class?: string;
   opes_score?: number;
-  opes_category?: 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
+  opes_category?: 'urgent' | 'critical' | 'high' | 'medium' | 'low' | 'informational';
   opes_label?: string;
   opes_confidence?: 'high' | 'medium' | 'low';
   attack_path_class?: string;
@@ -179,17 +185,19 @@ function isRansomwareKev(kev?: DelphiKEV | null): boolean {
 
 // OPES priority styles — match the colour scheme used on the dedicated
 // /oracle page so badges read consistently across the app.
+// "urgent" is a manual-only override; the engine never auto-assigns it.
 const opesCategoryStyle: Record<string, { label: string; className: string }> = {
-  P0: { label: 'OPES P0', className: 'bg-red-600/20 text-red-300 border-red-600/40' },
-  P1: { label: 'OPES P1', className: 'bg-orange-500/20 text-orange-300 border-orange-500/40' },
-  P2: { label: 'OPES P2', className: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40' },
-  P3: { label: 'OPES P3', className: 'bg-blue-500/20 text-blue-300 border-blue-500/40' },
-  P4: { label: 'OPES P4', className: 'bg-muted text-muted-foreground border-muted-foreground/30' },
+  urgent:       { label: 'OPES Urgent',       className: 'bg-purple-600/20 text-purple-300 border-purple-600/40' },
+  critical:     { label: 'OPES Critical',     className: 'bg-red-600/20 text-red-300 border-red-600/40' },
+  high:         { label: 'OPES High',         className: 'bg-orange-500/20 text-orange-300 border-orange-500/40' },
+  medium:       { label: 'OPES Medium',       className: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40' },
+  low:          { label: 'OPES Low',          className: 'bg-blue-500/20 text-blue-300 border-blue-500/40' },
+  informational:{ label: 'OPES Info',         className: 'bg-muted text-muted-foreground border-muted-foreground/30' },
 };
 
 function OracleBadge({ oracle, compact = false }: { oracle?: OracleEnrichment; compact?: boolean }) {
   if (!oracle || !oracle.opes_category) return null;
-  const style = opesCategoryStyle[oracle.opes_category] ?? opesCategoryStyle.P4;
+  const style = opesCategoryStyle[oracle.opes_category] ?? opesCategoryStyle.informational;
   const score = oracle.opes_score != null ? ` · ${oracle.opes_score.toFixed(1)}` : '';
   const title = [
     `${style.label}${score}`,
@@ -406,11 +414,12 @@ function DelphiBadges({ delphi, compact = false }: { delphi?: DelphiEnrichment; 
       {delphi.epss && (
         <Badge
           variant="outline"
-          className="text-[10px] px-1.5 py-0 h-5 border bg-purple-500/10 text-purple-300 border-purple-500/30"
-          title={`EPSS bucket: ${delphi.epss.bucket} · score ${delphi.epss.score.toFixed(3)} · percentile ${(delphi.epss.percentile * 100).toFixed(1)}%`}
+          className="text-[10px] px-1.5 py-0 h-5 border bg-muted/40 text-muted-foreground border-muted-foreground/20"
+          title={`EPSS (informational only — not used in scoring)\nScore: ${delphi.epss.score.toFixed(3)} · Percentile: ${(delphi.epss.percentile * 100).toFixed(1)}%\nEPSS is a probabilistic estimate. Priority is driven by KEV status and CVSS analysis.`}
         >
-          <TrendingUp className="h-3 w-3 mr-0.5" />
+          <TrendingUp className="h-3 w-3 mr-0.5 opacity-60" />
           EPSS {(delphi.epss.percentile * 100).toFixed(0)}%
+          <Info className="h-2.5 w-2.5 ml-0.5 opacity-60" />
         </Badge>
       )}
       {!compact && delphi.priority && delphi.priority !== 'none' && delphiPriorityStyle[delphi.priority] && (
@@ -489,6 +498,13 @@ export default function FindingsPage() {
   const [onlyKev, setOnlyKev] = useState(false);
   const [oracleBatchBusy, setOracleBatchBusy] = useState(false);
   const { toast } = useToast();
+
+  // Generate Nuclei Template state
+  const [generateTemplateOpen, setGenerateTemplateOpen] = useState(false);
+  const [generatingTemplate, setGeneratingTemplate] = useState(false);
+  const [generateTemplateCveId, setGenerateTemplateCveId] = useState('');
+  const [generateTemplateEvidence, setGenerateTemplateEvidence] = useState('');
+  const [firstOrgId, setFirstOrgId] = useState<number | null>(null);
 
   // Jira ticket creation state
   const [jiraDialogOpen, setJiraDialogOpen] = useState(false);
@@ -799,6 +815,10 @@ export default function FindingsPage() {
 
   useEffect(() => {
     fetchData();
+    // Grab the first org for template generation
+    api.getOrganizations().then((orgs: any[]) => {
+      if (orgs?.length) setFirstOrgId(orgs[0].id);
+    }).catch(() => {});
   }, [selectedSeverity]);
 
   const handleSearch = (query: string) => {
@@ -909,9 +929,9 @@ export default function FindingsPage() {
         const aRank = delphiPriorityRank[a.delphi?.priority || 'none'] ?? 5;
         const bRank = delphiPriorityRank[b.delphi?.priority || 'none'] ?? 5;
         if (aRank !== bRank) return aRank - bRank;
-        const aEpss = a.delphi?.epss?.score ?? 0;
-        const bEpss = b.delphi?.epss?.score ?? 0;
-        if (aEpss !== bEpss) return bEpss - aEpss;
+        const aCvss = a.cvss_score ?? 0;
+        const bCvss = b.cvss_score ?? 0;
+        if (aCvss !== bCvss) return bCvss - aCvss;
         // Fall through to severity tie-break
       }
       if (sortMode === 'recent') {
@@ -1022,7 +1042,7 @@ export default function FindingsPage() {
                 <SelectItem value="delphi">
                   <span className="flex items-center gap-2">
                     <Sparkles className="h-3.5 w-3.5 text-purple-400" />
-                    Sort: Delphi priority (KEV → EPSS)
+                    Sort: Delphi priority (KEV → CVSS)
                   </span>
                 </SelectItem>
                 <SelectItem value="cvss">Sort: CVSS score</SelectItem>
@@ -1070,7 +1090,7 @@ export default function FindingsPage() {
               <div className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4 text-purple-400" />
                 <span className="font-medium">Delphi enrichment</span>
-                <span className="text-muted-foreground">CISA KEV + FIRST EPSS</span>
+                <span className="text-muted-foreground">KEV · CVSS analysis · breach intel</span>
               </div>
               <div className="flex items-center gap-3 ml-auto flex-wrap">
                 {ransomwareCount > 0 && (
@@ -1085,9 +1105,9 @@ export default function FindingsPage() {
                     {kevCount} on CISA KEV
                   </span>
                 )}
-                <span className="flex items-center gap-1 text-purple-300">
-                  <TrendingUp className="h-3.5 w-3.5" />
-                  {findings.filter((f) => f.delphi?.epss).length} with EPSS
+                <span className="flex items-center gap-1 text-muted-foreground" title="EPSS is fetched for reference but does not affect priority scoring">
+                  <TrendingUp className="h-3.5 w-3.5 opacity-50" />
+                  {findings.filter((f) => f.delphi?.epss).length} with EPSS (reference)
                 </span>
               </div>
             </CardContent>
@@ -1603,34 +1623,43 @@ export default function FindingsPage() {
                       </div>
                     )}
                     {selectedFinding.delphi.epss && (
-                      <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <TrendingUp className="h-4 w-4 text-purple-400" />
-                          <p className="text-sm font-medium text-purple-300">FIRST EPSS — Exploit Prediction</p>
+                      <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                            <p className="text-sm font-medium text-muted-foreground">FIRST EPSS — Reference Only</p>
+                          </div>
+                          <Badge variant="outline" className="text-[10px] px-1.5 h-4 text-muted-foreground border-muted-foreground/30">
+                            Not used in scoring
+                          </Badge>
                         </div>
                         <div className="grid grid-cols-3 gap-2 text-center">
                           <div>
                             <p className="text-xs text-muted-foreground">Score</p>
-                            <p className="text-lg font-mono">{selectedFinding.delphi.epss.score.toFixed(3)}</p>
+                            <p className="text-lg font-mono text-muted-foreground">{selectedFinding.delphi.epss.score.toFixed(3)}</p>
                           </div>
                           <div>
                             <p className="text-xs text-muted-foreground">Percentile</p>
-                            <p className="text-lg font-mono">{(selectedFinding.delphi.epss.percentile * 100).toFixed(1)}%</p>
+                            <p className="text-lg font-mono text-muted-foreground">{(selectedFinding.delphi.epss.percentile * 100).toFixed(1)}%</p>
                           </div>
                           <div>
-                            <p className="text-xs text-muted-foreground">Bucket</p>
-                            <p className="text-sm uppercase tracking-wide">{selectedFinding.delphi.epss.bucket}</p>
+                            <p className="text-xs text-muted-foreground">Tier</p>
+                            <p className="text-sm text-muted-foreground">
+                              {selectedFinding.delphi.epss.display_label ?? selectedFinding.delphi.epss.bucket}
+                            </p>
                           </div>
                         </div>
-                        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="h-1 bg-muted rounded-full overflow-hidden">
                           <div
-                            className="h-full bg-purple-500"
+                            className="h-full bg-muted-foreground/40"
                             style={{ width: `${Math.min(100, selectedFinding.delphi.epss.percentile * 100)}%` }}
                           />
                         </div>
-                        {selectedFinding.delphi.epss.date && (
-                          <p className="text-xs text-muted-foreground">EPSS scoring date: {selectedFinding.delphi.epss.date}</p>
-                        )}
+                        <p className="text-xs text-muted-foreground">
+                          EPSS is a probabilistic 30-day exploit prediction. Priority is driven by CISA KEV status,
+                          CVSS vector analysis, and breach intelligence — not EPSS.
+                          {selectedFinding.delphi.epss.date && ` Score date: ${selectedFinding.delphi.epss.date}.`}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -1650,6 +1679,32 @@ export default function FindingsPage() {
                   );
                 }}
               />
+
+              {/* Generate Nuclei Template CTA */}
+              {selectedFinding && (selectedFinding.cve_id || selectedFinding.template_id) && (
+                <div className="flex items-center gap-2 p-2.5 rounded-lg border border-purple-500/20 bg-purple-500/5">
+                  <FileCode className="h-4 w-4 text-purple-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-purple-300 font-medium">Detection Coverage</p>
+                    <p className="text-xs text-muted-foreground">
+                      Generate or manage a custom Nuclei template for this finding
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 text-xs border-purple-500/30 text-purple-300 hover:bg-purple-500/10 gap-1"
+                    onClick={() => {
+                      setGenerateTemplateCveId(selectedFinding?.cve_id || '');
+                      setGenerateTemplateEvidence(selectedFinding?.evidence || selectedFinding?.matched_at || '');
+                      setGenerateTemplateOpen(true);
+                    }}
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    Generate Template
+                  </Button>
+                </div>
+              )}
 
               {/* Matched At / Evidence */}
               {selectedFinding?.matched_at && (
@@ -2027,6 +2082,79 @@ export default function FindingsPage() {
                   Create issue
                 </Button>
               )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Generate Nuclei Template Dialog */}
+        <Dialog open={generateTemplateOpen} onOpenChange={setGenerateTemplateOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-purple-400" />
+                Generate Nuclei Template
+              </DialogTitle>
+              <DialogDescription>
+                The AI will generate a Nuclei YAML detection template based on this finding. Saved as draft for your review.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <div className="space-y-1">
+                <label className="text-xs font-medium">CVE ID</label>
+                <Input
+                  placeholder="CVE-2024-12345"
+                  value={generateTemplateCveId}
+                  onChange={e => setGenerateTemplateCveId(e.target.value.toUpperCase())}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium">Affected URL / Matched Evidence <span className="text-muted-foreground">(optional)</span></label>
+                <Input
+                  placeholder="/path/to/vulnerable/endpoint"
+                  value={generateTemplateEvidence}
+                  onChange={e => setGenerateTemplateEvidence(e.target.value)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground p-2 rounded border border-purple-500/20 bg-purple-500/5 text-purple-400">
+                Template will be saved to <strong>Nuclei Templates</strong> as a draft. Review the YAML before activating.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-border">
+              <Button variant="outline" onClick={() => setGenerateTemplateOpen(false)} disabled={generatingTemplate}>
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!firstOrgId) {
+                    toast({ title: 'No organization found', variant: 'destructive' });
+                    return;
+                  }
+                  setGeneratingTemplate(true);
+                  try {
+                    const resp = await api.post('/nuclei-templates/generate', {
+                      organization_id: firstOrgId,
+                      cve_id: generateTemplateCveId.trim() || undefined,
+                      vulnerability_description: selectedFinding?.description || undefined,
+                      affected_url: generateTemplateEvidence.trim() || undefined,
+                      affected_product: selectedFinding?.detected_by || undefined,
+                    });
+                    toast({
+                      title: 'Template generated',
+                      description: `Saved as draft: ${resp.data.template_id} — view in Nuclei Templates`,
+                    });
+                    setGenerateTemplateOpen(false);
+                  } catch (err: any) {
+                    toast({ title: 'Generation failed', description: err?.response?.data?.detail || err.message, variant: 'destructive' });
+                  } finally {
+                    setGeneratingTemplate(false);
+                  }
+                }}
+                disabled={generatingTemplate || (!generateTemplateCveId.trim() && !selectedFinding?.description)}
+                className="gap-1.5 bg-purple-600 hover:bg-purple-700"
+              >
+                {generatingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                {generatingTemplate ? 'Generating…' : 'Generate'}
+              </Button>
             </div>
           </DialogContent>
         </Dialog>

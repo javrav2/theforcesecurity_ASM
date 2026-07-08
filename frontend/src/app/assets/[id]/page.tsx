@@ -797,10 +797,27 @@ export default function AssetDetailPage() {
               <CardContent className="p-4">
                 <div className="text-sm text-muted-foreground mb-2">Risk Drivers</div>
                 <div className="flex flex-wrap gap-1">
+                  {/* System type profile — data sensitivity classification */}
+                  {asset.acs_drivers?.system_type_profile && (
+                    <Badge
+                      className={`text-xs ${
+                        asset.acs_drivers.system_type_profile.risk === 'critical'
+                          ? 'bg-purple-600/20 text-purple-300 border-purple-600/40'
+                          : 'bg-orange-500/20 text-orange-300 border-orange-500/40'
+                      }`}
+                      title={[
+                        asset.acs_drivers.system_type_profile.reason,
+                        asset.acs_drivers.system_type_profile.data_labels?.join(', '),
+                        `ACS floor: ${asset.acs_drivers.system_type_profile.acs_floor}`,
+                      ].join(' · ')}
+                    >
+                      {asset.acs_drivers.system_type_profile.system_type?.replace(/_/g, ' ')}
+                    </Badge>
+                  )}
                   {/* Login Portal */}
                   {asset.acs_drivers?.login_portal && (
                     <Badge className="text-xs bg-red-500/20 text-red-400 border-red-500/30">
-                      🔐 Login Portal
+                      Login Portal
                     </Badge>
                   )}
                   {/* High-risk Technologies */}
@@ -810,7 +827,7 @@ export default function AssetDetailPage() {
                       asset.acs_drivers?.technologies?.risk === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
                       'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
                     }`}>
-                      ⚙️ {asset.acs_drivers?.technologies?.items?.[0]?.reason || 'High-risk Tech'}
+                      {asset.acs_drivers?.technologies?.items?.[0]?.reason || 'High-risk Tech'}
                     </Badge>
                   )}
                   {/* Risky Ports */}
@@ -819,25 +836,25 @@ export default function AssetDetailPage() {
                       asset.acs_drivers?.risky_ports?.risk === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
                       'bg-orange-500/20 text-orange-400 border-orange-500/30'
                     }`}>
-                      🔓 {asset.acs_drivers?.risky_ports?.count} Risky Port(s)
+                      {asset.acs_drivers?.risky_ports?.count} Risky Port(s)
                     </Badge>
                   )}
                   {/* Vulnerabilities */}
                   {asset.acs_drivers?.vulnerabilities?.critical > 0 && (
                     <Badge className="text-xs bg-red-500/20 text-red-400 border-red-500/30">
-                      ⚠️ {asset.acs_drivers?.vulnerabilities?.critical} Critical Vuln
+                      {asset.acs_drivers?.vulnerabilities?.critical} Critical Vuln(s)
                     </Badge>
                   )}
                   {/* Public Facing */}
                   {asset.acs_drivers?.public_facing && (
                     <Badge variant="secondary" className="text-xs">
-                      🌐 Public
+                      Public
                     </Badge>
                   )}
                   {/* Owned Infrastructure */}
                   {asset.acs_drivers?.owned_infrastructure && (
                     <Badge variant="secondary" className="text-xs">
-                      🏢 Owned Infra
+                      Owned Infra
                     </Badge>
                   )}
                   {/* Device Class fallback if no drivers */}

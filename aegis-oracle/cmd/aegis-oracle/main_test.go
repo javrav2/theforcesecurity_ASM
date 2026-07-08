@@ -25,8 +25,8 @@ func TestAnalyzeGenericFindingClassifiesAnonymousMongoRansomware(t *testing.T) {
 	if result.FindingClass != "exposed_datastore" {
 		t.Fatalf("expected exposed_datastore, got %q", result.FindingClass)
 	}
-	if result.OPES.Category != schema.PriorityP0 {
-		t.Fatalf("expected ransomware marker to drive P0, got %+v", result.OPES)
+	if result.OPES.Category != schema.PriorityCritical {
+		t.Fatalf("expected ransomware marker to drive critical, got %+v", result.OPES)
 	}
 	if result.AnalystBrief.Title == "" || result.RecommendationText == "" {
 		t.Fatalf("expected analyst brief and recommendation, got %+v", result)

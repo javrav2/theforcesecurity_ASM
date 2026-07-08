@@ -801,6 +801,12 @@ def persist_takeover_findings(
             existing.status = VulnerabilityStatus.OPEN
             summary["updated"] += 1
         else:
+            # High-confidence takeover = endpoint_confirmed: the scanner
+            # verified the CNAME is dangling and the resource is unclaimed.
+            # A subdomain takeover doesn't need an exploit payload — the DNS
+            # misconfiguration IS the vulnerability, and it's confirmed reachable.
+            dc = "endpoint_confirmed" if finding.confidence in ("high", "confirmed") else "version_only"
+
             vuln = Vulnerability(
                 title=title,
                 description=description,
@@ -810,10 +816,15 @@ def persist_takeover_findings(
                 detected_by="takeover_scanner",
                 template_id=f"takeover-{_slug(finding.provider)}",
                 matcher_name=",".join(finding.methods),
+                detection_confidence=dc,
                 status=VulnerabilityStatus.OPEN,
                 evidence=finding.evidence,
                 tags=["takeover", finding.verdict, _slug(finding.provider)],
                 metadata_=meta,
+                # CWE-284: Improper Access Control — dangling DNS/CNAME allows
+                # an unauthorized party to claim the resource and serve content
+                # under the victim's subdomain.
+                cwe_id="CWE-284",
                 remediation=(
                     f"Reclaim the dangling resource on {finding.provider} or "
                     f"remove the CNAME/DNS record pointing to it."

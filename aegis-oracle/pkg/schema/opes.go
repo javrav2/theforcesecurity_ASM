@@ -1,15 +1,17 @@
 package schema
 
-// Priority is the action-oriented bucket assigned by OPES. Renders to your
-// existing P0..P4 conventions; remap in the priority sink if needed.
+// Priority is the action-oriented bucket assigned by OPES.
+//
+// "urgent" is intentionally excluded here — it is a manual-only override
+// that analysts apply in the UI and cannot be emitted by the scoring engine.
 type Priority string
 
 const (
-	PriorityP0 Priority = "P0"
-	PriorityP1 Priority = "P1"
-	PriorityP2 Priority = "P2"
-	PriorityP3 Priority = "P3"
-	PriorityP4 Priority = "P4"
+	PriorityCritical     Priority = "critical"
+	PriorityHigh         Priority = "high"
+	PriorityMedium       Priority = "medium"
+	PriorityLow          Priority = "low"
+	PriorityInformational Priority = "informational"
 )
 
 // OPESScore is the Oracle Practical Exploitability Score: a 0–10 number

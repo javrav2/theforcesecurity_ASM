@@ -1,32 +1,35 @@
 """
-Delphi - CISA KEV + FIRST EPSS Enrichment Service.
+Delphi - Vulnerability Priority Intelligence Service.
 
 Delphi was the ancient Greek oracle — the place you went to ask "which of
 these threats should I actually worry about?" This service answers the same
-question for vulnerabilities.
+question for vulnerabilities using defensible, evidence-based signals.
 
-It enriches every CVE finding in the platform with two authoritative signals
-that prioritise vulnerabilities far better than CVSS alone:
+Priority is driven by confirmed exploitation evidence and technical CVE
+characteristics — not probabilistic estimates. EPSS (Exploit Prediction
+Scoring System) is fetched and stored for informational display but does
+NOT affect the priority calculation. The FIRE report (cvedata.com) shows
+that EPSS is a poor predictor of real-world financial losses, and FIRST.org
+themselves caution that EPSS should not replace KEV-class signals.
 
-  1. **CISA KEV** (Known Exploited Vulnerabilities Catalog) — a curated list
-     published by CISA of CVEs that are confirmed to be exploited in the
-     wild right now. Inclusion in KEV is the single strongest signal that a
-     vulnerability is not theoretical.
+Priority signals (in order of strength):
+  1. **CISA KEV** — confirmed in-the-wild exploitation (fact, not probability).
+  2. **Breach intel** — CVE appears in Mandiant M-Trends or CrowdStrike GTR
+     breach investigation reports (documented attacker use).
+  3. **CVSS severity + attack vector** — CVSS ≥ 9.0 with unauthenticated
+     network exploitation path → high; CVSS 7.0–8.9 with network → elevated;
+     otherwise moderate/low based on score alone.
 
-  2. **FIRST EPSS** (Exploit Prediction Scoring System) — a probabilistic
-     model published daily by FIRST.org that scores every public CVE with
-     the probability (0.0–1.0) that it will be exploited in the next 30
-     days, plus a percentile rank within the whole CVE universe.
-
-Together they turn a 100,000-CVE haystack into a short list of "exploit now"
-and "exploit soon" findings.
+EPSS is still fetched daily and surfaced in the UI as a reference data point.
+Analysts can use it to understand relative exploit prediction among CVEs, but
+it is explicitly marked as informational in all API responses.
 
 Data sources:
     https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
     https://epss.cyentia.com/epss_scores-current.csv.gz
 
-Both feeds are downloaded on demand into a small on-disk cache and re-fetched
-after `DELPHI_REFRESH_HOURS`. No API keys required; both are public.
+Both feeds are cached on-disk and re-fetched after `DELPHI_REFRESH_HOURS`.
+No API keys required; both are public.
 """
 
 from __future__ import annotations
@@ -51,22 +54,82 @@ logger = logging.getLogger(__name__)
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL = "https://epss.cyentia.com/epss_scores-current.csv.gz"
 
-# EPSS percentile thresholds used to bucket findings for humans.
-# These ranges come directly from the EPSS "interpretation" guidance on first.org.
-EPSS_BUCKETS: List[Tuple[float, str]] = [
-    (0.95, "imminent"),    # top 5%  — act now
-    (0.80, "high"),        # top 20% — prioritise
-    (0.50, "elevated"),    # top half
-    (0.20, "moderate"),
-    (0.0, "low"),
+# EPSS percentile labels — used for display only, NOT for priority calculation.
+# These ranges are from first.org guidance but EPSS does not drive Delphi priority.
+_EPSS_DISPLAY_BUCKETS: List[Tuple[float, str]] = [
+    (0.95, "top 5%"),
+    (0.80, "top 20%"),
+    (0.50, "top 50%"),
+    (0.20, "bottom 80%"),
+    (0.0,  "low"),
 ]
 
 
-def _epss_bucket(percentile: float) -> str:
-    for threshold, label in EPSS_BUCKETS:
+def _epss_display_label(percentile: float) -> str:
+    """Return a display-only percentile label. Not used in priority scoring."""
+    for threshold, label in _EPSS_DISPLAY_BUCKETS:
         if percentile >= threshold:
             return label
     return "low"
+
+
+# ── Static breach intel — mirrors aegis-oracle/internal/modules/enrichers/fire_ice.go
+# CVEs from Mandiant M-Trends and CrowdStrike GTR breach investigation reports.
+# Update annually when new reports are published.
+# Last updated: M-Trends 2025, CrowdStrike GTR 2026.
+_MANDIANT_MTRENDS_CVES: frozenset = frozenset({
+    # M-Trends 2024 (2023 investigations)
+    "CVE-2023-46805", "CVE-2024-21887",  # Ivanti Connect Secure
+    "CVE-2023-34362",                     # MOVEit Transfer
+    "CVE-2023-4966",                      # Citrix Bleed
+    "CVE-2023-22518",                     # Atlassian Confluence
+    "CVE-2023-3519",                      # Citrix ADC
+    "CVE-2023-27350",                     # PaperCut
+    "CVE-2022-47966",                     # Zoho ManageEngine
+    "CVE-2021-44228",                     # Log4Shell
+    # M-Trends 2025 (2024 investigations)
+    "CVE-2024-3400",                      # Palo Alto GlobalProtect
+    "CVE-2024-21762",                     # Fortinet FortiOS
+    "CVE-2024-40711",                     # Veeam Backup
+    "CVE-2024-55956",                     # Cleo MFT
+    "CVE-2024-50623",                     # Cleo LexiCom/VLTrader
+})
+
+_CROWDSTRIKE_GTR_CVES: frozenset = frozenset({
+    # GTR 2025 (2024 adversary activity)
+    "CVE-2024-3400",                      # Palo Alto GlobalProtect
+    "CVE-2024-21762",                     # Fortinet FortiOS
+    "CVE-2024-55956",                     # Cleo MFT
+    "CVE-2025-0282",                      # Ivanti Connect Secure
+    "CVE-2024-40711",                     # Veeam Backup
+    "CVE-2024-7965",                      # Google Chrome V8
+    "CVE-2024-38193",                     # Windows AFD
+    "CVE-2024-21338",                     # Windows Kernel
+    # GTR 2026 (2025 adversary activity) — update when published
+})
+
+# FIRE dataset (Zywave insurance carrier data via cvedata.com).
+# Empty by default — populate from a cvedata.com pipeline export when available.
+_FIRE_CVES: frozenset = frozenset()
+
+
+def _parse_cvss_vector(vector: Optional[str]) -> dict:
+    """
+    Parse a CVSS 3.x or 4.0 vector string into a component dict.
+    Handles both 'CVSS:4.0/AV:N/AC:L/AT:P/...' and 'AV:N/AC:L/PR:N/...' formats.
+    """
+    if not vector:
+        return {}
+    # Strip 'CVSS:4.0/' or 'CVSS:3.1/' prefix
+    clean = vector.strip()
+    if "/" in clean and clean.split("/")[0].startswith("CVSS:"):
+        clean = "/".join(clean.split("/")[1:])
+    parts = {}
+    for segment in clean.split("/"):
+        if ":" in segment:
+            k, v = segment.split(":", 1)
+            parts[k.upper()] = v.upper()
+    return parts
 
 
 def _cache_dir() -> str:
@@ -218,9 +281,12 @@ class DelphiEnrichmentService:
             logger.error("Delphi: EPSS parse failed: %s", exc)
 
     def ensure_loaded(self, force_refresh: bool = False) -> None:
-        """Lazy-load or refresh both feeds. Safe to call on every enrich()."""
+        """Lazy-load or refresh feeds. KEV is required; EPSS is best-effort (display only)."""
         with self._lock:
-            already_loaded = bool(self._kev) and bool(self._epss)
+            # KEV is the critical feed — required for priority calculation.
+            # EPSS is optional (display only), so we gate only on KEV for the
+            # "already loaded" check.
+            already_loaded = bool(self._kev)
             if already_loaded and not force_refresh:
                 age = time.time() - self._last_load_ts
                 if age < self.refresh_hours * 3600:
@@ -243,14 +309,23 @@ class DelphiEnrichmentService:
             s = f"CVE-{s}"
         return s
 
-    def lookup(self, cve_id: str) -> Dict[str, Any]:
+    def lookup(
+        self,
+        cve_id: str,
+        *,
+        cvss_score: Optional[float] = None,
+        cvss_vector: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Look up KEV + EPSS signals for a single CVE.
+        Look up Delphi enrichment signals for a single CVE.
 
-        Returns a dict with keys:
-            cve_id, kev (obj|None), epss {score, percentile, bucket}|None,
-            priority (one of: critical, high, medium, low, none),
-            priority_reason (human string explaining the priority choice)
+        Priority is driven by KEV status, breach intel, and CVSS analysis —
+        NOT by EPSS. EPSS is included in the response for informational display
+        only and is explicitly marked as non-scoring.
+
+        Returns a dict with:
+            cve_id, kev, epss (display only), priority, priority_reason,
+            priority_signals (list of signals that drove the decision)
         """
         cve = self._normalize_cve(cve_id)
         if not self.enabled or not cve:
@@ -261,93 +336,191 @@ class DelphiEnrichmentService:
         kev_entry = self._kev.get(cve)
         epss_entry = self._epss.get(cve)
 
+        # EPSS — fetched for display, not used in priority calculation.
         epss_out = None
         if epss_entry:
+            pct = round(float(epss_entry.get("percentile") or 0), 6)
             epss_out = {
-                "score": round(epss_entry["score"], 6),
-                "percentile": round(epss_entry["percentile"], 6),
-                "bucket": _epss_bucket(epss_entry["percentile"]),
+                "score": round(float(epss_entry.get("score") or 0), 6),
+                "percentile": pct,
+                "display_label": _epss_display_label(pct),
                 "date": self._epss_date,
+                # Explicit flag so UI can display the right context.
+                "informational_only": True,
+                "scoring_note": "EPSS is a probabilistic estimate. It is not used in Delphi priority scoring.",
             }
 
-        priority, reason = self._derive_priority(kev_entry, epss_entry)
+        priority, reason, signals = self._derive_priority(
+            cve_id=cve,
+            kev=kev_entry,
+            cvss_score=cvss_score,
+            cvss_vector=cvss_vector,
+        )
 
         return {
             "cve_id": cve,
-            "enriched": bool(kev_entry or epss_entry),
+            "enriched": bool(kev_entry or epss_entry or cvss_score),
             "kev": kev_entry,
             "epss": epss_out,
             "priority": priority,
             "priority_reason": reason,
+            "priority_signals": signals,
         }
 
     def _derive_priority(
-        self, kev: Optional[Dict[str, Any]], epss: Optional[Dict[str, float]]
-    ) -> Tuple[str, str]:
+        self,
+        cve_id: str,
+        kev: Optional[Dict[str, Any]],
+        cvss_score: Optional[float] = None,
+        cvss_vector: Optional[str] = None,
+    ) -> Tuple[str, str, List[str]]:
         """
-        Collapse KEV + EPSS into a single prioritised bucket.
+        Derive priority from evidence-based signals. EPSS is intentionally
+        excluded — it is a probabilistic estimate, not confirmed exploitation.
 
-        critical   → on CISA KEV (actively exploited)
-        high       → EPSS percentile ≥ 0.95 (top 5%)
-        medium     → EPSS percentile ≥ 0.80 (top 20%) or known ransomware CVE
-        low        → EPSS percentile ≥ 0.20
-        none       → everything else (no exploit signal)
+        Priority tiers:
+          critical  → CISA KEV (actively exploited, confirmed fact)
+          high      → Breach intel (M-Trends/CrowdStrike/FIRE) OR
+                      CVSS ≥ 9.0 with unauthenticated network exploit path
+                      (AV:N + PR:N/PR:L + UI:N, no required attack prep)
+          elevated  → CVSS ≥ 7.0 with network attack vector (AV:N)
+                      OR CVSS ≥ 9.0 (any vector — still critical severity)
+          moderate  → CVSS ≥ 4.0 (medium severity or non-network high)
+          low       → CVSS present but < 4.0
+          none      → No scoring data available
         """
+        signals: List[str] = []
+
+        # ── 1. CISA KEV — strongest signal: confirmed in-the-wild exploitation ──
         if kev:
             ransom = (kev.get("known_ransomware_use") or "").strip().lower()
-            base = "critical"
+            signals.append("cisa_kev")
             if ransom in ("known", "yes", "true"):
-                return base, "On CISA KEV with known ransomware campaign use"
-            return base, "On CISA KEV (actively exploited)"
+                signals.append("ransomware_campaign")
+                return "critical", "On CISA KEV with known ransomware campaign use", signals
+            return "critical", "On CISA KEV (confirmed in-the-wild exploitation)", signals
 
-        if epss:
-            p = float(epss.get("percentile") or 0)
-            s = float(epss.get("score") or 0)
-            if p >= 0.95:
-                return "high", f"Top 5% EPSS (percentile={p:.2%}, score={s:.3f})"
-            if p >= 0.80:
-                return "medium", f"Top 20% EPSS (percentile={p:.2%}, score={s:.3f})"
-            if p >= 0.20:
-                return "low", f"Moderate EPSS (percentile={p:.2%}, score={s:.3f})"
-            return "none", f"Low EPSS (percentile={p:.2%}, score={s:.3f})"
+        # ── 2. Breach intel — CVE seen in breach investigation reports ──────────
+        cve_upper = (cve_id or "").upper()
+        in_mtrends = cve_upper in _MANDIANT_MTRENDS_CVES
+        in_gtr = cve_upper in _CROWDSTRIKE_GTR_CVES
+        in_fire = cve_upper in _FIRE_CVES
+        if in_fire:
+            signals.append("fire_insurance_loss")
+        if in_mtrends:
+            signals.append("mandiant_mtrends")
+        if in_gtr:
+            signals.append("crowdstrike_gtr")
+        if in_fire or in_mtrends or in_gtr:
+            sources = ", ".join(s for s in ["FIRE (insurance loss)", "Mandiant M-Trends", "CrowdStrike GTR"]
+                                if (in_fire and "FIRE" in s) or (in_mtrends and "Mandiant" in s) or (in_gtr and "CrowdStrike" in s))
+            return "high", f"Appears in breach investigation data: {sources}", signals
 
-        return "none", "No KEV or EPSS signal"
+        # ── 3. CVSS-based — technical severity and attack path ───────────────────
+        if cvss_score is None:
+            return "none", "No CVE scoring data available", signals
+
+        score = float(cvss_score)
+        signals.append(f"cvss_{score:.1f}")
+        vec = _parse_cvss_vector(cvss_vector)
+
+        av_network = vec.get("AV") == "N"
+        pr_none_or_low = vec.get("PR") in ("N", "L")
+        no_ui = vec.get("UI") == "N"
+        at_present = vec.get("AT") == "P"   # CVSS 4.0: attack requirements present
+
+        if av_network:
+            signals.append("av_network")
+        if pr_none_or_low:
+            signals.append("pr_none_or_low")
+        if no_ui:
+            signals.append("no_ui_required")
+        if at_present:
+            signals.append("at_preparation_required")
+
+        # Critical CVSS + unauthenticated network + no prep required → high
+        if score >= 9.0 and av_network and pr_none_or_low and no_ui and not at_present:
+            return (
+                "high",
+                f"Critical CVSS {score:.1f} with unauthenticated network exploit (AV:N, PR:{vec.get('PR','?')}, UI:N)",
+                signals,
+            )
+
+        # Critical CVSS + network but with prep/UI required → still elevated
+        if score >= 9.0 and av_network:
+            return (
+                "elevated",
+                f"Critical CVSS {score:.1f} with network attack vector (preparation or user interaction required)",
+                signals,
+            )
+
+        # Critical CVSS non-network
+        if score >= 9.0:
+            return "elevated", f"Critical CVSS {score:.1f} (non-network attack vector)", signals
+
+        # High CVSS + network
+        if score >= 7.0 and av_network:
+            return "elevated", f"High CVSS {score:.1f} with network attack vector", signals
+
+        # High CVSS non-network
+        if score >= 7.0:
+            return "moderate", f"High CVSS {score:.1f}", signals
+
+        # Medium
+        if score >= 4.0:
+            return "moderate", f"Medium CVSS {score:.1f}", signals
+
+        return "low", f"Low CVSS {score:.1f}", signals
 
     def enrich_vulnerability(self, vulnerability) -> Dict[str, Any]:
         """
         Enrich a Vulnerability ORM object in-place on its metadata_.
 
+        Passes CVSS score and vector from the ORM model to the lookup so
+        that priority can be calculated from technical CVE characteristics.
         Returns the lookup dict (regardless of whether it was persisted).
         """
         cve = getattr(vulnerability, "cve_id", None)
         if not cve:
             return {"enriched": False, "reason": "no_cve_id"}
 
-        lookup = self.lookup(cve)
+        lookup = self.lookup(
+            cve,
+            cvss_score=getattr(vulnerability, "cvss_score", None),
+            cvss_vector=getattr(vulnerability, "cvss_vector", None),
+        )
         if not lookup.get("enriched"):
             return lookup
 
         meta = dict(vulnerability.metadata_ or {})
         meta["delphi"] = {
             "kev": lookup.get("kev"),
-            "epss": lookup.get("epss"),
+            "epss": lookup.get("epss"),          # stored for display, not scoring
             "priority": lookup.get("priority"),
             "priority_reason": lookup.get("priority_reason"),
+            "priority_signals": lookup.get("priority_signals", []),
             "enriched_at": datetime.utcnow().isoformat(),
         }
         vulnerability.metadata_ = meta
 
-        # Append a discovery tag for filtering in the findings UI.
+        # Update tags for filtering in the findings UI.
         tags = list(vulnerability.tags or [])
         if lookup.get("kev") and "cisa-kev" not in tags:
             tags.append("cisa-kev")
             if (lookup.get("kev") or {}).get("known_ransomware_use", "").lower() in ("known", "yes"):
                 if "ransomware" not in tags:
                     tags.append("ransomware")
-        if lookup.get("epss"):
-            bucket_tag = f"epss-{lookup['epss']['bucket']}"
-            if bucket_tag not in tags:
-                tags.append(bucket_tag)
+
+        # Add breach intel tags when present.
+        for signal in (lookup.get("priority_signals") or []):
+            if signal == "mandiant_mtrends" and "mandiant-mtrends" not in tags:
+                tags.append("mandiant-mtrends")
+            if signal == "crowdstrike_gtr" and "crowdstrike-gtr" not in tags:
+                tags.append("crowdstrike-gtr")
+            if signal == "fire_insurance_loss" and "fire" not in tags:
+                tags.append("fire")
+
+        # Delphi priority tag (replaces EPSS-bucket tags).
         priority_tag = f"delphi-priority-{lookup.get('priority', 'none')}"
         if priority_tag not in tags and lookup.get("priority") not in ("none", None):
             tags.append(priority_tag)
@@ -434,8 +607,15 @@ class DelphiEnrichmentService:
             "kev_entries": len(self._kev),
             "epss_entries": len(self._epss),
             "epss_score_date": self._epss_date,
+            "epss_role": "informational_display_only",
             "kev_catalog_version": self._kev_meta.get("catalog_version"),
             "kev_date_released": self._kev_meta.get("date_released"),
+            "breach_intel": {
+                "mandiant_mtrends_cves": len(_MANDIANT_MTRENDS_CVES),
+                "crowdstrike_gtr_cves": len(_CROWDSTRIKE_GTR_CVES),
+                "fire_cves": len(_FIRE_CVES),
+            },
+            "priority_drivers": ["cisa_kev", "breach_intel", "cvss_vector_analysis"],
             "refresh_hours": self.refresh_hours,
             "last_loaded": datetime.utcfromtimestamp(self._last_load_ts).isoformat() if self._last_load_ts else None,
         }

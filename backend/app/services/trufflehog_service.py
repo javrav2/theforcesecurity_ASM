@@ -343,6 +343,15 @@ def persist_trufflehog_findings(
             existing.status = VulnerabilityStatus.OPEN
             continue
 
+        # CWE-798: Use of Hard-coded Credentials (verified live secret)
+        # CWE-540: Inclusion of Sensitive Information in Source Code (unverified)
+        cwe_id = "CWE-798" if f.verified else "CWE-540"
+
+        # Verified secrets are exploit_confirmed: TruffleHog validated the credential
+        # against a live API. Unverified secrets are endpoint_confirmed: we found the
+        # credential in source/response but haven't confirmed it works.
+        detection_confidence = "exploit_confirmed" if f.verified else "endpoint_confirmed"
+
         vuln = Vulnerability(
             title=title[:500],
             description=description[:4000],
@@ -351,10 +360,12 @@ def persist_trufflehog_findings(
             scan_id=scan_id,
             detected_by="trufflehog",
             template_id=template_id,
+            detection_confidence=detection_confidence,
             status=VulnerabilityStatus.OPEN,
             evidence=(f.evidence or "")[:5000],
             tags=["secret-leak", f.detector.lower()] + (["verified"] if f.verified else []),
             metadata_=meta,
+            cwe_id=cwe_id,
             remediation=(
                 "Rotate the credential at the provider, purge it from git history "
                 "(git filter-repo / BFG), invalidate dependent tokens, and add the "

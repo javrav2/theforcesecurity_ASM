@@ -38,13 +38,13 @@ type Dampeners struct {
 	KEVFloorScore     float64
 }
 
-// Bucketing is the score → priority mapping. A score ≥ Pn maps to that
-// bucket; below P3 falls to P4. Tune per customer risk appetite.
+// Bucketing is the score → priority mapping. A score ≥ the threshold maps to
+// that bucket; below Low falls to Informational. Tune per customer risk appetite.
 type Bucketing struct {
-	P0 float64
-	P1 float64
-	P2 float64
-	P3 float64
+	Critical     float64
+	High         float64
+	Medium       float64
+	Low          float64
 }
 
 // DefaultConfig returns the baseline OPES configuration. These numbers
@@ -66,10 +66,10 @@ func DefaultConfig() Config {
 			KEVFloorScore:     8.5,
 		},
 		Bucketing: Bucketing{
-			P0: 8.5,
-			P1: 7.0,
-			P2: 5.0,
-			P3: 3.0,
+			Critical:     8.5,
+			High:         7.0,
+			Medium:       5.0,
+			Low:          3.0,
 		},
 	}
 }

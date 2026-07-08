@@ -30,6 +30,27 @@ type Input struct {
 	Preconditions schema.PreconditionEvalSet
 	Exploitation  schema.ExploitationEvidence
 	Now           time.Time
+
+	// CWEID is the primary CWE for this finding (e.g. "CWE-89").
+	// When empty and CVE is set, Compute auto-populates from CVE.CWEs[0].
+	// Used by the difficulty (E) component to apply a weakness-class ceiling:
+	// well-understood weakness classes like SQLi or hardcoded credentials
+	// cannot be scored as "hard to exploit" regardless of other signals.
+	CWEID string
+
+	// DetectionConfidence describes whether the vulnerable feature / code path
+	// was confirmed active by the scanner, or whether we only know the version.
+	//
+	//   ExploitConfirmed  → difficulty −2.0 (code path proven; attacker scout work done)
+	//   EndpointConfirmed → difficulty −1.0 (feature is live; weaponization still needed)
+	//   VersionOnly       → difficulty +1.5 (attacker must confirm reachability themselves)
+	//   DetectionUnknown  → no adjustment
+	//
+	// This directly addresses the gap between "Server: Apache/2.4.50" (version_only)
+	// and a Nuclei RCE template that got a DNS callback (exploit_confirmed).
+	// Both would otherwise receive identical difficulty scores, mispricing the
+	// attacker's remaining work.
+	DetectionConfidence schema.DetectionConfidence
 }
 
 // Compute runs the OPES pipeline: components → overrides → weighted sum
@@ -44,6 +65,10 @@ func Compute(in Input, cfg Config) schema.OPESScore {
 	cfg = cfg.WithDefaults()
 	if in.Now.IsZero() {
 		in.Now = time.Now()
+	}
+	// Auto-populate CWEID from CVE when not explicitly supplied by the caller.
+	if in.CWEID == "" && in.CVE != nil && len(in.CVE.CWEs) > 0 {
+		in.CWEID = in.CVE.CWEs[0]
 	}
 
 	components := schema.OPESComponents{

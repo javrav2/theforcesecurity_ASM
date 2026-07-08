@@ -116,11 +116,11 @@ class Settings(BaseSettings):
     DELPHI_AUTO_ENRICH_ON_INGEST: bool = True  # Enrich CVEs during ingestion pipeline
 
     # Oracle (LLM analyst-grade analysis) — background enrichment at ingest.
-    # Disabled by default: the Oracle call can take up to 180 s per finding and
-    # requires the aegis-oracle service to be running. Enable in production once
-    # Oracle is stable. When enabled, each new CVE-backed finding enqueues a
-    # non-blocking background Oracle analysis immediately after Delphi runs.
-    ORACLE_AUTO_ENRICH_ON_INGEST: bool = False
+    # Enabled: every new finding (CVE-backed or not) enqueues a non-blocking
+    # background Oracle analysis immediately after Delphi runs. Requires the
+    # aegis-oracle service to be running; failures are logged and never block
+    # ingestion.
+    ORACLE_AUTO_ENRICH_ON_INGEST: bool = True
 
     # Custom Nuclei templates shipped with the platform.
     # Relative to the backend/ directory; resolved to an absolute path at runtime.

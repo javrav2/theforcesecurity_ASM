@@ -162,22 +162,33 @@ def get_oracle_payload(vuln: Vulnerability) -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
-def enqueue_background_enrichment(vuln_id: int) -> None:
-    """Fire-and-forget Oracle enrichment for a single vulnerability.
+def enqueue_background_enrichment(vuln_id: int, *, severity: str = "medium") -> None:
+    """Submit a vulnerability to the universal scoring pipeline.
 
-    Opens its own database session so the caller's ingest session is not
-    shared across thread boundaries. Safe to call during ingest — the thread
-    is daemonised so it will not block process shutdown.
+    Delegates to ScoringPipeline, which manages a shared priority queue and
+    a fixed worker pool with retry/backoff. The pipeline automatically dedupes
+    repeat submissions, so calling this function on a vuln_id that is already
+    queued is a safe no-op.
 
-    The call is a no-op when:
-      • Oracle is unreachable (logged at WARNING, no exception propagated)
-      • The vulnerability already has a fresh enrichment (TTL cache)
-      • The vulnerability cannot be found by ID
+    Note: In most cases you do NOT need to call this manually — the pipeline's
+    SQLAlchemy event hooks fire automatically after every new Vulnerability
+    commit. This function exists as an explicit escape hatch for callers that
+    pre-date the universal hook (kept for backward compatibility).
     """
+    try:
+        from app.services.scoring_pipeline import get_scoring_pipeline
+        pipeline = get_scoring_pipeline()
+        if pipeline._running:
+            pipeline.submit(vuln_id, severity=severity)
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("enqueue_background_enrichment: pipeline unavailable (%s), falling back to thread", exc)
 
+    # Fallback: spawn a daemon thread if the pipeline isn't running yet
+    # (e.g. during early startup before on_event("startup") fires).
     def _run(vid: int) -> None:
         try:
-            from app.database import SessionLocal  # type: ignore[import]
+            from app.db.database import SessionLocal  # type: ignore[import]
             db: Session = SessionLocal()
             try:
                 vuln = db.query(Vulnerability).filter(Vulnerability.id == vid).first()
@@ -559,6 +570,9 @@ def _build_generic_vulnerability_payload(vuln: Vulnerability) -> Dict[str, Any]:
         "remediation": vuln.remediation or "",
         "detected_by": vuln.detected_by or "",
         "template_id": vuln.template_id or "",
+        # Pass detection_confidence so Oracle can use it in OPES difficulty (E).
+        # Fallback to "unknown" if the column is absent (older records).
+        "detection_confidence": getattr(vuln, "detection_confidence", None) or "unknown",
         "tags": vuln.tags or [],
         "metadata": metadata,
         "created_at": vuln.created_at.isoformat() if vuln.created_at else None,
@@ -683,12 +697,13 @@ def open_vulnerabilities_to_enrich(
     db: Session,
     *,
     organization_id: Optional[int] = None,
-    limit: int = 500,
+    limit: Optional[int] = 500,
 ) -> List[Vulnerability]:
     """Return open vulnerabilities eligible for Oracle enrichment, oldest-first.
 
     Used by the batch endpoint and the background worker. Scoped to an
-    organization when the caller is not a superuser.
+    organization when the caller is not a superuser. Pass ``limit=None`` to
+    return all matching rows (used by the backfill endpoint).
     """
     from app.models.vulnerability import VulnerabilityStatus
     q = (
@@ -698,4 +713,7 @@ def open_vulnerabilities_to_enrich(
     )
     if organization_id is not None:
         q = q.filter(Asset.organization_id == organization_id)
-    return q.order_by(Vulnerability.created_at.asc()).limit(limit).all()
+    q = q.order_by(Vulnerability.created_at.asc())
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()

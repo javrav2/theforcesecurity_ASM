@@ -51,13 +51,41 @@ interface ApiConfig {
 }
 
 const API_SERVICES = [
+  {
+    name: 'vulncheck',
+    label: 'VulnCheck',
+    description: 'KEV exploit intelligence — recently-added known-exploited CVEs, ransomware associations, threat-actor attribution, weaponized exploit evidence. Powers the Vulnerability Intelligence feed and OPES X-component scoring.',
+    free: false,
+    hasUser: false,
+    link: 'https://vulncheck.com/',
+    group: 'Vulnerability Intelligence',
+  },
+  {
+    name: 'pdcp',
+    label: 'ProjectDiscovery Cloud Platform',
+    description: 'Nuclei template availability (is_template), PoC detection, remote exploitability flags per CVE. Powers the Vulnerability Intelligence detection coverage column and raises vulnx rate limits.',
+    free: true,
+    hasUser: false,
+    link: 'https://cloud.projectdiscovery.io/',
+    group: 'Vulnerability Intelligence',
+  },
+  {
+    name: 'nvd',
+    label: 'NVD (NIST)',
+    description: 'Raises NVD API rate limits for CVE enrichment lookups (fallback when PDCP does not have a new CVE yet). Free key from nvd.nist.gov.',
+    free: true,
+    hasUser: false,
+    link: 'https://nvd.nist.gov/developers/request-an-api-key',
+    group: 'Vulnerability Intelligence',
+  },
   { 
     name: 'virustotal', 
     label: 'VirusTotal', 
     description: 'Subdomain discovery via VT database (up to 100 subdomains per domain)',
     free: false,
     hasUser: true,
-    link: 'https://www.virustotal.com/gui/join-us'
+    link: 'https://www.virustotal.com/gui/join-us',
+    group: 'Asset Discovery',
   },
   { 
     name: 'whoisxml', 
@@ -66,7 +94,8 @@ const API_SERVICES = [
     free: false,
     hasUser: false,
     needsOrgNames: true,
-    link: 'https://whoisxmlapi.com/'
+    link: 'https://whoisxmlapi.com/',
+    group: 'Asset Discovery',
   },
   { 
     name: 'otx', 
@@ -74,7 +103,8 @@ const API_SERVICES = [
     description: 'Threat intelligence passive DNS and URL data (free API key available)',
     free: true,
     hasUser: false,
-    link: 'https://otx.alienvault.com/api'
+    link: 'https://otx.alienvault.com/api',
+    group: 'Asset Discovery',
   },
   { 
     name: 'whoxy', 
@@ -83,7 +113,8 @@ const API_SERVICES = [
     free: false,
     hasUser: false,
     needsEmails: true,
-    link: 'https://www.whoxy.com/'
+    link: 'https://www.whoxy.com/',
+    group: 'Asset Discovery',
   },
   { 
     name: 'tracxn', 
@@ -91,7 +122,8 @@ const API_SERVICES = [
     description: 'Import M&A and acquisition history to discover domains from acquired companies',
     free: false,
     hasUser: false,
-    link: 'https://platform.tracxn.com/'
+    link: 'https://platform.tracxn.com/',
+    group: 'Asset Discovery',
   },
 ];
 
@@ -491,14 +523,23 @@ export default function SettingsPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Key className="h-5 w-5" />
-              External Discovery API Keys
+              API Keys
             </CardTitle>
             <CardDescription>
-              Configure API keys to enable additional discovery sources. Keys are encrypted at rest.
+              Configure API keys for vulnerability intelligence and asset discovery. Keys are encrypted at rest and scoped per organization.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {API_SERVICES.map((service) => {
+            {['Vulnerability Intelligence', 'Asset Discovery'].map((group) => {
+              const groupServices = API_SERVICES.filter((s: any) => (s.group || 'Asset Discovery') === group);
+              return (
+                <div key={group} className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <div className="h-px flex-1 bg-border" />
+                    <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">{group}</span>
+                    <div className="h-px flex-1 bg-border" />
+                  </div>
+                  {groupServices.map((service: any) => {
               const config = getConfigForService(service.name);
               return (
                 <div key={service.name} className="border rounded-lg p-4 space-y-3">
@@ -575,6 +616,9 @@ export default function SettingsPage() {
                       </div>
                     )}
                   </div>
+                </div>
+              );
+            })}
                 </div>
               );
             })}

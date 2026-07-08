@@ -36,3 +36,4 @@ services:
     environment:
       # Browser talks to :3000; Next.js server rewrites /api/* to backend:8000
       - CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000","http://localhost:8000","http://127.0.0.1:8000"]
+      - ORACLE_AUTO_ENRICH_ON_INGEST=true

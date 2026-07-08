@@ -187,6 +187,13 @@ class EnrichBatchRequest(BaseModel):
     organization_id: Optional[int] = None  # superuser-only override
 
 
+class BackfillRequest(BaseModel):
+    """Full-backfill request body — enriches every open finding with no cap."""
+
+    force: bool = False
+    organization_id: Optional[int] = None  # superuser-only override
+
+
 class EnrichResponse(BaseModel):
     """Per-vulnerability enrichment result returned by the single-vuln route."""
 
@@ -306,8 +313,43 @@ def oracle_enrich_batch(
     return {"queued": True, "selected": len(vuln_ids), "message": "batch running in background"}
 
 
+@router.post("/enrich/backfill")
+def oracle_enrich_backfill(
+    body: BackfillRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Enrich **all** open vulnerabilities with Oracle analysis — no row cap.
+
+    Always runs as a BackgroundTask so the HTTP call returns immediately.
+    Use `force=true` to re-enrich findings that already have a fresh Oracle
+    payload (within the {ttl}h TTL window). Poll the Findings page or query
+    `oracle_enriched_at` on vulnerability records to track progress.
+    """.format(ttl=ENRICH_TTL_HOURS)
+    org_id: Optional[int]
+    if current_user.is_superuser:
+        org_id = body.organization_id
+    else:
+        org_id = current_user.organization_id
+        if body.organization_id and body.organization_id != current_user.organization_id:
+            raise HTTPException(status_code=403, detail="cannot target a different organisation")
+
+    vulns = open_vulnerabilities_to_enrich(db, organization_id=org_id, limit=None)
+    if not vulns:
+        return {"queued": False, "selected": 0, "message": "no open vulnerabilities found"}
+
+    vuln_ids: List[int] = [v.id for v in vulns]
+    background.add_task(_run_batch_in_background, vuln_ids, body.force)
+    return {
+        "queued": True,
+        "selected": len(vuln_ids),
+        "message": f"backfill running in background — {len(vuln_ids)} findings queued",
+    }
+
+
 def _run_batch_in_background(vuln_ids: List[int], force: bool) -> None:
-    """Worker entry point for batch enrichment.
+    """Worker entry point for batch/backfill enrichment.
 
     Opens its own DB session and processes each vulnerability via the
     enrichment service so failures don't poison the caller's session.
