@@ -28,19 +28,29 @@ ssh $SSH_OPTS "$SSH_USER@$EC2_IP" bash <<EOF
   set -e
   cd $APP_DIR
 
-  echo "[1/4] Pulling latest code..."
+  echo "[1/5] Pulling latest code..."
   git pull
 
-  echo "[2/4] Rebuilding changed images (backend + oracle)..."
-  docker compose build backend aegis-oracle
+  echo "[2/5] Rebuilding changed images..."
+  # backend  — API routes, services, models
+  # scanner  — scanner_worker.py (CommonCrawl handler, in_scope guards)
+  # scheduler — schedule_worker.py (daily CC refresh)
+  # frontend  — settings page UI updates
+  docker compose build backend scanner scheduler frontend aegis-oracle
 
-  echo "[3/4] Restarting services..."
-  docker compose up -d --no-deps backend aegis-oracle frontend nginx
+  echo "[3/5] Restarting services..."
+  docker compose up -d --no-deps backend scanner scheduler frontend aegis-oracle nginx
 
-  echo "[4/4] Running Oracle DB migration..."
+  echo "[4/5] Running migrations..."
+  # Oracle columns (existing)
   docker exec asm_backend python scripts/migrate_add_oracle_columns.py --backfill 2>/dev/null || true
+  # CommonCrawl: add enum value + create project-settings rows for all orgs
+  docker exec asm_backend python scripts/migrate_commoncrawl_enum.py
+
+  echo "[5/5] Health check..."
+  sleep 5
+  docker compose ps
 
   echo ""
-  echo "✓ Deploy complete. Service status:"
-  docker compose ps
+  echo "✓ Deploy complete."
 EOF
