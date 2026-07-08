@@ -44,6 +44,8 @@ ssh $SSH_OPTS "$SSH_USER@$EC2_IP" bash <<EOF
   echo "[4/5] Running migrations..."
   # Oracle columns (existing)
   docker exec asm_backend python scripts/migrate_add_oracle_columns.py --backfill 2>/dev/null || true
+  # agent_knowledge embedding columns
+  docker exec asm_backend python scripts/migrate_agent_knowledge_embeddings.py
   # CommonCrawl: add enum value + create project-settings rows for all orgs
   docker exec asm_backend python scripts/migrate_commoncrawl_enum.py
 
