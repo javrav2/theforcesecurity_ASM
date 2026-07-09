@@ -1222,39 +1222,59 @@ export default function AgentPage() {
                 )}
 
                 {/* Chat card */}
-                <Card className="flex-1">
-                  <CardHeader className="pb-3">
+                <Card className="flex-1 flex flex-col min-h-0">
+                  <CardHeader className="pb-2 shrink-0">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="flex items-center gap-2 text-base">
-                        <MessageSquare className="h-5 w-5 text-primary" />
+                      <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground/80">
+                        <MessageSquare className="h-4 w-4 text-primary" />
                         AI Security Agent
                       </CardTitle>
-                      <div className="flex items-center gap-2">
-                        <Button variant="ghost" size="sm" onClick={() => setShowScenario(!showScenario)}
-                          className={`h-8 px-2 ${showScenario ? 'bg-muted' : ''}`} title="Toggle attack scenario panel">
-                          <Crosshair className="h-4 w-4 mr-1" />
-                          <span className="text-xs">{showScenario ? 'Hide' : 'Scenario'}</span>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon" onClick={() => setShowScenario(!showScenario)}
+                          className={cn('h-7 w-7', showScenario && 'bg-muted')} title="Attack scenario panel">
+                          <Crosshair className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="ghost" size="sm"
+                        <Button variant="ghost" size="icon"
                           onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadConversations(); }}
-                          className={`h-8 px-2 ${showHistory ? 'bg-muted' : ''}`}>
-                          <Clock className="h-4 w-4 mr-1" />
-                          <span className="text-xs">{showHistory ? 'Hide' : 'History'}</span>
+                          className={cn('h-7 w-7', showHistory && 'bg-muted')} title="Conversation history">
+                          <Clock className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={startNewConversation} className="h-8 px-2" title="Start new conversation">
-                          <Plus className="h-4 w-4 mr-1" />
-                          <span className="text-xs">New</span>
+                        <Button variant="ghost" size="icon" onClick={startNewConversation} className="h-7 w-7" title="New conversation">
+                          <Plus className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </div>
-                    <CardDescription>
-                      Query assets, scan targets, and analyze your attack surface. Switch to the CVE Lookup or Findings tabs for exploitability intelligence.
-                    </CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="rounded-lg border bg-muted/30 max-h-[50vh] overflow-y-auto p-4 space-y-3">
+                  <CardContent className="flex flex-col gap-3 flex-1 min-h-0 pb-4">
+                    {/* Message window */}
+                    <div className="rounded-lg border bg-muted/20 flex-1 overflow-y-auto min-h-[40vh] max-h-[58vh] p-4 space-y-3">
                       {messages.length === 0 && (
-                        <p className="text-muted-foreground text-sm">Send a message to start. The agent can run scans and discovery for your organization.</p>
+                        <div className="h-full flex flex-col items-center justify-center gap-4 py-6 text-center">
+                          <div className="rounded-full bg-primary/10 p-4">
+                            <MessageSquare className="h-7 w-7 text-primary/50" />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-sm font-medium text-foreground/80">Ask anything about your attack surface</p>
+                            <p className="text-xs text-muted-foreground">Run scans, analyze CVEs, query assets, or chain attack scenarios</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+                            {[
+                              'Run a full recon on our primary domain',
+                              'What are our highest risk open ports?',
+                              'Scan for critical vulnerabilities',
+                              'Show exposed subdomains',
+                            ].map((prompt) => (
+                              <button
+                                key={prompt}
+                                onClick={() => setQuestion(prompt)}
+                                disabled={loading || agentAvailable === false}
+                                className="text-xs rounded-full border border-border/60 px-3 py-1.5 hover:bg-muted/60 hover:border-primary/40 transition-colors text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {prompt}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       )}
                       {messages.map((m) => (
                         <div key={m.id} className={`flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
@@ -1348,61 +1368,73 @@ export default function AgentPage() {
                       <div ref={messagesEndRef} />
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className="space-y-1.5">
-                        <Label htmlFor="mode-select">Mode</Label>
-                        <Select value={mode} onValueChange={(v) => setMode(v as 'assist' | 'agent')}>
-                          <SelectTrigger id="mode-select"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="assist">Assist (approval required between phases)</SelectItem>
-                            <SelectItem value="agent">Agent (autonomous; no approval)</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <p className="text-xs text-muted-foreground">Agent mode runs without asking for approval between phases.</p>
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label htmlFor="playbook-select">Preset</Label>
-                        <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
-                          <SelectTrigger id="playbook-select"><SelectValue placeholder="Custom" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="custom">Custom (free-form question)</SelectItem>
-                            {playbooks.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                      </div>
+                    {/* Compact controls toolbar */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Select value={mode} onValueChange={(v) => setMode(v as 'assist' | 'agent')}>
+                        <SelectTrigger className="h-7 text-xs w-auto min-w-[110px] border-dashed bg-transparent">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="assist">Assist mode</SelectItem>
+                          <SelectItem value="agent">Agent mode</SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
+                        <SelectTrigger className="h-7 text-xs w-auto min-w-[100px] border-dashed bg-transparent">
+                          <SelectValue placeholder="Custom" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="custom">Custom</SelectItem>
+                          {playbooks.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+
                       {selectedPlaybookId !== 'custom' && (
-                        <div className="space-y-1.5">
-                          <Label htmlFor="target-input">Target (optional)</Label>
-                          <Input id="target-input" placeholder="e.g. example.com" value={target}
-                            onChange={(e) => setTarget(e.target.value)} disabled={loading || agentAvailable === false} />
-                        </div>
+                        <Input
+                          placeholder="target (optional)"
+                          value={target}
+                          onChange={(e) => setTarget(e.target.value)}
+                          disabled={loading || agentAvailable === false}
+                          className="h-7 text-xs w-40 border-dashed bg-transparent"
+                        />
+                      )}
+
+                      {sessionId && (
+                        <span className="ml-auto text-[10px] text-muted-foreground/50 font-mono tabular-nums">
+                          {sessionId.slice(0, 8)}
+                        </span>
                       )}
                     </div>
 
-                    {urlPrefilled && <p className="text-sm text-muted-foreground">Pre-filled from link. Click Send to start.</p>}
+                    {urlPrefilled && <p className="text-xs text-muted-foreground">Pre-filled from link — press Send to start.</p>}
 
+                    {/* Input row */}
                     <div className="flex gap-2">
                       <Textarea
                         placeholder={
-                          pendingAnswer ? 'Type your answer to the agent…'
-                            : selectedPlaybookId === 'custom' ? 'Ask a question (e.g. run a port scan on example.com)'
+                          pendingAnswer
+                            ? 'Type your answer to the agent…'
+                            : selectedPlaybookId === 'custom'
+                            ? 'Ask a question or describe a task…'
                             : 'Add a note or leave blank to run the preset'
                         }
                         value={question}
                         onChange={(e) => setQuestion(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                        rows={2} className="resize-none"
+                        rows={2}
+                        className="resize-none text-sm"
                         disabled={loading || agentAvailable === false}
                       />
                       <Button
                         onClick={handleSend}
                         disabled={loading || agentAvailable === false || (selectedPlaybookId === 'custom' ? !question.trim() : false)}
-                        size="icon" className="shrink-0 h-auto py-3"
+                        size="icon"
+                        className="shrink-0 h-auto py-3"
                       >
                         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                       </Button>
                     </div>
-                    {sessionId && <p className="text-xs text-muted-foreground">Session: {sessionId.slice(0, 8)}…</p>}
                   </CardContent>
                 </Card>
 
