@@ -578,9 +578,9 @@ export default function ThreatIntelPage() {
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
             <StatCard label="Total Emerging" value={summary.total} icon={TrendingUp}
               color="bg-primary/10 text-primary" tooltip={`CVEs added to VulnCheck KEV in the last ${days} days`} />
-            <StatCard label="Critical" value={summary.by_severity.critical} icon={AlertTriangle}
+            <StatCard label="Critical" value={summary.by_severity?.critical ?? 0} icon={AlertTriangle}
               color="bg-red-500/10 text-red-400" />
-            <StatCard label="High" value={summary.by_severity.high} icon={AlertTriangle}
+            <StatCard label="High" value={summary.by_severity?.high ?? 0} icon={AlertTriangle}
               color="bg-orange-500/10 text-orange-400" />
             <StatCard label="Nuclei Templates" value={summary.with_nuclei_template} icon={FileCode}
               color="bg-emerald-500/10 text-emerald-400"
