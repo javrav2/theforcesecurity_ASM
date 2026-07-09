@@ -491,7 +491,7 @@ export default function ThreatIntelPage() {
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
     try {
-      const params: Record<string, string> = { days: String(days), limit: '200' };
+      const params: Record<string, string> = { days: String(days), limit: '2000' };
       if (severityFilter !== 'all') params.severity = severityFilter;
       if (detectionFilter !== 'all') params.detection = detectionFilter;
       const resp = await api.get('/threat-intel/emerging', params);
@@ -551,7 +551,7 @@ export default function ThreatIntelPage() {
     <MainLayout>
       <Header
         title="Vulnerability Intelligence"
-        subtitle={`Emerging VulnCheck KEV vulnerabilities — last ${days} days${data ? ` (${data.total} entries)` : ''}`}
+        subtitle={`VulnCheck KEV vulnerabilities — ${days === 0 ? 'all time' : `last ${days} days`}${data ? ` (${data.total} entries)` : ''}`}
       />
 
       <div className="p-6 space-y-6">
@@ -620,6 +620,9 @@ export default function ThreatIntelPage() {
               <SelectItem value="30">Last 30 days</SelectItem>
               <SelectItem value="60">Last 60 days</SelectItem>
               <SelectItem value="90">Last 90 days</SelectItem>
+              <SelectItem value="180">Last 180 days</SelectItem>
+              <SelectItem value="365">Last year</SelectItem>
+              <SelectItem value="0">All time</SelectItem>
             </SelectContent>
           </Select>
 

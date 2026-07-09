@@ -39,55 +39,89 @@ def _get_pdcp_key(db: Session, org_id: int | None = None) -> str:
 # ── VulnCheck KEV ─────────────────────────────────────────────────────────────
 
 async def _fetch_vulncheck_kev(client: httpx.AsyncClient, days: int, token: str) -> list[dict]:
-    """Fetch recent VulnCheck KEV additions, filtered to the last `days` days."""
+    """Fetch VulnCheck KEV entries, paginating until the cutoff date is passed.
+
+    Uses cursor-based pagination so the full KEV dataset is available for
+    longer time windows. Stops fetching as soon as every entry on the current
+    page pre-dates the cutoff (VulnCheck sorts descending by dateAdded).
+    """
     if not token:
         return []
 
-    try:
-        resp = await client.get(
-            "https://api.vulncheck.com/v3/index/vulncheck-kev",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-                "User-Agent": "aegis-oracle/1.0",
-            },
-            params={"sort": "dateAdded", "order": "desc", "limit": 200},
-            timeout=_HTTP_TIMEOUT,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception:
-        return []
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "aegis-oracle/1.0",
+    }
+    # days=0 means "all time" — fetch everything
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+        if days > 0
+        else datetime.min.replace(tzinfo=timezone.utc)
+    )
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    entries = payload.get("data", []) or []
-    recent = []
-    for entry in entries:
-        date_str = entry.get("dateAdded") or entry.get("date_added") or ""
+    all_entries: list[dict] = []
+    cursor: str | None = None
+    page_limit = 500  # max VulnCheck allows per page
+    max_pages = 10    # safety cap (~5 000 entries)
+
+    for _ in range(max_pages):
+        params: dict = {"sort": "dateAdded", "order": "desc", "limit": page_limit}
+        if cursor:
+            params["cursor"] = cursor
+
         try:
-            added = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-            if added < cutoff:
-                break  # sorted desc, so we can stop early
-        except ValueError:
-            pass
+            resp = await client.get(
+                "https://api.vulncheck.com/v3/index/vulncheck-kev",
+                headers=headers,
+                params=params,
+                timeout=_HTTP_TIMEOUT,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception:
+            break
 
-        cves = entry.get("cve", []) or []
-        if not cves:
-            continue
+        entries = payload.get("data", []) or []
+        if not entries:
+            break
 
-        recent.append({
-            "cve_id": cves[0] if cves else "",
-            "all_cves": cves,
-            "date_added": date_str,
-            "vendor_project": entry.get("vendorProject", ""),
-            "product": entry.get("product", ""),
-            "vulnerability_name": entry.get("vulnerabilityName", ""),
-            "short_description": entry.get("shortDescription", ""),
-            "known_ransomware_use": entry.get("knownRansomwareUse", "Unknown"),
-            "kev_sources": ["vulncheck_kev"],
-        })
+        page_done = False
+        for entry in entries:
+            date_str = entry.get("dateAdded") or entry.get("date_added") or ""
+            cves = entry.get("cve", []) or []
+            if not cves:
+                continue
 
-    return recent
+            try:
+                added = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                if added < cutoff:
+                    page_done = True
+                    break
+            except ValueError:
+                pass
+
+            all_entries.append({
+                "cve_id": cves[0] if cves else "",
+                "all_cves": cves,
+                "date_added": date_str,
+                "vendor_project": entry.get("vendorProject", ""),
+                "product": entry.get("product", ""),
+                "vulnerability_name": entry.get("vulnerabilityName", ""),
+                "short_description": entry.get("shortDescription", ""),
+                "known_ransomware_use": entry.get("knownRansomwareUse", "Unknown"),
+                "kev_sources": ["vulncheck_kev"],
+            })
+
+        if page_done:
+            break
+
+        # Follow cursor for next page
+        cursor = payload.get("_next") or payload.get("cursor") or payload.get("meta", {}).get("next_cursor")
+        if not cursor:
+            break
+
+    return all_entries
 
 
 # ── ProjectDiscovery PDCP (vulnx backend) ────────────────────────────────────
@@ -303,10 +337,10 @@ def _build_entry(
 
 @router.get("/emerging")
 async def get_emerging_vulnerabilities(
-    days: int = Query(30, ge=1, le=90, description="KEV entries added in the last N days"),
+    days: int = Query(30, ge=0, le=3650, description="KEV entries added in the last N days; 0 = all time"),
     severity: Optional[str] = Query(None, description="Filter by severity (critical,high,medium,low)"),
     detection: Optional[str] = Query(None, description="Filter: nuclei_template | poc_available | remote_no_template | no_detection"),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(500, ge=1, le=5000),
     organization_id: Optional[int] = Query(None, description="Org whose stored API keys to use; omit to use any available key"),
     db: Session = Depends(get_db),
     _current_user=Depends(get_current_active_user),
