@@ -1295,13 +1295,13 @@ export default function AgentPage() {
                                 <p className="text-xs text-muted-foreground">Review the proposed action before the agent continues.</p>
                               </div>
                             </div>
-                            {req.action && (
+                            {!!req.action && (
                               <div className="rounded-md bg-muted/40 border border-border px-3 py-2">
                                 <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-0.5">Proposed action</p>
                                 <p className="text-sm text-foreground/90">{String(req.action)}</p>
                               </div>
                             )}
-                            {req.description && (
+                            {!!req.description && (
                               <p className="text-xs text-muted-foreground pl-1">{String(req.description)}</p>
                             )}
                             {showModifyInput && (
