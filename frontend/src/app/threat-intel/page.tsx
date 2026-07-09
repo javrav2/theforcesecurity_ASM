@@ -104,6 +104,8 @@ interface Summary {
   otx_active_campaigns: number;
   oracle_analyzed: number;
   by_severity: { critical: number; high: number; medium: number; low: number };
+  by_source: { cisa_kev: number; vulncheck_kev: number; enisa_kev: number; euvd: number };
+  multi_source_count: number;
   vulncheck_configured: boolean;
   pdcp_configured: boolean;
 }
@@ -270,6 +272,60 @@ function daysAgo(dateStr: string): string {
   }
 }
 
+// ── Source badges ─────────────────────────────────────────────────────────────
+
+const SOURCE_META: Record<string, { label: string; color: string; url: string; desc: string }> = {
+  cisa_kev:    { label: 'CISA',    color: 'bg-blue-500/15 text-blue-400 border-blue-500/30',    url: 'https://www.cisa.gov/known-exploited-vulnerabilities-catalog',          desc: 'CISA Known Exploited Vulnerabilities Catalog' },
+  vulncheck_kev: { label: 'VulnCheck', color: 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30', url: 'https://vulncheck.com/advisories',                               desc: 'VulnCheck KEV — aggregated from 150+ threat sources' },
+  enisa_kev:   { label: 'ENISA',   color: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',   url: 'https://github.com/enisaeu/KEV',                                        desc: 'ENISA EU CSIRT Network KEV List' },
+  euvd:        { label: 'EUVD',    color: 'bg-teal-500/15 text-teal-400 border-teal-500/30',   url: 'https://euvd.enisa.europa.eu',                                          desc: 'EU Vulnerability Database — exploited-in-the-wild entries' },
+};
+
+function SourceBadges({ sources }: { sources: string[] }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {sources.map(src => {
+        const meta = SOURCE_META[src];
+        if (!meta) return null;
+        return (
+          <TooltipProvider key={src}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a
+                  href={meta.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={e => e.stopPropagation()}
+                >
+                  <Badge variant="outline" className={cn('text-xs font-semibold cursor-pointer hover:opacity-80', meta.color)}>
+                    {meta.label}
+                  </Badge>
+                </a>
+              </TooltipTrigger>
+              <TooltipContent><p className="text-xs">{meta.desc}</p></TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        );
+      })}
+      {sources.length > 1 && (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="outline" className="text-xs bg-amber-500/15 text-amber-400 border-amber-500/30 cursor-default">
+                ×{sources.length} sources
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p className="text-xs">Confirmed by {sources.length} independent intelligence feeds — higher exploitation confidence</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
+    </div>
+  );
+}
+
 // ── Detail dialog ─────────────────────────────────────────────────────────────
 
 function EntryDetail({ entry, open, onClose }: { entry: EmergingEntry | null; open: boolean; onClose: () => void }) {
@@ -292,6 +348,17 @@ function EntryDetail({ entry, open, onClose }: { entry: EmergingEntry | null; op
           )}
           {entry.short_description && (
             <p className="text-muted-foreground leading-relaxed">{entry.short_description}</p>
+          )}
+
+          {/* Intel sources */}
+          {entry.kev_sources?.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider">Intelligence Sources</p>
+              <SourceBadges sources={entry.kev_sources} />
+              {entry.kev_sources.length > 1 && (
+                <p className="text-xs text-amber-400">Confirmed by {entry.kev_sources.length} independent sources — high exploitation confidence</p>
+              )}
+            </div>
           )}
 
           {/* Key signals */}
@@ -482,6 +549,7 @@ export default function ThreatIntelPage() {
   const [days, setDays] = useState(30);
   const [severityFilter, setSeverityFilter] = useState('all');
   const [detectionFilter, setDetectionFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<EmergingEntry | null>(null);
   const [sortField, setSortField] = useState<'date_added_kev' | 'cvss_score' | 'otx_pulse_count'>('date_added_kev');
@@ -494,6 +562,7 @@ export default function ThreatIntelPage() {
       const params: Record<string, string> = { days: String(days), limit: '2000' };
       if (severityFilter !== 'all') params.severity = severityFilter;
       if (detectionFilter !== 'all') params.detection = detectionFilter;
+      if (sourceFilter !== 'all') params.source = sourceFilter;
       const resp = await api.get('/threat-intel/emerging', params);
       setData(resp.data);
     } catch (err: any) {
@@ -502,7 +571,7 @@ export default function ThreatIntelPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [days, severityFilter, detectionFilter, toast]);
+  }, [days, severityFilter, detectionFilter, sourceFilter, toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -539,7 +608,7 @@ export default function ThreatIntelPage() {
   if (loading) {
     return (
       <MainLayout>
-        <Header title="Vulnerability Intelligence" subtitle="Emerging KEV vulnerabilities with detection coverage" />
+        <Header title="Vulnerability Intelligence" subtitle="Loading exploitation intelligence from all sources…" />
         <div className="flex items-center justify-center h-64">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
@@ -551,50 +620,68 @@ export default function ThreatIntelPage() {
     <MainLayout>
       <Header
         title="Vulnerability Intelligence"
-        subtitle={`VulnCheck KEV vulnerabilities — ${days === 0 ? 'all time' : `last ${days} days`}${data ? ` (${data.total} entries)` : ''}`}
+        subtitle={`All exploitation intelligence sources — ${days === 0 ? 'all time' : `last ${days} days`}${data ? ` · ${data.total} CVEs across CISA, VulnCheck, ENISA & EUVD` : ''}`}
       />
 
       <div className="p-6 space-y-6">
 
         {/* Source status banner */}
-        {summary && (!summary.vulncheck_configured || !summary.pdcp_configured) && (
-          <div className="flex items-start gap-2 p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 text-sm text-yellow-400">
-            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-            <div>
-              {!summary.vulncheck_configured && (
-                <p><strong>VULNCHECK_API_TOKEN</strong> not set — KEV feed unavailable. Add your token to <code className="text-xs bg-black/20 px-1 rounded">.env</code>.</p>
-              )}
-              {!summary.pdcp_configured && (
-                <p className="mt-1"><strong>PDCP_API_KEY</strong> not set — Nuclei template & PoC availability data unavailable.
-                  Get a free key at <a href="https://cloud.projectdiscovery.io" target="_blank" rel="noopener noreferrer" className="underline">cloud.projectdiscovery.io</a>.
-                </p>
-              )}
+        {summary && (
+          <div className="flex items-start gap-2 p-3 rounded-lg border border-border bg-muted/20 text-sm text-muted-foreground">
+            <Info className="h-4 w-4 mt-0.5 shrink-0 text-primary" />
+            <div className="space-y-1">
+              <p className="text-foreground font-medium text-xs">Active intelligence sources</p>
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="text-blue-400">✓ CISA KEV <span className="text-muted-foreground">(free)</span></span>
+                {summary.vulncheck_configured
+                  ? <span className="text-indigo-400">✓ VulnCheck KEV</span>
+                  : <span className="text-yellow-500">⚠ VulnCheck — add <code className="bg-black/20 px-0.5 rounded">VULNCHECK_API_TOKEN</code> for 150+ source aggregation</span>
+                }
+                <span className="text-cyan-400">✓ ENISA EU KEV <span className="text-muted-foreground">(free)</span></span>
+                <span className="text-teal-400">✓ EUVD <span className="text-muted-foreground">(free)</span></span>
+                {!summary.pdcp_configured && (
+                  <span className="text-yellow-500">⚠ PDCP — add <code className="bg-black/20 px-0.5 rounded">PDCP_API_KEY</code> for Nuclei template data (<a href="https://cloud.projectdiscovery.io" target="_blank" rel="noopener noreferrer" className="underline">free key</a>)</span>
+                )}
+              </div>
             </div>
           </div>
         )}
 
         {/* Summary stat cards */}
         {summary && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-            <StatCard label="Total Emerging" value={summary.total} icon={TrendingUp}
-              color="bg-primary/10 text-primary" tooltip={`CVEs added to VulnCheck KEV in the last ${days} days`} />
-            <StatCard label="Critical" value={summary.by_severity?.critical ?? 0} icon={AlertTriangle}
-              color="bg-red-500/10 text-red-400" />
-            <StatCard label="High" value={summary.by_severity?.high ?? 0} icon={AlertTriangle}
-              color="bg-orange-500/10 text-orange-400" />
-            <StatCard label="Nuclei Templates" value={summary.with_nuclei_template} icon={FileCode}
-              color="bg-emerald-500/10 text-emerald-400"
-              tooltip="Vulnerabilities with a Nuclei detection template — can be auto-detected during scans" />
-            <StatCard label="PoC Available" value={summary.with_poc} icon={Target}
-              color="bg-yellow-500/10 text-yellow-400"
-              tooltip="Vulnerabilities with a public proof-of-concept exploit" />
-            <StatCard label="Active Campaigns" value={summary.otx_active_campaigns} icon={Activity}
-              color="bg-purple-500/10 text-purple-400"
-              tooltip="CVEs with 20+ OTX threat-intel pulses — indicating active attacker campaigns" />
-            <StatCard label="Ransomware" value={summary.ransomware_associated} icon={Flame}
-              color="bg-red-700/10 text-red-500"
-              tooltip="CVEs associated with known ransomware operators (VulnCheck KEV data)" />
-          </div>
+          <>
+            {/* Top row: source breakdown */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+              <StatCard label="Total CVEs" value={summary.total} icon={TrendingUp}
+                color="bg-primary/10 text-primary" tooltip="Unique CVEs from all exploitation intelligence sources combined" />
+              <StatCard label="CISA KEV" value={summary.by_source?.cisa_kev ?? 0} icon={Shield}
+                color="bg-blue-500/10 text-blue-400" tooltip="CVEs in the CISA Known Exploited Vulnerabilities catalog" />
+              <StatCard label="VulnCheck KEV" value={summary.by_source?.vulncheck_kev ?? 0} icon={Crosshair}
+                color="bg-indigo-500/10 text-indigo-400" tooltip="CVEs in the VulnCheck KEV aggregated feed (150+ sources)" />
+              <StatCard label="ENISA KEV" value={summary.by_source?.enisa_kev ?? 0} icon={AlertCircle}
+                color="bg-cyan-500/10 text-cyan-400" tooltip="CVEs in the ENISA EU CSIRT Network KEV List" />
+              <StatCard label="EUVD" value={summary.by_source?.euvd ?? 0} icon={Info}
+                color="bg-teal-500/10 text-teal-400" tooltip="Exploited-in-the-wild entries from the EU Vulnerability Database" />
+            </div>
+            {/* Bottom row: signal stats */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <StatCard label="Multi-Source" value={summary.multi_source_count} icon={Sparkles}
+                color="bg-amber-500/10 text-amber-400" tooltip="CVEs confirmed by 2+ independent sources — highest confidence of active exploitation" />
+              <StatCard label="Critical" value={summary.by_severity?.critical ?? 0} icon={AlertTriangle}
+                color="bg-red-500/10 text-red-400" />
+              <StatCard label="High" value={summary.by_severity?.high ?? 0} icon={AlertTriangle}
+                color="bg-orange-500/10 text-orange-400" />
+              <StatCard label="Nuclei Templates" value={summary.with_nuclei_template} icon={FileCode}
+                color="bg-emerald-500/10 text-emerald-400"
+                tooltip="Vulnerabilities with a Nuclei detection template — can be auto-detected" />
+              <StatCard label="Active Campaigns" value={summary.otx_active_campaigns} icon={Activity}
+                color="bg-purple-500/10 text-purple-400"
+                tooltip="CVEs with 20+ OTX threat-intel pulses — active attacker campaigns" />
+              <StatCard label="Ransomware" value={summary.ransomware_associated} icon={Flame}
+                color="bg-red-700/10 text-red-500"
+                tooltip="CVEs associated with known ransomware operators" />
+            </div>
+          </>
         )}
 
         {/* Filters */}
@@ -654,6 +741,20 @@ export default function ThreatIntelPage() {
             </SelectContent>
           </Select>
 
+          <Select value={sourceFilter} onValueChange={setSourceFilter}>
+            <SelectTrigger className="w-44 h-9">
+              <Zap className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+              <SelectValue placeholder="Source" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sources</SelectItem>
+              <SelectItem value="cisa_kev">CISA KEV only</SelectItem>
+              <SelectItem value="vulncheck_kev">VulnCheck only</SelectItem>
+              <SelectItem value="enisa_kev">ENISA KEV only</SelectItem>
+              <SelectItem value="euvd">EUVD only</SelectItem>
+            </SelectContent>
+          </Select>
+
           <Button
             variant="outline"
             size="sm"
@@ -692,6 +793,7 @@ export default function ThreatIntelPage() {
                     >
                       CVSS <SortIcon field="cvss_score" />
                     </TableHead>
+                    <TableHead className="w-48">Intel Sources</TableHead>
                     <TableHead className="w-40">Detection</TableHead>
                     <TableHead
                       className="w-20 cursor-pointer select-none hover:text-foreground"
@@ -700,7 +802,6 @@ export default function ThreatIntelPage() {
                       OTX <SortIcon field="otx_pulse_count" />
                     </TableHead>
                     <TableHead className="w-28">Ransomware</TableHead>
-                    <TableHead className="w-28">Oracle</TableHead>
                     <TableHead
                       className="w-24 cursor-pointer select-none hover:text-foreground"
                       onClick={() => toggleSort('date_added_kev')}
@@ -752,6 +853,11 @@ export default function ThreatIntelPage() {
                         )}
                       </TableCell>
 
+                      {/* Intel Sources */}
+                      <TableCell onClick={e => e.stopPropagation()}>
+                        <SourceBadges sources={entry.kev_sources} />
+                      </TableCell>
+
                       {/* Detection */}
                       <TableCell>
                         <DetectionBadge entry={entry} />
@@ -773,11 +879,6 @@ export default function ThreatIntelPage() {
                         )}
                       </TableCell>
 
-                      {/* Oracle */}
-                      <TableCell>
-                        <OracleBadge entry={entry} />
-                      </TableCell>
-
                       {/* Date */}
                       <TableCell>
                         <TooltipProvider>
@@ -792,6 +893,7 @@ export default function ThreatIntelPage() {
                         </TooltipProvider>
                       </TableCell>
                     </TableRow>
+
                   ))}
                 </TableBody>
               </Table>
@@ -800,8 +902,7 @@ export default function ThreatIntelPage() {
         </Card>
 
         <p className="text-xs text-muted-foreground text-center">
-          Data: VulnCheck KEV · ProjectDiscovery PDCP (Nuclei template availability) · AlienVault OTX (pulse count) · Oracle OPES
-          {summary?.pdcp_configured === false && ' · PDCP_API_KEY not set — template data unavailable'}
+          Sources: CISA KEV · VulnCheck KEV · ENISA EU KEV · EUVD · AlienVault OTX (campaign signals) · ProjectDiscovery PDCP (template availability) · Oracle OPES
         </p>
       </div>
 
