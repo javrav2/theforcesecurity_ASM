@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # Anthropic/Claude Configuration (default agent)
     # Use key from https://console.anthropic.com (API keys) — NOT Claude Code / Cursor keys
     ANTHROPIC_API_KEY: Optional[str] = None
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
 
     @field_validator("ANTHROPIC_API_KEY", "OPENAI_API_KEY", mode="before")
     @classmethod

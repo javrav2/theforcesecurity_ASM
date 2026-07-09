@@ -250,7 +250,7 @@ def default_security_checks_config():
 def default_agent_config():
     return {
         "llm_provider": "anthropic",  # openai | anthropic (Claude)
-        "llm_model": "claude-sonnet-4-20250514",
+        "llm_model": "claude-sonnet-4-5",
         "max_iterations": 100,
         "require_approval_exploitation": True,
         "require_approval_post_exploitation": True,

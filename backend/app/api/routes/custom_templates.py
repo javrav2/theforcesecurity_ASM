@@ -437,7 +437,7 @@ async def _call_llm(prompt: str) -> str:
         from langchain_anthropic import ChatAnthropic
         from langchain_core.messages import HumanMessage, SystemMessage
         llm = ChatAnthropic(
-            model=model_name or "claude-sonnet-4-20250514",
+            model=model_name or "claude-sonnet-4-5",
             api_key=getattr(settings, "ANTHROPIC_API_KEY", ""),
             max_tokens=4096,
         )
@@ -522,7 +522,7 @@ async def generate_template(
     cve_ids = list({c.upper() for c in (meta.get("cve_ids") or []) + ([req.cve_id.upper()] if req.cve_id else [])})
 
     ai_model = getattr(settings, "AI_MODEL", None) or (
-        "claude-sonnet-4-20250514" if getattr(settings, "AI_PROVIDER", "openai") == "anthropic" else "gpt-4o"
+        "claude-sonnet-4-5" if getattr(settings, "AI_PROVIDER", "openai") == "anthropic" else "gpt-4o"
     )
 
     t = CustomNucleiTemplate(
