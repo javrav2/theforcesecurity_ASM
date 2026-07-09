@@ -1,8 +1,9 @@
 """Vulnerability routes."""
 
+import logging
 from typing import List, Optional
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
@@ -12,6 +13,8 @@ from app.models.asset import Asset
 from app.models.user import User
 from app.schemas.vulnerability import VulnerabilityCreate, VulnerabilityUpdate, VulnerabilityResponse
 from app.api.deps import get_current_active_user, require_analyst
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/vulnerabilities", tags=["Vulnerabilities"])
 
@@ -113,29 +116,26 @@ def list_vulnerabilities(
 @router.post("/", response_model=VulnerabilityResponse, status_code=status.HTTP_201_CREATED)
 def create_vulnerability(
     vuln_data: VulnerabilityCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst)
 ):
     """Create a new vulnerability."""
-    # Check asset exists and user has access
     asset = db.query(Asset).filter(Asset.id == vuln_data.asset_id).first()
     if not asset:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Asset not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+
     if not current_user.is_superuser and current_user.organization_id != asset.organization_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
     new_vuln = Vulnerability(**vuln_data.model_dump())
     db.add(new_vuln)
     db.commit()
     db.refresh(new_vuln)
-    
+
+    # Auto-create Jira ticket if the org has an active integration with auto-create enabled
+    _maybe_auto_create_jira_ticket(db, new_vuln, background_tasks, asset.organization_id)
+
     return new_vuln
 
 
@@ -213,37 +213,43 @@ def get_vulnerability(
 def update_vulnerability(
     vuln_id: int,
     vuln_data: VulnerabilityUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst)
 ):
     """Update vulnerability."""
     vuln = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
-    
+
     if not vuln:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vulnerability not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+
     if not check_org_access(db, current_user, vuln.asset_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied"
-        )
-    
-    # Update fields
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
     update_data = vuln_data.model_dump(exclude_unset=True)
-    
-    # Handle status change to resolved
-    if update_data.get("status") == VulnerabilityStatus.RESOLVED and vuln.status != VulnerabilityStatus.RESOLVED:
+    old_status = vuln.status.value if vuln.status else "open"
+    new_status = update_data.get("status")
+
+    if new_status == VulnerabilityStatus.RESOLVED and vuln.status != VulnerabilityStatus.RESOLVED:
         vuln.resolved_at = datetime.utcnow()
-    
+
     for field, value in update_data.items():
         setattr(vuln, field, value)
-    
+
     db.commit()
     db.refresh(vuln)
-    
+
+    # Sync linked Jira ticket when status changes
+    if new_status and new_status != old_status:
+        _maybe_sync_jira_ticket(
+            db=db,
+            vuln=vuln,
+            old_status=old_status,
+            new_status=new_status.value if hasattr(new_status, "value") else str(new_status),
+            changed_by=current_user.email or current_user.username or "unknown",
+            background_tasks=background_tasks,
+        )
+
     return vuln
 
 
@@ -732,6 +738,94 @@ def get_related_findings(
         "related_findings": related_findings,
         "also_affects": also_affects
     }
+
+
+# ── Jira integration hooks ───────────────────────────────────────────────────
+
+def _maybe_auto_create_jira_ticket(
+    db: Session,
+    vuln: Vulnerability,
+    background_tasks: BackgroundTasks,
+    org_id: int,
+) -> None:
+    """Queue a Jira ticket creation if the org has auto-create enabled and severity qualifies."""
+    try:
+        from app.models.jira_integration import JiraIntegration, severity_meets_threshold
+        from app.services.jira_service import auto_create_ticket_sync
+
+        integration = (
+            db.query(JiraIntegration)
+            .filter(
+                JiraIntegration.organization_id == org_id,
+                JiraIntegration.is_active == True,
+                JiraIntegration.auto_create_enabled == True,
+            )
+            .first()
+        )
+        if not integration or not integration.default_project_key:
+            return
+
+        vuln_severity = vuln.severity.value if vuln.severity else "info"
+        min_severity = integration.auto_create_min_severity or "high"
+        if not severity_meets_threshold(vuln_severity, min_severity):
+            return
+
+        background_tasks.add_task(auto_create_ticket_sync, integration, vuln)
+    except Exception:
+        logger.exception("Error scheduling Jira auto-create for vuln %s", vuln.id)
+
+
+def _maybe_sync_jira_ticket(
+    db: Session,
+    vuln: Vulnerability,
+    old_status: str,
+    new_status: str,
+    changed_by: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Queue a Jira status sync if there are active tickets linked to this vulnerability."""
+    try:
+        from app.models.jira_integration import JiraIntegration, JiraTicket
+        from app.services.jira_service import sync_ticket_for_status_change_sync
+
+        asset = vuln.asset
+        if not asset:
+            return
+        org_id = asset.organization_id
+
+        integration = (
+            db.query(JiraIntegration)
+            .filter(
+                JiraIntegration.organization_id == org_id,
+                JiraIntegration.is_active == True,
+            )
+            .first()
+        )
+        if not integration:
+            return
+
+        # Only sync if transitions are configured in either direction
+        has_close = bool(integration.open_to_close_transitions)
+        has_reopen = bool(integration.close_to_open_transitions)
+        if not has_close and not has_reopen:
+            return
+
+        tickets = (
+            db.query(JiraTicket)
+            .filter(
+                JiraTicket.vulnerability_id == vuln.id,
+                JiraTicket.integration_id == integration.id,
+                JiraTicket.disconnected_at.is_(None),
+            )
+            .all()
+        )
+        for ticket in tickets:
+            background_tasks.add_task(
+                sync_ticket_for_status_change_sync,
+                integration, ticket, old_status, new_status, changed_by,
+            )
+    except Exception:
+        logger.exception("Error scheduling Jira sync for vuln %s", vuln.id)
 
 
 

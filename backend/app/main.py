@@ -562,6 +562,18 @@ def apply_oracle_migrations():
         "CREATE INDEX IF NOT EXISTS ix_vuln_oracle_opes_category ON vulnerabilities (oracle_opes_category)",
         "CREATE INDEX IF NOT EXISTS ix_vuln_oracle_mode          ON vulnerabilities (oracle_mode)",
         "CREATE INDEX IF NOT EXISTS ix_vuln_oracle_enriched_at   ON vulnerabilities (oracle_enriched_at)",
+
+        # ── Jira integration schema migrations ────────────────────────────────
+        "ALTER TABLE jira_integrations ADD COLUMN IF NOT EXISTS auto_create_enabled       BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE jira_integrations ADD COLUMN IF NOT EXISTS auto_create_min_severity  VARCHAR(20) DEFAULT 'high'",
+        "ALTER TABLE jira_integrations ADD COLUMN IF NOT EXISTS open_to_close_transitions JSONB DEFAULT '[]'",
+        "ALTER TABLE jira_integrations ADD COLUMN IF NOT EXISTS close_to_open_transitions JSONB DEFAULT '[]'",
+        "ALTER TABLE jira_integrations ADD COLUMN IF NOT EXISTS close_custom_fields       JSONB DEFAULT '{}'",
+        "ALTER TABLE jira_integrations ADD COLUMN IF NOT EXISTS reopen_custom_fields      JSONB DEFAULT '{}'",
+        "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS jira_status      VARCHAR(100)",
+        "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS jira_assignee    VARCHAR(255)",
+        "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS is_associated    BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS disconnected_at  TIMESTAMP WITH TIME ZONE",
     ]
 
     try:

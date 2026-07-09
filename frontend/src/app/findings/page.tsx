@@ -506,8 +506,9 @@ export default function FindingsPage() {
   const [generateTemplateEvidence, setGenerateTemplateEvidence] = useState('');
   const [firstOrgId, setFirstOrgId] = useState<number | null>(null);
 
-  // Jira ticket creation state
+  // Jira ticket state
   const [jiraDialogOpen, setJiraDialogOpen] = useState(false);
+  const [jiraDialogMode, setJiraDialogMode] = useState<'create' | 'associate'>('create');
   const [jiraProjects, setJiraProjects] = useState<{ key: string; name: string }[]>([]);
   const [jiraIssueTypes, setJiraIssueTypes] = useState<{ id: string; name: string }[]>([]);
   const [jiraHasIntegration, setJiraHasIntegration] = useState<boolean | null>(null);
@@ -517,14 +518,19 @@ export default function FindingsPage() {
   const [jiraIncludeRemediation, setJiraIncludeRemediation] = useState(true);
   const [jiraIncludeEnrichment, setJiraIncludeEnrichment] = useState(true);
   const [jiraCreating, setJiraCreating] = useState(false);
-  const [jiraExistingTickets, setJiraExistingTickets] = useState<{ jira_issue_key: string; jira_issue_url: string }[]>([]);
+  const [jiraExistingTickets, setJiraExistingTickets] = useState<import('@/lib/api').JiraTicket[]>([]);
+  const [jiraAssociateKey, setJiraAssociateKey] = useState('');
+  const [jiraDisconnecting, setJiraDisconnecting] = useState<number | null>(null);
+  const [jiraRefreshing, setJiraRefreshing] = useState<number | null>(null);
 
   // Open Jira ticket dialog for a finding
-  const openJiraDialog = async (finding: Finding) => {
+  const openJiraDialog = async (finding: Finding, mode: 'create' | 'associate' = 'create') => {
     setJiraDialogOpen(true);
+    setJiraDialogMode(mode);
     setJiraProjectKey('');
     setJiraIssueType('Bug');
     setJiraExistingTickets([]);
+    setJiraAssociateKey('');
 
     try {
       const [integrationData, projectsData, ticketsData] = await Promise.all([
@@ -536,7 +542,6 @@ export default function FindingsPage() {
       setJiraProjects(projectsData.projects);
       setJiraExistingTickets(ticketsData);
 
-      // Prefer the saved default project; fall back to the first project alphabetically
       const savedProject = integrationData?.default_project_key;
       const savedIssueType = integrationData?.default_issue_type || 'Bug';
       const initialKey =
@@ -550,7 +555,6 @@ export default function FindingsPage() {
       if (initialKey) {
         const typesData = await api.getJiraIssueTypes(initialKey);
         setJiraIssueTypes(typesData.issue_types);
-        // Keep the saved issue type if it exists in the project, otherwise use the first available
         const typeExists = typesData.issue_types.some((t) => t.name === savedIssueType);
         if (!typeExists && typesData.issue_types.length > 0) {
           setJiraIssueType(typesData.issue_types[0].name);
@@ -560,9 +564,49 @@ export default function FindingsPage() {
       if (err?.response?.status === 404) {
         setJiraHasIntegration(false);
       } else {
-        toast({ title: 'Could not load Jira projects', description: getApiErrorMessage(err), variant: 'destructive' });
+        toast({ title: 'Could not load Jira data', description: getApiErrorMessage(err), variant: 'destructive' });
         setJiraDialogOpen(false);
       }
+    }
+  };
+
+  const handleAssociateJiraTicket = async () => {
+    if (!selectedFinding || !jiraAssociateKey.trim()) return;
+    setJiraCreating(true);
+    try {
+      const ticket = await api.associateJiraTicket(selectedFinding.id, jiraAssociateKey.trim());
+      toast({ title: `Ticket ${ticket.jira_issue_key} linked.` });
+      setJiraExistingTickets((prev) => [ticket, ...prev]);
+      setJiraAssociateKey('');
+    } catch (err) {
+      toast({ title: 'Failed to associate ticket', description: getApiErrorMessage(err), variant: 'destructive' });
+    } finally {
+      setJiraCreating(false);
+    }
+  };
+
+  const handleDisconnectJiraTicket = async (ticketId: number, issueKey: string) => {
+    setJiraDisconnecting(ticketId);
+    try {
+      await api.disconnectJiraTicket(ticketId);
+      toast({ title: `Ticket ${issueKey} disconnected.` });
+      setJiraExistingTickets((prev) => prev.filter((t) => t.id !== ticketId));
+    } catch (err) {
+      toast({ title: 'Failed to disconnect', description: getApiErrorMessage(err), variant: 'destructive' });
+    } finally {
+      setJiraDisconnecting(null);
+    }
+  };
+
+  const handleRefreshJiraTicket = async (ticketId: number) => {
+    setJiraRefreshing(ticketId);
+    try {
+      const updated = await api.refreshJiraTicketStatus(ticketId);
+      setJiraExistingTickets((prev) => prev.map((t) => (t.id === ticketId ? updated : t)));
+    } catch (err) {
+      toast({ title: 'Could not refresh ticket status', description: getApiErrorMessage(err), variant: 'destructive' });
+    } finally {
+      setJiraRefreshing(null);
     }
   };
 
@@ -1941,9 +1985,9 @@ export default function FindingsPage() {
           </DialogContent>
         </Dialog>
 
-        {/* Create Jira Ticket Dialog */}
+        {/* Jira Dialog — Create / Associate */}
         <Dialog open={jiraDialogOpen} onOpenChange={(v) => { if (!jiraCreating) setJiraDialogOpen(v); }}>
-          <DialogContent className="max-w-lg">
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <div className="w-6 h-6 rounded bg-[#0052CC] flex items-center justify-center shrink-0">
@@ -1951,115 +1995,156 @@ export default function FindingsPage() {
                     <path d="M11.571 11.429 6.286 6.143A.857.857 0 0 0 5.07 7.357l4.071 4.072-4.07 4.071a.857.857 0 0 0 1.213 1.214l5.285-5.286a.857.857 0 0 0 0-1.214zm4.286 0-5.286-5.286a.857.857 0 0 0-1.214 1.214l4.072 4.072-4.072 4.071a.857.857 0 0 0 1.214 1.214l5.286-5.286a.857.857 0 0 0 0-1.214z" />
                   </svg>
                 </div>
-                Create Jira Ticket
+                Jira
               </DialogTitle>
-              <DialogDescription>
-                {selectedFinding?.title || selectedFinding?.name}
-              </DialogDescription>
+              <DialogDescription className="truncate">{selectedFinding?.title || selectedFinding?.name}</DialogDescription>
             </DialogHeader>
+
+            {/* Mode tabs */}
+            {jiraHasIntegration !== false && (
+              <div className="flex gap-1 border-b border-border pb-2">
+                {(['create', 'associate'] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setJiraDialogMode(m)}
+                    className={cn(
+                      'px-3 py-1 text-sm rounded-md transition-colors',
+                      jiraDialogMode === m
+                        ? 'bg-[#0052CC]/20 text-[#4C9AFF] border border-[#0052CC]/30'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
+                    )}
+                  >
+                    {m === 'create' ? 'Create new ticket' : 'Link existing ticket'}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="space-y-4 py-2">
               {jiraHasIntegration === false ? (
                 <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4 text-sm space-y-2">
                   <p className="text-yellow-300 font-medium flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4" />
-                    Jira not configured
+                    <AlertCircle className="h-4 w-4" />Jira not configured
                   </p>
                   <p className="text-muted-foreground">
                     Set up the Jira integration on the{' '}
-                    <a href="/integrations" className="text-primary underline">Integrations page</a>{' '}
-                    to push findings to Jira.
+                    <a href="/integrations" className="text-primary underline">Integrations page</a>.
                   </p>
                 </div>
               ) : (
                 <>
-                  {/* Existing tickets */}
+                  {/* Active linked tickets */}
                   {jiraExistingTickets.length > 0 && (
                     <div className="space-y-1.5">
-                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Existing tickets</p>
-                      <div className="space-y-1">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Linked tickets</p>
+                      <div className="space-y-1.5">
                         {jiraExistingTickets.map((t) => (
-                          <a
-                            key={t.jira_issue_key}
-                            href={t.jira_issue_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-2 text-sm text-[#4C9AFF] hover:underline"
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                            {t.jira_issue_key}
-                          </a>
+                          <div key={t.id} className="flex items-center gap-2 rounded border border-border px-2 py-1.5 text-sm">
+                            <a href={t.jira_issue_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-[#4C9AFF] hover:underline flex-1 min-w-0">
+                              <ExternalLink className="h-3 w-3 shrink-0" />
+                              <span className="font-mono">{t.jira_issue_key}</span>
+                            </a>
+                            {t.jira_status && (
+                              <Badge variant="outline" className="text-[10px] h-4 px-1 shrink-0">{t.jira_status}</Badge>
+                            )}
+                            {t.jira_assignee && (
+                              <span className="text-xs text-muted-foreground shrink-0 hidden sm:inline">{t.jira_assignee}</span>
+                            )}
+                            {t.is_associated && (
+                              <Badge variant="outline" className="text-[10px] h-4 px-1 shrink-0 text-muted-foreground">linked</Badge>
+                            )}
+                            <button
+                              onClick={() => handleRefreshJiraTicket(t.id)}
+                              disabled={jiraRefreshing === t.id}
+                              className="text-muted-foreground hover:text-foreground"
+                              title="Refresh status from Jira"
+                            >
+                              {jiraRefreshing === t.id
+                                ? <Loader2 className="h-3 w-3 animate-spin" />
+                                : <RefreshCw className="h-3 w-3" />}
+                            </button>
+                            <button
+                              onClick={() => handleDisconnectJiraTicket(t.id, t.jira_issue_key)}
+                              disabled={jiraDisconnecting === t.id}
+                              className="text-muted-foreground hover:text-red-400"
+                              title="Disconnect ticket"
+                            >
+                              {jiraDisconnecting === t.id
+                                ? <Loader2 className="h-3 w-3 animate-spin" />
+                                : <XCircle className="h-3 w-3" />}
+                            </button>
+                          </div>
                         ))}
                       </div>
                     </div>
                   )}
 
-                  {/* Project selection */}
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Project</label>
-                    {jiraProjects.length > 0 ? (
-                      <Select value={jiraProjectKey} onValueChange={handleJiraProjectChange}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select a project" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {jiraProjects.map((p) => (
-                            <SelectItem key={p.key} value={p.key}>
-                              {p.key} — {p.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Input
-                        placeholder="e.g. SEC"
-                        value={jiraProjectKey}
-                        onChange={(e) => setJiraProjectKey(e.target.value.toUpperCase())}
-                      />
-                    )}
-                  </div>
+                  {/* Create mode */}
+                  {jiraDialogMode === 'create' && (
+                    <>
+                      <div className="space-y-1.5">
+                        <label className="text-sm font-medium">Project</label>
+                        {jiraProjects.length > 0 ? (
+                          <Select value={jiraProjectKey} onValueChange={handleJiraProjectChange}>
+                            <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
+                            <SelectContent>
+                              {jiraProjects.map((p) => (
+                                <SelectItem key={p.key} value={p.key}>{p.key} — {p.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input placeholder="e.g. SEC" value={jiraProjectKey} onChange={(e) => setJiraProjectKey(e.target.value.toUpperCase())} />
+                        )}
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-sm font-medium">Issue type</label>
+                        {jiraIssueTypes.length > 0 ? (
+                          <Select value={jiraIssueType} onValueChange={setJiraIssueType}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {jiraIssueTypes.map((t) => (
+                                <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input placeholder="Bug" value={jiraIssueType} onChange={(e) => setJiraIssueType(e.target.value)} />
+                        )}
+                      </div>
+                      <div className="space-y-2 pt-1">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Include in ticket</p>
+                        {[
+                          { label: 'Evidence & Proof of Concept', value: jiraIncludeEvidence, set: setJiraIncludeEvidence },
+                          { label: 'Remediation playbook', value: jiraIncludeRemediation, set: setJiraIncludeRemediation },
+                          { label: 'Delphi KEV/EPSS + Oracle OPES', value: jiraIncludeEnrichment, set: setJiraIncludeEnrichment },
+                        ].map(({ label, value, set }) => (
+                          <label key={label} className="flex items-center gap-2 cursor-pointer text-sm">
+                            <Checkbox checked={value} onCheckedChange={(v) => set(!!v)} className="shrink-0" />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
 
-                  {/* Issue type */}
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Issue type</label>
-                    {jiraIssueTypes.length > 0 ? (
-                      <Select value={jiraIssueType} onValueChange={setJiraIssueType}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {jiraIssueTypes.map((t) => (
-                            <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Input
-                        placeholder="Bug"
-                        value={jiraIssueType}
-                        onChange={(e) => setJiraIssueType(e.target.value)}
-                      />
-                    )}
-                  </div>
-
-                  {/* Content toggles */}
-                  <div className="space-y-2 pt-1">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Include in ticket</p>
-                    {[
-                      { label: 'Evidence & Proof of Concept', value: jiraIncludeEvidence, set: setJiraIncludeEvidence },
-                      { label: 'Remediation guidance', value: jiraIncludeRemediation, set: setJiraIncludeRemediation },
-                      { label: 'Delphi + Oracle enrichment', value: jiraIncludeEnrichment, set: setJiraIncludeEnrichment },
-                    ].map(({ label, value, set }) => (
-                      <label key={label} className="flex items-center gap-2 cursor-pointer text-sm">
-                        <Checkbox
-                          checked={value}
-                          onCheckedChange={(v) => set(!!v)}
-                          className="shrink-0"
+                  {/* Associate mode */}
+                  {jiraDialogMode === 'associate' && (
+                    <div className="space-y-3">
+                      <p className="text-sm text-muted-foreground">
+                        Enter an existing Jira issue key to link it to this finding. The ticket will not be modified in Jira, but status sync will apply going forward.
+                      </p>
+                      <div className="space-y-1.5">
+                        <label className="text-sm font-medium">Jira issue key</label>
+                        <Input
+                          placeholder="e.g. SEC-123"
+                          value={jiraAssociateKey}
+                          onChange={(e) => setJiraAssociateKey(e.target.value.toUpperCase())}
+                          onKeyDown={(e) => e.key === 'Enter' && handleAssociateJiraTicket()}
                         />
-                        {label}
-                      </label>
-                    ))}
-                  </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -2068,18 +2153,16 @@ export default function FindingsPage() {
               <Button variant="outline" onClick={() => setJiraDialogOpen(false)} disabled={jiraCreating}>
                 {jiraHasIntegration === false ? 'Close' : 'Cancel'}
               </Button>
-              {jiraHasIntegration !== false && (
-                <Button
-                  onClick={handleCreateJiraTicket}
-                  disabled={jiraCreating || !jiraProjectKey}
-                  className="bg-[#0052CC] hover:bg-[#0065FF] text-white"
-                >
-                  {jiraCreating ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  ) : (
-                    <Ticket className="h-4 w-4 mr-2" />
-                  )}
+              {jiraHasIntegration !== false && jiraDialogMode === 'create' && (
+                <Button onClick={handleCreateJiraTicket} disabled={jiraCreating || !jiraProjectKey} className="bg-[#0052CC] hover:bg-[#0065FF] text-white">
+                  {jiraCreating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Ticket className="h-4 w-4 mr-2" />}
                   Create issue
+                </Button>
+              )}
+              {jiraHasIntegration !== false && jiraDialogMode === 'associate' && (
+                <Button onClick={handleAssociateJiraTicket} disabled={jiraCreating || !jiraAssociateKey.trim()} className="bg-[#0052CC] hover:bg-[#0065FF] text-white">
+                  {jiraCreating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Ticket className="h-4 w-4 mr-2" />}
+                  Link ticket
                 </Button>
               )}
             </div>
