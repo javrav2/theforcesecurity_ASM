@@ -145,6 +145,7 @@ class NucleiFindingsService:
         summary = {
             "findings_created": 0,
             "findings_updated": 0,
+            "findings_reactivated": 0,
             "assets_created": 0,
             "labels_created": 0,
             "by_severity": {
@@ -157,7 +158,9 @@ class NucleiFindingsService:
             "cves_found": set(),
             "errors": []
         }
-        
+        # Track reactivated vuln IDs for post-commit Jira sync.
+        reactivations: list = []  # [(vuln_id, old_status_value), ...]
+
         for nuclei_result in scan_result.findings:
             try:
                 result = self.import_single_finding(
@@ -175,6 +178,12 @@ class NucleiFindingsService:
                         summary["by_severity"][severity] += 1
                 elif result.get("updated"):
                     summary["findings_updated"] += 1
+
+                if result.get("reactivated") and result.get("vulnerability_id"):
+                    summary["findings_reactivated"] += 1
+                    reactivations.append(
+                        (result["vulnerability_id"], result["old_status"])
+                    )
                 
                 if result.get("asset_created"):
                     summary["assets_created"] += 1
@@ -190,13 +199,21 @@ class NucleiFindingsService:
                 summary["errors"].append(f"{nuclei_result.template_id}: {str(e)}")
         
         self.db.commit()
+
+        # After commit, reopen linked Jira tickets for reactivated findings.
+        # Each call spawns a self-contained daemon thread with its own DB session.
+        if reactivations:
+            from app.services.reactivation_service import trigger_jira_reopen_background
+            for vuln_id, old_st in reactivations:
+                trigger_jira_reopen_background(vuln_id, old_st)
         
         # Convert set to list for JSON serialization
         summary["cves_found"] = list(summary["cves_found"])
         
         logger.info(
             f"Nuclei import complete: {summary['findings_created']} created, "
-            f"{summary['findings_updated']} updated"
+            f"{summary['findings_updated']} updated, "
+            f"{summary['findings_reactivated']} reactivated"
         )
         
         return summary
@@ -225,9 +242,11 @@ class NucleiFindingsService:
         result = {
             "created": False,
             "updated": False,
+            "reactivated": False,
+            "old_status": None,
             "asset_created": False,
             "labels_added": 0,
-            "vulnerability_id": None
+            "vulnerability_id": None,
         }
         
         # Find or create the asset
@@ -242,11 +261,18 @@ class NucleiFindingsService:
         if create_assets and asset.id is None:
             result["asset_created"] = True
         
-        # Check for existing finding on this asset
+        # Check for existing finding on this asset (active or closed)
         existing = self._find_existing_vulnerability(asset.id, nuclei_result)
         
         if existing:
-            # Update existing finding
+            # Reactivate if the finding was previously closed
+            from app.services.reactivation_service import reactivate_if_closed
+            old_status = existing.status.value
+            if reactivate_if_closed(existing):
+                result["reactivated"] = True
+                result["old_status"] = old_status
+
+            # Update remaining fields regardless
             self._update_vulnerability(existing, nuclei_result)
             result["updated"] = True
             result["vulnerability_id"] = existing.id
@@ -407,31 +433,59 @@ class NucleiFindingsService:
         asset_id: int,
         nuclei_result: NucleiResult
     ) -> Optional[Vulnerability]:
-        """Find existing vulnerability matching this finding."""
-        # Match by template_id and asset
+        """
+        Find an existing vulnerability matching this finding.
+
+        Priority order:
+          1. Active (OPEN / IN_PROGRESS) match by template_id
+          2. Active match by CVE ID
+          3. Closed (RESOLVED / ACCEPTED / FALSE_POSITIVE / MITIGATED) match by template_id
+          4. Closed match by CVE ID
+
+        Returning a closed record signals to the caller that the finding should
+        be reactivated rather than creating a duplicate.
+        """
+        active_statuses = [VulnerabilityStatus.OPEN, VulnerabilityStatus.IN_PROGRESS]
+
+        # 1. Active match — template_id
         existing = self.db.query(Vulnerability).filter(
             Vulnerability.asset_id == asset_id,
             Vulnerability.template_id == nuclei_result.template_id,
-            Vulnerability.status.in_([
-                VulnerabilityStatus.OPEN,
-                VulnerabilityStatus.IN_PROGRESS
-            ])
+            Vulnerability.status.in_(active_statuses),
         ).first()
-        
         if existing:
             return existing
-        
-        # Also check by CVE if available
+
+        # 2. Active match — CVE ID
         if nuclei_result.cve_id:
             existing = self.db.query(Vulnerability).filter(
                 Vulnerability.asset_id == asset_id,
                 Vulnerability.cve_id == nuclei_result.cve_id,
-                Vulnerability.status.in_([
-                    VulnerabilityStatus.OPEN,
-                    VulnerabilityStatus.IN_PROGRESS
-                ])
+                Vulnerability.status.in_(active_statuses),
             ).first()
-        
+            if existing:
+                return existing
+
+        # 3. Closed match — template_id (redetection of a previously closed finding)
+        from app.services.reactivation_service import CLOSED_STATUSES
+        closed_list = list(CLOSED_STATUSES)
+
+        existing = self.db.query(Vulnerability).filter(
+            Vulnerability.asset_id == asset_id,
+            Vulnerability.template_id == nuclei_result.template_id,
+            Vulnerability.status.in_(closed_list),
+        ).first()
+        if existing:
+            return existing
+
+        # 4. Closed match — CVE ID
+        if nuclei_result.cve_id:
+            existing = self.db.query(Vulnerability).filter(
+                Vulnerability.asset_id == asset_id,
+                Vulnerability.cve_id == nuclei_result.cve_id,
+                Vulnerability.status.in_(closed_list),
+            ).first()
+
         return existing
     
     def _create_vulnerability(

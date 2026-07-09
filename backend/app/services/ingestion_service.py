@@ -173,10 +173,16 @@ def _upsert_vulnerability(
     db: Session,
     asset: Asset,
     finding: UnifiedFinding,
-) -> Tuple[Optional[Vulnerability], str]:
-    """Create or update a vulnerability record. Returns (vuln, status)."""
+) -> Tuple[Optional[Vulnerability], str, Optional[str]]:
+    """
+    Create or update a vulnerability record.
+
+    Returns (vuln, status, old_status_value_if_reactivated).
+    Possible status values: "skipped", "duplicate", "reactivated", "created".
+    old_status_value is only set when status == "reactivated".
+    """
     if finding.type != ResultType.VULNERABILITY:
-        return None, "skipped"
+        return None, "skipped", None
 
     filters = [Vulnerability.asset_id == asset.id]
     if finding.template_id:
@@ -188,8 +194,12 @@ def _upsert_vulnerability(
 
     existing = db.query(Vulnerability).filter(and_(*filters)).first()
     if existing:
+        old_status = existing.status
         existing.last_detected = datetime.utcnow()
-        return existing, "duplicate"
+        from app.services.reactivation_service import reactivate_if_closed
+        if reactivate_if_closed(existing):
+            return existing, "reactivated", old_status.value
+        return existing, "duplicate", None
 
     vuln = Vulnerability(
         title=finding.title or "Untitled Finding",
@@ -236,7 +246,7 @@ def _upsert_vulnerability(
         except Exception as exc:
             logger.debug("Oracle auto-enrich skipped for vuln %s: %s", vuln.id, exc)
 
-    return vuln, "created"
+    return vuln, "created", None
 
 
 def _enrich_takeover(asset: Asset, finding: UnifiedFinding):
@@ -328,6 +338,8 @@ def process_ingestion_batch(
     start = time.monotonic()
     results: List[IngestionFindingResult] = []
     created = updated = duplicates = errors = 0
+    # Track reactivated findings so we can sync their Jira tickets after commit.
+    reactivations: List[Tuple[int, str]] = []  # (vuln_id, old_status_value)
 
     for idx, finding in enumerate(request.findings):
         try:
@@ -342,15 +354,19 @@ def process_ingestion_batch(
                 finding_id = ps.id if ps else None
 
             elif finding.type == ResultType.VULNERABILITY:
-                vuln, v_status = _upsert_vulnerability(db, asset, finding)
+                vuln, v_status, old_st = _upsert_vulnerability(db, asset, finding)
                 status = v_status
                 finding_id = vuln.id if vuln else None
+                if v_status == "reactivated" and vuln and old_st:
+                    reactivations.append((vuln.id, old_st))
 
             elif finding.type == ResultType.TAKEOVER:
                 _enrich_takeover(asset, finding)
-                vuln, v_status = _upsert_vulnerability(db, asset, finding)
+                vuln, v_status, old_st = _upsert_vulnerability(db, asset, finding)
                 status = v_status
                 finding_id = vuln.id if vuln else None
+                if v_status == "reactivated" and vuln and old_st:
+                    reactivations.append((vuln.id, old_st))
 
             elif finding.type == ResultType.TLS_ANALYSIS:
                 _enrich_tls(asset, finding)
@@ -373,7 +389,7 @@ def process_ingestion_batch(
 
             if status == "created":
                 created += 1
-            elif status == "updated":
+            elif status in ("updated", "reactivated"):
                 updated += 1
             elif status == "duplicate":
                 duplicates += 1
@@ -395,11 +411,20 @@ def process_ingestion_batch(
             ))
 
     db.commit()
+
+    # After commit, trigger Jira reopen syncs for reactivated findings.
+    # Each call spawns a self-contained daemon thread with its own DB session.
+    if reactivations:
+        from app.services.reactivation_service import trigger_jira_reopen_background
+        for vuln_id, old_st in reactivations:
+            trigger_jira_reopen_background(vuln_id, old_st)
+
     elapsed_ms = (time.monotonic() - start) * 1000
 
     logger.info(
         f"Ingestion batch {batch_id}: {len(request.findings)} findings, "
-        f"{created} created, {updated} updated, {duplicates} dupes, {errors} errors "
+        f"{created} created, {updated} updated "
+        f"({len(reactivations)} reactivated), {duplicates} dupes, {errors} errors "
         f"({elapsed_ms:.1f}ms)"
     )
 
