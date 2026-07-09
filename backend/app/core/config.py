@@ -29,11 +29,36 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://asm_user:asm_password@db:5432/asm_db"
     
     # JWT Authentication
-    SECRET_KEY: str = "your-super-secret-key-change-in-production"
+    # No default: SECRET_KEY must be supplied via the environment. A missing or
+    # placeholder value makes HS256 tokens forgeable, so we fail closed at startup.
+    SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
+    # Registration
+    # Public self-registration is disabled by default; admins provision users via
+    # POST /users/. Flip to True only for deployments that intentionally allow it.
+    ALLOW_PUBLIC_REGISTRATION: bool = False
+
+    # CAPTCHA (bot / brute-force protection on auth endpoints)
+    # Disabled by default: with no secret key configured, verification is skipped
+    # so local/dev logins keep working. Set CAPTCHA_ENABLED=true + the keys in prod.
+    CAPTCHA_ENABLED: bool = False
+    CAPTCHA_PROVIDER: str = "turnstile"  # turnstile | hcaptcha | recaptcha
+    CAPTCHA_SECRET_KEY: Optional[str] = None
+    # Public site key — safe to expose to the browser (served via GET /auth/config).
+    CAPTCHA_SITE_KEY: Optional[str] = None
+
+    # Rate limiting (brute-force / abuse protection on auth + expensive endpoints)
+    RATE_LIMIT_ENABLED: bool = True
+    # slowapi storage backend. "memory://" is per-process (fine for a single
+    # worker); use "redis://redis:6379" to share limits across workers/instances.
+    RATE_LIMIT_STORAGE_URI: str = "memory://"
+    RATE_LIMIT_LOGIN: str = "5/minute"
+    RATE_LIMIT_REGISTER: str = "5/hour"
+    RATE_LIMIT_REFRESH: str = "20/minute"
+
     # CORS
     CORS_ORIGINS: list[str] = [
         "http://localhost",
@@ -71,6 +96,36 @@ class Settings(BaseSettings):
     @classmethod
     def strip_api_keys(cls, v: Optional[str]) -> Optional[str]:
         return _strip_api_key(v)
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        """Refuse to start with a missing, placeholder, or weak signing key.
+
+        A predictable SECRET_KEY lets anyone forge valid JWTs for any user
+        (including the superuser), so this is enforced at startup rather than
+        left to operator discipline.
+        """
+        value = (v or "").strip()
+        insecure = {
+            "your-super-secret-key-change-in-production",
+            "please-change-me-locally-only",
+            "changeme",
+            "change-me",
+            "secret",
+            "secret-key",
+        }
+        if not value or value.lower() in insecure:
+            raise ValueError(
+                "SECRET_KEY is missing or set to a known placeholder. Set a strong, "
+                "unique value in the environment (generate one with `openssl rand -hex 32`)."
+            )
+        if len(value) < 32:
+            raise ValueError(
+                "SECRET_KEY must be at least 32 characters. Generate one with "
+                "`openssl rand -hex 32`."
+            )
+        return value
     
     # Agent settings (overridable per-org via project_settings.agent)
     AGENT_MAX_ITERATIONS: int = 100

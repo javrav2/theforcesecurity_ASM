@@ -32,7 +32,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, Users, Loader2 } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Plus, Users, Loader2, KeyRound } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate } from '@/lib/utils';
@@ -47,6 +48,7 @@ interface User {
   is_active: boolean;
   organization_id: number | null;
   created_at: string;
+  must_change_password?: boolean;
 }
 
 export default function UsersPage() {
@@ -55,6 +57,7 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [resettingId, setResettingId] = useState<number | null>(null);
   const [formData, setFormData] = useState({
     email: '',
     username: '',
@@ -62,6 +65,7 @@ export default function UsersPage() {
     full_name: '',
     role: 'analyst',
     organization_id: '' as string,
+    must_change_password: true,
   });
   const { toast } = useToast();
   const { user: currentUser } = useAuth();
@@ -118,6 +122,7 @@ export default function UsersPage() {
         password: formData.password,
         full_name: formData.full_name,
         role: formData.role,
+        must_change_password: formData.must_change_password,
       };
       if (formData.organization_id) {
         payload.organization_id = parseInt(formData.organization_id, 10);
@@ -127,10 +132,12 @@ export default function UsersPage() {
       await api.createUser(payload);
       toast({
         title: 'Success',
-        description: 'User created successfully',
+        description: formData.must_change_password
+          ? 'User created. They will be required to set a new password at first login.'
+          : 'User created successfully',
       });
       setCreateDialogOpen(false);
-      setFormData({ email: '', username: '', password: '', full_name: '', role: 'analyst', organization_id: '' });
+      setFormData({ email: '', username: '', password: '', full_name: '', role: 'analyst', organization_id: '', must_change_password: true });
       fetchUsers();
     } catch (error: any) {
       toast({
@@ -140,6 +147,26 @@ export default function UsersPage() {
       });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleForceReset = async (user: User) => {
+    setResettingId(user.id);
+    try {
+      await api.forcePasswordReset(user.id);
+      toast({
+        title: 'Password reset required',
+        description: `${user.full_name || user.email} must set a new password on their next request.`,
+      });
+      fetchUsers();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.response?.data?.detail || 'Failed to force password reset',
+        variant: 'destructive',
+      });
+    } finally {
+      setResettingId(null);
     }
   };
 
@@ -215,7 +242,7 @@ export default function UsersPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
+                  <Label htmlFor="password">Initial Password</Label>
                   <Input
                     id="password"
                     type="password"
@@ -223,6 +250,24 @@ export default function UsersPage() {
                     value={formData.password}
                     onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   />
+                </div>
+
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id="must_change_password"
+                    checked={formData.must_change_password}
+                    onCheckedChange={(checked) =>
+                      setFormData({ ...formData, must_change_password: checked === true })
+                    }
+                  />
+                  <div className="grid gap-1 leading-none">
+                    <Label htmlFor="must_change_password" className="cursor-pointer">
+                      Require password change at first login
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      The password above is temporary; the user must set their own before accessing the platform.
+                    </p>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -295,18 +340,19 @@ export default function UsersPage() {
                 <TableHead>Organization</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8">
+                  <TableCell colSpan={7} className="text-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : users.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                     No users found.
                   </TableCell>
                 </TableRow>
@@ -324,12 +370,33 @@ export default function UsersPage() {
                         : '—'}
                     </TableCell>
                     <TableCell>
-                      <Badge variant={user.is_active ? 'default' : 'secondary'}>
-                        {user.is_active ? 'Active' : 'Inactive'}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={user.is_active ? 'default' : 'secondary'}>
+                          {user.is_active ? 'Active' : 'Inactive'}
+                        </Badge>
+                        {user.must_change_password && (
+                          <Badge className="bg-amber-500/20 text-amber-400">Reset pending</Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {formatDate(user.created_at)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleForceReset(user)}
+                        disabled={resettingId === user.id || user.must_change_password}
+                        title={user.must_change_password ? 'User already has a pending password reset' : 'Force this user to set a new password'}
+                      >
+                        {resettingId === user.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+                        )}
+                        Force reset
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))

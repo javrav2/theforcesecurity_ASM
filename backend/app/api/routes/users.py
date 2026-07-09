@@ -48,7 +48,8 @@ def create_user(
             detail="Username already taken"
         )
     
-    # Create new user
+    # Create new user. The initial password is treated as temporary by default,
+    # forcing the user to set their own password on first login.
     new_user = User(
         email=user_data.email,
         username=user_data.username,
@@ -57,7 +58,8 @@ def create_user(
         role=user_data.role,
         organization_id=user_data.organization_id,
         is_active=True,
-        is_superuser=False
+        is_superuser=False,
+        must_change_password=user_data.must_change_password,
     )
     
     db.add(new_user)
@@ -140,6 +142,34 @@ def update_user(
     db.commit()
     db.refresh(user)
     
+    return user
+
+
+@router.post("/{user_id}/force-password-reset", response_model=UserResponse)
+def force_password_reset(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin)
+):
+    """Force a user to set a new password on their next request (admin only).
+
+    Sets must_change_password=True. Because the auth dependency re-checks this
+    flag from the database on every request, any active session is immediately
+    gated (403 password_change_required) until the user changes their password —
+    no token revocation needed. The user's existing password still works for the
+    change-password step.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    user.must_change_password = True
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 

@@ -10,6 +10,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
+from app.core.rate_limit import register_rate_limiting
 from app.db.database import engine, Base, SessionLocal
 from app.core.security import get_password_hash
 from app.models.user import User, UserRole
@@ -92,6 +93,9 @@ except ImportError:
         app.add_middleware(_ProxyHeadersMiddleware, trusted_hosts="*")
     except ImportError:
         pass  # Neither middleware available in this env; nginx handles SSL termination
+
+# Register rate limiting (slowapi) — attaches the limiter + 429 handler.
+register_rate_limiting(app)
 
 # Configure CORS
 app.add_middleware(
@@ -574,6 +578,9 @@ def apply_oracle_migrations():
         "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS jira_assignee    VARCHAR(255)",
         "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS is_associated    BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE jira_tickets ADD COLUMN IF NOT EXISTS disconnected_at  TIMESTAMP WITH TIME ZONE",
+
+        # ── Forced password reset for admin-provisioned accounts ──────────────
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE",
     ]
 
     try:
@@ -590,10 +597,22 @@ def apply_oracle_migrations():
 
 
 def ensure_default_admin():
-    """Ensure a known-good admin account exists and is usable."""
+    """Ensure a known-good admin account exists and is usable.
+
+    Fails closed: without an explicit DEFAULT_ADMIN_PASSWORD we do NOT create or
+    repair an admin account, so the platform never ships a predictable superuser.
+    """
     default_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@judahsecurity.com")
     default_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
-    default_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
+    default_password = os.getenv("DEFAULT_ADMIN_PASSWORD")
+
+    _weak_passwords = {"admin123", "admin", "password", "changeme", "change-me"}
+    if not default_password or default_password.strip().lower() in _weak_passwords:
+        logger.warning(
+            "Skipping default admin bootstrap: DEFAULT_ADMIN_PASSWORD is unset or weak. "
+            "Set a strong DEFAULT_ADMIN_PASSWORD to auto-provision the admin account."
+        )
+        return
 
     db = SessionLocal()
     try:

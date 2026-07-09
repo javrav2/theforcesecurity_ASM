@@ -28,6 +28,9 @@ class User(Base):
     role = Column(Enum(UserRole), default=UserRole.VIEWER, nullable=False)
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
+    # Forces the user to set a new password on next login before any other access.
+    # Set when an admin provisions an account with an initial/temporary password.
+    must_change_password = Column(Boolean, default=False, nullable=False)
     
     # Organization membership
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)

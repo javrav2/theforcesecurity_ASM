@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, Loader2, Shield, Scan, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -8,25 +8,61 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/store/auth';
 import { useToast } from '@/hooks/use-toast';
+import { api } from '@/lib/api';
+import { Turnstile } from '@/components/auth/Turnstile';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [captcha, setCaptcha] = useState<{ enabled: boolean; siteKey: string | null }>({
+    enabled: false,
+    siteKey: null,
+  });
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const router = useRouter();
   const { login } = useAuth();
   const { toast } = useToast();
 
+  useEffect(() => {
+    api
+      .getAuthConfig()
+      .then((cfg) => {
+        if (cfg.captcha.enabled && cfg.captcha.provider === 'turnstile' && cfg.captcha.site_key) {
+          setCaptcha({ enabled: true, siteKey: cfg.captcha.site_key });
+        }
+      })
+      .catch(() => {
+        /* config unreachable — proceed without captcha (backend still enforces if required) */
+      });
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (captcha.enabled && !captchaToken) {
+      toast({
+        title: 'Verification required',
+        description: 'Please complete the CAPTCHA challenge.',
+        variant: 'destructive',
+      });
+      return;
+    }
     setIsLoading(true);
     try {
-      await login(email, password);
+      await login(email, password, captchaToken ?? undefined);
+      const currentUser = useAuth.getState().user;
+      if (currentUser?.must_change_password) {
+        toast({ title: 'Password change required', description: 'Please set a new password to continue.' });
+        router.push('/change-password');
+        return;
+      }
       toast({ title: 'Welcome back!', description: 'Successfully logged in.' });
       router.push('/dashboard');
     } catch (error: any) {
       const { getApiErrorMessage } = await import('@/lib/api');
+      // A CAPTCHA token is single-use; force a fresh challenge after any failure.
+      setCaptchaToken(null);
       toast({
         title: 'Login failed',
         description: getApiErrorMessage(error, 'Invalid credentials'),
@@ -152,10 +188,20 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {captcha.enabled && captcha.siteKey && (
+              <div className="flex justify-center">
+                <Turnstile
+                  siteKey={captcha.siteKey}
+                  onVerify={(token) => setCaptchaToken(token)}
+                  onExpire={() => setCaptchaToken(null)}
+                />
+              </div>
+            )}
+
             <Button
               type="submit"
               className="w-full h-11 text-sm font-semibold tracking-wide"
-              disabled={isLoading}
+              disabled={isLoading || (captcha.enabled && !captchaToken)}
             >
               {isLoading ? (
                 <>

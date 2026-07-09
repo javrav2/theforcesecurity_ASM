@@ -19,6 +19,15 @@ class UserCreate(UserBase):
     password: str = Field(..., min_length=8, max_length=100)
     role: UserRole = UserRole.VIEWER
     organization_id: Optional[int] = None
+    # When True (default), the initial password is treated as temporary and the
+    # user is forced to change it on first login. Admin can uncheck if desired.
+    must_change_password: bool = True
+
+
+class PasswordChange(BaseModel):
+    """Schema for a user changing their own password."""
+    current_password: str = Field(..., min_length=1, max_length=100)
+    new_password: str = Field(..., min_length=8, max_length=100)
 
 
 class UserUpdate(BaseModel):
@@ -44,6 +53,7 @@ class UserResponse(UserBase):
     role: UserRole
     is_active: bool
     is_superuser: bool
+    must_change_password: bool = False
     organization_id: Optional[int] = None
     created_at: datetime
     last_login: Optional[datetime] = None

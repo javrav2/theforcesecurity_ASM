@@ -192,14 +192,27 @@ class ApiClient {
   }
 
   // Auth
-  async login(email: string, password: string) {
+  async getAuthConfig() {
+    const response = await this.client.get('/auth/config');
+    return response.data as {
+      captcha: { enabled: boolean; provider: string; site_key: string | null };
+      public_registration: boolean;
+    };
+  }
+
+  async login(email: string, password: string, captchaToken?: string) {
     const formData = new URLSearchParams();
     formData.append('username', email);
     formData.append('password', password);
-    
-    const response = await this.client.post('/auth/login', formData, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    if (captchaToken) {
+      headers['X-Captcha-Token'] = captchaToken;
+    }
+
+    const response = await this.client.post('/auth/login', formData, { headers });
     this.setToken(response.data.access_token);
     return response.data;
   }
@@ -952,8 +965,21 @@ class ApiClient {
     return response.data;
   }
 
-  async createUser(data: { email: string; username: string; password: string; full_name: string; role?: string; organization_id?: number | null }) {
+  async createUser(data: { email: string; username: string; password: string; full_name: string; role?: string; organization_id?: number | null; must_change_password?: boolean }) {
     const response = await this.client.post('/users', data);
+    return response.data;
+  }
+
+  async changePassword(currentPassword: string, newPassword: string) {
+    const response = await this.client.post('/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    return response.data;
+  }
+
+  async forcePasswordReset(userId: number) {
+    const response = await this.client.post(`/users/${userId}/force-password-reset`);
     return response.data;
   }
 
