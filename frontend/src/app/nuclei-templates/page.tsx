@@ -436,24 +436,281 @@ function TemplateDetail({
   );
 }
 
+// ── Detection Gap type ────────────────────────────────────────────────────────
+
+interface DetectionGap {
+  cve_id: string;
+  title: string;
+  severity: string;
+  asset_count: number;
+  finding_id: number;
+  cvss_score: number | null;
+  is_kev: boolean;
+}
+
+const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, informational: 4, unknown: 5 };
+
+// ── Detection Gaps tab ────────────────────────────────────────────────────────
+
+function DetectionGapsTab({
+  selectedOrg,
+  templates,
+  templatesLoading,
+  onGenerate,
+}: {
+  selectedOrg: number | null;
+  templates: Template[];
+  templatesLoading: boolean;
+  onGenerate: (cveId: string) => void;
+}) {
+  const { toast } = useToast();
+  const [gaps, setGaps] = useState<DetectionGap[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [sevFilter, setSevFilter] = useState('all');
+
+  const coveredCves = new Set(templates.flatMap(t => t.cve_ids.map(c => c.toUpperCase())));
+
+  const loadGaps = useCallback(async () => {
+    if (!selectedOrg) return;
+    setLoading(true);
+    try {
+      const resp = await api.getVulnerabilities({ organization_id: selectedOrg, limit: 2000 });
+      const vulns: any[] = Array.isArray(resp) ? resp : (resp as any).items ?? [];
+      const seen = new Set<string>();
+      const found: DetectionGap[] = [];
+      for (const v of vulns) {
+        const cve = (v.cve_id || '').toUpperCase();
+        if (!cve || seen.has(cve)) continue;
+        seen.add(cve);
+        if (coveredCves.has(cve)) continue;
+        found.push({
+          cve_id: cve,
+          title: v.title || v.name || cve,
+          severity: (v.severity || 'unknown').toLowerCase(),
+          asset_count: 1,
+          finding_id: v.id,
+          cvss_score: v.cvss_score ?? null,
+          is_kev: !!(v.metadata_?.delphi?.is_kev || v.delphi_is_kev),
+        });
+      }
+      found.sort((a, b) =>
+        (SEVERITY_ORDER[a.severity] ?? 5) - (SEVERITY_ORDER[b.severity] ?? 5)
+      );
+      setGaps(found);
+    } catch (err: any) {
+      toast({ title: 'Failed to load detection gaps', description: err.message, variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedOrg, coveredCves.size]);
+
+  useEffect(() => { loadGaps(); }, [selectedOrg, templates.length]);
+
+  const filtered = gaps.filter(g => {
+    if (sevFilter !== 'all' && g.severity !== sevFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return g.cve_id.toLowerCase().includes(q) || g.title.toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  const gapStats = {
+    total: gaps.length,
+    critical: gaps.filter(g => g.severity === 'critical').length,
+    high: gaps.filter(g => g.severity === 'high').length,
+    kev: gaps.filter(g => g.is_kev).length,
+  };
+
+  if (!selectedOrg) {
+    return (
+      <div className="flex items-center justify-center py-20 text-muted-foreground">
+        <p>Select an organization to see detection gaps.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Total Gaps', value: gapStats.total, color: 'text-primary', desc: 'CVEs with no detection template' },
+          { label: 'Critical', value: gapStats.critical, color: 'text-red-400', desc: 'Critical severity gaps' },
+          { label: 'High', value: gapStats.high, color: 'text-orange-400', desc: 'High severity gaps' },
+          { label: 'On CISA KEV', value: gapStats.kev, color: 'text-yellow-400', desc: 'Known exploited with no detection' },
+        ].map(s => (
+          <Card key={s.label} className="border-border">
+            <CardContent className="p-4">
+              <p className={cn('text-2xl font-bold', s.color)}>{loading ? '—' : s.value}</p>
+              <p className="text-sm font-medium mt-0.5">{s.label}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{s.desc}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="relative flex-1 min-w-48 max-w-72">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search CVE ID or title…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-8 h-9"
+          />
+        </div>
+
+        <Select value={sevFilter} onValueChange={setSevFilter}>
+          <SelectTrigger className="w-36 h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Severities</SelectItem>
+            <SelectItem value="critical">Critical</SelectItem>
+            <SelectItem value="high">High</SelectItem>
+            <SelectItem value="medium">Medium</SelectItem>
+            <SelectItem value="low">Low</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Button variant="outline" size="sm" onClick={loadGaps} className="gap-1 h-9">
+          <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
+        </Button>
+      </div>
+
+      {/* Table */}
+      <Card className="border-border">
+        <CardContent className="p-0">
+          {loading || templatesLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+              <CheckCircle2 className="h-10 w-10 mb-3 opacity-30 text-emerald-400" />
+              <p className="font-medium">No detection gaps found</p>
+              <p className="text-sm mt-1">
+                {gaps.length === 0
+                  ? 'All CVEs in your findings have detection templates — great coverage!'
+                  : 'No gaps match your current filters.'}
+              </p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="border-border hover:bg-transparent">
+                  <TableHead>CVE</TableHead>
+                  <TableHead>Title</TableHead>
+                  <TableHead className="w-24">Severity</TableHead>
+                  <TableHead className="w-20">CVSS</TableHead>
+                  <TableHead className="w-24">KEV</TableHead>
+                  <TableHead className="w-52 text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map(g => (
+                  <TableRow key={g.cve_id} className="border-border hover:bg-muted/30">
+                    <TableCell>
+                      <span className="font-mono text-xs font-semibold text-primary">{g.cve_id}</span>
+                    </TableCell>
+
+                    <TableCell>
+                      <span className="text-sm line-clamp-1">{g.title}</span>
+                    </TableCell>
+
+                    <TableCell>
+                      <Badge variant="outline" className={cn('text-xs uppercase', SEVERITY_STYLE[g.severity] ?? '')}>
+                        {g.severity}
+                      </Badge>
+                    </TableCell>
+
+                    <TableCell>
+                      <span className="text-sm">{g.cvss_score != null ? g.cvss_score.toFixed(1) : '—'}</span>
+                    </TableCell>
+
+                    <TableCell>
+                      {g.is_kev ? (
+                        <Badge variant="outline" className="bg-yellow-500/15 text-yellow-400 border-yellow-500/30 text-xs gap-1">
+                          <Zap className="h-3 w-3" />KEV
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">—</span>
+                      )}
+                    </TableCell>
+
+                    <TableCell className="text-right">
+                      <div className="flex gap-2 justify-end">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs gap-1"
+                                onClick={() =>
+                                  window.open(
+                                    `https://nuclei.projectdiscovery.io/nuclei-templates/?q=${encodeURIComponent(g.cve_id)}`,
+                                    '_blank'
+                                  )
+                                }
+                              >
+                                <Search className="h-3 w-3" />
+                                Community
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Search community Nuclei templates for this CVE</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                className="h-7 text-xs gap-1 bg-purple-600 hover:bg-purple-700"
+                                onClick={() => onGenerate(g.cve_id)}
+                              >
+                                <Sparkles className="h-3 w-3" />
+                                Generate
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Generate a Nuclei template with AI for this CVE</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function NucleiTemplatesPage() {
+export default function DetectionCoveragePage() {
   const { toast } = useToast();
   const searchParams = useSearchParams();
   const [orgs, setOrgs] = useState<any[]>([]);
   const [selectedOrg, setSelectedOrg] = useState<number | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [showGenerate, setShowGenerate] = useState(false);
   const [generatePrefill, setGeneratePrefill] = useState<string | undefined>();
   const [selected, setSelected] = useState<Template | null>(null);
+  const [activeTab, setActiveTab] = useState('gaps');
   const autoOpenedRef = useRef(false);
 
-  // Load orgs on mount; auto-open generate dialog if ?generate=CVE-XXX is present
   useEffect(() => {
     api.getOrganizations().then((data: any[]) => {
       setOrgs(data);
@@ -469,7 +726,7 @@ export default function NucleiTemplatesPage() {
 
   const loadTemplates = useCallback(async () => {
     if (!selectedOrg) return;
-    setLoading(true);
+    setTemplatesLoading(true);
     try {
       const params: Record<string, string> = { organization_id: String(selectedOrg) };
       if (statusFilter !== 'all') params.status = statusFilter;
@@ -479,7 +736,7 @@ export default function NucleiTemplatesPage() {
     } catch (err: any) {
       toast({ title: 'Failed to load templates', description: err.message, variant: 'destructive' });
     } finally {
-      setLoading(false);
+      setTemplatesLoading(false);
     }
   }, [selectedOrg, statusFilter, sourceFilter, toast]);
 
@@ -515,18 +772,24 @@ export default function NucleiTemplatesPage() {
 
   const handleGenerated = (t: Template) => {
     setTemplates(prev => [t, ...prev]);
+    setActiveTab('templates');
+  };
+
+  const handleGenerateForCve = (cveId: string) => {
+    setGeneratePrefill(cveId);
+    setShowGenerate(true);
   };
 
   return (
     <MainLayout>
       <Header
-        title="Nuclei Templates"
-        subtitle={`Custom detection templates — ${stats.active} active, ${stats.draft} pending review`}
+        title="Detection Coverage"
+        subtitle="Identify undetected CVEs in your environment and generate Nuclei templates"
       />
 
       <div className="p-6 space-y-6">
 
-        {/* Org selector + stats */}
+        {/* Org selector */}
         <div className="flex flex-wrap items-center gap-4">
           <Select
             value={selectedOrg ? String(selectedOrg) : ''}
@@ -542,60 +805,6 @@ export default function NucleiTemplatesPage() {
             </SelectContent>
           </Select>
 
-          <div className="flex gap-3 ml-auto">
-            {[
-              { label: 'Active', value: stats.active, color: 'text-emerald-400' },
-              { label: 'Draft', value: stats.draft, color: 'text-yellow-400' },
-              { label: 'AI Generated', value: stats.aiGenerated, color: 'text-purple-400' },
-              { label: 'Total Matches', value: stats.matches, color: 'text-primary' },
-            ].map(s => (
-              <div key={s.label} className="text-center">
-                <p className={cn('text-xl font-bold', s.color)}>{s.value}</p>
-                <p className="text-xs text-muted-foreground">{s.label}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Toolbar */}
-        <div className="flex flex-wrap gap-3 items-center">
-          <div className="relative flex-1 min-w-48 max-w-72">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search ID, CVE, tag…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="pl-8 h-9"
-            />
-          </div>
-
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-32 h-9">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="draft">Draft</SelectItem>
-              <SelectItem value="disabled">Disabled</SelectItem>
-            </SelectContent>
-          </Select>
-
-          <Select value={sourceFilter} onValueChange={setSourceFilter}>
-            <SelectTrigger className="w-40 h-9">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Sources</SelectItem>
-              <SelectItem value="ai_generated">AI Generated</SelectItem>
-              <SelectItem value="manual">Manual</SelectItem>
-            </SelectContent>
-          </Select>
-
-          <Button variant="outline" size="sm" onClick={() => loadTemplates()} className="gap-1 h-9">
-            <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-          </Button>
-
           <Button
             size="sm"
             onClick={() => setShowGenerate(true)}
@@ -603,98 +812,171 @@ export default function NucleiTemplatesPage() {
             className="gap-1.5 h-9 bg-purple-600 hover:bg-purple-700 ml-auto"
           >
             <Sparkles className="h-3.5 w-3.5" />
-            Generate with AI
+            Generate Template with AI
           </Button>
         </div>
 
-        {/* Table */}
-        <Card className="border-border">
-          <CardContent className="p-0">
-            {loading ? (
-              <div className="flex items-center justify-center py-16">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        {/* Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="grid w-full max-w-xs grid-cols-2">
+            <TabsTrigger value="gaps" className="gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5" />
+              Detection Gaps
+            </TabsTrigger>
+            <TabsTrigger value="templates" className="gap-1.5">
+              <FileCode className="h-3.5 w-3.5" />
+              My Templates
+              {stats.active > 0 && (
+                <Badge variant="secondary" className="ml-1 text-xs h-4 px-1">{stats.active}</Badge>
+              )}
+            </TabsTrigger>
+          </TabsList>
+
+          {/* ── Detection Gaps tab ── */}
+          <TabsContent value="gaps" className="mt-5">
+            <DetectionGapsTab
+              selectedOrg={selectedOrg}
+              templates={templates}
+              templatesLoading={templatesLoading}
+              onGenerate={handleGenerateForCve}
+            />
+          </TabsContent>
+
+          {/* ── My Templates tab ── */}
+          <TabsContent value="templates" className="mt-5">
+            <div className="space-y-5">
+              {/* Stats */}
+              <div className="flex gap-5">
+                {[
+                  { label: 'Active', value: stats.active, color: 'text-emerald-400' },
+                  { label: 'Draft', value: stats.draft, color: 'text-yellow-400' },
+                  { label: 'AI Generated', value: stats.aiGenerated, color: 'text-purple-400' },
+                  { label: 'Total Matches', value: stats.matches, color: 'text-primary' },
+                ].map(s => (
+                  <div key={s.label} className="text-center">
+                    <p className={cn('text-xl font-bold', s.color)}>{s.value}</p>
+                    <p className="text-xs text-muted-foreground">{s.label}</p>
+                  </div>
+                ))}
               </div>
-            ) : filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-                <FileCode className="h-10 w-10 mb-3 opacity-30" />
-                <p className="font-medium">No templates found</p>
-                <p className="text-sm mt-1">Use "Generate with AI" to create your first detection template</p>
+
+              {/* Toolbar */}
+              <div className="flex flex-wrap gap-3 items-center">
+                <div className="relative flex-1 min-w-48 max-w-72">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search ID, CVE, tag…"
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="pl-8 h-9"
+                  />
+                </div>
+
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-32 h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="draft">Draft</SelectItem>
+                    <SelectItem value="disabled">Disabled</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                  <SelectTrigger className="w-40 h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Sources</SelectItem>
+                    <SelectItem value="ai_generated">AI Generated</SelectItem>
+                    <SelectItem value="manual">Manual</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Button variant="outline" size="sm" onClick={() => loadTemplates()} className="gap-1 h-9">
+                  <RefreshCw className={cn('h-3.5 w-3.5', templatesLoading && 'animate-spin')} />
+                </Button>
               </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-border hover:bg-transparent">
-                    <TableHead>Template ID</TableHead>
-                    <TableHead>CVEs</TableHead>
-                    <TableHead className="w-24">Severity</TableHead>
-                    <TableHead className="w-28">Source</TableHead>
-                    <TableHead className="w-24">Status</TableHead>
-                    <TableHead className="w-20">Matches</TableHead>
-                    <TableHead className="w-28">Created</TableHead>
-                    <TableHead className="w-20" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map(t => (
-                    <TableRow
-                      key={t.id}
-                      className="border-border cursor-pointer hover:bg-muted/30"
-                      onClick={() => setSelected(t)}
-                    >
-                      <TableCell>
-                        <div className="space-y-0.5">
-                          <p className="font-mono text-xs font-semibold text-primary">{t.template_id}</p>
-                          <p className="text-xs text-muted-foreground line-clamp-1">{t.name}</p>
-                        </div>
-                      </TableCell>
 
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          {t.cve_ids.slice(0, 2).map(c => (
-                            <Badge key={c} variant="outline" className="text-xs font-mono text-primary border-primary/30">{c}</Badge>
-                          ))}
-                          {t.cve_ids.length > 2 && (
-                            <Badge variant="secondary" className="text-xs">+{t.cve_ids.length - 2}</Badge>
-                          )}
-                          {t.cve_ids.length === 0 && (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                        </div>
-                      </TableCell>
-
-                      <TableCell>
-                        {t.severity ? (
-                          <Badge variant="outline" className={cn('text-xs uppercase', SEVERITY_STYLE[t.severity] ?? '')}>
-                            {t.severity}
-                          </Badge>
-                        ) : <span className="text-muted-foreground text-xs">—</span>}
-                      </TableCell>
-
-                      <TableCell><SourceBadge source={t.source} /></TableCell>
-                      <TableCell><StatusBadge status={t.status} /></TableCell>
-
-                      <TableCell>
-                        <span className="text-sm font-semibold">{t.times_matched}</span>
-                      </TableCell>
-
-                      <TableCell>
-                        <span className="text-xs text-muted-foreground">
-                          {t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'}
-                        </span>
-                      </TableCell>
-
-                      <TableCell>
-                        <Button variant="ghost" size="icon" className="h-7 w-7">
-                          <Eye className="h-3.5 w-3.5" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
+              {/* Table */}
+              <Card className="border-border">
+                <CardContent className="p-0">
+                  {templatesLoading ? (
+                    <div className="flex items-center justify-center py-16">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : filtered.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+                      <FileCode className="h-10 w-10 mb-3 opacity-30" />
+                      <p className="font-medium">No templates found</p>
+                      <p className="text-sm mt-1">Use "Generate with AI" to create your first detection template</p>
+                    </div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-border hover:bg-transparent">
+                          <TableHead>Template ID</TableHead>
+                          <TableHead>CVEs</TableHead>
+                          <TableHead className="w-24">Severity</TableHead>
+                          <TableHead className="w-28">Source</TableHead>
+                          <TableHead className="w-24">Status</TableHead>
+                          <TableHead className="w-20">Matches</TableHead>
+                          <TableHead className="w-28">Created</TableHead>
+                          <TableHead className="w-20" />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filtered.map(t => (
+                          <TableRow
+                            key={t.id}
+                            className="border-border cursor-pointer hover:bg-muted/30"
+                            onClick={() => setSelected(t)}
+                          >
+                            <TableCell>
+                              <div className="space-y-0.5">
+                                <p className="font-mono text-xs font-semibold text-primary">{t.template_id}</p>
+                                <p className="text-xs text-muted-foreground line-clamp-1">{t.name}</p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex flex-wrap gap-1">
+                                {t.cve_ids.slice(0, 2).map(c => (
+                                  <Badge key={c} variant="outline" className="text-xs font-mono text-primary border-primary/30">{c}</Badge>
+                                ))}
+                                {t.cve_ids.length > 2 && (
+                                  <Badge variant="secondary" className="text-xs">+{t.cve_ids.length - 2}</Badge>
+                                )}
+                                {t.cve_ids.length === 0 && <span className="text-xs text-muted-foreground">—</span>}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              {t.severity ? (
+                                <Badge variant="outline" className={cn('text-xs uppercase', SEVERITY_STYLE[t.severity] ?? '')}>
+                                  {t.severity}
+                                </Badge>
+                              ) : <span className="text-muted-foreground text-xs">—</span>}
+                            </TableCell>
+                            <TableCell><SourceBadge source={t.source} /></TableCell>
+                            <TableCell><StatusBadge status={t.status} /></TableCell>
+                            <TableCell><span className="text-sm font-semibold">{t.times_matched}</span></TableCell>
+                            <TableCell>
+                              <span className="text-xs text-muted-foreground">
+                                {t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <Button variant="ghost" size="icon" className="h-7 w-7">
+                                <Eye className="h-3.5 w-3.5" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
 
       <GenerateDialog

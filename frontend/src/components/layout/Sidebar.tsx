@@ -40,7 +40,7 @@ const navigation = [
   { name: 'Graph', href: '/graph', icon: GitBranch },
   { name: 'Findings', href: '/findings', icon: Shield },
   { name: 'Vulnerability Intel', href: '/threat-intel', icon: Radio },
-  { name: 'Nuclei Templates', href: '/nuclei-templates', icon: FileCode },
+  { name: 'Detection Coverage', href: '/nuclei-templates', icon: FileCode },
   { name: 'Exceptions', href: '/exceptions', icon: FileText },
   { name: 'Remediation', href: '/remediation', icon: Wrench },
   { name: 'Screenshots', href: '/screenshots', icon: Camera },
