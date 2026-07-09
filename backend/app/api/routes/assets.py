@@ -504,6 +504,59 @@ def create_assets_bulk(
     return created_assets
 
 
+@router.get("/geo-stats")
+def get_assets_geo_stats_early(
+    organization_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get geo-location statistics for assets - used by the map component."""
+    from app.services.geolocation_service import get_all_regions
+
+    query = db.query(Asset)
+
+    if current_user.is_superuser:
+        if organization_id:
+            query = query.filter(Asset.organization_id == organization_id)
+    else:
+        if not current_user.organization_id:
+            return {"total": 0, "with_geo": 0, "without_geo": 0, "by_country": {}, "by_region": {}}
+        query = query.filter(Asset.organization_id == current_user.organization_id)
+
+    assets = query.all()
+
+    total = len(assets)
+    with_geo = 0
+    without_geo = 0
+    by_country = {}
+    by_city = {}
+    by_region = {}
+
+    for asset in assets:
+        if asset.latitude and asset.longitude:
+            with_geo += 1
+            country = asset.country or asset.country_code or "Unknown"
+            by_country[country] = by_country.get(country, 0) + 1
+            region = asset.region or "Unknown"
+            by_region[region] = by_region.get(region, 0) + 1
+            if asset.city:
+                city_key = asset.city + ", " + country
+                by_city[city_key] = by_city.get(city_key, 0) + 1
+        else:
+            without_geo += 1
+
+    return {
+        "total": total,
+        "with_geo": with_geo,
+        "without_geo": without_geo,
+        "by_region": dict(sorted(by_region.items(), key=lambda x: x[1], reverse=True)),
+        "by_country": dict(sorted(by_country.items(), key=lambda x: x[1], reverse=True)),
+        "by_city": dict(sorted(by_city.items(), key=lambda x: x[1], reverse=True)[:20]),
+        "coverage_percent": round(with_geo / total * 100, 1) if total > 0 else 0,
+        "available_regions": get_all_regions()
+    }
+
+
 @router.get("/{asset_id}", response_model=AssetResponse)
 def get_asset(
     asset_id: int,
@@ -992,61 +1045,6 @@ async def enrich_assets_geolocation(
     }
 
 
-@router.get("/geo-stats")
-def get_assets_geo_stats(
-    organization_id: Optional[int] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
-    """Get geo-location statistics for assets - used by the map component."""
-    from app.services.geolocation_service import get_all_regions
-    
-    query = db.query(Asset)
-    
-    # Organization filter
-    if current_user.is_superuser:
-        if organization_id:
-            query = query.filter(Asset.organization_id == organization_id)
-    else:
-        if not current_user.organization_id:
-            return {"total": 0, "with_geo": 0, "without_geo": 0, "by_country": {}, "by_region": {}}
-        query = query.filter(Asset.organization_id == current_user.organization_id)
-    
-    assets = query.all()
-    
-    total = len(assets)
-    with_geo = 0
-    without_geo = 0
-    by_country = {}
-    by_city = {}
-    by_region = {}
-    
-    for asset in assets:
-        if asset.latitude and asset.longitude:
-            with_geo += 1
-            country = asset.country or asset.country_code or "Unknown"
-            by_country[country] = by_country.get(country, 0) + 1
-            
-            # Track by region
-            region = asset.region or "Unknown"
-            by_region[region] = by_region.get(region, 0) + 1
-            
-            if asset.city:
-                city_key = f"{asset.city}, {country}"
-                by_city[city_key] = by_city.get(city_key, 0) + 1
-        else:
-            without_geo += 1
-    
-    return {
-        "total": total,
-        "with_geo": with_geo,
-        "without_geo": without_geo,
-        "by_region": dict(sorted(by_region.items(), key=lambda x: x[1], reverse=True)),
-        "by_country": dict(sorted(by_country.items(), key=lambda x: x[1], reverse=True)),
-        "by_city": dict(sorted(by_city.items(), key=lambda x: x[1], reverse=True)[:20]),
-        "coverage_percent": round(with_geo / total * 100, 1) if total > 0 else 0,
-        "available_regions": get_all_regions()
-    }
 
 
 @router.post("/enrich-from-netblocks")

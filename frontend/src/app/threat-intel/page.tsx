@@ -494,7 +494,7 @@ export default function ThreatIntelPage() {
       const params: Record<string, string> = { days: String(days), limit: '200' };
       if (severityFilter !== 'all') params.severity = severityFilter;
       if (detectionFilter !== 'all') params.detection = detectionFilter;
-      const resp = await api.get('/threat-intel/emerging', { params });
+      const resp = await api.get('/threat-intel/emerging', params);
       setData(resp.data);
     } catch (err: any) {
       toast({ title: 'Failed to load emerging threats', description: err?.response?.data?.detail || err.message, variant: 'destructive' });

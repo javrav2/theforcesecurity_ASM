@@ -474,7 +474,7 @@ export default function NucleiTemplatesPage() {
       const params: Record<string, string> = { organization_id: String(selectedOrg) };
       if (statusFilter !== 'all') params.status = statusFilter;
       if (sourceFilter !== 'all') params.source = sourceFilter;
-      const resp = await api.get('/nuclei-templates', { params });
+      const resp = await api.get('/nuclei-templates', params);
       setTemplates(resp.data);
     } catch (err: any) {
       toast({ title: 'Failed to load templates', description: err.message, variant: 'destructive' });
