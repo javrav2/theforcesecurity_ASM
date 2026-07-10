@@ -1124,13 +1124,18 @@ class ScannerWorker:
             
             logger.info(f"Scan {scan_id}: masscan/naabu completed with {len(result.ports_found)} ports found")
             
-            # Import results with error handling
+            # Import results with error handling.
+            # create_all_hosts=False: only create IP assets for hosts with at
+            # least one open port.  CIDR blocks are updated separately via the
+            # post-scan CIDR update loop below, so we don't need to flood the
+            # asset DB with hundreds of empty IPs per /24 CIDR target.
             try:
                 import_summary = self.port_scanner_service.import_results_to_assets(
                     db=db,
                     scan_result=result,
                     organization_id=organization_id,
-                    create_assets=True
+                    create_assets=True,
+                    create_all_hosts=False,
                 )
                 logger.info(f"Scan {scan_id}: imported {import_summary.get('ports_imported', 0)} ports")
             except Exception as import_error:
@@ -1290,6 +1295,84 @@ class ScannerWorker:
                 
                 if scanned_netblocks > 0:
                     logger.info(f"Updated {scanned_netblocks} netblocks as scanned")
+                
+                # -------------------------------------------------------
+                # Update CIDR block ASSETS with aggregate scan results.
+                #
+                # Naabu pre-expands CIDRs to individual IPs so the original
+                # CIDR notation never appears in result.hosts_scanned.
+                # import_results_to_assets handles CIDRs that ARE in
+                # hosts_scanned (masscan path), but for naabu we need this
+                # additional pass over the original targets list.
+                # -------------------------------------------------------
+                cidr_assets_updated = 0
+                for target in targets:
+                    if '/' not in target:
+                        continue
+                    try:
+                        network = ipaddress.ip_network(target, strict=False)
+                    except ValueError:
+                        continue
+                    
+                    # Find live IPs within this CIDR from scan results
+                    live_ips: set[str] = set()
+                    for p in result.ports_found:
+                        try:
+                            ip_obj = ipaddress.ip_address(p.ip or p.host)
+                            if ip_obj in network:
+                                live_ips.add(str(ip_obj))
+                        except ValueError:
+                            pass
+                    
+                    usable = network.num_addresses - 2 if network.prefixlen < 31 else network.num_addresses
+                    
+                    # Find the CIDR block asset in the DB
+                    cidr_asset = db.query(Asset).filter(
+                        Asset.organization_id == organization_id,
+                        Asset.value == target
+                    ).first()
+                    
+                    if cidr_asset:
+                        meta = dict(cidr_asset.metadata_ or {})
+                        meta["last_port_scan"] = datetime.utcnow().isoformat()
+                        meta["live_hosts_found"] = len(live_ips)
+                        meta["live_ips"] = sorted(live_ips)
+                        meta["usable_hosts"] = usable
+                        meta["scan_id"] = scan_id
+                        cidr_asset.metadata_ = meta
+                        cidr_asset.last_seen = datetime.utcnow()
+                        if live_ips:
+                            cidr_asset.is_live = True
+                        cidr_assets_updated += 1
+                    
+                    # Also update the host_results entry for this CIDR so the
+                    # frontend table shows accurate aggregate info.
+                    for hr in scan.results.get("host_results", []):
+                        if hr.get("host") == target or hr.get("ip") == target:
+                            hr["live_hosts_in_cidr"] = len(live_ips)
+                            hr["usable_hosts"] = usable
+                            hr["is_live"] = len(live_ips) > 0
+                            hr["is_cidr"] = True
+                            break
+                    else:
+                        # CIDR was pre-expanded (naabu path) — it's not in
+                        # host_results yet.  Add a summary row.
+                        if cidr_asset:
+                            scan.results["host_results"].append({
+                                "host": target,
+                                "ip": target,
+                                "is_live": len(live_ips) > 0,
+                                "is_cidr": True,
+                                "live_hosts_in_cidr": len(live_ips),
+                                "usable_hosts": usable,
+                                "open_ports": [],
+                                "port_count": 0,
+                                "asset_id": cidr_asset.id,
+                                "asset_created": False,
+                            })
+                
+                if cidr_assets_updated > 0:
+                    logger.info(f"Updated {cidr_assets_updated} CIDR block assets with port-scan summary")
             
             # Commit the scan results BEFORE any additional processing
             try:

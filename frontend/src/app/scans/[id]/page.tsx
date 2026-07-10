@@ -684,14 +684,32 @@ export default function ScanDetailPage() {
                     <TableRow key={index}>
                       <TableCell className="font-mono">{host.host || host.ip}</TableCell>
                       <TableCell>
-                        {host.is_live ? (
+                        {host.is_cidr ? (
+                          host.is_live ? (
+                            <Badge className="bg-green-500/20 text-green-400">
+                              {host.live_hosts_in_cidr} / {host.usable_hosts} Live
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary">
+                              0 / {host.usable_hosts ?? '?'} Live
+                            </Badge>
+                          )
+                        ) : host.is_live ? (
                           <Badge className="bg-green-500/20 text-green-400">Live</Badge>
                         ) : (
                           <Badge variant="secondary">No Response</Badge>
                         )}
                       </TableCell>
                       <TableCell>
-                        {host.open_ports && host.open_ports.length > 0 ? (
+                        {host.is_cidr ? (
+                          host.is_live ? (
+                            <span className="text-xs text-muted-foreground">
+                              {host.live_hosts_in_cidr} host{host.live_hosts_in_cidr !== 1 ? 's' : ''} with open ports
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )
+                        ) : host.open_ports && host.open_ports.length > 0 ? (
                           <div className="flex flex-wrap gap-1">
                             {host.open_ports.slice(0, 10).map((port: number) => (
                               <Badge key={port} variant="outline" className="font-mono text-xs">
@@ -709,7 +727,7 @@ export default function ScanDetailPage() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <span className="font-mono">{host.port_count || 0}</span>
+                        <span className="font-mono">{host.is_cidr ? (host.live_hosts_in_cidr ?? 0) : (host.port_count || 0)}</span>
                       </TableCell>
                       <TableCell>
                         {host.asset_id ? (

@@ -1294,6 +1294,9 @@ class PortScannerService:
             for host in scan_result.hosts_scanned:
                 all_hosts_to_process.add(host)
         
+        # Pre-build an ipaddress network lookup for fast CIDR membership checks
+        import ipaddress as _ipaddress
+        
         # Process each host
         for host in all_hosts_to_process:
             summary["hosts_processed"] += 1
@@ -1320,7 +1323,9 @@ class PortScannerService:
             ).first()
             
             if not asset and create_assets:
-                # Skip CIDR ranges - they belong in netblocks table, not assets
+                # Skip CIDR ranges - they belong in netblocks table, not assets.
+                # BUT if the CIDR asset already exists in the DB it will be found
+                # above and updated below with aggregate stats.
                 if self._is_cidr(host):
                     logger.debug(f"Skipping CIDR range {host} - belongs in netblocks, not assets")
                     summary["hosts_skipped"] = summary.get("hosts_skipped", 0) + 1
@@ -1377,6 +1382,38 @@ class PortScannerService:
             
             if asset:
                 host_result["asset_id"] = asset.id
+                
+                # For CIDR block assets, compute aggregate live-IP stats from this scan
+                if self._is_cidr(host):
+                    try:
+                        network = _ipaddress.ip_network(host, strict=False)
+                        live_ips_in_cidr: set[str] = set()
+                        for pr in scan_result.ports_found:
+                            try:
+                                ip_obj = _ipaddress.ip_address(pr.ip or pr.host)
+                                if ip_obj in network:
+                                    live_ips_in_cidr.add(str(ip_obj))
+                            except ValueError:
+                                pass
+                        usable = network.num_addresses - 2 if network.prefixlen < 31 else network.num_addresses
+                        host_result["live_hosts_in_cidr"] = len(live_ips_in_cidr)
+                        host_result["usable_hosts"] = usable
+                        host_result["is_live"] = len(live_ips_in_cidr) > 0
+                        host_result["is_cidr"] = True
+                        # Persist aggregate data in asset metadata
+                        meta = dict(asset.metadata_ or {})
+                        meta["last_port_scan"] = datetime.utcnow().isoformat()
+                        meta["live_hosts_found"] = len(live_ips_in_cidr)
+                        meta["live_ips"] = sorted(live_ips_in_cidr)
+                        meta["usable_hosts"] = usable
+                        asset.metadata_ = meta
+                        asset.last_seen = datetime.utcnow()
+                        if len(live_ips_in_cidr) > 0:
+                            asset.is_live = True
+                    except ValueError:
+                        pass
+                    summary["host_results"].append(host_result)
+                    continue  # Skip port import for CIDR assets
                 
                 # Track IPs discovered for this asset (for domain assets)
                 discovered_ips = set()
