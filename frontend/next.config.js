@@ -15,6 +15,15 @@ const nextConfig = {
   httpAgentOptions: {
     keepAlive: true,
   },
+  async redirects() {
+    return [
+      {
+        source: '/threat-intel',
+        destination: '/vulnerability-intel',
+        permanent: true,
+      },
+    ];
+  },
   async rewrites() {
     return [
       {

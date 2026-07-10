@@ -102,6 +102,15 @@ async def _fetch_vulncheck_kev(client: httpx.AsyncClient, days: int, token: str)
             except ValueError:
                 pass
 
+            # Extract CVSS — VulnCheck may nest it several ways
+            cvss_obj = entry.get("cvss") or entry.get("cvssMetrics") or {}
+            cvss_score = (
+                cvss_obj.get("v3Score")
+                or cvss_obj.get("cvssV3Score")
+                or cvss_obj.get("baseScore")
+                or entry.get("cvssV3Score")
+                or entry.get("cvss_v3_score")
+            )
             all_entries.append({
                 "cve_id": cves[0] if cves else "",
                 "all_cves": cves,
@@ -112,6 +121,7 @@ async def _fetch_vulncheck_kev(client: httpx.AsyncClient, days: int, token: str)
                 "short_description": entry.get("shortDescription", ""),
                 "known_ransomware_use": entry.get("knownRansomwareUse", "Unknown"),
                 "kev_sources": ["vulncheck_kev"],
+                "cvss_score": float(cvss_score) if cvss_score is not None else None,
             })
 
         if page_done:
@@ -399,6 +409,42 @@ async def _fetch_otx_batch(
     }
 
 
+# ── FIRST.org EPSS (free, no key) ────────────────────────────────────────────
+
+async def _fetch_epss_batch(
+    client: httpx.AsyncClient, cve_ids: list[str]
+) -> dict[str, dict]:
+    """
+    Fetch EPSS scores + percentiles for a batch of CVEs from FIRST.org (free).
+    Returns a map of cve_id → {epss_score, epss_percentile}.
+    FIRST.org supports up to ~200 CVEs per request via comma-separated cve= param.
+    """
+    if not cve_ids:
+        return {}
+    results: dict[str, dict] = {}
+    chunk_size = 200
+    for i in range(0, len(cve_ids), chunk_size):
+        chunk = cve_ids[i : i + chunk_size]
+        try:
+            resp = await client.get(
+                "https://api.first.org/data/v1/epss",
+                params={"cve": ",".join(chunk), "limit": len(chunk)},
+                headers={"User-Agent": "aegis-oracle/1.0", "Accept": "application/json"},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            for row in resp.json().get("data", []):
+                cve = row.get("cve", "").upper()
+                if cve:
+                    results[cve] = {
+                        "epss_score": float(row["epss"]) if row.get("epss") else None,
+                        "epss_percentile": float(row["percentile"]) if row.get("percentile") else None,
+                    }
+        except Exception:
+            pass
+    return results
+
+
 # ── DB: Oracle analysis ───────────────────────────────────────────────────────
 
 def _get_oracle_analysis_for_cves(db: Session, cve_ids: list[str]) -> dict[str, dict]:
@@ -475,9 +521,18 @@ def _build_entry(
     pdcp: dict,
     otx_count: int,
     oracle: dict,
+    epss: dict | None = None,
 ) -> dict:
     cve_id = kev["cve_id"]
-    cvss = pdcp.get("cvss_score") or pdcp.get("cvss") or oracle.get("cvss_score")
+    # CVSS: prefer PDCP (most accurate), fall back to what KEV source provided
+    cvss = (
+        pdcp.get("cvss_score")
+        or pdcp.get("cvss")
+        or oracle.get("cvss_score")
+        or kev.get("cvss_score")
+    )
+    # EPSS: prefer PDCP, fall back to FIRST.org batch result
+    epss_score = pdcp.get("epss_score") or (epss or {}).get("epss_score")
     severity = (
         pdcp.get("severity")
         or oracle.get("severity")
@@ -499,7 +554,8 @@ def _build_entry(
         # Severity / scoring
         "severity": severity,
         "cvss_score": cvss,
-        "epss_score": pdcp.get("epss_score"),
+        "epss_score": epss_score,
+        "epss_percentile": (epss or {}).get("epss_percentile"),
 
         # Detection coverage — the 'can we find this?' answer
         "is_template": bool(pdcp.get("is_template") or pdcp.get("nuclei_templates")),
@@ -606,10 +662,11 @@ async def get_emerging_vulnerabilities(
 
         cve_ids = [e["cve_id"] for e in merged_entries if e["cve_id"]][:limit]
 
-        # Concurrent enrichment: PDCP + OTX in parallel batches
-        pdcp_map, otx_map = await asyncio.gather(
+        # Concurrent enrichment: PDCP + OTX + EPSS in parallel
+        pdcp_map, otx_map, epss_map = await asyncio.gather(
             _fetch_pdcp_batch(client, cve_ids, pdcp_key),
             _fetch_otx_batch(client, cve_ids),
+            _fetch_epss_batch(client, cve_ids),
         )
 
     # Oracle DB lookup (sync, local DB — no HTTP)
@@ -626,6 +683,7 @@ async def get_emerging_vulnerabilities(
             pdcp=pdcp_map.get(cve_id, {}),
             otx_count=otx_map.get(cve_id, 0),
             oracle=oracle_map.get(cve_id, {}),
+            epss=epss_map.get(cve_id),
         )
         entries.append(entry)
 
@@ -719,6 +777,85 @@ async def get_cve_detail(
         "is_remote": bool(pdcp.get("is_remote")),
         "oracle": oracle,
     }
+
+
+@router.post("/analyze/{cve_id}")
+async def analyze_kev_cve(
+    cve_id: str,
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_active_user),
+):
+    """
+    Trigger Oracle intrinsic analysis for a CVE from the threat-intel feed.
+
+    Calls the Oracle's GET /cve/{id} endpoint (Phase A — no asset context
+    required) and returns the analysis result. If the CVE already exists
+    as a Vulnerability in the DB, the result is persisted there too.
+
+    Returns attack_path_class, analyst_brief, confidence, and any available
+    OPES score so the frontend can display it next to severity.
+    """
+    import os
+
+    cve_id = cve_id.upper().strip()
+    oracle_url = os.getenv("ORACLE_URL", "http://aegis-oracle:8742").rstrip("/")
+    oracle_timeout = float(os.getenv("ORACLE_TIMEOUT", "60"))
+
+    try:
+        async with httpx.AsyncClient(base_url=oracle_url, timeout=oracle_timeout) as client:
+            resp = await client.get(f"/cve/{cve_id}")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"Oracle returned {e.response.status_code} for {cve_id}: {e.response.text[:200]}",
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Oracle service unreachable: {e}")
+
+    analysis = data.get("analysis") or {}
+    exploitation = data.get("exploitation") or {}
+    opes = analysis.get("opes") or {}
+
+    result = {
+        "cve_id": cve_id,
+        "analysis_status": data.get("analysis_status", "complete"),
+        # OPES scoring (present when Oracle has enough signal)
+        "opes_score": opes.get("score"),
+        "opes_category": opes.get("category"),
+        "opes_label": opes.get("label"),
+        "opes_confidence": opes.get("confidence"),
+        # Intrinsic analysis fields
+        "attack_path_class": analysis.get("attack_path_class"),
+        "lateral_movement_potential": analysis.get("lateral_movement_potential"),
+        "remote_triggerability": analysis.get("remote_triggerability"),
+        "exploit_complexity": analysis.get("exploit_complexity"),
+        "attacker_capability": analysis.get("attacker_capability"),
+        "confidence": analysis.get("confidence"),
+        "analyst_brief": analysis.get("analyst_brief"),
+        "preconditions": analysis.get("preconditions"),
+        "cvss_reconciliation": analysis.get("cvss_reconciliation"),
+        "exploitation_evidence": exploitation,
+    }
+
+    # If this CVE exists as a Vulnerability in the DB, persist the result
+    try:
+        from app.main import Vulnerability  # avoid circular import
+        vuln = db.query(Vulnerability).filter(Vulnerability.cve_id == cve_id).first()
+        if vuln:
+            meta = dict(vuln.metadata_) if isinstance(vuln.metadata_, dict) else {}
+            meta["oracle"] = result
+            vuln.metadata_ = meta
+            if opes.get("score") is not None:
+                vuln.opes_score = opes["score"]
+            if opes.get("category"):
+                vuln.opes_category = opes["category"]
+            db.commit()
+    except Exception:
+        pass  # non-fatal — return result regardless
+
+    return result
 
 
 @router.get("/stats")
