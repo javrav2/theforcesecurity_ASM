@@ -818,25 +818,35 @@ async def analyze_kev_cve(
     exploitation = data.get("exploitation") or {}
     opes = analysis.get("opes") or {}
 
+    def _str(v: Any) -> str | None:
+        """Return v as a string, or None — never returns a raw object to the frontend."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (int, float, bool)):
+            return str(v)
+        return None  # drop objects/lists silently
+
     result = {
         "cve_id": cve_id,
-        "analysis_status": data.get("analysis_status", "complete"),
+        "analysis_status": _str(data.get("analysis_status")) or "complete",
         # OPES scoring (present when Oracle has enough signal)
-        "opes_score": opes.get("score"),
-        "opes_category": opes.get("category"),
-        "opes_label": opes.get("label"),
-        "opes_confidence": opes.get("confidence"),
-        # Intrinsic analysis fields
-        "attack_path_class": analysis.get("attack_path_class"),
-        "lateral_movement_potential": analysis.get("lateral_movement_potential"),
-        "remote_triggerability": analysis.get("remote_triggerability"),
-        "exploit_complexity": analysis.get("exploit_complexity"),
-        "attacker_capability": analysis.get("attacker_capability"),
-        "confidence": analysis.get("confidence"),
-        "analyst_brief": analysis.get("analyst_brief"),
-        "preconditions": analysis.get("preconditions"),
-        "cvss_reconciliation": analysis.get("cvss_reconciliation"),
-        "exploitation_evidence": exploitation,
+        "opes_score": opes.get("score") if isinstance(opes.get("score"), (int, float)) else None,
+        "opes_category": _str(opes.get("category")),
+        "opes_label": _str(opes.get("label")),
+        "opes_confidence": _str(opes.get("confidence")),
+        # Intrinsic analysis fields — all forced to str | None so React can render them
+        "attack_path_class": _str(analysis.get("attack_path_class")),
+        "lateral_movement_potential": bool(analysis.get("lateral_movement_potential")),
+        "remote_triggerability": _str(analysis.get("remote_triggerability")),
+        "exploit_complexity": _str(analysis.get("exploit_complexity")),
+        "attacker_capability": _str(analysis.get("attacker_capability")),
+        "confidence": _str(analysis.get("confidence")),
+        "analyst_brief": _str(analysis.get("analyst_brief")),
+        # Exploitation summary scalars only (avoids sending raw object to React)
+        "exploitability_score": exploitation.get("exploitability_score") if isinstance(exploitation.get("exploitability_score"), (int, float)) else None,
+        "exploitability_tier": _str(exploitation.get("exploitability_tier")),
     }
 
     # If this CVE exists as a Vulnerability in the DB, persist the result
