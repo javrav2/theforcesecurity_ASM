@@ -80,11 +80,8 @@ server {
     client_max_body_size 100M;
 
     # ----- Backend API (FastAPI) -----
-    # Use variables for proxy_pass so Docker's resolver re-resolves after container
-    # restarts (prevents stale-IP 502s when backend gets a new Docker IP).
     location /api/ {
-        set $backend http://backend:8000;
-        proxy_pass $backend;
+        proxy_pass http://asm_backend;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -111,8 +108,7 @@ server {
 
     # Backend health, OpenAPI docs, raw schema
     location ~ ^/(health|docs|redoc|openapi\.json)$ {
-        set $backend http://backend:8000;
-        proxy_pass $backend;
+        proxy_pass http://asm_backend;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -122,8 +118,7 @@ server {
 
     # ----- Frontend (Next.js) -----
     location / {
-        set $frontend http://frontend:3000;
-        proxy_pass $frontend;
+        proxy_pass http://asm_frontend;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
