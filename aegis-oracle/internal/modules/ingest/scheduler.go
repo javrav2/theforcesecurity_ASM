@@ -30,48 +30,64 @@ type SchedulerStore interface {
 	// ListCVEIDsSince returns all CVE IDs whose updated_at > since.
 	// Used by the EPSS refresh job to bound the refresh window.
 	ListCVEIDsSince(ctx context.Context, since time.Time) ([]string, error)
+
+	// ListCVEsWithoutAnalysis returns up to limit CVE IDs that have no
+	// intrinsic analysis row yet. Used by the auto-analyze job.
+	ListCVEsWithoutAnalysis(ctx context.Context, limit int) ([]string, error)
+
+	// GetCVE returns the full CVE record for analysis. Returns nil, nil if
+	// the CVE is not in the store.
+	GetCVE(ctx context.Context, cveID string) (*schema.CVE, error)
 }
 
 // SchedulerIntervals controls how often each background sync job runs.
 type SchedulerIntervals struct {
-	NVDDelta time.Duration // default: 1h — recently-modified CVE delta from NVD
-	CISAKEV  time.Duration // default: 6h — full CISA KEV catalogue refresh
-	EPSS     time.Duration // default: 12h — EPSS score refresh for recent CVEs
+	NVDDelta      time.Duration // default: 1h   — recently-modified CVE delta from NVD
+	CISAKEV       time.Duration // default: 6h   — full CISA KEV catalogue refresh
+	EPSS          time.Duration // default: 12h  — EPSS score refresh for recent CVEs
+	AnalyzePending time.Duration // default: 15m  — auto Phase-A analysis of unanalyzed CVEs
 }
 
 // DefaultIntervals returns conservative production-ready intervals.
 func DefaultIntervals() SchedulerIntervals {
 	return SchedulerIntervals{
-		NVDDelta: time.Hour,
-		CISAKEV:  6 * time.Hour,
-		EPSS:     12 * time.Hour,
+		NVDDelta:      time.Hour,
+		CISAKEV:       6 * time.Hour,
+		EPSS:          12 * time.Hour,
+		AnalyzePending: 15 * time.Minute,
 	}
 }
 
 // Scheduler runs background CVE freshness sync jobs.
 //
-// Three jobs run concurrently on independent tickers:
+// Four jobs run concurrently on independent tickers:
 //
-//   - nvd_delta  (every 1h):  Queries the NVD CVE 2.0 API for any CVE whose
+//   - nvd_delta       (every 1h):  Queries the NVD CVE 2.0 API for any CVE whose
 //     lastModified falls in the previous window. New CVEs are inserted; existing
 //     rows have their CVSS vectors, CWEs, and references refreshed. Handles NVD
 //     pagination (2000 results/page) with mandatory inter-page sleep.
 //
-//   - cisa_kev   (every 6h):  Downloads the full CISA Known Exploited
+//   - cisa_kev        (every 6h):  Downloads the full CISA Known Exploited
 //     Vulnerabilities catalogue (~1400 CVEs as of 2026) and bulk-marks any
 //     matching rows in oracle.cves with in_kev=true / kev_added_on. Rows not
 //     yet in oracle.cves are not auto-ingested — KEV status is applied lazily
 //     the next time that CVE is requested.
 //
-//   - epss       (every 12h): Fetches fresh EPSS scores from FIRST.org for
+//   - epss            (every 12h): Fetches fresh EPSS scores from FIRST.org for
 //     every CVE updated in oracle.cves within the last 30 days. Uses the EPSS
 //     batch API (up to 500 CVE IDs per request) and updates scores in-place
 //     without touching other columns.
+//
+//   - analyze_pending (every 15m): Runs Phase-A intrinsic analysis on CVEs that
+//     have no entry in cve_intrinsic_analyses yet. Processes up to 20 CVEs per
+//     run, newest-first, so KEV additions are prioritised. Skipped when no LLM
+//     analyzer is wired (analyzer == nil).
 //
 // All jobs fire once immediately at startup so the store is never more than
 // one interval stale from a cold start.
 type Scheduler struct {
 	store      SchedulerStore
+	analyzer   func(ctx context.Context, cve *schema.CVE) error // nil = disabled
 	nvdAPIKey  string
 	intervals  SchedulerIntervals
 	httpClient *http.Client
@@ -79,12 +95,17 @@ type Scheduler struct {
 
 // NewScheduler constructs a Scheduler ready to be started.
 // nvdKey is optional; passing one raises NVD's rate limit from 5 to 50 req/30s.
-func NewScheduler(store SchedulerStore, nvdKey string, intervals SchedulerIntervals) *Scheduler {
+// analyzer is optional; pass nil to disable the auto-analyze job.
+func NewScheduler(store SchedulerStore, nvdKey string, intervals SchedulerIntervals, analyzer func(ctx context.Context, cve *schema.CVE) error) *Scheduler {
 	if intervals.NVDDelta == 0 {
 		intervals = DefaultIntervals()
 	}
+	if intervals.AnalyzePending == 0 {
+		intervals.AnalyzePending = 15 * time.Minute
+	}
 	return &Scheduler{
 		store:      store,
+		analyzer:   analyzer,
 		nvdAPIKey:  nvdKey,
 		intervals:  intervals,
 		httpClient: &http.Client{Timeout: 45 * time.Second},
@@ -98,10 +119,14 @@ func (s *Scheduler) Start(ctx context.Context) {
 		"nvd_delta_interval", s.intervals.NVDDelta,
 		"cisa_kev_interval", s.intervals.CISAKEV,
 		"epss_interval", s.intervals.EPSS,
+		"analyze_pending_interval", s.intervals.AnalyzePending,
 	)
 	go s.loop(ctx, "nvd_delta", s.intervals.NVDDelta, s.syncNVDDelta)
 	go s.loop(ctx, "cisa_kev", s.intervals.CISAKEV, s.syncCISAKEV)
 	go s.loop(ctx, "epss", s.intervals.EPSS, s.syncEPSS)
+	if s.analyzer != nil {
+		go s.loop(ctx, "analyze_pending", s.intervals.AnalyzePending, s.syncAnalyzePending)
+	}
 }
 
 // loop fires job immediately, then on every tick until ctx is done.
@@ -145,8 +170,8 @@ func (s *Scheduler) syncNVDDelta(ctx context.Context) error {
 		url := fmt.Sprintf(
 			"%s?lastModStartDate=%s&lastModEndDate=%s&resultsPerPage=%d&startIndex=%d",
 			nvdCVEsURL,
-			start.Format("2006-01-02T15:04:05.000"),
-			end.Format("2006-01-02T15:04:05.000"),
+			start.Format("2006-01-02T15:04:05.000+00:00"),
+			end.Format("2006-01-02T15:04:05.000+00:00"),
 			pageSize, startIdx,
 		)
 
@@ -353,6 +378,64 @@ func (s *Scheduler) syncEPSS(ctx context.Context) error {
 	}
 
 	slog.Info("epss sync complete", "refreshed", updated, "window_days", 30, "total_ids", len(ids))
+	return nil
+}
+
+// ─────────────────────────── Auto-analyze pending ───────────────────────────
+
+// syncAnalyzePending runs Phase-A intrinsic analysis on CVEs that have no
+// analysis row yet. Processes up to 20 CVEs per run, newest-first, with a
+// 5-second pause between calls to stay gentle on LLM rate limits.
+func (s *Scheduler) syncAnalyzePending(ctx context.Context) error {
+	const batchSize = 20
+
+	ids, err := s.store.ListCVEsWithoutAnalysis(ctx, batchSize)
+	if err != nil {
+		return fmt.Errorf("analyze_pending: list: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	slog.Info("analyze_pending: starting batch", "count", len(ids))
+	var analyzed, skipped int
+
+	for _, cveID := range ids {
+		if ctx.Err() != nil {
+			break
+		}
+
+		cve, err := s.store.GetCVE(ctx, cveID)
+		if err != nil {
+			slog.Warn("analyze_pending: get cve failed", "cve", cveID, "error", err)
+			skipped++
+			continue
+		}
+		if cve == nil {
+			skipped++
+			continue
+		}
+
+		analyzeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		err = s.analyzer(analyzeCtx, cve)
+		cancel()
+		if err != nil {
+			slog.Warn("analyze_pending: analysis failed", "cve", cveID, "error", err)
+			skipped++
+		} else {
+			slog.Info("analyze_pending: analyzed", "cve", cveID)
+			analyzed++
+		}
+
+		// Pause between LLM calls to avoid rate limit spikes.
+		select {
+		case <-ctx.Done():
+			break
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	slog.Info("analyze_pending: batch complete", "analyzed", analyzed, "skipped", skipped)
 	return nil
 }
 

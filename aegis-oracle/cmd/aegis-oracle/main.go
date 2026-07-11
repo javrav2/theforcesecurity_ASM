@@ -72,12 +72,13 @@ type Config struct {
 	Addr string `yaml:"addr"`
 
 	// Scheduler controls the background CVE freshness sync jobs.
-	// Omit or set to zero to use DefaultIntervals (1h NVD delta, 6h KEV, 12h EPSS).
+	// Omit or set to zero to use DefaultIntervals (1h NVD delta, 6h KEV, 12h EPSS, 15m analyze).
 	Scheduler struct {
-		Disabled        bool          `yaml:"disabled"`         // set true to run on-demand only
-		NVDDeltaEvery   time.Duration `yaml:"nvd_delta_every"`  // default: 1h
-		CISAKEVEvery    time.Duration `yaml:"cisa_kev_every"`   // default: 6h
-		EPSSEvery       time.Duration `yaml:"epss_every"`       // default: 12h
+		Disabled             bool          `yaml:"disabled"`              // set true to run on-demand only
+		NVDDeltaEvery        time.Duration `yaml:"nvd_delta_every"`       // default: 1h
+		CISAKEVEvery         time.Duration `yaml:"cisa_kev_every"`        // default: 6h
+		EPSSEvery            time.Duration `yaml:"epss_every"`            // default: 12h
+		AnalyzePendingEvery  time.Duration `yaml:"analyze_pending_every"` // default: 15m
 	} `yaml:"scheduler"`
 }
 
@@ -161,11 +162,21 @@ func main() {
 	// disabled in config for environments that prefer purely on-demand ingest.
 	if !cfg.Scheduler.Disabled {
 		intervals := ingest.SchedulerIntervals{
-			NVDDelta: cfg.Scheduler.NVDDeltaEvery,
-			CISAKEV:  cfg.Scheduler.CISAKEVEvery,
-			EPSS:     cfg.Scheduler.EPSSEvery,
+			NVDDelta:       cfg.Scheduler.NVDDeltaEvery,
+			CISAKEV:        cfg.Scheduler.CISAKEVEvery,
+			EPSS:           cfg.Scheduler.EPSSEvery,
+			AnalyzePending: cfg.Scheduler.AnalyzePendingEvery,
 		}
-		scheduler := ingest.NewScheduler(store, cfg.NVDKey, intervals)
+		// Wire the intrinsic reasoner for auto-analysis only when the LLM is
+		// ready — skip if no API key was configured to avoid noisy failures.
+		var autoAnalyzer func(ctx context.Context, cve *schema.CVE) error
+		if llmReady {
+			autoAnalyzer = func(ctx context.Context, cve *schema.CVE) error {
+				_, err := reasoner.Analyze(ctx, cve, nil)
+				return err
+			}
+		}
+		scheduler := ingest.NewScheduler(store, cfg.NVDKey, intervals, autoAnalyzer)
 		go scheduler.Start(ctx)
 	}
 

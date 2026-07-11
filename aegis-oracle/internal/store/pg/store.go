@@ -616,6 +616,32 @@ func (s *Store) UpdateEPSS(ctx context.Context, cveID string, score, percentile 
 	return nil
 }
 
+// ListCVEsWithoutAnalysis returns up to limit CVE IDs that have no row in
+// cve_intrinsic_analyses. Ordered by updated_at DESC so newly-ingested CVEs
+// (e.g. fresh KEV additions) are prioritised. Used by the auto-analyze job.
+func (s *Store) ListCVEsWithoutAnalysis(ctx context.Context, limit int) ([]string, error) {
+	q := fmt.Sprintf(`SELECT c.cve_id
+		FROM %s.cves c
+		LEFT JOIN %s.cve_intrinsic_analyses a ON a.cve_id = c.cve_id
+		WHERE a.cve_id IS NULL
+		ORDER BY c.updated_at DESC
+		LIMIT $1`, s.cfg.OracleSchema, s.cfg.OracleSchema)
+	rows, err := s.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list cves without analysis: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan cve id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // ListCVEIDsSince returns all CVE IDs in oracle.cves whose updated_at is
 // more recent than since. Used by the background EPSS refresh job to bound
 // its refresh window to recently active rows.

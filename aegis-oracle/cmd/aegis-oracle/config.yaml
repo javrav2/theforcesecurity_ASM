@@ -23,7 +23,7 @@ llm:
 
   anthropic:
     api_key: ""            # or set ANTHROPIC_API_KEY env var
-    model: "claude-sonnet-4-5"
+    model: "claude-sonnet-4-6"
 
   openai:
     api_key: ""            # or set OPENAI_API_KEY env var
@@ -69,6 +69,19 @@ opes:
     P1: 7.0
     P2: 5.0
     P3: 3.0
+
+# ── Scheduler ────────────────────────────────────────────────────────
+# All intervals accept Go duration strings: "1h", "15m", "30s", etc.
+# Set disabled: true to run in on-demand-only mode (no background jobs).
+scheduler:
+  disabled: false
+  nvd_delta_every: "1h"
+  cisa_kev_every: "6h"
+  epss_every: "12h"
+  # How often to auto-run Phase-A intrinsic analysis on newly ingested CVEs
+  # that have no analysis yet. Processes up to 20 CVEs per run, newest-first,
+  # so KEV additions appear analyzed in the UI quickly. Set to "0" to disable.
+  analyze_pending_every: "15m"
 
 # ── Logging ──────────────────────────────────────────────────────────
 log:
