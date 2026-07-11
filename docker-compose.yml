@@ -152,11 +152,13 @@ services:
       - frontend
     networks:
       - asm_network
-    # Process nginx templates then start nginx.
+    # The nginx entrypoint only auto-processes templates when CMD starts with
+    # "nginx". Since we override CMD with /bin/sh for the reload loop, we do
+    # the substitution manually with sed, then start nginx.
     # Reload every 6h so renewed Let's Encrypt certs are picked up automatically.
     command: >
       /bin/sh -c '
-        envsubst "$$DOMAIN" < /etc/nginx/templates/app.conf.template > /etc/nginx/conf.d/app.conf &&
+        sed "s|\$${DOMAIN}|$$DOMAIN|g" /etc/nginx/templates/app.conf.template > /etc/nginx/conf.d/app.conf &&
         while :; do sleep 6h & wait $${!}; nginx -s reload; done &
         nginx -g "daemon off;"
       '
