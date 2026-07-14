@@ -56,9 +56,15 @@ import {
   Radar,
   Camera,
   Cloud,
+  FolderTree,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+import dynamic from 'next/dynamic';
+
+const AppStructureContent = dynamic(() => import('./AppStructureContent'), {
+  loading: () => <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin" /></div>,
+});
 
 // Types for External Discovery
 interface SourceResult {
@@ -115,6 +121,30 @@ interface WaybackResult {
   elapsed_time?: number;
 }
 
+// Types for Reverse-lookup pivot preview
+interface PivotHost {
+  host: string;
+  seen_on_assets: number;
+  sources: string[];
+}
+
+interface WhoisPreviewTerm {
+  term: string;
+  would_return_domains: number;
+}
+
+interface ReversePivotPlan {
+  organization_id: number;
+  primary_domain?: string | null;
+  sampled_assets: number;
+  min_shared_threshold: number;
+  providers_available: string[];
+  nameserver_pivots: PivotHost[];
+  mailserver_pivots: PivotHost[];
+  reverse_whois_preview: WhoisPreviewTerm[];
+  note: string;
+}
+
 // Wrapper component to handle Suspense for useSearchParams
 export default function DiscoveryPage() {
   return (
@@ -140,16 +170,23 @@ function DiscoveryPageContent() {
   const [domain, setDomain] = useState('');
   const { toast } = useToast();
   
+  // Main tab (external | wayback | app-structure) — supports deep-linking via ?tab=
+  const [activeMainTab, setActiveMainTab] = useState<string>('external');
+
   // Pre-fill from URL params (when coming from Organization page)
   useEffect(() => {
     const orgId = searchParams?.get('org');
     const domainParam = searchParams?.get('domain');
+    const tabParam = searchParams?.get('tab');
     
     if (orgId) {
       setSelectedOrg(orgId);
     }
     if (domainParam) {
       setDomain(domainParam);
+    }
+    if (tabParam && ['external', 'wayback', 'app-structure'].includes(tabParam)) {
+      setActiveMainTab(tabParam);
     }
   }, [searchParams]);
 
@@ -186,6 +223,10 @@ function DiscoveryPageContent() {
   const [includeSniDiscovery, setIncludeSniDiscovery] = useState(true);
   const [sniKeywords, setSniKeywords] = useState<string[]>([]);
   const [newSniKeyword, setNewSniKeyword] = useState('');
+
+  // Reverse-lookup pivot preview (credit-free plan of NS/MX/WHOIS pivots)
+  const [reversePivots, setReversePivots] = useState<ReversePivotPlan | null>(null);
+  const [reversePivotsLoading, setReversePivotsLoading] = useState(false);
 
   // Wayback URLs state
   const [waybackRunning, setWaybackRunning] = useState(false);
@@ -363,6 +404,38 @@ function DiscoveryPageContent() {
     setSniKeywords(sniKeywords.filter(k => k !== keyword));
   };
 
+  // Load the credit-free reverse-lookup pivot plan for the selected org.
+  const handleLoadReversePivots = async () => {
+    if (!selectedOrg) {
+      toast({
+        title: 'Error',
+        description: 'Please select an organization first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setReversePivotsLoading(true);
+    try {
+      const plan = await api.getReversePivots(parseInt(selectedOrg), domain || undefined);
+      setReversePivots(plan);
+      const pivotCount = (plan.nameserver_pivots?.length || 0) + (plan.mailserver_pivots?.length || 0);
+      toast({
+        title: 'Pivot Preview Ready',
+        description: `${pivotCount} infrastructure pivot${pivotCount === 1 ? '' : 's'} found. No credits were spent.`,
+      });
+    } catch (error: any) {
+      console.error('Reverse pivot preview error:', error);
+      toast({
+        title: 'Preview Failed',
+        description: error.response?.data?.detail || error.message || 'Failed to load reverse-lookup pivots.',
+        variant: 'destructive',
+      });
+    } finally {
+      setReversePivotsLoading(false);
+    }
+  };
+
   // Wayback URLs handlers
   const handleRunWayback = async () => {
     if (waybackMode === 'single' && !domain) {
@@ -509,8 +582,8 @@ function DiscoveryPageContent() {
         </Card>
 
         {/* Main Tabs */}
-        <Tabs defaultValue="external" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-2 lg:w-[400px]">
+        <Tabs value={activeMainTab} onValueChange={setActiveMainTab} className="space-y-6">
+          <TabsList className="grid w-full grid-cols-3 lg:w-[600px]">
             <TabsTrigger value="external" className="flex items-center gap-2">
               <Search className="h-4 w-4" />
               External Discovery
@@ -518,6 +591,10 @@ function DiscoveryPageContent() {
             <TabsTrigger value="wayback" className="flex items-center gap-2">
               <History className="h-4 w-4" />
               Wayback URLs
+            </TabsTrigger>
+            <TabsTrigger value="app-structure" className="flex items-center gap-2">
+              <FolderTree className="h-4 w-4" />
+              App Structure
             </TabsTrigger>
           </TabsList>
 
@@ -895,6 +972,174 @@ function DiscoveryPageContent() {
                         </p>
                       </div>
                     </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Reverse-Lookup Pivots Preview (credit-free) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Network className="h-5 w-5" />
+                  Reverse-Lookup Pivots
+                  <Badge variant="secondary" className="text-xs font-normal">Preview · no credits</Badge>
+                </CardTitle>
+                <CardDescription>
+                  See exactly which nameservers, mail servers, and WHOIS terms reverse discovery
+                  would pivot on for this organization — <span className="font-medium">before</span> any run
+                  spends provider credits.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={handleLoadReversePivots}
+                    disabled={reversePivotsLoading || !selectedOrg}
+                  >
+                    {reversePivotsLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Building plan...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        {reversePivots ? 'Refresh Pivot Plan' : 'Preview Pivots'}
+                      </>
+                    )}
+                  </Button>
+                  {reversePivots && (
+                    <span className="text-xs text-muted-foreground">
+                      Sampled {reversePivots.sampled_assets} in-scope asset{reversePivots.sampled_assets === 1 ? '' : 's'} ·
+                      recurrence threshold {reversePivots.min_shared_threshold}
+                    </span>
+                  )}
+                </div>
+
+                {reversePivots && (
+                  <div className="space-y-5">
+                    {/* Providers available */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Providers:</span>
+                      {reversePivots.providers_available.length > 0 ? (
+                        reversePivots.providers_available.map((p) => (
+                          <Badge key={p} variant="default" className="bg-green-600 text-xs">
+                            <CheckCircle className="h-3 w-3 mr-1" />
+                            {p}
+                          </Badge>
+                        ))
+                      ) : (
+                        <Badge variant="destructive" className="text-xs">
+                          <XCircle className="h-3 w-3 mr-1" />
+                          None configured — add keys in Settings
+                        </Badge>
+                      )}
+                      {reversePivots.primary_domain && (
+                        <Badge variant="outline" className="text-xs">
+                          apex: {reversePivots.primary_domain}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {/* Nameserver + Mailserver pivots */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      <div>
+                        <h4 className="font-medium text-sm mb-2 flex items-center gap-2">
+                          <Server className="h-4 w-4" />
+                          Nameserver Pivots ({reversePivots.nameserver_pivots.length})
+                        </h4>
+                        {reversePivots.nameserver_pivots.length > 0 ? (
+                          <div className="space-y-1 max-h-64 overflow-y-auto">
+                            {reversePivots.nameserver_pivots.map((p) => (
+                              <div key={p.host} className="flex items-center justify-between gap-2 p-2 bg-muted/50 rounded text-sm">
+                                <span className="font-mono truncate" title={p.host}>{p.host}</span>
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <Badge variant="secondary" className="text-xs">{p.seen_on_assets} assets</Badge>
+                                  {p.sources.map((s) => (
+                                    <Badge key={s} variant="outline" className="text-xs">{s}</Badge>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No org-specific nameserver pivots detected.</p>
+                        )}
+                      </div>
+
+                      <div>
+                        <h4 className="font-medium text-sm mb-2 flex items-center gap-2">
+                          <Mail className="h-4 w-4" />
+                          Mailserver Pivots ({reversePivots.mailserver_pivots.length})
+                        </h4>
+                        {reversePivots.mailserver_pivots.length > 0 ? (
+                          <div className="space-y-1 max-h-64 overflow-y-auto">
+                            {reversePivots.mailserver_pivots.map((p) => (
+                              <div key={p.host} className="flex items-center justify-between gap-2 p-2 bg-muted/50 rounded text-sm">
+                                <span className="font-mono truncate" title={p.host}>{p.host}</span>
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <Badge variant="secondary" className="text-xs">{p.seen_on_assets} assets</Badge>
+                                  {p.sources.map((s) => (
+                                    <Badge key={s} variant="outline" className="text-xs">{s}</Badge>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No org-specific mailserver pivots detected.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Reverse-WHOIS preview */}
+                    {reversePivots.reverse_whois_preview.length > 0 && (
+                      <div>
+                        <h4 className="font-medium text-sm mb-2 flex items-center gap-2">
+                          <Building2 className="h-4 w-4" />
+                          Reverse-WHOIS Estimates
+                        </h4>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Search Term</TableHead>
+                              <TableHead className="text-right">Est. Domains Returned</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {reversePivots.reverse_whois_preview.map((w) => (
+                              <TableRow key={w.term}>
+                                <TableCell className="font-mono text-sm">{w.term}</TableCell>
+                                <TableCell className="text-right">
+                                  {w.would_return_domains < 0 ? (
+                                    <Badge variant="outline" className="text-xs">unknown</Badge>
+                                  ) : (
+                                    <Badge
+                                      variant={w.would_return_domains > 5000 ? 'destructive' : 'secondary'}
+                                      className="text-xs"
+                                    >
+                                      {w.would_return_domains.toLocaleString()}
+                                    </Badge>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Estimates come from the provider&apos;s free preview mode. High counts (&gt;5,000)
+                          usually mean a shared/registrar term that will pull in unrelated domains — refine before running.
+                        </p>
+                      </div>
+                    )}
+
+                    {reversePivots.note && (
+                      <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                        <p className="text-xs text-blue-400">{reversePivots.note}</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>
@@ -1389,6 +1634,11 @@ function DiscoveryPageContent() {
                 </p>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* App Structure Tab */}
+          <TabsContent value="app-structure" className="space-y-6">
+            <AppStructureContent />
           </TabsContent>
         </Tabs>
       </div>

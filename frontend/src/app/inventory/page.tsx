@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Network, Globe, Loader2, Building2, FolderTree } from 'lucide-react';
+import { Network, Globe, Loader2, Building2 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 
 // Dynamically import content components
@@ -21,15 +21,19 @@ const AcquisitionsContent = dynamic(() => import('./AcquisitionsContent'), {
   loading: () => <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin" /></div>,
 });
 
-const AppStructureContent = dynamic(() => import('./AppStructureContent'), {
-  loading: () => <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin" /></div>,
-});
-
 function InventoryPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const initialTab = searchParams.get('tab') || 'netblocks';
+  const requestedTab = searchParams.get('tab');
+  // App Structure moved to the Discovery page — redirect old links there.
+  const initialTab = requestedTab && requestedTab !== 'app-structure' ? requestedTab : 'netblocks';
   const [activeTab, setActiveTab] = useState(initialTab);
+
+  useEffect(() => {
+    if (requestedTab === 'app-structure') {
+      router.replace('/discovery?tab=app-structure');
+    }
+  }, [requestedTab, router]);
 
   const handleTabChange = (value: string) => {
     setActiveTab(value);
@@ -45,7 +49,7 @@ function InventoryPageContent() {
 
       <div className="p-6">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
-          <TabsList className="grid w-full max-w-2xl grid-cols-4">
+          <TabsList className="grid w-full max-w-2xl grid-cols-3">
             <TabsTrigger value="netblocks" className="flex items-center gap-2">
               <Network className="h-4 w-4" />
               CIDR Blocks
@@ -57,10 +61,6 @@ function InventoryPageContent() {
             <TabsTrigger value="acquisitions" className="flex items-center gap-2">
               <Building2 className="h-4 w-4" />
               M&A
-            </TabsTrigger>
-            <TabsTrigger value="app-structure" className="flex items-center gap-2">
-              <FolderTree className="h-4 w-4" />
-              App Structure
             </TabsTrigger>
           </TabsList>
 
@@ -74,10 +74,6 @@ function InventoryPageContent() {
 
           <TabsContent value="acquisitions" className="space-y-6">
             <AcquisitionsContent />
-          </TabsContent>
-
-          <TabsContent value="app-structure" className="space-y-6">
-            <AppStructureContent />
           </TabsContent>
         </Tabs>
       </div>
