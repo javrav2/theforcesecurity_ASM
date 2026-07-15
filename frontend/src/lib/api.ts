@@ -722,6 +722,32 @@ class ApiClient {
     return response.data;
   }
 
+  // Read-only preview of what reverse-NS/MX/WHOIS discovery would pivot on.
+  // Spends no purchase credits (reverse-WHOIS uses free preview mode).
+  async getReversePivots(organizationId: number, domain?: string, whoisPreview: boolean = true) {
+    const response = await this.client.get(`/external-discovery/reverse-pivots/${organizationId}`, {
+      params: { domain: domain || undefined, whois_preview: whoisPreview },
+    });
+    return response.data;
+  }
+
+  // Run reverse-NS/MX discovery on an explicitly-selected set of pivots.
+  // This spends provider credits, bounded by the selected hosts.
+  async runReverseDiscovery(data: {
+    organization_id: number;
+    domain?: string;
+    nameservers: string[];
+    mailservers: string[];
+    create_assets?: boolean;
+    enumerate_discovered_domains?: boolean;
+    max_domains_to_enumerate?: number;
+  }) {
+    const response = await this.client.post('/external-discovery/run/reverse', data, {
+      timeout: 300000,  // reverse lookups can page through many results
+    });
+    return response.data;
+  }
+
   async getApiConfigs(organizationId: number) {
     const response = await this.client.get(`/external-discovery/configs/${organizationId}`);
     return response.data;

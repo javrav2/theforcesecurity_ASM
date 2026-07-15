@@ -45,6 +45,11 @@ interface TurnstileProps {
   onExpire?: () => void;
 }
 
+// Turnstile's "normal" widget size. Reserved up-front so the form doesn't
+// shift/jump when the widget finishes loading and mounts.
+const WIDGET_WIDTH = 300;
+const WIDGET_HEIGHT = 65;
+
 /**
  * Cloudflare Turnstile widget. Renders the challenge and reports the token via
  * onVerify. The token is single-use and short-lived, so it is passed to the
@@ -54,20 +59,31 @@ export function Turnstile({ siteKey, onVerify, onExpire }: TurnstileProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
 
+  // Keep the latest callbacks in refs so the render effect can depend only on
+  // siteKey. Passing inline callbacks (whose identity changes every render)
+  // would otherwise tear down and re-create the widget on each parent render,
+  // causing visible flicker/resizing.
+  const onVerifyRef = useRef(onVerify);
+  const onExpireRef = useRef(onExpire);
+  onVerifyRef.current = onVerify;
+  onExpireRef.current = onExpire;
+
   useEffect(() => {
     let cancelled = false;
 
     loadScript()
       .then(() => {
         if (cancelled || !containerRef.current || !window.turnstile) return;
+        // Guard against double-render (e.g. React StrictMode) creating two widgets.
+        if (widgetIdRef.current) return;
         widgetIdRef.current = window.turnstile.render(containerRef.current, {
           sitekey: siteKey,
-          callback: (token: string) => onVerify(token),
-          'expired-callback': () => onExpire?.(),
-          'error-callback': () => onExpire?.(),
+          callback: (token: string) => onVerifyRef.current(token),
+          'expired-callback': () => onExpireRef.current?.(),
+          'error-callback': () => onExpireRef.current?.(),
         });
       })
-      .catch(() => onExpire?.());
+      .catch(() => onExpireRef.current?.());
 
     return () => {
       cancelled = true;
@@ -77,9 +93,15 @@ export function Turnstile({ siteKey, onVerify, onExpire }: TurnstileProps) {
         } catch {
           /* widget already gone */
         }
+        widgetIdRef.current = null;
       }
     };
-  }, [siteKey, onVerify, onExpire]);
+  }, [siteKey]);
 
-  return <div ref={containerRef} />;
+  return (
+    <div
+      ref={containerRef}
+      style={{ minWidth: WIDGET_WIDTH, minHeight: WIDGET_HEIGHT }}
+    />
+  );
 }

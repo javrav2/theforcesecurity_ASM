@@ -84,6 +84,18 @@ services:
       # Aegis Oracle service URL (internal docker network)
       - ORACLE_URL=${ORACLE_URL:-http://aegis-oracle:8742}
       - ORACLE_TIMEOUT=${ORACLE_TIMEOUT:-180}
+      # Auth hardening: CAPTCHA (bot / brute-force protection on login + register)
+      - CAPTCHA_ENABLED=${CAPTCHA_ENABLED:-false}
+      - CAPTCHA_PROVIDER=${CAPTCHA_PROVIDER:-turnstile}
+      - CAPTCHA_SITE_KEY=${CAPTCHA_SITE_KEY:-}
+      - CAPTCHA_SECRET_KEY=${CAPTCHA_SECRET_KEY:-}
+      # Auth hardening: rate limiting + public registration toggle
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_STORAGE_URI=${RATE_LIMIT_STORAGE_URI:-memory://}
+      - RATE_LIMIT_LOGIN=${RATE_LIMIT_LOGIN:-5/minute}
+      - RATE_LIMIT_REGISTER=${RATE_LIMIT_REGISTER:-5/hour}
+      - RATE_LIMIT_REFRESH=${RATE_LIMIT_REFRESH:-20/minute}
+      - ALLOW_PUBLIC_REGISTRATION=${ALLOW_PUBLIC_REGISTRATION:-false}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:

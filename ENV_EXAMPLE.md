@@ -50,6 +50,35 @@ LETSENCRYPT_STAGING=0
 # Redis
 REDIS_PORT=6379
 
+# =============================================================================
+# Auth hardening: CAPTCHA + rate limiting (brute-force / bot protection)
+# =============================================================================
+
+# --- CAPTCHA (login + registration) ---
+# Disabled by default so local/dev logins work with no setup. Turn ON in prod.
+# Provider-agnostic: "turnstile" (Cloudflare, recommended/free), "hcaptcha",
+# or "recaptcha" (Google reCAPTCHA v2). The backend fails CLOSED when enabled,
+# so if the verifier is unreachable the login is rejected.
+#
+# Cloudflare Turnstile setup (free):
+#   1. https://dash.cloudflare.com → Turnstile → Add site
+#   2. Add your domain (e.g. aegis.theforcesecurity.io)
+#   3. Copy the Site Key -> CAPTCHA_SITE_KEY (public, safe for the browser)
+#      and the Secret Key -> CAPTCHA_SECRET_KEY (keep private)
+CAPTCHA_ENABLED=false
+CAPTCHA_PROVIDER=turnstile
+CAPTCHA_SITE_KEY=
+CAPTCHA_SECRET_KEY=
+
+# --- Rate limiting ---
+# On by default. Uses in-process memory storage (fine for a single backend
+# worker). For multiple workers/instances, point at Redis so limits are shared.
+RATE_LIMIT_ENABLED=true
+# RATE_LIMIT_STORAGE_URI=redis://redis:6379
+RATE_LIMIT_LOGIN=5/minute
+RATE_LIMIT_REGISTER=5/hour
+RATE_LIMIT_REFRESH=20/minute
+
 # AWS Configuration (optional)
 AWS_REGION=us-east-1
 SQS_QUEUE_URL=
@@ -75,7 +104,20 @@ OPENAI_MODEL=gpt-4o
 # Anthropic/Claude Configuration (use API key from Console, NOT Cursor/Claude Code)
 # Get key at: https://console.anthropic.com/ → API Keys (must start with sk-ant-)
 ANTHROPIC_API_KEY=
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
+ANTHROPIC_MODEL=claude-sonnet-4-6
+
+# DeepSeek (OpenAI-compatible). Optional. Provider string in task_models: "deepseek"
+# Get key at: https://platform.deepseek.com/
+# DEEPSEEK_API_KEY=
+# DEEPSEEK_MODEL=deepseek-chat
+
+# Per-task model routing (bring-your-own-key):
+#   These env vars are the GLOBAL default keys/models. Each organization can
+#   override provider + model per task (reasoning / offensive / report) and
+#   supply its own encrypted keys via the API-config store — see the "agent"
+#   module in project settings ("task_models": {"offensive": "anthropic:claude-sonnet-4-6", ...}).
+#   Provider keys are only ever handed to the model SDK; they are never placed
+#   into prompts, tool output, or agent state.
 
 # Optional: Tavily API for agent web search (CVE/exploit research, RedAmon-style)
 # Get key at: https://tavily.com (free tier available)
@@ -148,6 +190,13 @@ SECRET_KEY=your-generated-secret-key
 # Frontend / API (use your real domain)
 NEXT_PUBLIC_API_URL=https://aegis.theforcesecurity.io
 CORS_ORIGINS=["https://aegis.theforcesecurity.io"]
+
+# Auth hardening — enable CAPTCHA to stop credential brute-forcing.
+# Keys from Cloudflare dashboard → Turnstile (see main config block above).
+CAPTCHA_ENABLED=true
+CAPTCHA_PROVIDER=turnstile
+CAPTCHA_SITE_KEY=0x4AAAAAAA_your_site_key
+CAPTCHA_SECRET_KEY=0x4AAAAAAA_your_secret_key
 
 # Ports
 BACKEND_PORT=8000
