@@ -373,14 +373,46 @@ class NucleiService:
             if exclude_tags:
                 cmd.extend(["-exclude-tags", ",".join(exclude_tags)])
             
-            # Add specific templates
+            # Collect explicit template sources (shipped + org custom).
+            #
+            # IMPORTANT: As soon as Nuclei is given ANY -t path it runs ONLY the
+            # templates found in those paths and ignores its default template
+            # directory (~/.config/nuclei/nuclei-templates).
+            template_dirs: list[str] = []
             if templates:
-                for template in templates:
-                    cmd.extend(["-t", template])
-            
-            # Add custom templates path
+                template_dirs.extend([t for t in templates if t])
             if self.templates_path:
-                cmd.extend(["-t", self.templates_path])
+                template_dirs.append(self.templates_path)
+
+            # When this service is configured with a shipped custom-templates
+            # directory (the broad vulnerability-scan use case) also add the
+            # official templates corpus. Because -t restricts Nuclei to ONLY the
+            # given paths, without this every scan would run just the handful of
+            # shipped templates and finish in seconds with no findings. Targeted
+            # callers that construct NucleiService() without templates_path (the
+            # takeover engine, single-template recheck) intentionally keep their
+            # narrow selection and are left untouched.
+            if self.templates_path:
+                from app.services.nuclei_template_parser_service import (
+                    resolve_official_templates_path,
+                )
+                official_dir = resolve_official_templates_path()
+                if (
+                    official_dir
+                    and os.path.isdir(official_dir)
+                    and official_dir not in template_dirs
+                ):
+                    template_dirs.append(official_dir)
+                    logger.info(f"Including official Nuclei templates from {official_dir}")
+                else:
+                    logger.warning(
+                        "Official Nuclei templates directory not found "
+                        f"(resolved: {official_dir!r}); scan will run only "
+                        "custom/shipped templates. Run 'nuclei -update-templates'."
+                    )
+
+            for template_dir in template_dirs:
+                cmd.extend(["-t", template_dir])
             
             logger.info(f"Starting Nuclei scan on {len(targets)} targets")
             logger.info(f"Nuclei command: {' '.join(cmd)}")
