@@ -139,7 +139,7 @@ class NucleiTemplateParser:
     
     def __init__(self, templates_path: Optional[str] = None):
         """Initialize parser with optional custom templates path."""
-        self.templates_path = templates_path or self.DEFAULT_TEMPLATES_PATH
+        self.templates_path = templates_path or resolve_official_templates_path()
     
     def parse_template(self, template_path: str) -> Optional[NucleiTemplateInfo]:
         """Parse a single Nuclei template file."""
@@ -426,6 +426,86 @@ class NucleiTemplateParser:
 # =============================================================================
 # API FUNCTIONS
 # =============================================================================
+
+def _looks_like_templates_dir(path: str) -> bool:
+    """Heuristic check that a directory actually holds Nuclei templates.
+
+    This matters because Nuclei's *config* directory (~/.config/nuclei) exists
+    even when templates live elsewhere (e.g. ~/nuclei-templates on Nuclei
+    v3.7+). Pointing -t at the config dir loads zero templates and produces a
+    scan that finishes in seconds with no findings.
+    """
+    try:
+        if not path or not os.path.isdir(path):
+            return False
+        # Fast path: well-known template subdirectories.
+        for sub in ("http", "cves", "dns", "network", "ssl", "misconfiguration"):
+            if os.path.isdir(os.path.join(path, sub)):
+                return True
+        # Fallback: any .yaml/.yml in the top couple of levels.
+        for root, dirs, files in os.walk(path):
+            if any(f.endswith((".yaml", ".yml")) for f in files):
+                return True
+            if root.count(os.sep) - path.count(os.sep) >= 2:
+                dirs[:] = []  # limit depth
+        return False
+    except OSError:
+        return False
+
+
+def resolve_official_templates_path() -> str:
+    """Best-effort resolution of the official Nuclei templates directory.
+
+    Deployments vary. Nuclei v3.7+ installs templates to ~/nuclei-templates,
+    older/other setups use ~/.config/nuclei/nuclei-templates or
+    ~/.local/nuclei-templates. We check, in order:
+      1. settings.NUCLEI_OFFICIAL_TEMPLATES_PATH
+      2. env NUCLEI_TEMPLATES_PATH
+      3. common on-disk locations (including container/root paths)
+    We first return the highest-priority candidate that actually *contains*
+    templates; otherwise the first that exists as a directory; otherwise the
+    historical default so callers still get a stable path.
+    """
+    candidates: List[str] = []
+
+    try:
+        from app.core.config import settings
+        configured = getattr(settings, "NUCLEI_OFFICIAL_TEMPLATES_PATH", "") or ""
+        if configured:
+            candidates.append(configured)
+    except Exception:
+        pass
+
+    env_path = os.environ.get("NUCLEI_TEMPLATES_PATH", "")
+    if env_path:
+        candidates.append(env_path)
+
+    home = os.path.expanduser("~")
+    candidates.extend([
+        # Nuclei v3.7+ default install location.
+        os.path.join(home, "nuclei-templates"),
+        os.path.join(home, ".config", "nuclei", "nuclei-templates"),
+        os.path.join(home, ".local", "nuclei-templates"),
+        # Common container/root locations (scanner runs as root).
+        "/root/nuclei-templates",
+        "/root/.config/nuclei/nuclei-templates",
+    ])
+
+    # Prefer a candidate that genuinely holds templates.
+    for path in candidates:
+        if _looks_like_templates_dir(path):
+            return path
+
+    # Otherwise fall back to the first existing directory.
+    for path in candidates:
+        try:
+            if path and os.path.isdir(path):
+                return path
+        except OSError:
+            continue
+
+    return NucleiTemplateParser.DEFAULT_TEMPLATES_PATH
+
 
 def get_template_parser(templates_path: Optional[str] = None) -> NucleiTemplateParser:
     """Get a configured template parser instance."""
