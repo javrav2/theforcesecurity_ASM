@@ -20,8 +20,15 @@ def list_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
-    """List all users (admin only)."""
-    users = db.query(User).offset(skip).limit(limit).all()
+    """List users. Superusers see all users; org admins see only users in their own org."""
+    query = db.query(User)
+    if not current_user.is_superuser:
+        # Org-level admins are scoped to their own organization
+        if current_user.organization_id:
+            query = query.filter(User.organization_id == current_user.organization_id)
+        else:
+            return []
+    users = query.offset(skip).limit(limit).all()
     return users
 
 
@@ -75,23 +82,31 @@ def get_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Get user by ID."""
-    # Users can view their own profile, admins can view any
-    if not current_user.is_superuser and current_user.id != user_id:
-        if current_user.role.value != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
-            )
-    
+    """Get user by ID. Users see themselves; org admins see users in their own org; superusers see all."""
     user = db.query(User).filter(User.id == user_id).first()
-    
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
+    if current_user.id != user_id:
+        if current_user.is_superuser:
+            pass  # full access
+        elif current_user.role.value == "admin" and current_user.organization_id:
+            # Org admins can only see users within their own organization
+            if user.organization_id != current_user.organization_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied"
+            )
+
     return user
 
 
@@ -102,46 +117,44 @@ def update_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Update user (users can update themselves, admins can update anyone)."""
-    # Check permissions
-    is_admin = current_user.is_superuser or current_user.role.value == "admin"
+    """Update user. Users update themselves; org admins update users in their own org; superusers update all."""
+    is_superuser = current_user.is_superuser
+    is_org_admin = (not is_superuser and current_user.role.value == "admin")
     is_self = current_user.id == user_id
-    
-    if not is_admin and not is_self:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied"
-        )
-    
+
+    # Fetch target user first so we can check org membership
     user = db.query(User).filter(User.id == user_id).first()
-    
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Non-admins cannot change their own role or active status
-    if not is_admin:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not is_superuser and not is_self:
+        if is_org_admin and current_user.organization_id:
+            # Org admins can only modify users within their own organization
+            if user.organization_id != current_user.organization_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        else:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    # Non-superusers (including org admins) cannot change role, active status, or org membership
+    if not is_superuser:
         user_data.role = None
         user_data.is_active = None
         user_data.organization_id = None
-    
+
     # Update fields
     update_data = user_data.model_dump(exclude_unset=True)
-    
+
     # Hash password if being updated
     if "password" in update_data and update_data["password"]:
         update_data["hashed_password"] = get_password_hash(update_data.pop("password"))
     elif "password" in update_data:
         del update_data["password"]
-    
+
     for field, value in update_data.items():
         setattr(user, field, value)
-    
+
     db.commit()
     db.refresh(user)
-    
     return user
 
 
