@@ -38,8 +38,11 @@ import {
   ArrowRight,
   Zap,
   ArrowLeftRight,
+  Radar,
+  Download,
+  RotateCw,
 } from 'lucide-react';
-import { api, getApiErrorMessage, type JiraIntegration } from '@/lib/api';
+import { api, getApiErrorMessage, type JiraIntegration, type CensysIntegration } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
@@ -122,6 +125,415 @@ function TransitionListEditor({
   );
 }
 
+interface CensysFormState {
+  workspace_name: string;
+  api_key: string;
+  import_vulnerabilities: boolean;
+  import_assets: boolean;
+  continuous_sync_enabled: boolean;
+  sync_interval_minutes: number;
+}
+
+const defaultCensysForm: CensysFormState = {
+  workspace_name: '',
+  api_key: '',
+  import_vulnerabilities: true,
+  import_assets: true,
+  continuous_sync_enabled: false,
+  sync_interval_minutes: 360,
+};
+
+const CENSYS_SYNC_INTERVALS: { value: number; label: string }[] = [
+  { value: 60, label: 'Every hour' },
+  { value: 360, label: 'Every 6 hours' },
+  { value: 720, label: 'Every 12 hours' },
+  { value: 1440, label: 'Every 24 hours' },
+];
+
+function formatCensysInterval(minutes: number): string {
+  const match = CENSYS_SYNC_INTERVALS.find(i => i.value === minutes);
+  if (match) return match.label;
+  if (minutes % 1440 === 0) return `Every ${minutes / 1440} day(s)`;
+  if (minutes % 60 === 0) return `Every ${minutes / 60} hour(s)`;
+  return `Every ${minutes} min`;
+}
+
+function CensysSection() {
+  const { toast } = useToast();
+  const [integrations, setIntegrations] = useState<CensysIntegration[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [editing, setEditing] = useState<CensysIntegration | null>(null);
+  const [form, setForm] = useState<CensysFormState>(defaultCensysForm);
+  const [saving, setSaving] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CensysIntegration | null>(null);
+
+  useEffect(() => { load(); }, []);
+
+  async function load() {
+    setLoading(true);
+    try {
+      setIntegrations(await api.getCensysIntegrations());
+    } catch {
+      setIntegrations([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openCreate() {
+    setEditing(null);
+    setForm(defaultCensysForm);
+    setSetupOpen(true);
+  }
+
+  function openEdit(integration: CensysIntegration) {
+    setEditing(integration);
+    setForm({
+      workspace_name: integration.workspace_name,
+      api_key: '',
+      import_vulnerabilities: integration.import_vulnerabilities,
+      import_assets: integration.import_assets,
+      continuous_sync_enabled: integration.continuous_sync_enabled,
+      sync_interval_minutes: integration.sync_interval_minutes,
+    });
+    setSetupOpen(true);
+  }
+
+  async function handleSave() {
+    if (!form.workspace_name.trim()) {
+      toast({ title: 'Workspace name is required.', variant: 'destructive' });
+      return;
+    }
+    if (!editing && !form.api_key.trim()) {
+      toast({ title: 'API key is required when adding a connection.', variant: 'destructive' });
+      return;
+    }
+    setSaving(true);
+    try {
+      if (editing) {
+        await api.updateCensysIntegration(editing.id, {
+          workspace_name: form.workspace_name,
+          ...(form.api_key ? { api_key: form.api_key } : {}),
+          import_vulnerabilities: form.import_vulnerabilities,
+          import_assets: form.import_assets,
+          continuous_sync_enabled: form.continuous_sync_enabled,
+          sync_interval_minutes: form.sync_interval_minutes,
+        });
+        toast({ title: 'Censys ASM connection updated.' });
+      } else {
+        await api.createCensysIntegration({
+          workspace_name: form.workspace_name,
+          api_key: form.api_key,
+          import_vulnerabilities: form.import_vulnerabilities,
+          import_assets: form.import_assets,
+          continuous_sync_enabled: form.continuous_sync_enabled,
+          sync_interval_minutes: form.sync_interval_minutes,
+        });
+        toast({ title: 'Censys ASM connection added.' });
+      }
+      setSetupOpen(false);
+      await load();
+    } catch (err) {
+      toast({ title: 'Failed to save', description: getApiErrorMessage(err), variant: 'destructive' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest(integration: CensysIntegration) {
+    setBusyId(integration.id);
+    try {
+      const result = await api.testCensysConnection(integration.id);
+      toast({
+        title: result.ok ? 'Connection OK' : 'Connection failed',
+        description: result.message,
+        variant: result.ok ? undefined : 'destructive',
+      });
+      await load();
+    } catch (err) {
+      toast({ title: 'Test failed', description: getApiErrorMessage(err), variant: 'destructive' });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleSync(integration: CensysIntegration) {
+    setBusyId(integration.id);
+    try {
+      const result = await api.syncCensysIntegration(integration.id);
+      toast({
+        title: result.ok ? 'Sync complete' : 'Sync failed',
+        description: result.message,
+        variant: result.ok ? undefined : 'destructive',
+      });
+      await load();
+    } catch (err) {
+      toast({ title: 'Sync failed', description: getApiErrorMessage(err), variant: 'destructive' });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setBusyId(deleteTarget.id);
+    try {
+      await api.deleteCensysIntegration(deleteTarget.id);
+      setDeleteTarget(null);
+      toast({ title: 'Censys ASM connection removed.' });
+      await load();
+    } catch (err) {
+      toast({ title: 'Failed to remove', description: getApiErrorMessage(err), variant: 'destructive' });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <Card className="border border-border">
+      <CardHeader className="flex flex-row items-center gap-4 space-y-0 pb-3">
+        <div className="w-10 h-10 rounded-lg bg-[#0A1F44] flex items-center justify-center shrink-0">
+          <Radar className="w-5 h-5 text-[#4A90E2]" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <CardTitle className="text-base">Censys ASM</CardTitle>
+          <CardDescription className="text-sm">
+            Import risks and assets that Censys Attack Surface Management has attributed to your organization. Read-only.
+          </CardDescription>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {loading ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : integrations.length > 0 ? (
+            <Badge variant="outline" className="bg-green-500/10 text-green-400 border-green-500/30">
+              <CheckCircle2 className="h-3 w-3 mr-1" />
+              {integrations.length} workspace{integrations.length > 1 ? 's' : ''}
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-muted-foreground">Not configured</Badge>
+          )}
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {integrations.length > 0 ? (
+          <div className="space-y-3">
+            {integrations.map((c) => (
+              <div key={c.id} className="rounded-lg border border-border p-3 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-sm truncate">{c.workspace_name}</p>
+                      {!c.is_active && <Badge variant="outline" className="text-muted-foreground text-xs">Disabled</Badge>}
+                      {c.last_test_ok === false && (
+                        <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/30 text-xs">
+                          <AlertCircle className="h-3 w-3 mr-1" />Auth issue
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs text-muted-foreground">
+                      <span>Import: {[c.import_assets && 'Assets', c.import_vulnerabilities && 'Vulnerabilities'].filter(Boolean).join(' + ') || 'Nothing'}</span>
+                      {c.continuous_sync_enabled ? (
+                        <span className="inline-flex items-center gap-1 text-green-400">
+                          <RotateCw className="h-3 w-3" />
+                          Auto-sync {formatCensysInterval(c.sync_interval_minutes).toLowerCase()}
+                        </span>
+                      ) : (
+                        <span>Auto-sync off</span>
+                      )}
+                      {c.last_sync_at && (
+                        <span>
+                          Last sync: {new Date(c.last_sync_at).toLocaleString()}
+                          {c.last_sync_ok === true && <span className="text-green-400"> — OK</span>}
+                          {c.last_sync_ok === false && <span className="text-red-400"> — Failed</span>}
+                        </span>
+                      )}
+                      {c.continuous_sync_enabled && c.next_sync_at && (
+                        <span>Next: {new Date(c.next_sync_at).toLocaleString()}</span>
+                      )}
+                    </div>
+                    {c.last_sync_ok && c.last_sync_stats && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {c.last_sync_stats.assets_created ?? 0} new assets, {c.last_sync_stats.vulns_created ?? 0} new risks imported.
+                      </p>
+                    )}
+                    {c.last_sync_ok === false && c.last_error && (
+                      <p className="text-xs text-red-400 mt-1 truncate">{c.last_error}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => handleSync(c)} disabled={busyId === c.id || !c.is_active}>
+                    {busyId === c.id ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Download className="h-4 w-4 mr-2" />}
+                    Sync now
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => handleTest(c)} disabled={busyId === c.id}>
+                    <RefreshCw className="h-4 w-4 mr-2" />Test
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => openEdit(c)}>
+                    <Settings2 className="h-4 w-4 mr-2" />Edit
+                  </Button>
+                  <Button size="sm" variant="outline" className="border-red-600/30 hover:bg-red-600/20 text-red-400" onClick={() => setDeleteTarget(c)}>
+                    <Trash2 className="h-4 w-4 mr-2" />Remove
+                  </Button>
+                </div>
+              </div>
+            ))}
+            <Button size="sm" variant="outline" onClick={openCreate}>
+              <Plus className="h-4 w-4 mr-2" />Add another workspace
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+            <p className="text-sm text-muted-foreground flex-1">
+              Connect a Censys ASM workspace to ingest its discovered risks and assets into your attack surface.
+            </p>
+            <Button onClick={openCreate}>
+              <Plug className="h-4 w-4 mr-2" />Connect Censys ASM
+            </Button>
+          </div>
+        )}
+      </CardContent>
+
+      {/* Setup / Edit Dialog */}
+      <Dialog open={setupOpen} onOpenChange={(v) => { if (!saving) setSetupOpen(v); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Radar className="h-5 w-5 text-[#4A90E2]" />
+              {editing ? 'Edit Censys ASM connection' : 'Connect Censys ASM'}
+            </DialogTitle>
+            <DialogDescription>
+              Each connection maps to one Censys ASM workspace. Generate a workspace-scoped API key from the Censys ASM Integrations page.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Workspace name</label>
+              <Input
+                placeholder="e.g. Production"
+                value={form.workspace_name}
+                onChange={(e) => setForm(f => ({ ...f, workspace_name: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">A label to identify this connection.</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">
+                ASM API Key{editing && <span className="text-muted-foreground font-normal"> (leave blank to keep existing)</span>}
+              </label>
+              <Input
+                type="password"
+                placeholder={editing ? '••••••••••••' : 'Paste your workspace API key'}
+                value={form.api_key}
+                onChange={(e) => setForm(f => ({ ...f, api_key: e.target.value }))}
+              />
+              <a href="https://app.censys.io/integrations" target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline inline-flex items-center gap-1">
+                Get your ASM API key <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">What to import</label>
+              <div className="flex items-start gap-3 rounded-lg border border-border p-3">
+                <Checkbox
+                  id="censys-assets"
+                  checked={form.import_assets}
+                  onCheckedChange={(v) => setForm(f => ({ ...f, import_assets: !!v }))}
+                  className="mt-0.5 shrink-0"
+                />
+                <label htmlFor="censys-assets" className="text-sm cursor-pointer">
+                  <span className="font-medium">Import assets</span>
+                  <p className="text-xs text-muted-foreground mt-0.5">Hosts, domains, subdomains, and certificates Censys attributes to you.</p>
+                </label>
+              </div>
+              <div className="flex items-start gap-3 rounded-lg border border-border p-3">
+                <Checkbox
+                  id="censys-vulns"
+                  checked={form.import_vulnerabilities}
+                  onCheckedChange={(v) => setForm(f => ({ ...f, import_vulnerabilities: !!v }))}
+                  className="mt-0.5 shrink-0"
+                />
+                <label htmlFor="censys-vulns" className="text-sm cursor-pointer">
+                  <span className="font-medium">Import vulnerabilities</span>
+                  <p className="text-xs text-muted-foreground mt-0.5">Risks identified by Censys ASM, imported as findings.</p>
+                </label>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Continuous sync</label>
+              <div className="flex items-start gap-3 rounded-lg border border-border p-3">
+                <Checkbox
+                  id="censys-continuous"
+                  checked={form.continuous_sync_enabled}
+                  onCheckedChange={(v) => setForm(f => ({ ...f, continuous_sync_enabled: !!v }))}
+                  className="mt-0.5 shrink-0"
+                />
+                <label htmlFor="censys-continuous" className="text-sm cursor-pointer">
+                  <span className="font-medium flex items-center gap-2">
+                    <RotateCw className="h-4 w-4 text-green-400" />
+                    Automatically re-sync on a schedule
+                  </span>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Keeps your inventory current by pulling new Censys risks and assets in the background.
+                  </p>
+                </label>
+              </div>
+              {form.continuous_sync_enabled && (
+                <div className="space-y-1.5 pl-1">
+                  <label className="text-sm font-medium">Sync frequency</label>
+                  <Select
+                    value={String(form.sync_interval_minutes)}
+                    onValueChange={(v) => setForm(f => ({ ...f, sync_interval_minutes: Number(v) }))}
+                  >
+                    <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CENSYS_SYNC_INTERVALS.map(i => (
+                        <SelectItem key={i.value} value={String(i.value)}>{i.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 pt-2 border-t border-border">
+            <Button variant="outline" onClick={() => setSetupOpen(false)} disabled={saving}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              {editing ? 'Save changes' : 'Connect'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation */}
+      <Dialog open={!!deleteTarget} onOpenChange={(v) => { if (!v) setDeleteTarget(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-400">
+              <Trash2 className="h-5 w-5" />Remove connection
+            </DialogTitle>
+            <DialogDescription>
+              This removes the stored API key for <strong>{deleteTarget?.workspace_name}</strong>. Assets and findings already imported are kept.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={busyId === deleteTarget?.id}>
+              {busyId === deleteTarget?.id ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
+
 export default function IntegrationsPage() {
   const { toast } = useToast();
   const [integration, setIntegration] = useState<JiraIntegration | null>(null);
@@ -135,12 +547,38 @@ export default function IntegrationsPage() {
   const [deleting, setDeleting] = useState(false);
   const [activeTab, setActiveTab] = useState<'auth' | 'auto' | 'transitions'>('auth');
 
-  useEffect(() => { loadIntegration(); }, []);
+  // Admin org-selector state
+  const [currentUser, setCurrentUser] = useState<{ is_superuser?: boolean; organization_id?: number } | null>(null);
+  const [organizations, setOrganizations] = useState<{ id: number; name: string }[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState<number | undefined>(undefined);
+
+  useEffect(() => {
+    async function bootstrap() {
+      try {
+        const user = await api.getCurrentUser();
+        setCurrentUser(user);
+        if (user.is_superuser) {
+          const orgs = await api.getOrganizations();
+          const list = Array.isArray(orgs) ? orgs : orgs.items || [];
+          setOrganizations(list);
+        }
+      } catch { /* ignore */ }
+      loadIntegration();
+    }
+    bootstrap();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reload integration whenever the selected org changes
+  useEffect(() => {
+    loadIntegration();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrgId]);
 
   async function loadIntegration() {
     setLoadingIntegration(true);
     try {
-      const data = await api.getJiraIntegration();
+      const data = await api.getJiraIntegration(selectedOrgId);
       setIntegration(data);
     } catch {
       setIntegration(null);
@@ -175,7 +613,7 @@ export default function IntegrationsPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await api.testJiraConnection();
+      const result = await api.testJiraConnection(selectedOrgId);
       setTestResult(result);
       await loadIntegration();
     } catch (err) {
@@ -202,10 +640,10 @@ export default function IntegrationsPage() {
         close_to_open_transitions: form.close_to_open_transitions,
       };
       if (integration) {
-        await api.updateJiraIntegration(payload);
+        await api.updateJiraIntegration(payload, selectedOrgId);
         toast({ title: 'Jira integration updated.' });
       } else {
-        await api.createJiraIntegration({ ...payload, api_token: form.api_token });
+        await api.createJiraIntegration({ ...payload, api_token: form.api_token }, selectedOrgId);
         toast({ title: 'Jira integration configured.' });
       }
       setSetupOpen(false);
@@ -220,7 +658,7 @@ export default function IntegrationsPage() {
   async function handleDelete() {
     setDeleting(true);
     try {
-      await api.deleteJiraIntegration();
+      await api.deleteJiraIntegration(selectedOrgId);
       setIntegration(null);
       setDeleteOpen(false);
       toast({ title: 'Jira integration removed.' });
@@ -250,7 +688,39 @@ export default function IntegrationsPage() {
       <Header title="Integrations" subtitle="Connect ASM to third-party platforms to push findings and automate workflows." />
       <div className="p-6 space-y-6">
 
-        {/* Jira Integration Card */}
+        {/* Admin org selector — only visible to superusers */}
+        {currentUser?.is_superuser && organizations.length > 0 && (
+          <Card className="border border-primary/20 bg-primary/5">
+            <CardContent className="py-3 px-4 flex items-center gap-3">
+              <Settings2 className="h-4 w-4 text-primary shrink-0" />
+              <span className="text-sm font-medium text-primary">Admin view — configure for:</span>
+              <Select
+                value={selectedOrgId ? String(selectedOrgId) : '__own__'}
+                onValueChange={(v) => {
+                  setSelectedOrgId(v === '__own__' ? undefined : Number(v));
+                  setIntegration(null);
+                }}
+              >
+                <SelectTrigger className="h-8 w-56 text-sm border-primary/30">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__own__">My organization</SelectItem>
+                  {organizations.map((org) => (
+                    <SelectItem key={org.id} value={String(org.id)}>
+                      {org.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedOrgId && (
+                <Badge variant="outline" className="text-primary border-primary/40 text-xs">
+                  Org #{selectedOrgId}
+                </Badge>
+              )}
+            </CardContent>
+          </Card>
+        )}
         <Card className="border border-border">
           <CardHeader className="flex flex-row items-center gap-4 space-y-0 pb-3">
             <div className="w-10 h-10 rounded-lg bg-[#0052CC] flex items-center justify-center shrink-0">
@@ -370,6 +840,9 @@ export default function IntegrationsPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Censys ASM Integration Card */}
+        <CensysSection />
 
         {/* Placeholder integrations */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -118,6 +118,42 @@ export interface JiraTransition {
   to_status?: string;
 }
 
+// ── Censys ASM shared types ────────────────────────────────────────────────
+
+export interface CensysIntegration {
+  id: number;
+  organization_id: number;
+  workspace_name: string;
+  import_vulnerabilities: boolean;
+  import_assets: boolean;
+  is_active: boolean;
+  continuous_sync_enabled: boolean;
+  sync_interval_minutes: number;
+  last_tested_at?: string;
+  last_test_ok?: boolean;
+  last_sync_at?: string;
+  last_sync_ok?: boolean;
+  next_sync_at?: string;
+  last_sync_stats?: Record<string, number>;
+  last_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CensysSyncResult {
+  ok: boolean;
+  message: string;
+  assets_created: number;
+  assets_updated: number;
+  vulns_created: number;
+  vulns_updated: number;
+  hosts_seen: number;
+  domains_seen: number;
+  subdomains_seen: number;
+  certificates_seen: number;
+  risks_seen: number;
+}
+
 class ApiClient {
   private client: AxiosInstance;
   private token: string | null = null;
@@ -432,6 +468,62 @@ class ApiClient {
     remediation_deadline?: string;
   }) {
     const response = await this.client.post('/vulnerabilities/bulk-update', data);
+    return response.data;
+  }
+
+  // Finding validation (NanoClaw validator agent)
+  async validateFinding(vulnId: number) {
+    const response = await this.client.post(`/vulnerabilities/${vulnId}/validate`);
+    return response.data;
+  }
+
+  async getValidationResult(vulnId: number) {
+    const response = await this.client.get(`/vulnerabilities/${vulnId}/validation`);
+    return response.data;
+  }
+
+  async createDetectionFeedback(vulnId: number, data: { logic_issue: string; verdict?: string }) {
+    const response = await this.client.post(`/vulnerabilities/${vulnId}/detection-feedback`, data);
+    return response.data;
+  }
+
+  async getDetectionFeedback(params?: { template_id?: string; limit?: number }) {
+    const response = await this.client.get('/detection-feedback', { params });
+    return response.data;
+  }
+
+  // Pattern-based detection suppression
+  async getDetectionSuppressions(params?: {
+    status?: string;
+    template_id?: string;
+    include_coverage?: boolean;
+    limit?: number;
+  }) {
+    const response = await this.client.get('/detection-suppression', { params });
+    return response.data;
+  }
+
+  async evaluateDetectionPatterns() {
+    const response = await this.client.post('/detection-suppression/evaluate');
+    return response.data;
+  }
+
+  async approveDetectionSuppression(suppressionId: number) {
+    const response = await this.client.post(`/detection-suppression/${suppressionId}/approve`);
+    return response.data;
+  }
+
+  async dismissDetectionSuppression(suppressionId: number) {
+    const response = await this.client.post(`/detection-suppression/${suppressionId}/dismiss`);
+    return response.data;
+  }
+
+  async validateSuppressionSample(suppressionId: number, limit?: number) {
+    const response = await this.client.post(
+      `/detection-suppression/${suppressionId}/validate-sample`,
+      null,
+      { params: limit ? { limit } : undefined }
+    );
     return response.data;
   }
 
@@ -1309,7 +1401,7 @@ class ApiClient {
     return response.data;
   }
 
-  /** Top N open findings ranked by Delphi priority (KEV → EPSS). */
+  /** Top N open findings ranked by Delphi exploitation-likelihood (tier → score). */
   async getDelphiPriorities(limit: number = 50, includeResolved: boolean = false) {
     const response = await this.client.get('/delphi/priorities', {
       params: { limit, include_resolved: includeResolved },
@@ -1795,42 +1887,50 @@ class ApiClient {
 
   // ── Jira Integration ─────────────────────────────────────────────────────
 
-  async getJiraIntegration(): Promise<JiraIntegration> {
-    const response = await this.client.get('/integrations/jira');
+  async getJiraIntegration(orgId?: number): Promise<JiraIntegration> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.get('/integrations/jira', { params });
     return response.data;
   }
 
-  async createJiraIntegration(payload: Partial<JiraIntegration> & { api_token: string; hostname: string; email: string }): Promise<JiraIntegration> {
-    const response = await this.client.post('/integrations/jira', payload);
+  async createJiraIntegration(payload: Partial<JiraIntegration> & { api_token: string; hostname: string; email: string }, orgId?: number): Promise<JiraIntegration> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.post('/integrations/jira', payload, { params });
     return response.data;
   }
 
-  async updateJiraIntegration(payload: Partial<JiraIntegration> & { api_token?: string }): Promise<JiraIntegration> {
-    const response = await this.client.put('/integrations/jira', payload);
+  async updateJiraIntegration(payload: Partial<JiraIntegration> & { api_token?: string }, orgId?: number): Promise<JiraIntegration> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.put('/integrations/jira', payload, { params });
     return response.data;
   }
 
-  async deleteJiraIntegration(): Promise<void> {
-    await this.client.delete('/integrations/jira');
+  async deleteJiraIntegration(orgId?: number): Promise<void> {
+    const params = orgId ? { org_id: orgId } : {};
+    await this.client.delete('/integrations/jira', { params });
   }
 
-  async testJiraConnection(): Promise<{ ok: boolean; message: string; display_name?: string }> {
-    const response = await this.client.post('/integrations/jira/test');
+  async testJiraConnection(orgId?: number): Promise<{ ok: boolean; message: string; display_name?: string }> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.post('/integrations/jira/test', undefined, { params });
     return response.data;
   }
 
-  async getJiraProjects(): Promise<{ projects: JiraProject[] }> {
-    const response = await this.client.get('/integrations/jira/projects');
+  async getJiraProjects(orgId?: number): Promise<{ projects: JiraProject[] }> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.get('/integrations/jira/projects', { params });
     return response.data;
   }
 
-  async getJiraIssueTypes(projectKey: string): Promise<{ issue_types: { id: string; name: string; description?: string }[] }> {
-    const response = await this.client.get(`/integrations/jira/projects/${projectKey}/issue-types`);
+  async getJiraIssueTypes(projectKey: string, orgId?: number): Promise<{ issue_types: { id: string; name: string; description?: string }[] }> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.get(`/integrations/jira/projects/${projectKey}/issue-types`, { params });
     return response.data;
   }
 
-  async getJiraIssueTransitions(issueKey: string): Promise<{ transitions: JiraTransition[] }> {
-    const response = await this.client.get(`/integrations/jira/issues/${issueKey}/transitions`);
+  async getJiraIssueTransitions(issueKey: string, orgId?: number): Promise<{ transitions: JiraTransition[] }> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.get(`/integrations/jira/issues/${issueKey}/transitions`, { params });
     return response.data;
   }
 
@@ -1844,38 +1944,90 @@ class ApiClient {
     include_enrichment?: boolean;
     assignee_account_id?: string;
     extra_labels?: string[];
-  }): Promise<JiraTicket> {
-    const response = await this.client.post(`/integrations/jira/vulnerabilities/${vulnerabilityId}/ticket`, payload);
+  }, orgId?: number): Promise<JiraTicket> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.post(`/integrations/jira/vulnerabilities/${vulnerabilityId}/ticket`, payload, { params });
     return response.data;
   }
 
-  async associateJiraTicket(vulnerabilityId: number, issueKey: string, projectKey?: string): Promise<JiraTicket> {
+  async associateJiraTicket(vulnerabilityId: number, issueKey: string, projectKey?: string, orgId?: number): Promise<JiraTicket> {
+    const params = orgId ? { org_id: orgId } : {};
     const response = await this.client.post(`/integrations/jira/vulnerabilities/${vulnerabilityId}/associate`, {
       issue_key: issueKey,
       project_key: projectKey,
-    });
+    }, { params });
     return response.data;
   }
 
-  async getJiraTicketsForVulnerability(vulnerabilityId: number): Promise<JiraTicket[]> {
-    const response = await this.client.get(`/integrations/jira/vulnerabilities/${vulnerabilityId}/tickets`);
+  async getJiraTicketsForVulnerability(vulnerabilityId: number, orgId?: number): Promise<JiraTicket[]> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.get(`/integrations/jira/vulnerabilities/${vulnerabilityId}/tickets`, { params });
     return response.data;
   }
 
-  async disconnectJiraTicket(ticketId: number): Promise<{ ok: boolean; message: string }> {
-    const response = await this.client.delete(`/integrations/jira/tickets/${ticketId}`);
+  async disconnectJiraTicket(ticketId: number, orgId?: number): Promise<{ ok: boolean; message: string }> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.delete(`/integrations/jira/tickets/${ticketId}`, { params });
     return response.data;
   }
 
-  async refreshJiraTicketStatus(ticketId: number): Promise<JiraTicket> {
-    const response = await this.client.post(`/integrations/jira/tickets/${ticketId}/refresh`);
+  async refreshJiraTicketStatus(ticketId: number, orgId?: number): Promise<JiraTicket> {
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.post(`/integrations/jira/tickets/${ticketId}/refresh`, undefined, { params });
     return response.data;
   }
 
-  async syncJiraVulnerabilityStatus(vulnerabilityId: number): Promise<{
+  async syncJiraVulnerabilityStatus(vulnerabilityId: number, orgId?: number): Promise<{
     ok: boolean; message: string; transitions_executed: string[]; comment_added: boolean;
   }> {
-    const response = await this.client.post(`/integrations/jira/vulnerabilities/${vulnerabilityId}/sync`);
+    const params = orgId ? { org_id: orgId } : {};
+    const response = await this.client.post(`/integrations/jira/vulnerabilities/${vulnerabilityId}/sync`, undefined, { params });
+    return response.data;
+  }
+
+  // ── Censys ASM Integration ─────────────────────────────────────────────────
+
+  async getCensysIntegrations(): Promise<CensysIntegration[]> {
+    const response = await this.client.get('/integrations/censys');
+    return response.data;
+  }
+
+  async createCensysIntegration(payload: {
+    workspace_name: string;
+    api_key: string;
+    import_vulnerabilities: boolean;
+    import_assets: boolean;
+    continuous_sync_enabled?: boolean;
+    sync_interval_minutes?: number;
+  }): Promise<CensysIntegration> {
+    const response = await this.client.post('/integrations/censys', payload);
+    return response.data;
+  }
+
+  async updateCensysIntegration(id: number, payload: {
+    workspace_name?: string;
+    api_key?: string;
+    import_vulnerabilities?: boolean;
+    import_assets?: boolean;
+    is_active?: boolean;
+    continuous_sync_enabled?: boolean;
+    sync_interval_minutes?: number;
+  }): Promise<CensysIntegration> {
+    const response = await this.client.put(`/integrations/censys/${id}`, payload);
+    return response.data;
+  }
+
+  async deleteCensysIntegration(id: number): Promise<void> {
+    await this.client.delete(`/integrations/censys/${id}`);
+  }
+
+  async testCensysConnection(id: number): Promise<{ ok: boolean; message: string; workspace_id?: string }> {
+    const response = await this.client.post(`/integrations/censys/${id}/test`);
+    return response.data;
+  }
+
+  async syncCensysIntegration(id: number): Promise<CensysSyncResult> {
+    const response = await this.client.post(`/integrations/censys/${id}/sync`);
     return response.data;
   }
 }
