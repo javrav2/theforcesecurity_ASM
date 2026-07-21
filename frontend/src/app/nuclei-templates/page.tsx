@@ -169,7 +169,7 @@ function GenerateDialog({
 
   useEffect(() => { if (prefillCveId) setCveId(prefillCveId); }, [prefillCveId]);
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (force = false) => {
     if (!organizationId) return;
     if (!cveId.trim() && !description.trim()) {
       toast({ title: 'Provide a CVE ID or vulnerability description', variant: 'destructive' });
@@ -184,12 +184,27 @@ function GenerateDialog({
         affected_url: affectedUrl.trim() || undefined,
         affected_product: product.trim() || undefined,
         detection_evidence: evidence.trim() || undefined,
+        force,
       });
       toast({ title: 'Template generated', description: 'Saved as draft — review YAML before activating.' });
       onGenerated(resp.data);
       onClose();
     } catch (err: any) {
-      toast({ title: 'Generation failed', description: err?.response?.data?.detail || err.message, variant: 'destructive' });
+      const detail = err?.response?.data?.detail;
+      // 409: a template already exists for this CVE — offer to generate anyway.
+      if (err?.response?.status === 409 && detail?.error === 'template_already_exists') {
+        const proceed = window.confirm(
+          `${detail.message}\n\nGenerate a custom (secondary) template anyway?`
+        );
+        if (proceed) {
+          setGenerating(false);
+          return handleGenerate(true);
+        }
+        toast({ title: 'Template already exists', description: detail.message });
+      } else {
+        const msg = typeof detail === 'string' ? detail : (detail?.message || err.message);
+        toast({ title: 'Generation failed', description: msg, variant: 'destructive' });
+      }
     } finally {
       setGenerating(false);
     }
@@ -259,7 +274,7 @@ function GenerateDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={generating}>Cancel</Button>
           <Button
-            onClick={handleGenerate}
+            onClick={() => handleGenerate()}
             disabled={generating || (!cveId.trim() && !description.trim())}
             className="gap-2 bg-purple-600 hover:bg-purple-700"
           >
@@ -293,14 +308,32 @@ function TemplateDetail({
 
   if (!template) return null;
 
-  const handleActivate = async () => {
+  const handleActivate = async (skipValidation = false) => {
     setToggling(true);
     try {
-      await api.post(`/nuclei-templates/${template.id}/activate`);
+      await api.post(
+        `/nuclei-templates/${template.id}/activate`,
+        null,
+        { params: skipValidation ? { skip_validation: true } : undefined },
+      );
       toast({ title: 'Template activated' });
       onStatusChange(template.id, 'active');
-    } catch {
-      toast({ title: 'Failed to activate', variant: 'destructive' });
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      // 422: nuclei -validate rejected the template — show why + offer override.
+      if (err?.response?.status === 422 && detail?.error === 'template_validation_failed') {
+        const proceed = window.confirm(
+          `${detail.message}\n\n${detail.validation_output || ''}\n\nActivate anyway (skip validation)?`
+        );
+        if (proceed) {
+          setToggling(false);
+          return handleActivate(true);
+        }
+        toast({ title: 'Validation failed', description: detail.message, variant: 'destructive' });
+      } else {
+        const msg = typeof detail === 'string' ? detail : (detail?.message || 'Failed to activate');
+        toast({ title: 'Failed to activate', description: msg, variant: 'destructive' });
+      }
     } finally { setToggling(false); }
   };
 
@@ -418,7 +451,7 @@ function TemplateDetail({
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>Close</Button>
             {template.status !== 'active' && (
-              <Button size="sm" onClick={handleActivate} disabled={toggling} className="gap-1 bg-emerald-600 hover:bg-emerald-700">
+              <Button size="sm" onClick={() => handleActivate()} disabled={toggling} className="gap-1 bg-emerald-600 hover:bg-emerald-700">
                 {toggling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
                 Activate
               </Button>
@@ -475,8 +508,19 @@ function DetectionGapsTab({
     if (!selectedOrg) return;
     setLoading(true);
     try {
-      const resp = await api.getVulnerabilities({ organization_id: selectedOrg, limit: 2000 });
-      const vulns: any[] = Array.isArray(resp) ? resp : (resp as any).items ?? [];
+      // API enforces limit <= 100; page through to build the full CVE set.
+      const pageSize = 100;
+      const vulns: any[] = [];
+      for (let skip = 0; ; skip += pageSize) {
+        const resp = await api.getVulnerabilities({
+          organization_id: selectedOrg,
+          skip,
+          limit: pageSize,
+        });
+        const batch: any[] = Array.isArray(resp) ? resp : (resp as any).items ?? [];
+        vulns.push(...batch);
+        if (batch.length < pageSize) break;
+      }
       const seen = new Set<string>();
       const found: DetectionGap[] = [];
       for (const v of vulns) {
