@@ -302,6 +302,7 @@ class NucleiService:
         bulk_size: int = 25,
         concurrency: int = 25,
         timeout: int = 10,
+        max_runtime_seconds: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> NucleiScanResult:
         """
@@ -353,7 +354,9 @@ class NucleiService:
             cmd = [
                 self.nuclei_path,
                 "-list", targets_file_path,
-                "-je", output_file_path,  # JSON export to file (JSON Lines format)
+                # JSONL export: written incrementally, so if we have to kill the
+                # process on timeout we still keep the findings gathered so far.
+                "-jle", output_file_path,
                 "-rate-limit", str(rate_limit),
                 "-bulk-size", str(bulk_size),
                 "-concurrency", str(concurrency),
@@ -414,19 +417,52 @@ class NucleiService:
             for template_dir in template_dirs:
                 cmd.extend(["-t", template_dir])
             
+            # Resolve an overall runtime cap so a single scan can't run for
+            # hours and monopolize a worker slot. 0/negative disables the cap.
+            if max_runtime_seconds is None:
+                try:
+                    max_runtime_seconds = int(os.getenv("NUCLEI_MAX_RUNTIME_SECONDS", "3600"))
+                except ValueError:
+                    max_runtime_seconds = 3600
+
             logger.info(f"Starting Nuclei scan on {len(targets)} targets")
             logger.info(f"Nuclei command: {' '.join(cmd)}")
-            
+
             # Run scan
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            
-            stdout, stderr = await process.communicate()
-            
-            logger.info(f"Nuclei process completed with return code: {process.returncode}")
+
+            timed_out = False
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=max_runtime_seconds if max_runtime_seconds and max_runtime_seconds > 0 else None,
+                )
+            except asyncio.TimeoutError:
+                timed_out = True
+                logger.warning(
+                    f"Nuclei exceeded {max_runtime_seconds}s; killing process and "
+                    "parsing partial results collected so far"
+                )
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    stdout, stderr = await process.communicate()
+                except Exception:
+                    stdout, stderr = b"", b""
+                result.errors.append(
+                    f"nuclei timed out after {max_runtime_seconds}s (partial results returned)"
+                )
+
+            logger.info(
+                f"Nuclei process completed with return code: {process.returncode} "
+                f"(timed_out={timed_out})"
+            )
             
             if stdout:
                 stdout_text = stdout.decode()[:1000]  # Limit stdout log
