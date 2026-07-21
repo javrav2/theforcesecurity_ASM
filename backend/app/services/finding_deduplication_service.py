@@ -18,7 +18,7 @@ from typing import Optional, List, Tuple, Set
 from datetime import datetime
 
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, cast, String
 
 from app.models.asset import Asset, AssetType
 from app.models.vulnerability import Vulnerability, VulnerabilityStatus
@@ -94,7 +94,12 @@ class FindingDeduplicationService:
                 Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
                 or_(
                     Asset.ip_address == ip_value,
-                    Asset.ip_addresses.contains([ip_value])
+                    # ip_addresses is a JSON (not JSONB) column, so .contains()
+                    # emits a text LIKE that Postgres rejects with
+                    # "operator does not exist: json ~~ text". Match against the
+                    # JSON-encoded array text instead (values are stored quoted,
+                    # e.g. ["1.2.3.4"]).
+                    cast(Asset.ip_addresses, String).like(f'%"{ip_value}"%')
                 )
             ).all()
             related.extend(domain_assets)
