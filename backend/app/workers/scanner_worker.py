@@ -27,6 +27,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.netblock import Netblock
+from app.models.vulnerability import Vulnerability
+from app.models.finding_validation import (
+    FindingValidation,
+    ValidationStatus,
+    ValidationVerdict,
+)
 from app.models.project_settings import ProjectSettings, MODULE_SCAN_TOGGLES, MODULE_SECURITY_CHECKS
 from app.models.port_service import PortService, PortState, Protocol
 from app.services.nuclei_service import NucleiService
@@ -228,11 +234,60 @@ class ScannerWorker:
             if db_messages:
                 messages.extend(db_messages)
         
+        # Check for queued on-demand finding validations (DB-backed queue).
+        # These are lightweight/low-volume and run regardless of SQS config.
+        if not messages:
+            validation_messages = self.poll_database_for_validations()
+            if validation_messages:
+                messages.extend(validation_messages)
+        
         # If no messages from either source, wait before next poll
         if not messages:
             await asyncio.sleep(POLL_INTERVAL)
         
         return messages
+    
+    def poll_database_for_validations(self):
+        """Claim queued finding validations and return them as job messages.
+        
+        Validations are claimed atomically (status queued -> running) at poll
+        time so the same request is never processed twice, mirroring how scans
+        are marked RUNNING on pickup.
+        """
+        db = self.get_db_session()
+        if not db:
+            return []
+        try:
+            queued = db.query(FindingValidation).filter(
+                FindingValidation.status == ValidationStatus.QUEUED
+            ).order_by(FindingValidation.created_at.asc()).limit(3).all()
+            
+            messages = []
+            for validation in queued:
+                validation.status = ValidationStatus.RUNNING
+                validation.started_at = datetime.utcnow()
+                db.commit()
+                
+                job_data = {
+                    'job_type': 'VALIDATE_FINDING',
+                    'validation_id': validation.id,
+                    'vulnerability_id': validation.vulnerability_id,
+                    'organization_id': validation.organization_id,
+                }
+                messages.append({
+                    'MessageId': f'db-val-{validation.id}',
+                    'ReceiptHandle': f'db-val-{validation.id}',
+                    'Body': json.dumps(job_data),
+                })
+                logger.info(f"Claimed finding validation {validation.id} for vuln {validation.vulnerability_id}")
+            
+            return messages
+        except Exception as e:
+            logger.error(f"Error polling validations: {e}")
+            db.rollback()
+            return []
+        finally:
+            db.close()
     
     async def poll_database_for_jobs(self):
         """
@@ -708,6 +763,8 @@ class ScannerWorker:
                     await self.handle_urlhaus_lookup(body)
                 elif job_type == 'BGP_LOOKUP':
                     await self.handle_bgp_lookup(body)
+                elif job_type == 'VALIDATE_FINDING':
+                    await self.handle_validate_finding(body)
                 else:
                     logger.warning(f"Unknown job type: {job_type}")
                     if scan_id:
@@ -733,6 +790,395 @@ class ScannerWorker:
             # Message will return to queue after visibility timeout (SQS)
             # For DB messages, the scan status will be set to FAILED by handlers
     
+    async def handle_validate_finding(self, job_data: dict):
+        """Validate a single finding by invoking the NanoClaw validator agent.
+
+        Invokes nanoclaw-agent/validate_finding.py (via `docker run` of the
+        NanoClaw image by default, or a local subprocess when
+        NANOCLAW_VALIDATOR_MODE=subprocess). The agent actively re-tests the
+        live target and returns a structured JSON verdict, which is written back
+        to the FindingValidation row and denormalized onto the Vulnerability.
+        A false positive attributed to the template's own logic also records a
+        DetectionFeedback entry with a generated upstream bug report.
+        """
+        import subprocess
+        from pathlib import Path
+        from urllib.parse import urlparse
+
+        JSON_START = "===VALIDATION_JSON_START==="
+        JSON_END = "===VALIDATION_JSON_END==="
+
+        validation_id = job_data.get('validation_id')
+        vulnerability_id = job_data.get('vulnerability_id')
+
+        db = self.get_db_session()
+        if not db:
+            logger.error("VALIDATE_FINDING: no database connection")
+            return
+        validation = None
+        try:
+            validation = db.query(FindingValidation).filter(
+                FindingValidation.id == validation_id
+            ).first() if validation_id else None
+            if not validation:
+                logger.error(f"VALIDATE_FINDING: validation {validation_id} not found")
+                return
+
+            # Idempotency: with the SQS + DB-poll hybrid, a validation could be
+            # delivered twice. Skip anything already finished.
+            if validation.status == ValidationStatus.COMPLETED:
+                logger.info(f"VALIDATE_FINDING: validation {validation.id} already completed, skipping")
+                return
+
+            vuln = db.query(Vulnerability).filter(
+                Vulnerability.id == validation.vulnerability_id
+            ).first()
+            if not vuln:
+                validation.status = ValidationStatus.FAILED
+                validation.error = "vulnerability_not_found"
+                validation.completed_at = datetime.utcnow()
+                db.commit()
+                return
+
+            # Ensure claimed (SQS path may not have gone through the DB poller).
+            if validation.status != ValidationStatus.RUNNING:
+                validation.status = ValidationStatus.RUNNING
+                if not validation.started_at:
+                    validation.started_at = datetime.utcnow()
+                db.commit()
+
+            # Resolve a target for the validator to re-test. Findings come from many
+            # sources (nuclei, port_scanner, js_recon, trufflehog, manual, ...), each
+            # storing the affected location differently — probe common keys, then fall
+            # back to the asset value (and host:port for network findings).
+            meta = vuln.metadata_ or {}
+            asset = db.query(Asset).filter(Asset.id == vuln.asset_id).first()
+            asset_value = asset.value if asset else None
+            target = None
+            for key in (
+                "nuclei_matched_at", "nuclei_host", "matched_at", "url", "endpoint",
+                "location", "request_url", "target", "host",
+            ):
+                if meta.get(key):
+                    target = meta[key]
+                    break
+            if not target and meta.get("port"):
+                base_host = meta.get("scanned_ip") or asset_value
+                if base_host:
+                    target = f"{base_host}:{meta['port']}"
+            if not target and vuln.affected_component:
+                target = vuln.affected_component
+            if not target:
+                target = asset_value
+            severity = vuln.severity.value if vuln.severity else "medium"
+
+            # Classify the source so the validator can pick the right re-test strategy.
+            detected_by = (vuln.detected_by or "").lower()
+            if vuln.is_manual:
+                source_kind = "manual"
+            elif detected_by in ("port_scanner",):
+                source_kind = "network_service"
+            elif detected_by in ("trufflehog", "github_secret_scanner"):
+                source_kind = "secret"
+            elif detected_by in (
+                "nuclei", "graphql_scanner", "takeover_scanner", "js_recon",
+                "jsluice", "agent", "llm_red_team", "auto_discovery",
+            ):
+                source_kind = "web"
+            else:
+                source_kind = "generic"
+
+            # Resolve the matched template's YAML so the validator can reason about
+            # WHY the template fired (true positive vs. template-logic mis-detection).
+            template_yaml = None
+            if vuln.template_id:
+                try:
+                    from app.services.custom_template_ai import lookup_template_yaml
+                    template_yaml = lookup_template_yaml(db, validation.organization_id, vuln.template_id)
+                except Exception as e:
+                    logger.debug(f"VALIDATE_FINDING: could not load template YAML: {e}")
+
+            # Trim metadata to keep the payload bounded but source-aware.
+            trimmed_meta = {}
+            if isinstance(meta, dict):
+                for k, v in meta.items():
+                    if isinstance(v, (str, int, float, bool)) or v is None:
+                        trimmed_meta[k] = v
+                    else:
+                        trimmed_meta[k] = str(v)[:500]
+
+            finding_payload = {
+                "id": vuln.id,
+                "title": vuln.title,
+                "description": vuln.description,
+                "severity": severity,
+                "target": target,
+                "asset": asset_value,
+                "source_kind": source_kind,
+                "detected_by": vuln.detected_by,
+                "template_id": vuln.template_id,
+                "template_yaml": template_yaml,
+                "matcher_name": vuln.matcher_name,
+                "cve_id": vuln.cve_id,
+                "cwe_id": vuln.cwe_id,
+                "detection_confidence": vuln.detection_confidence,
+                "references": vuln.references or [],
+                "tags": vuln.tags or [],
+                "evidence": vuln.evidence,
+                # Manual / pentest context (present for manual and some agent findings).
+                "is_manual": bool(vuln.is_manual),
+                "impact": vuln.impact,
+                "affected_component": vuln.affected_component,
+                "steps_to_reproduce": vuln.steps_to_reproduce,
+                "proof_of_concept": vuln.proof_of_concept,
+                # Full (trimmed) source metadata so the agent can read source-specific fields.
+                "metadata": trimmed_meta,
+            }
+            finding_json = json.dumps(finding_payload, default=str)
+
+            scope = ""
+            if target:
+                host = urlparse(target if "://" in str(target) else f"//{target}").hostname or str(target)
+                scope = host
+
+            # Build the validator invocation.
+            mode = os.getenv("NANOCLAW_VALIDATOR_MODE", "docker").lower()
+            max_turns = os.getenv("NANOCLAW_VALIDATE_MAX_TURNS", "20")
+            timeout_sec = int(os.getenv("NANOCLAW_VALIDATE_TIMEOUT", "900"))
+            cwd = None
+            if mode == "subprocess":
+                nanoclaw_path = os.getenv("NANOCLAW_PATH") or str(
+                    Path(__file__).resolve().parents[3] / "nanoclaw-agent"
+                )
+                cmd = [
+                    "python3", os.path.join(nanoclaw_path, "validate_finding.py"),
+                    "--finding-json", "-", "--max-turns", str(max_turns),
+                ]
+                cwd = nanoclaw_path
+            else:
+                image = os.getenv("NANOCLAW_IMAGE", "nanoclaw-agent:latest")
+                cmd = [
+                    "docker", "run", "--rm", "-i",
+                    "-e", "ANTHROPIC_API_KEY", "-e", "AEGIS_MODEL",
+                    image,
+                    "python3", "/agent/validate_finding.py",
+                    "--finding-json", "-", "--max-turns", str(max_turns),
+                ]
+            if scope:
+                cmd += ["--scope", scope]
+
+            logger.info(
+                f"VALIDATE_FINDING: validating vuln {vuln.id} (source={source_kind}, "
+                f"detected_by={vuln.detected_by}, template={vuln.template_id}) "
+                f"on {target} via {mode}"
+            )
+
+            def _run():
+                return subprocess.run(
+                    cmd,
+                    input=finding_json,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                    cwd=cwd,
+                    env=os.environ.copy(),
+                )
+
+            verdict_data = None
+            run_error = None
+            try:
+                proc = await asyncio.to_thread(_run)
+                stdout = proc.stdout or ""
+                if JSON_START in stdout and JSON_END in stdout:
+                    chunk = stdout.split(JSON_START, 1)[1].split(JSON_END, 1)[0].strip()
+                    try:
+                        verdict_data = json.loads(chunk)
+                    except json.JSONDecodeError as e:
+                        run_error = f"unparseable_verdict: {e}"
+                else:
+                    run_error = "no_verdict_in_output"
+                    logger.warning(
+                        f"VALIDATE_FINDING: no verdict sentinels in output. "
+                        f"stderr tail: {(proc.stderr or '')[-500:]}"
+                    )
+            except subprocess.TimeoutExpired:
+                run_error = "validator_timeout"
+            except FileNotFoundError as e:
+                run_error = f"invocation_failed: {e}"
+            except Exception as e:
+                run_error = f"validator_error: {e}"
+
+            now = datetime.utcnow()
+            if verdict_data is None:
+                validation.status = ValidationStatus.FAILED
+                validation.error = (run_error or "unknown_error")[:255]
+                validation.completed_at = now
+                vuln.validation_status = "failed"
+                vuln.last_validated_at = now
+                db.commit()
+                logger.warning(f"VALIDATE_FINDING: validation {validation.id} failed: {run_error}")
+                return
+
+            verdict_str = str(verdict_data.get("verdict", "needs_more_evidence")).lower()
+            verdict_map = {
+                "confirmed": ValidationVerdict.CONFIRMED,
+                "false_positive": ValidationVerdict.FALSE_POSITIVE,
+                "needs_more_evidence": ValidationVerdict.NEEDS_MORE_EVIDENCE,
+            }
+            verdict_enum = verdict_map.get(verdict_str, ValidationVerdict.NEEDS_MORE_EVIDENCE)
+            template_logic_issue = verdict_data.get("template_logic_issue")
+
+            validation.status = ValidationStatus.COMPLETED
+            validation.verdict = verdict_enum
+            validation.confidence = str(verdict_data.get("confidence") or "")[:20] or None
+            validation.recommended_severity = str(verdict_data.get("recommended_severity") or "")[:20] or None
+            validation.reasoning = verdict_data.get("reasoning")
+            validation.evidence = verdict_data.get("evidence")
+            validation.template_logic_issue = template_logic_issue
+            validation.error = verdict_data.get("error")
+            validation.raw_output = verdict_data
+            validation.completed_at = now
+
+            vuln.validation_status = "completed"
+            vuln.last_validation_verdict = verdict_enum.value
+            vuln.last_validated_at = now
+            db.commit()
+
+            # Log a template-logic issue when the FP is attributed to the template.
+            if verdict_enum == ValidationVerdict.FALSE_POSITIVE and vuln.template_id and template_logic_issue:
+                try:
+                    from app.services.detection_feedback_service import record_detection_feedback
+                    record_detection_feedback(
+                        db,
+                        organization_id=validation.organization_id,
+                        template_id=vuln.template_id,
+                        logic_issue=str(template_logic_issue),
+                        detected_by=vuln.detected_by or "nuclei",
+                        verdict="false_positive",
+                        severity=severity,
+                        target=str(target) if target else None,
+                        evidence=verdict_data.get("evidence"),
+                        reasoning=verdict_data.get("reasoning"),
+                        example_vulnerability_id=vuln.id,
+                        finding_validation_id=validation.id,
+                        source="validator_agent",
+                    )
+                    logger.info(
+                        f"VALIDATE_FINDING: recorded detection feedback for template {vuln.template_id}"
+                    )
+                except Exception as e:
+                    logger.error(f"VALIDATE_FINDING: failed to record detection feedback: {e}")
+
+            # Close the loop: when a template-logic false positive is confirmed and
+            # auto-refine is enabled, generate a tightened template and re-check it
+            # against the known false-positive target.
+            auto_refine = os.getenv("NUCLEI_AUTO_REFINE_ON_FP", "false").lower() in ("1", "true", "yes")
+            if (
+                auto_refine
+                and verdict_enum == ValidationVerdict.FALSE_POSITIVE
+                and vuln.template_id
+                and template_logic_issue
+                and template_yaml
+            ):
+                try:
+                    from app.services import custom_template_ai as ai
+                    refined = await ai.refine_template(
+                        db,
+                        organization_id=validation.organization_id,
+                        template_logic_issue=str(template_logic_issue),
+                        original_yaml=template_yaml,
+                        template_id=vuln.template_id,
+                        target=str(target) if target else None,
+                        evidence=verdict_data.get("evidence"),
+                        reasoning=verdict_data.get("reasoning"),
+                        cve_ids=[vuln.cve_id] if vuln.cve_id else None,
+                        created_by_user_id=validation.requested_by_user_id,
+                        example_vulnerability_id=vuln.id,
+                    )
+                    recheck = None
+                    if target:
+                        recheck = await ai.recheck_template_against_target(
+                            refined.template_yaml, str(target)
+                        )
+                    # Record the produced refinement on the validation for the UI.
+                    ro = dict(validation.raw_output or {})
+                    ro["refined_template_id"] = refined.id
+                    ro["refined_template_key"] = refined.template_id
+                    ro["refined_recheck"] = recheck
+                    validation.raw_output = ro
+                    db.commit()
+                    logger.info(
+                        f"VALIDATE_FINDING: auto-refined template {vuln.template_id} -> "
+                        f"draft custom template {refined.template_id} (recheck={recheck})"
+                    )
+                except Exception as e:
+                    logger.error(f"VALIDATE_FINDING: auto-refine failed: {e}", exc_info=True)
+
+            # Re-evaluate the false-positive pattern for this template. A pattern
+            # spanning enough hosts raises a suppression recommendation (it never
+            # auto-suppresses without analyst approval).
+            if verdict_enum == ValidationVerdict.FALSE_POSITIVE and vuln.template_id:
+                try:
+                    from app.services.detection_pattern_service import evaluate_template
+                    evaluate_template(
+                        db,
+                        organization_id=validation.organization_id,
+                        template_id=vuln.template_id,
+                        detected_by=vuln.detected_by or "nuclei",
+                    )
+                except Exception as e:
+                    logger.error(f"VALIDATE_FINDING: pattern evaluation failed: {e}")
+
+            logger.info(
+                f"VALIDATE_FINDING: validation {validation.id} completed -> {verdict_enum.value}"
+            )
+        except Exception as e:
+            logger.error(f"VALIDATE_FINDING handler error: {e}", exc_info=True)
+            try:
+                if validation:
+                    validation.status = ValidationStatus.FAILED
+                    validation.error = str(e)[:255]
+                    validation.completed_at = datetime.utcnow()
+                    db.commit()
+            except Exception:
+                db.rollback()
+        finally:
+            db.close()
+
+    def _queue_nuclei_follow_ups(self, db, parent_scan, remaining_targets, config, chunk_size):
+        """Queue follow-up NUCLEI scans for hosts beyond the per-scan cap.
+
+        Each follow-up is a PENDING vulnerability scan carrying an explicit chunk
+        of hosts and ``presplit=True`` so it is neither split again nor used to
+        re-create assets. Returns the number of follow-up scans queued.
+        """
+        queued = 0
+        try:
+            base_name = parent_scan.name if (parent_scan and parent_scan.name) else "nuclei"
+            org_id = parent_scan.organization_id if parent_scan else config.get("organization_id")
+            started_by = parent_scan.started_by if parent_scan else "system"
+            for i in range(0, len(remaining_targets), chunk_size):
+                chunk = remaining_targets[i:i + chunk_size]
+                follow_config = {**(config or {}), "presplit": True, "max_targets": chunk_size}
+                db.add(Scan(
+                    name=f"{base_name} (part {queued + 2})",
+                    scan_type=ScanType.VULNERABILITY,
+                    organization_id=org_id,
+                    targets=chunk,
+                    config=follow_config,
+                    started_by=started_by,
+                    status=ScanStatus.PENDING,
+                ))
+                queued += 1
+            db.commit()
+        except Exception as e:
+            logger.error(f"Failed to queue Nuclei follow-up scans: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return queued
+
     async def handle_nuclei_scan(self, job_data: dict):
         """Handle Nuclei vulnerability scan job."""
         scan_id = job_data.get('scan_id')
@@ -742,6 +1188,9 @@ class ScannerWorker:
         severity = job_data.get('severity') or ['critical', 'high', 'medium', 'low', 'info']
         tags = job_data.get('tags') or []
         exclude_tags = job_data.get('exclude_tags') or []
+        # Follow-up scans queued by the per-scan target cap already hold an
+        # explicit list of hosts; they must not be re-split or re-create assets.
+        presplit = bool((job_data.get('config') or {}).get('presplit'))
         
         # Normalize targets - ensure URLs have protocol
         normalized_targets = []
@@ -780,7 +1229,7 @@ class ScannerWorker:
                 scan.current_step = "Creating assets for scan targets"
                 db.commit()
             
-            for target in targets:
+            for target in ([] if presplit else targets):
                 try:
                     # Extract hostname from URL
                     target_str = target.strip()
@@ -865,12 +1314,56 @@ class ScannerWorker:
             # Get rate limit from config or use environment default
             config = job_data.get('config', {})
             rate_limit = config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT)
-            
+
+            # Cap the number of hosts scanned per job so a single oversized scan
+            # can't run for hours and monopolize a worker slot. Expand CIDRs
+            # first so the cap reflects the real number of hosts Nuclei probes;
+            # scan the first chunk here and queue the remainder as follow-up
+            # PENDING scans (picked up by the normal poll loop).
+            targets_to_scan = targets
+            if not presplit:
+                try:
+                    max_targets = int(config.get('max_targets') or os.getenv('NUCLEI_MAX_TARGETS_PER_SCAN', '5000'))
+                except (TypeError, ValueError):
+                    max_targets = 5000
+                if max_targets > 0:
+                    from app.services.nuclei_service import expand_cidr_targets
+                    expanded_all, expanded_total = expand_cidr_targets(targets)
+                    if expanded_total > max_targets:
+                        targets_to_scan = expanded_all[:max_targets]
+                        remaining = expanded_all[max_targets:]
+                        queued = self._queue_nuclei_follow_ups(
+                            db,
+                            scan,
+                            remaining,
+                            {**config, 'severity': severity, 'tags': tags, 'exclude_tags': exclude_tags},
+                            max_targets,
+                        )
+                        logger.warning(
+                            f"Nuclei scan {scan_id}: {expanded_total} hosts exceed cap "
+                            f"{max_targets}; scanning first {len(targets_to_scan)} and queued "
+                            f"{queued} follow-up scan(s) for {len(remaining)} remaining hosts."
+                        )
+
+            # Materialize this org's active custom (analyst/AI-generated) templates
+            # from the DB to disk so Nuclei can actually run them alongside the
+            # shipped/official templates.
+            extra_templates = None
+            try:
+                from app.services.custom_template_store import materialize_org_templates
+                custom_dir = materialize_org_templates(db, organization_id)
+                if custom_dir:
+                    extra_templates = [custom_dir]
+                    logger.info(f"Including custom templates from {custom_dir} in Nuclei scan")
+            except Exception as e:
+                logger.warning(f"Failed to materialize custom Nuclei templates: {e}")
+
             result = await self.nuclei_service.scan_targets(
-                targets=targets,
+                targets=targets_to_scan,
                 severity=severity,
                 tags=tags if tags else None,
                 exclude_tags=exclude_tags if exclude_tags else None,
+                templates=extra_templates,
                 rate_limit=rate_limit
             )
             
@@ -2311,6 +2804,15 @@ class ScannerWorker:
             pass
         
         return False
+
+    def _filter_scannable_domains(self, targets: list) -> tuple:
+        """Filter a raw target list to ParamSpider-scannable domains.
+
+        Delegates to the shared implementation in paramspider_service so the
+        scheduler (batch rotation) and worker apply identical rules.
+        """
+        from app.services.paramspider_service import filter_scannable_domains
+        return filter_scannable_domains(targets)
     
     async def handle_subdomain_enum(self, job_data: dict):
         """Handle subdomain enumeration job."""
@@ -2994,16 +3496,32 @@ class ScannerWorker:
                     Asset.organization_id == organization_id,
                     Asset.asset_type.in_([AssetType.DOMAIN, AssetType.SUBDOMAIN]),
                     Asset.is_live == True
-                ).limit(config.get('max_domains', 50)).all()
+                ).all()
                 targets = [a.value for a in domain_assets]
             
-            # Limit targets to prevent excessively long scans
-            max_targets = config.get('max_domains', 30)
-            if len(targets) > max_targets:
-                logger.info(f"Limiting ParamSpider scan from {len(targets)} to {max_targets} targets")
-                targets = targets[:max_targets]
+            # Filter to domains ParamSpider can actually mine (drop IPs, CIDRs,
+            # wildcards, malformed entries) and dedupe. This avoids wasting scan
+            # slots on targets that can never return archive data.
+            raw_target_count = len(targets)
+            targets, filter_stats = self._filter_scannable_domains(targets)
+            logger.info(
+                f"ParamSpider target filtering: {raw_target_count} raw -> "
+                f"{filter_stats['scannable_domains']} scannable domains "
+                f"(skipped {filter_stats['skipped_ip_cidr']} IP/CIDR, "
+                f"{filter_stats['skipped_invalid']} invalid, "
+                f"{filter_stats['deduped']} duplicates)"
+            )
             
-            logger.info(f"Running ParamSpider on {len(targets)} targets (parallel)")
+            # Cap the number of domains to keep runtime bounded. Applies to valid
+            # domains only now, so the cap reflects real coverage.
+            max_targets = config.get('max_domains', 500)
+            capped = False
+            if len(targets) > max_targets:
+                logger.info(f"Limiting ParamSpider scan from {len(targets)} to {max_targets} scannable domains")
+                targets = targets[:max_targets]
+                capped = True
+            
+            logger.info(f"Running ParamSpider on {len(targets)} domains (parallel)")
             
             total_urls = 0
             total_params = 0
@@ -3016,10 +3534,12 @@ class ScannerWorker:
                 scan.current_step = f"Discovering params from {len(targets)} domains (parallel)"
                 db.commit()
             
-            # Use parallel processing for faster completion
+            # Use parallel processing for faster completion. Archive mining is
+            # I/O bound (HTTP to web.archive.org), so higher concurrency is the
+            # main runtime lever.
             results = await paramspider.scan_multiple_domains(
                 domains=targets,
-                max_concurrent=config.get('max_concurrent', 5),
+                max_concurrent=config.get('max_concurrent', 15),
                 level=config.get('level', 'high'),
                 timeout=config.get('timeout', 120),  # Reduced from 300 to 120 seconds per target
             )
@@ -3077,6 +3597,12 @@ class ScannerWorker:
                     'total_endpoints': total_endpoints,
                     'total_js_files': total_js_files,
                     'assets_updated': assets_updated,
+                    'input_targets': filter_stats['input_targets'],
+                    'skipped_ip_cidr': filter_stats['skipped_ip_cidr'],
+                    'skipped_invalid': filter_stats['skipped_invalid'],
+                    'duplicates_removed': filter_stats['deduped'],
+                    'capped': capped,
+                    'max_domains': max_targets,
                 }
                 if total_params == 0 and total_endpoints == 0 and len(targets) > 0:
                     scan.results['error'] = 'No parameters or endpoints discovered from web archives for any domain.'
@@ -3427,7 +3953,9 @@ class ScannerWorker:
                                         by_host[host]["endpoints"].add(path)
                                     if parsed.query:
                                         by_host[host]["params"].update(parse_qs(parsed.query).keys())
-                                    if path.endswith(".js") or "/js/" in path:
+                                    _JS_EXTS = ('.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx')
+                                    _JS_PATHS = ('/js/', '/scripts/', '/_next/static/', '/static/js/', '/assets/', '/bundles/', '/dist/')
+                                    if path.endswith(_JS_EXTS) or any(p in path for p in _JS_PATHS):
                                         by_host[host]["js"].add(u)
                                     if any(re.search(p, u.lower()) for p in ["/api/", r"/v\d+/", "/graphql", "/rest/"]):
                                         by_host[host]["api"].add(u)
@@ -3731,7 +4259,6 @@ class ScannerWorker:
                 scan.current_step = f"Detecting technologies using {source}"
                 db.commit()
             
-            from app.services.technology_scan_service import run_technology_scan_for_hosts
             from app.models.project_settings import ProjectSettings, MODULE_WAPPALYZER
             
             wappalyzer_config = ProjectSettings.get_config(db, organization_id, MODULE_WAPPALYZER)
@@ -3786,14 +4313,24 @@ class ScannerWorker:
             db.close()
             db = None
             
-            # Run technology scan (Wappalyzer options from project settings)
-            result = run_technology_scan_for_hosts(
-                organization_id=organization_id,
-                hosts=targets,
-                max_hosts=max_hosts,
-                source=source,
-                wappalyzer_config=wappalyzer_config,
-            )
+            # Run technology scan directly via the async helper — calling the
+            # synchronous run_technology_scan_for_hosts wrapper would invoke
+            # asyncio.run() inside an already-running event loop (RuntimeError).
+            from app.services.technology_scan_service import _scan_hosts_async
+            from app.db.database import SessionLocal as _SessionLocal
+
+            _db = _SessionLocal()
+            try:
+                result = await _scan_hosts_async(
+                    _db,
+                    organization_id=organization_id,
+                    hosts=targets,
+                    max_hosts=max_hosts,
+                    source=source,
+                    wappalyzer_config=wappalyzer_config,
+                )
+            finally:
+                _db.close()
             
             # Reopen db for final update
             db = self.get_db_session()
@@ -3812,6 +4349,8 @@ class ScannerWorker:
                         'hosts_scanned': result.get('hosts_scanned', 0),
                         'technologies_found': result.get('technologies_found', 0),
                         'chatbots_found': result.get('chatbots_found', 0),
+                        'skipped_no_asset': result.get('skipped_no_asset', 0),
+                        'errors': result.get('errors', 0),
                         'source': source,
                     }
                     db.commit()
@@ -5600,7 +6139,49 @@ class ScannerWorker:
                 scan.vulnerabilities_found = created
                 scan.progress = 100
                 scan.current_step = "Completed"
+
+                # Build comprehensive results so analysts can audit everything
+                # that was analyzed, not just what raised a finding.
+                _scripts = sorted({f.source_url for f in result.findings if f.source_url})
+                _endpoints = sorted({
+                    f.match for f in result.findings if f.kind in ("endpoint", "js_path")
+                })
+                _secrets = [
+                    {
+                        "kind": f.pattern_name,
+                        "severity": f.severity,
+                        "match": f.match[:80],   # truncate for safety
+                        "source_url": f.source_url,
+                        "verified": f.verified,
+                    }
+                    for f in result.findings if f.kind == "secret"
+                ]
+                _sourcemaps = [
+                    {"url": f.match, "source_url": f.source_url, "severity": f.severity}
+                    for f in result.findings if f.kind == "sourcemap"
+                ]
+                _dom_sinks = [
+                    {"sink": f.match, "source_url": f.source_url, "context": f.evidence[:200]}
+                    for f in result.findings if f.kind == "dom_sink"
+                ]
+                _dep_confusion = [
+                    {"package": f.match, "verified": f.verified}
+                    for f in result.findings if f.kind == "dep_confusion"
+                ]
+                _js_paths = [
+                    {
+                        "url": f.match,
+                        "method": (f.extras or {}).get("method", "GET"),
+                        "query_params": (f.extras or {}).get("query_params", []),
+                        "body_params": (f.extras or {}).get("body_params", []),
+                        "url_type": (f.extras or {}).get("type"),
+                        "source_js": f.source_url,
+                    }
+                    for f in result.findings if f.kind == "js_path"
+                ]
+
                 scan.results = {
+                    # Counts
                     "scripts_analyzed": result.scripts_analyzed,
                     "secrets_found": result.secrets_found,
                     "source_maps_found": result.source_maps_found,
@@ -5608,22 +6189,18 @@ class ScannerWorker:
                     "dep_confusion_candidates": result.dep_confusion_candidates,
                     "js_paths_found": result.js_paths_found,
                     "js_params_found": result.js_params_found,
-                    # Paths with parameter data — capped for JSON column size
-                    "jsluice_paths": [
-                        {
-                            "url": f.match,
-                            "method": (f.extras or {}).get("method", "GET"),
-                            "query_params": (f.extras or {}).get("query_params", []),
-                            "body_params": (f.extras or {}).get("body_params", []),
-                            "url_type": (f.extras or {}).get("type"),
-                            "source_js": f.source_url,
-                        }
-                        for f in result.findings
-                        if f.kind == "js_path" and (
-                            (f.extras or {}).get("query_params")
-                            or (f.extras or {}).get("body_params")
-                        )
-                    ][:200],
+                    "dom_sinks_found": result.dom_sinks,
+                    "duration_seconds": round(result.duration_seconds, 1),
+                    "errors": result.errors[:20],
+                    # Full inventories (capped to keep JSON column manageable)
+                    "scripts": _scripts[:500],
+                    "endpoints": _endpoints[:1000],
+                    "secrets": _secrets[:500],
+                    "sourcemaps": _sourcemaps[:200],
+                    "dom_sinks": _dom_sinks[:200],
+                    "dep_confusion": _dep_confusion[:200],
+                    "jsluice_paths": [p for p in _js_paths if p["query_params"] or p["body_params"]][:200],
+                    "jsluice_all_paths": _js_paths[:500],
                 }
             db.commit()
 
