@@ -28,11 +28,6 @@ from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.netblock import Netblock
 from app.models.vulnerability import Vulnerability
-from app.models.finding_validation import (
-    FindingValidation,
-    ValidationStatus,
-    ValidationVerdict,
-)
 from app.models.project_settings import ProjectSettings, MODULE_SCAN_TOGGLES, MODULE_SECURITY_CHECKS
 from app.models.port_service import PortService, PortState, Protocol
 from app.services.nuclei_service import NucleiService
@@ -807,6 +802,19 @@ class ScannerWorker:
         import subprocess
         from pathlib import Path
         from urllib.parse import urlparse
+
+        try:
+            from app.models.finding_validation import (
+                FindingValidation,
+                ValidationStatus,
+                ValidationVerdict,
+            )
+        except ModuleNotFoundError:
+            logger.error(
+                "VALIDATE_FINDING: app.models.finding_validation is not installed "
+                "in this image — skipping validation job"
+            )
+            return
 
         JSON_START = "===VALIDATION_JSON_START==="
         JSON_END = "===VALIDATION_JSON_END==="
