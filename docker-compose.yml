@@ -96,8 +96,19 @@ services:
       - RATE_LIMIT_REGISTER=${RATE_LIMIT_REGISTER:-5/hour}
       - RATE_LIMIT_REFRESH=${RATE_LIMIT_REFRESH:-20/minute}
       - ALLOW_PUBLIC_REGISTRATION=${ALLOW_PUBLIC_REGISTRATION:-false}
+      # --- Authenticated crawl credentials (optional) ---
+      # deep_crawl's self-service login can reference these as
+      # {"login": {"username": "env:TARGET_USER", "password": "env:TARGET_PASS"}}
+      # so secrets never appear inline in the agent's tool args / trace.
+      # - TARGET_USER=${TARGET_USER:-}
+      # - TARGET_PASS=${TARGET_PASS:-}
+      # Directory for "secret:NAME" references (defaults to /run/secrets).
+      # - SECRETS_DIR=/run/secrets
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    # For "secret:NAME" references, mount Docker/K8s secrets, e.g.:
+    # secrets:
+    #   - target_pass
     depends_on:
       db:
         condition: service_healthy
@@ -213,6 +224,14 @@ services:
       - POLL_INTERVAL=${POLL_INTERVAL:-10}
       - PORT_SCAN_RATE=${PORT_SCAN_RATE:-2000}
       - NUCLEI_RATE_LIMIT=${NUCLEI_RATE_LIMIT:-300}
+      # Keep Nuclei jobs bounded so they can't wedge the worker queue
+      - NUCLEI_MAX_RUNTIME_SECONDS=${NUCLEI_MAX_RUNTIME_SECONDS:-900}
+      - NUCLEI_MAX_TARGETS_PER_SCAN=${NUCLEI_MAX_TARGETS_PER_SCAN:-500}
+      # --- Authenticated crawl credentials (optional) ---
+      # Same as the backend: referenced by deep_crawl login as env:/secret: refs.
+      # - TARGET_USER=${TARGET_USER:-}
+      # - TARGET_PASS=${TARGET_PASS:-}
+      # - SECRETS_DIR=/run/secrets
     depends_on:
       db:
         condition: service_healthy

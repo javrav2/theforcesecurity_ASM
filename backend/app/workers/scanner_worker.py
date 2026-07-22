@@ -491,7 +491,9 @@ class ScannerWorker:
         
         Returns the count of recovered scans.
         """
-        STALE_SCAN_THRESHOLD_MINUTES = 60  # Scans running > 1 hour are considered stale
+        # Must be above NUCLEI_MAX_RUNTIME_SECONDS (default 900s) so legitimate
+        # nuclei jobs can finish, but low enough that wedged slots recover.
+        STALE_SCAN_THRESHOLD_MINUTES = 25
         
         db = self.get_db_session()
         if not db:
@@ -501,11 +503,12 @@ class ScannerWorker:
             from datetime import timedelta
             threshold = datetime.utcnow() - timedelta(minutes=STALE_SCAN_THRESHOLD_MINUTES)
             
-            # Find scans that are RUNNING but started too long ago
+            # Find scans RUNNING longer than the threshold. Include ones still in
+            # active_scans — previously we skipped those, so a hung nuclei
+            # subprocess held a worker slot forever and the queue wedged.
             stale_scans = db.query(Scan).filter(
                 Scan.status == ScanStatus.RUNNING,
                 Scan.started_at < threshold,
-                ~Scan.id.in_(active_scans)  # Exclude scans actively being processed
             ).all()
             
             recovered_count = 0
@@ -1192,6 +1195,16 @@ class ScannerWorker:
         # explicit list of hosts; they must not be re-split or re-create assets.
         presplit = bool((job_data.get('config') or {}).get('presplit'))
         
+        # Drop CIDR/netblock ranges — expanding them into 100k+ hosts is what
+        # wedged the worker (scans never finished, slots never freed).
+        from app.services.nuclei_service import filter_nuclei_targets
+        targets, skipped_cidrs = filter_nuclei_targets(targets)
+        if skipped_cidrs:
+            logger.warning(
+                f"Nuclei scan {scan_id}: skipped {skipped_cidrs} CIDR/netblock "
+                f"target(s); Nuclei will run against hostnames/IPs/URLs only"
+            )
+
         # Normalize targets - ensure URLs have protocol
         normalized_targets = []
         for target in targets:
@@ -1208,6 +1221,11 @@ class ScannerWorker:
         if normalized_targets:
             targets = normalized_targets
             logger.info(f"Normalized {len(targets)} targets for Nuclei scan")
+
+        if not targets:
+            logger.error(f"Nuclei scan {scan_id}: no eligible targets after CIDR filter")
+            self._mark_scan_failed(scan_id, "No eligible Nuclei targets (CIDR ranges are skipped)")
+            return
         
         db = self.get_db_session()
         if not db:
@@ -1228,8 +1246,12 @@ class ScannerWorker:
             if scan:
                 scan.current_step = "Creating assets for scan targets"
                 db.commit()
+
+            # Cap asset pre-creation — looping 10k targets with per-row queries
+            # was delaying nuclei start by minutes and holding a worker slot.
+            asset_targets = [] if presplit else targets[:500]
             
-            for target in ([] if presplit else targets):
+            for target in asset_targets:
                 try:
                     # Extract hostname from URL
                     target_str = target.strip()
@@ -1315,35 +1337,30 @@ class ScannerWorker:
             config = job_data.get('config', {})
             rate_limit = config.get('rate_limit', DEFAULT_NUCLEI_RATE_LIMIT)
 
-            # Cap the number of hosts scanned per job so a single oversized scan
-            # can't run for hours and monopolize a worker slot. Expand CIDRs
-            # first so the cap reflects the real number of hosts Nuclei probes;
-            # scan the first chunk here and queue the remainder as follow-up
-            # PENDING scans (picked up by the normal poll loop).
+            # Cap hosts per job so one scan can't monopolize a worker slot.
+            # CIDRs were already filtered out above — slice the host list only
+            # (no full-inventory expansion, which previously hung the worker).
             targets_to_scan = targets
             if not presplit:
                 try:
-                    max_targets = int(config.get('max_targets') or os.getenv('NUCLEI_MAX_TARGETS_PER_SCAN', '5000'))
+                    max_targets = int(config.get('max_targets') or os.getenv('NUCLEI_MAX_TARGETS_PER_SCAN', '500'))
                 except (TypeError, ValueError):
-                    max_targets = 5000
-                if max_targets > 0:
-                    from app.services.nuclei_service import expand_cidr_targets
-                    expanded_all, expanded_total = expand_cidr_targets(targets)
-                    if expanded_total > max_targets:
-                        targets_to_scan = expanded_all[:max_targets]
-                        remaining = expanded_all[max_targets:]
-                        queued = self._queue_nuclei_follow_ups(
-                            db,
-                            scan,
-                            remaining,
-                            {**config, 'severity': severity, 'tags': tags, 'exclude_tags': exclude_tags},
-                            max_targets,
-                        )
-                        logger.warning(
-                            f"Nuclei scan {scan_id}: {expanded_total} hosts exceed cap "
-                            f"{max_targets}; scanning first {len(targets_to_scan)} and queued "
-                            f"{queued} follow-up scan(s) for {len(remaining)} remaining hosts."
-                        )
+                    max_targets = 500
+                if max_targets > 0 and len(targets) > max_targets:
+                    targets_to_scan = targets[:max_targets]
+                    remaining = targets[max_targets:]
+                    queued = self._queue_nuclei_follow_ups(
+                        db,
+                        scan,
+                        remaining,
+                        {**config, 'severity': severity, 'tags': tags, 'exclude_tags': exclude_tags},
+                        max_targets,
+                    )
+                    logger.warning(
+                        f"Nuclei scan {scan_id}: {len(targets)} hosts exceed cap "
+                        f"{max_targets}; scanning first {len(targets_to_scan)} and queued "
+                        f"{queued} follow-up scan(s) for {len(remaining)} remaining hosts."
+                    )
 
             # Materialize this org's active custom (analyst/AI-generated) templates
             # from the DB to disk so Nuclei can actually run them alongside the

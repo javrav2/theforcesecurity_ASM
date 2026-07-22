@@ -23,51 +23,88 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def expand_cidr_targets(targets: list[str]) -> tuple[list[str], int]:
+def is_cidr_range(target: str) -> bool:
+    """True if target is an IP network with more than one address (e.g. 10.0.0.0/24)."""
+    candidate = (target or "").strip()
+    if not candidate or "://" in candidate or "/" not in candidate:
+        return False
+    # Strip optional scheme-less host:port noise; CIDRs look like a.b.c.d/nn
+    try:
+        network = ipaddress.ip_network(candidate.split()[0], strict=False)
+        return network.num_addresses > 1
+    except ValueError:
+        return False
+
+
+def filter_nuclei_targets(targets: list[str]) -> tuple[list[str], int]:
+    """Drop CIDR/netblock ranges from Nuclei target lists.
+
+    Nuclei against raw CIDRs explodes into tens/hundreds of thousands of hosts,
+    saturates worker slots for hours, and never usefully finishes. Domains,
+    hostnames, single IPs, and URLs are kept.
+    """
+    kept: list[str] = []
+    skipped = 0
+    for target in targets or []:
+        target = (target or "").strip()
+        if not target:
+            continue
+        if is_cidr_range(target):
+            skipped += 1
+            continue
+        kept.append(target)
+    return kept, skipped
+
+
+def expand_cidr_targets(targets: list[str], max_hosts: Optional[int] = None) -> tuple[list[str], int]:
     """
     Expand CIDR ranges in targets to individual IPs.
-    
+
+    Args:
+        targets: Input targets (URLs, IPs, CIDRs)
+        max_hosts: If set, stop expanding once this many hosts are collected.
+                   Prevents OOM / multi-minute hangs on /16+ inventories.
+
     Returns:
-        tuple: (expanded_targets, total_ip_count)
-        
-    Nuclei can handle CIDRs natively, but we expand them to:
-    1. Get accurate target counts for reporting
-    2. Better control over large ranges
+        tuple: (expanded_targets, total_ip_count_seen_or_collected)
     """
     expanded = []
     total_count = 0
-    
+
     for target in targets:
         target = target.strip()
         if not target:
             continue
-            
+
+        if max_hosts is not None and total_count >= max_hosts:
+            break
+
         # Check if it's a CIDR notation
-        if '/' in target:
+        if '/' in target and "://" not in target:
             try:
                 # Try to parse as IP network (CIDR)
                 network = ipaddress.ip_network(target, strict=False)
-                
-                # For small networks (/24 or smaller = 256 IPs or less), expand all
-                # For larger networks, we still expand but log a warning
+
                 num_hosts = network.num_addresses
-                
+
                 if num_hosts > 65536:  # /16 or larger
                     logger.warning(
                         f"Large CIDR range {target} has {num_hosts} addresses. "
                         "Consider breaking into smaller ranges for better performance."
                     )
-                
-                # Expand all hosts in the network
+
+                # Expand hosts, respecting max_hosts cap
                 for ip in network.hosts():
                     expanded.append(str(ip))
                     total_count += 1
-                    
+                    if max_hosts is not None and total_count >= max_hosts:
+                        break
+
                 # Also include network and broadcast for /31 and /32
-                if network.prefixlen >= 31:
+                if network.prefixlen >= 31 and (max_hosts is None or total_count < max_hosts):
                     expanded.append(str(network.network_address))
                     total_count += 1
-                    
+
             except ValueError:
                 # Not a valid CIDR, treat as regular target (might be URL with port)
                 expanded.append(target)
@@ -76,7 +113,7 @@ def expand_cidr_targets(targets: list[str]) -> tuple[list[str], int]:
             # Regular target (IP, domain, URL)
             expanded.append(target)
             total_count += 1
-    
+
     return expanded, total_count
 
 
@@ -421,18 +458,22 @@ class NucleiService:
             # hours and monopolize a worker slot. 0/negative disables the cap.
             if max_runtime_seconds is None:
                 try:
-                    max_runtime_seconds = int(os.getenv("NUCLEI_MAX_RUNTIME_SECONDS", "3600"))
+                    # 15 minutes default — full-template scans against thousands of
+                    # hosts otherwise hold a worker slot for hours and starve the queue.
+                    max_runtime_seconds = int(os.getenv("NUCLEI_MAX_RUNTIME_SECONDS", "900"))
                 except ValueError:
-                    max_runtime_seconds = 3600
+                    max_runtime_seconds = 900
 
             logger.info(f"Starting Nuclei scan on {len(targets)} targets")
             logger.info(f"Nuclei command: {' '.join(cmd)}")
 
-            # Run scan
+            # Run scan in its own process group so we can kill nuclei + children
+            # on timeout (nuclei spawns workers that otherwise outlive the parent).
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
 
             timed_out = False
@@ -444,15 +485,19 @@ class NucleiService:
             except asyncio.TimeoutError:
                 timed_out = True
                 logger.warning(
-                    f"Nuclei exceeded {max_runtime_seconds}s; killing process and "
+                    f"Nuclei exceeded {max_runtime_seconds}s; killing process group and "
                     "parsing partial results collected so far"
                 )
                 try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
+                    import signal as _signal
+                    os.killpg(process.pid, _signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
                 try:
-                    stdout, stderr = await process.communicate()
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
                 except Exception:
                     stdout, stderr = b"", b""
                 result.errors.append(
