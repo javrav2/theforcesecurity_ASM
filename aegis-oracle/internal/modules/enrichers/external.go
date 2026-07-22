@@ -18,6 +18,7 @@
 //   - CISA Vulnrichment  CVSS 4.0 + SSVC triage decisions (GitHub).
 //   - Metasploit    Weaponized exploit module detection (GitHub search).
 //   - Nuclei        Automated scan template detection (GitHub search).
+//   - PoC-in-GitHub Public PoC repos via nomi-sec/PoC-in-GitHub raw index.
 //   - JVN iPedia    Japanese national vulnerability database (MyJVN API).
 //   - BDU FSTEC     Russian national vulnerability database (GitHub mirror).
 //   - ATT&CK        CVE → MITRE technique mappings (CTID Mappings Explorer).
@@ -115,10 +116,11 @@ type ExternalEnrichment struct {
 	GP0        GP0Result        `json:"gp0"`
 	AttackerKB AttackerKBResult `json:"attackerkb"`
 
-	// Weaponization
-	Metasploit MetasploitResult        `json:"metasploit"`
-	Nuclei     NucleiResult            `json:"nuclei"`
-	VulnCheck  VulnCheckExploitResult  `json:"vulncheck"`
+	// Weaponization / public exploit artifacts
+	Metasploit MetasploitResult       `json:"metasploit"`
+	Nuclei     NucleiResult           `json:"nuclei"`
+	PoCGitHub  PoCGitHubResult        `json:"poc_github"`
+	VulnCheck  VulnCheckExploitResult `json:"vulncheck"`
 
 	// Government / national database coverage
 	Vulnrichment VulnrichmentResult `json:"vulnrichment"`
@@ -192,6 +194,10 @@ func FetchAllWithVulnCheck(ctx context.Context, cveID, vulnCheckToken string) Ex
 		{"nuclei", func() {
 			r := FetchNucleiTemplate(ctx, cveID)
 			mu.Lock(); result.Nuclei = r; mu.Unlock()
+		}},
+		{"poc_github", func() {
+			r := FetchPoCGitHub(ctx, cveID)
+			mu.Lock(); result.PoCGitHub = r; mu.Unlock()
 		}},
 		{"vulnrichment", func() {
 			r := FetchVulnrichment(ctx, cveID)
@@ -281,6 +287,23 @@ func Apply(ext ExternalEnrichment, ev *schema.ExploitationEvidence) {
 	if ext.Metasploit.Found {
 		ev.MetasploitAvailable = true
 		ev.MetasploitModCount = ext.Metasploit.ModuleCount
+	}
+	if ext.PoCGitHub.Found {
+		ev.PublicPOCFound = true
+		ev.PublicPOCCount = ext.PoCGitHub.POCCount
+		urls := make([]string, 0, len(ext.PoCGitHub.POCs))
+		for _, p := range ext.PoCGitHub.POCs {
+			if p.URL != "" {
+				urls = append(urls, p.URL)
+			}
+		}
+		ev.PublicPOCURLs = appendUniqueAll(ev.PublicPOCURLs, urls)
+		// Prefer the freshest PoC age when multiple sources contribute later.
+		if ext.PoCGitHub.RecentPOCDays > 0 {
+			if ev.RecentPOCDays <= 0 || ext.PoCGitHub.RecentPOCDays < ev.RecentPOCDays {
+				ev.RecentPOCDays = ext.PoCGitHub.RecentPOCDays
+			}
+		}
 	}
 	if ext.VulnCheck.Found {
 		applyVulnCheck(ext.VulnCheck, ev)

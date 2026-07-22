@@ -548,7 +548,12 @@ func exploitation(e schema.ExploitationEvidence) float64 {
 		score = max(score, 3.5)
 	}
 
-	// Recent public PoC — weakest standalone signal.
+	// Public PoC repos (e.g. nomi-sec/PoC-in-GitHub) — weaker than weaponized
+	// modules or KEV, but confirms exploit/PoC code is circulating.
+	if e.PublicPOCFound {
+		score = max(score, 2.0)
+	}
+	// Recent public PoC — still weak, but fresher PoCs raise urgency slightly.
 	if e.RecentPOCDays > 0 && e.RecentPOCDays <= 30 {
 		score = max(score, 3.0)
 	}

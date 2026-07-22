@@ -23,6 +23,7 @@
 //   - check_osv               — OSV.dev: 20+ ecosystem CVE advisories by CVE ID or package name
 //   - check_openssf_malicious_packages — OpenSSF Malicious Packages: backdoor/supply chain flags
 //   - check_exploitdb         — Exploit-DB mirror: working exploit code lookup via GitHub index
+//   - check_poc_github        — nomi-sec/PoC-in-GitHub: public PoC repo URLs + first-seen dates
 //   - check_cnw_kev           — CNW (EU CSIRTs network) KEV: exploitation type + reporting CSIRT
 //   - check_cisa_ics_advisory — CISA ICS-CERT CSAF advisories: affected ICS/OT products and vendors
 //   - check_ics_vendor_csaf   — NVD CPE + vendor PSIRT data: exact ICS product models, firmware versions, vendor advisory URLs
@@ -93,6 +94,7 @@ func BuildRegistry(d Deps) *react.Registry {
 	reg.Register(&checkOSVTool{})                                      // OSV.dev: 20+ ecosystem CVE / package advisories
 	reg.Register(&checkOpenSSFMaliciousTool{})                         // OpenSSF malicious packages (supply chain)
 	reg.Register(&checkExploitDBTool{})                                // Exploit-DB working exploit code
+	reg.Register(&checkPoCGitHubTool{})                                // nomi-sec/PoC-in-GitHub public PoC repos
 	reg.Register(&checkCNWKEVTool{})                                   // EU CSIRTs network KEV (ransomware type + reporting CSIRT)
 	reg.Register(&checkCISAICSAdvisoryTool{})                          // CISA ICS-CERT CSAF advisories (ICS/OT product context)
 	reg.Register(&checkICSVendorCSAFTool{})                            // NVD CPE + vendor PSIRT: exact ICS product models + advisory links
@@ -1795,6 +1797,64 @@ func (t *checkExploitDBTool) Run(ctx context.Context, args map[string]any) (stri
 		"note":          "technique_preview contains the first 100 lines of exploit source — use it to explain the attack technique to developers",
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b), nil
+}
+
+// ─────────────────────────── check_poc_github ───────────────────────────────
+
+// checkPoCGitHubTool looks up public PoC repositories in nomi-sec/PoC-in-GitHub.
+// This is the same GitHub PoC index used by aggregators such as Zero Day Clock
+// Explorer. A hit confirms circulating proof-of-concept code — weaker than
+// Metasploit/VulnCheck weaponization or KEV, but useful for DEV NOTE attack
+// mechanism detail and RecentPOCDays / OPES X flooring.
+type checkPoCGitHubTool struct{}
+
+func (t *checkPoCGitHubTool) Name() string { return "check_poc_github" }
+func (t *checkPoCGitHubTool) Description() string {
+	return "Look up public proof-of-concept repositories for a CVE via nomi-sec/PoC-in-GitHub " +
+		"(the GitHub PoC index also used by Zero Day Clock Explorer). " +
+		"Returns PoC repo URLs, star counts, created dates, newest/earliest PoC timestamps, " +
+		"and recent_poc_days. A PoC is weaker than Metasploit/VulnCheck weaponization or KEV " +
+		"(confirmed in-the-wild) — use it to show exploit code is circulating and to ground " +
+		"DEV NOTE attack steps. No API key required."
+}
+func (t *checkPoCGitHubTool) ArgsSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"cve_id": map[string]any{
+				"type":        "string",
+				"description": "CVE identifier, e.g. CVE-2021-44228",
+			},
+		},
+		"required": []string{"cve_id"},
+	}
+}
+func (t *checkPoCGitHubTool) Run(ctx context.Context, args map[string]any) (string, error) {
+	cveID, _ := args["cve_id"].(string)
+	if cveID == "" {
+		return "", fmt.Errorf("cve_id is required")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	result := enrichers.FetchPoCGitHub(fetchCtx, cveID)
+	out := map[string]any{
+		"cve_id":          strings.ToUpper(strings.TrimSpace(cveID)),
+		"found":           result.Found,
+		"poc_count":       result.POCCount,
+		"recent_poc_days": result.RecentPOCDays,
+		"newest_poc_at":   result.NewestPOCAt,
+		"earliest_poc_at": result.EarliestPOCAt,
+		"pocs":            result.POCs,
+		"source":          "nomi-sec/PoC-in-GitHub",
+		"note":            result.Note,
+		"signal_strength": "poc_only — not confirmed ITW; prefer check_vulncheck_exploits / check_weaponization / check_epss_kev for stronger exploitation signals",
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return "", err
+	}
 	return string(b), nil
 }
 
