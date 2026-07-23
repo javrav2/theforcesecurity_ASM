@@ -57,6 +57,24 @@ from app.models.vulnerability import Vulnerability
 logger = logging.getLogger(__name__)
 
 
+def _utc_iso(dt: Optional[datetime]) -> str:
+    """Return an RFC-3339 UTC string with a Z suffix.
+
+    SQLAlchemy returns naive datetimes from TIMESTAMP WITHOUT TIME ZONE
+    columns. Go's time.Time JSON unmarshaller rejects bare ISO strings like
+    '2026-07-22T18:01:51.446024' — it requires a timezone (Z or offset).
+    Naive datetimes are treated as UTC.
+    """
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    # Prefer Z over +00:00 — both are RFC-3339, Z is what Go examples use.
+    return dt.isoformat().replace("+00:00", "Z")
+
+
 ORACLE_URL = os.getenv("ORACLE_URL", "http://aegis-oracle:8742").rstrip("/")
 ORACLE_TIMEOUT = float(os.getenv("ORACLE_TIMEOUT", "180"))
 
@@ -412,7 +430,7 @@ def _build_oracle_asset(asset: Asset) -> Optional[Dict[str, Any]]:
         "criticality": _normalise_criticality(asset.criticality),
         "exposure": "internet" if asset.is_public else "internal",
         "source": "asm",
-        "updated_at": (asset.updated_at or datetime.now(timezone.utc)).isoformat() if asset.updated_at else datetime.now(timezone.utc).isoformat(),
+        "updated_at": _utc_iso(asset.updated_at),
     }
     return payload
 
@@ -575,7 +593,7 @@ def _build_generic_vulnerability_payload(vuln: Vulnerability) -> Dict[str, Any]:
         "detection_confidence": getattr(vuln, "detection_confidence", None) or "unknown",
         "tags": vuln.tags or [],
         "metadata": metadata,
-        "created_at": vuln.created_at.isoformat() if vuln.created_at else None,
+        "created_at": _utc_iso(vuln.created_at) if vuln.created_at else None,
     }
 
 

@@ -3,7 +3,6 @@ package schema
 import (
 	"strconv"
 	"strings"
-	"time"
 )
 
 type Exposure string
@@ -37,7 +36,7 @@ type Asset struct {
 	Criticality Criticality  `json:"criticality"`
 	Exposure    Exposure     `json:"exposure"`
 	Source      string       `json:"source"`
-	UpdatedAt   time.Time    `json:"updated_at"`
+	UpdatedAt   FlexTime     `json:"updated_at"`
 }
 
 // AssetSignals is intentionally a flat bag with optional fields organized

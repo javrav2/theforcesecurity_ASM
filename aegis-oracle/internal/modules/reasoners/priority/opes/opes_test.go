@@ -236,7 +236,7 @@ func cve202555130Input() Input {
 		Criticality: schema.CriticalityHigh,
 		Exposure:    schema.ExposureInternet,
 		Source:      "asm-core-v2",
-		UpdatedAt:   now,
+		UpdatedAt:   schema.NewFlexTime(now),
 	}
 
 	// Phase B output: both blockers Unknown — we can't read container

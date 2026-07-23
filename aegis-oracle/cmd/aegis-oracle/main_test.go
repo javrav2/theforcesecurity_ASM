@@ -67,7 +67,7 @@ func publicAsset(id string, ports ...int) *schema.Asset {
 		Criticality: schema.CriticalityHigh,
 		Exposure:    schema.ExposureInternet,
 		Source:      "test",
-		UpdatedAt:   time.Now().UTC(),
+		UpdatedAt:   schema.NewFlexTime(time.Now().UTC()),
 		Signals: schema.AssetSignals{
 			Network: &schema.NetworkSignals{
 				InternetFacing: &internet,
