@@ -197,6 +197,12 @@ class NucleiFindingsService:
             except Exception as e:
                 logger.error(f"Error importing finding {nuclei_result.template_id}: {e}")
                 summary["errors"].append(f"{nuclei_result.template_id}: {str(e)}")
+                # Postgres aborts the whole transaction on enum/SQL errors —
+                # roll back so the next finding can still import.
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
         
         self.db.commit()
 
@@ -314,6 +320,28 @@ class NucleiFindingsService:
                 self.db.flush()
                 result["created"] = True
                 result["vulnerability_id"] = vulnerability.id
+
+                # Approved suppression enforcement: if an analyst has approved
+                # suppression for this template, auto-mark the new finding as a
+                # false positive at ingest (recommend-then-approve, never silent).
+                try:
+                    from app.services.detection_pattern_service import is_template_suppressed
+                    if nuclei_result.template_id and is_template_suppressed(
+                        self.db, organization_id, nuclei_result.template_id
+                    ):
+                        vulnerability.status = VulnerabilityStatus.FALSE_POSITIVE
+                        meta = dict(vulnerability.metadata_ or {})
+                        meta["auto_suppressed"] = True
+                        meta["auto_suppressed_reason"] = "approved_detection_suppression"
+                        meta["auto_suppressed_template_id"] = nuclei_result.template_id
+                        vulnerability.metadata_ = meta
+                        result["auto_suppressed"] = True
+                        logger.info(
+                            "Auto-suppressed finding %s on %s (approved template suppression)",
+                            nuclei_result.template_id, asset.value,
+                        )
+                except Exception as exc:
+                    logger.debug("Suppression check skipped for %s: %s", nuclei_result.template_id, exc)
 
                 # Delphi enrichment: attach CISA KEV + EPSS signals for new
                 # CVE-backed findings. Best-effort — failures never block scan
@@ -466,9 +494,10 @@ class NucleiFindingsService:
             if existing:
                 return existing
 
-        # 3. Closed match — template_id (redetection of a previously closed finding)
-        from app.services.reactivation_service import CLOSED_STATUSES
-        closed_list = list(CLOSED_STATUSES)
+        # 3/4. Closed match (redetection of a previously closed finding).
+        # MITIGATED may be missing from older Postgres vulnerabilitystatus enums —
+        # fall back without it so import still succeeds.
+        closed_list = self._closed_statuses_for_query()
 
         existing = self.db.query(Vulnerability).filter(
             Vulnerability.asset_id == asset_id,
@@ -487,6 +516,45 @@ class NucleiFindingsService:
             ).first()
 
         return existing
+
+    def _closed_statuses_for_query(self) -> list:
+        """Closed statuses safe to use in SQL against the current DB enum."""
+        from app.services.reactivation_service import CLOSED_STATUSES
+        from sqlalchemy.exc import DataError, ProgrammingError
+
+        closed_list = list(CLOSED_STATUSES)
+        # Probe once per service instance whether MITIGATED exists in PG.
+        cached = getattr(self, "_mitigated_in_db", None)
+        if cached is False:
+            return [s for s in closed_list if s != VulnerabilityStatus.MITIGATED]
+        if cached is True:
+            return closed_list
+
+        try:
+            from sqlalchemy import text
+            row = self.db.execute(text(
+                "SELECT 1 FROM pg_enum e "
+                "JOIN pg_type t ON e.enumtypid = t.oid "
+                "WHERE t.typname = 'vulnerabilitystatus' "
+                "AND e.enumlabel IN ('MITIGATED', 'mitigated') "
+                "LIMIT 1"
+            )).first()
+            self._mitigated_in_db = bool(row)
+        except (ProgrammingError, DataError, Exception):
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            self._mitigated_in_db = False
+
+        if not self._mitigated_in_db:
+            logger.warning(
+                "Postgres enum vulnerabilitystatus is missing MITIGATED; "
+                "closed-finding lookup will omit it. Run: "
+                "ALTER TYPE vulnerabilitystatus ADD VALUE IF NOT EXISTS 'MITIGATED';"
+            )
+            return [s for s in closed_list if s != VulnerabilityStatus.MITIGATED]
+        return closed_list
     
     def _create_vulnerability(
         self,
