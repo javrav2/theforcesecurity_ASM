@@ -1,14 +1,18 @@
 """Vulnerability routes."""
 
+import json
 import logging
+import os
 from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.db.database import get_db
 from app.models.vulnerability import Vulnerability, Severity, VulnerabilityStatus
+from app.models.finding_validation import FindingValidation, ValidationStatus
 from app.models.asset import Asset
 from app.models.user import User
 from app.schemas.vulnerability import VulnerabilityCreate, VulnerabilityUpdate, VulnerabilityResponse
@@ -17,6 +21,73 @@ from app.api.deps import get_current_active_user, require_analyst
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/vulnerabilities", tags=["Vulnerabilities"])
+
+# ── SQS enqueue for on-demand validation (best-effort; DB poll is the fallback) ─
+_SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL")
+_AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+_validation_sqs_client = None
+
+
+def _get_validation_sqs_client():
+    global _validation_sqs_client
+    if _validation_sqs_client is None and _SQS_QUEUE_URL:
+        try:
+            import boto3
+            _validation_sqs_client = boto3.client('sqs', region_name=_AWS_REGION)
+        except Exception as e:
+            logger.error(f"Failed to initialize SQS client for validation: {e}")
+    return _validation_sqs_client
+
+
+def send_validation_to_sqs(validation: FindingValidation) -> bool:
+    """Enqueue a VALIDATE_FINDING job. Returns False if SQS is not configured.
+
+    The scanner worker also polls the DB for queued validations, so a False
+    return here simply means the job will be picked up on the next DB poll.
+    """
+    if not _SQS_QUEUE_URL:
+        return False
+    sqs = _get_validation_sqs_client()
+    if not sqs:
+        return False
+    body = {
+        'job_type': 'VALIDATE_FINDING',
+        'validation_id': validation.id,
+        'vulnerability_id': validation.vulnerability_id,
+        'organization_id': validation.organization_id,
+    }
+    try:
+        sqs.send_message(
+            QueueUrl=_SQS_QUEUE_URL,
+            MessageBody=json.dumps(body),
+            MessageAttributes={
+                'job_type': {'StringValue': 'VALIDATE_FINDING', 'DataType': 'String'},
+            },
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to enqueue validation {validation.id} to SQS: {e}")
+        return False
+
+
+def _validation_to_dict(v: FindingValidation) -> dict:
+    return {
+        "id": v.id,
+        "vulnerability_id": v.vulnerability_id,
+        "organization_id": v.organization_id,
+        "status": v.status.value if v.status else None,
+        "verdict": v.verdict.value if v.verdict else None,
+        "confidence": v.confidence,
+        "recommended_severity": v.recommended_severity,
+        "reasoning": v.reasoning,
+        "evidence": v.evidence,
+        "template_logic_issue": v.template_logic_issue,
+        "error": v.error,
+        "requested_by_user_id": v.requested_by_user_id,
+        "created_at": v.created_at,
+        "started_at": v.started_at,
+        "completed_at": v.completed_at,
+    }
 
 
 def check_org_access(db: Session, user: User, asset_id: int) -> bool:
@@ -35,6 +106,7 @@ def build_vuln_response(vuln: Vulnerability) -> dict:
     d["name"] = vuln.title
     d["host"] = vuln.asset.value if vuln.asset else None
     d["matched_at"] = (vuln.evidence[:200] if vuln.evidence else None)
+    d["organization_id"] = vuln.asset.organization_id if vuln.asset else None
     # Surface Delphi (CISA KEV + EPSS) and Aegis Oracle enrichment so the UI
     # can show KEV / EPSS / OPES badges and sort by combined priority.
     # Everything else in metadata_ stays internal.
@@ -250,6 +322,25 @@ def update_vulnerability(
             background_tasks=background_tasks,
         )
 
+    # Manually marking a finding as a false positive is a suppression signal.
+    if (
+        new_status == VulnerabilityStatus.FALSE_POSITIVE
+        and old_status != "false_positive"
+        and vuln.template_id
+    ):
+        try:
+            from app.services.detection_pattern_service import evaluate_template
+            asset = db.query(Asset).filter(Asset.id == vuln.asset_id).first()
+            org_id = asset.organization_id if asset else current_user.organization_id
+            evaluate_template(
+                db,
+                organization_id=org_id,
+                template_id=vuln.template_id,
+                detected_by=vuln.detected_by or "nuclei",
+            )
+        except Exception as e:
+            logger.warning(f"Detection pattern evaluation failed: {e}")
+
     return vuln
 
 
@@ -326,6 +417,7 @@ def bulk_update_vulnerabilities(
     new_status = update_data.get("status")
     assigned_to = update_data.get("assigned_to")
     remediation_deadline = update_data.get("remediation_deadline")
+    fp_templates: set = set()  # templates newly marked false_positive
     
     for vuln in vulns:
         if new_status:
@@ -333,6 +425,12 @@ def bulk_update_vulnerabilities(
             # Handle status change to resolved
             if status_enum == VulnerabilityStatus.RESOLVED and vuln.status != VulnerabilityStatus.RESOLVED:
                 vuln.resolved_at = datetime.utcnow()
+            if (
+                status_enum == VulnerabilityStatus.FALSE_POSITIVE
+                and vuln.status != VulnerabilityStatus.FALSE_POSITIVE
+                and vuln.template_id
+            ):
+                fp_templates.add((vuln.asset_id, vuln.template_id, vuln.detected_by))
             vuln.status = status_enum
         
         if assigned_to is not None:  # Allow empty string to unassign
@@ -344,6 +442,30 @@ def bulk_update_vulnerabilities(
         updated_count += 1
     
     db.commit()
+
+    # Re-evaluate false-positive patterns for any templates just marked FP.
+    if fp_templates:
+        try:
+            from app.services.detection_pattern_service import evaluate_template
+            asset_ids = {asset_id for asset_id, _, _ in fp_templates}
+            asset_orgs = {
+                a.id: a.organization_id
+                for a in db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+            }
+            seen: set = set()
+            for asset_id, template_id, detected_by in fp_templates:
+                org_id = asset_orgs.get(asset_id)
+                if org_id is None or (org_id, template_id) in seen:
+                    continue
+                seen.add((org_id, template_id))
+                evaluate_template(
+                    db,
+                    organization_id=org_id,
+                    template_id=template_id,
+                    detected_by=detected_by or "nuclei",
+                )
+        except Exception as e:
+            logger.warning(f"Detection pattern evaluation failed: {e}")
     
     return {
         "success": True,
@@ -826,6 +948,144 @@ def _maybe_sync_jira_ticket(
             )
     except Exception:
         logger.exception("Error scheduling Jira sync for vuln %s", vuln.id)
+
+
+# =============================================================================
+# ON-DEMAND FINDING VALIDATION (NanoClaw validator agent)
+# =============================================================================
+
+
+class DetectionFeedbackCreate(BaseModel):
+    """Analyst-submitted detection-logic feedback for a finding's template."""
+    logic_issue: str
+    verdict: Optional[str] = "false_positive"
+
+
+@router.post("/{vuln_id}/validate")
+def validate_finding(
+    vuln_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """Queue an on-demand validation of this finding by the NanoClaw validator agent.
+
+    The agent actively re-tests the live target and writes a verdict back to the
+    finding. Returns the queued FindingValidation record; poll
+    GET /vulnerabilities/{id}/validation for the result.
+    """
+    vuln = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
+    if not vuln:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+    if not check_org_access(db, current_user, vuln.asset_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    # Avoid stacking duplicate in-flight validations for the same finding.
+    in_flight = db.query(FindingValidation).filter(
+        FindingValidation.vulnerability_id == vuln.id,
+        FindingValidation.status.in_([ValidationStatus.QUEUED, ValidationStatus.RUNNING]),
+    ).first()
+    if in_flight:
+        return _validation_to_dict(in_flight)
+
+    asset = db.query(Asset).filter(Asset.id == vuln.asset_id).first()
+    organization_id = asset.organization_id if asset else current_user.organization_id
+
+    validation = FindingValidation(
+        vulnerability_id=vuln.id,
+        organization_id=organization_id,
+        status=ValidationStatus.QUEUED,
+        requested_by_user_id=current_user.id,
+    )
+    db.add(validation)
+    vuln.validation_status = "queued"
+    db.commit()
+    db.refresh(validation)
+
+    send_validation_to_sqs(validation)  # best-effort; DB poll is the fallback
+
+    return _validation_to_dict(validation)
+
+
+@router.get("/{vuln_id}/validation")
+def get_finding_validation(
+    vuln_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the most recent validation run for this finding (for polling)."""
+    vuln = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
+    if not vuln:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+    if not check_org_access(db, current_user, vuln.asset_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    validation = db.query(FindingValidation).filter(
+        FindingValidation.vulnerability_id == vuln.id
+    ).order_by(FindingValidation.created_at.desc()).first()
+    if not validation:
+        return None
+    return _validation_to_dict(validation)
+
+
+@router.post("/{vuln_id}/detection-feedback")
+def create_finding_detection_feedback(
+    vuln_id: int,
+    payload: DetectionFeedbackCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_analyst),
+):
+    """Log a detection-logic issue for this finding's template.
+
+    Records a DetectionFeedback entry keyed on the finding's template_id and
+    generates a copy-pasteable upstream bug report.
+    """
+    vuln = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
+    if not vuln:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+    if not check_org_access(db, current_user, vuln.asset_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if not vuln.template_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Finding has no template_id to attribute the detection issue to",
+        )
+
+    from app.services.detection_feedback_service import record_detection_feedback
+    from app.api.routes.detection_feedback import feedback_to_dict
+
+    asset = db.query(Asset).filter(Asset.id == vuln.asset_id).first()
+    organization_id = asset.organization_id if asset else current_user.organization_id
+    target = asset.value if asset else None
+
+    feedback = record_detection_feedback(
+        db,
+        organization_id=organization_id,
+        template_id=vuln.template_id,
+        logic_issue=payload.logic_issue,
+        detected_by=vuln.detected_by or "nuclei",
+        verdict=payload.verdict or "false_positive",
+        severity=vuln.severity.value if vuln.severity else None,
+        target=target,
+        evidence=vuln.evidence,
+        example_vulnerability_id=vuln.id,
+        source="analyst",
+        reported_by_user_id=current_user.id,
+    )
+
+    # Re-evaluate the false-positive pattern for this template (recommend-only).
+    if vuln.template_id:
+        try:
+            from app.services.detection_pattern_service import evaluate_template
+            evaluate_template(
+                db,
+                organization_id=organization_id,
+                template_id=vuln.template_id,
+                detected_by=vuln.detected_by or "nuclei",
+            )
+        except Exception as e:
+            logger.warning(f"Detection pattern evaluation failed: {e}")
+
+    return feedback_to_dict(feedback)
 
 
 

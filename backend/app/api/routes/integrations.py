@@ -61,8 +61,55 @@ def _resolve_org_id(user: User, org_id_override: Optional[int] = None) -> int:
             )
         return org_id_override
     if not user.organization_id:
-        raise HTTPException(status_code=400, detail="User has no associated organization.")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "User has no associated organization. "
+                "Pass org_id for the client organization (e.g. Rockwell), "
+                "or assign this user to an organization."
+            ),
+        )
     return user.organization_id
+
+
+def _resolve_org_for_vulnerability(
+    db: Session,
+    user: User,
+    vulnerability_id: int,
+    org_id_override: Optional[int] = None,
+) -> tuple[int, Vulnerability]:
+    """
+    Resolve the org for a vulnerability-scoped Jira action.
+
+    Priority:
+      1. Explicit org_id query param (superuser only)
+      2. The vulnerability's asset.organization_id (works for admin accounts
+         that have no organization_id of their own)
+      3. The user's organization_id
+    """
+    vuln = (
+        db.query(Vulnerability)
+        .options(joinedload(Vulnerability.asset))
+        .filter(Vulnerability.id == vulnerability_id)
+        .first()
+    )
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found.")
+
+    if org_id_override is not None:
+        resolved = _resolve_org_id(user, org_id_override)
+    elif vuln.asset and vuln.asset.organization_id:
+        resolved = vuln.asset.organization_id
+        # Non-superusers may only act on findings in their own org
+        if not user.is_superuser and user.organization_id and user.organization_id != resolved:
+            raise HTTPException(status_code=403, detail="Access denied.")
+    else:
+        resolved = _resolve_org_id(user, None)
+
+    if vuln.asset and vuln.asset.organization_id != resolved and not user.is_superuser:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    return resolved, vuln
 
 
 def _get_integration(db: Session, org_id: int) -> JiraIntegration:
@@ -246,19 +293,8 @@ async def create_jira_ticket_for_vulnerability(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst),
 ):
-    resolved = _resolve_org_id(current_user, org_id)
+    resolved, vuln = _resolve_org_for_vulnerability(db, current_user, vulnerability_id, org_id)
     integration = _get_integration(db, resolved)
-
-    vuln = (
-        db.query(Vulnerability)
-        .options(joinedload(Vulnerability.asset))
-        .filter(Vulnerability.id == vulnerability_id)
-        .first()
-    )
-    if not vuln:
-        raise HTTPException(status_code=404, detail="Vulnerability not found.")
-    if vuln.asset and vuln.asset.organization_id != resolved and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Access denied.")
 
     existing = (
         db.query(JiraTicket)
@@ -322,14 +358,8 @@ async def associate_existing_jira_ticket(
     current_user: User = Depends(require_analyst),
 ):
     """Link an existing Jira ticket to a vulnerability without creating a new one."""
-    resolved = _resolve_org_id(current_user, org_id)
+    resolved, vuln = _resolve_org_for_vulnerability(db, current_user, vulnerability_id, org_id)
     integration = _get_integration(db, resolved)
-
-    vuln = db.query(Vulnerability).options(joinedload(Vulnerability.asset)).filter(Vulnerability.id == vulnerability_id).first()
-    if not vuln:
-        raise HTTPException(status_code=404, detail="Vulnerability not found.")
-    if vuln.asset and vuln.asset.organization_id != resolved and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Access denied.")
 
     # Verify the issue exists in Jira and fetch its current status
     try:
@@ -370,12 +400,41 @@ def list_jira_tickets_for_vulnerability(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    resolved = _resolve_org_id(current_user, org_id)
+    resolved, _vuln = _resolve_org_for_vulnerability(db, current_user, vulnerability_id, org_id)
     integration = _get_integration(db, resolved)
     return _active_tickets_for_vuln(db, integration.id, vulnerability_id)
 
 
 # ── Disconnect a ticket ──────────────────────────────────────────────────────
+
+def _ticket_and_integration_for_user(
+    db: Session,
+    user: User,
+    ticket_id: int,
+    org_id_override: Optional[int] = None,
+) -> tuple[JiraTicket, JiraIntegration]:
+    """Load a ticket and verify the caller can access its integration's org."""
+    ticket = (
+        db.query(JiraTicket)
+        .options(joinedload(JiraTicket.integration))
+        .filter(JiraTicket.id == ticket_id)
+        .first()
+    )
+    if not ticket or not ticket.integration:
+        raise HTTPException(status_code=404, detail="Ticket not found.")
+
+    integration = ticket.integration
+    if org_id_override is not None:
+        resolved = _resolve_org_id(user, org_id_override)
+        if integration.organization_id != resolved:
+            raise HTTPException(status_code=404, detail="Ticket not found.")
+    elif not user.is_superuser:
+        if not user.organization_id or user.organization_id != integration.organization_id:
+            raise HTTPException(status_code=403, detail="Access denied.")
+    # Superusers without org_id may act on any ticket via the ticket's own org
+
+    return ticket, integration
+
 
 @router.delete("/jira/tickets/{ticket_id}", status_code=status.HTTP_200_OK)
 def disconnect_jira_ticket(
@@ -388,17 +447,7 @@ def disconnect_jira_ticket(
     Unlink a Jira ticket from the vulnerability.
     The ticket is soft-deleted (disconnected_at set); the Jira issue is untouched.
     """
-    resolved = _resolve_org_id(current_user, org_id)
-    integration = _get_integration(db, resolved)
-
-    ticket = (
-        db.query(JiraTicket)
-        .filter(JiraTicket.id == ticket_id, JiraTicket.integration_id == integration.id)
-        .first()
-    )
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found.")
-
+    ticket, _integration = _ticket_and_integration_for_user(db, current_user, ticket_id, org_id)
     ticket.disconnected_at = datetime.utcnow()
     db.commit()
     return {"ok": True, "message": f"Ticket {ticket.jira_issue_key} disconnected."}
@@ -414,16 +463,7 @@ async def refresh_jira_ticket_status(
     current_user: User = Depends(get_current_active_user),
 ):
     """Pull the latest status and assignee from Jira and update our record."""
-    resolved = _resolve_org_id(current_user, org_id)
-    integration = _get_integration(db, resolved)
-
-    ticket = (
-        db.query(JiraTicket)
-        .filter(JiraTicket.id == ticket_id, JiraTicket.integration_id == integration.id)
-        .first()
-    )
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found.")
+    ticket, integration = _ticket_and_integration_for_user(db, current_user, ticket_id, org_id)
 
     try:
         detail = await jira_service.get_issue_detail(
@@ -452,12 +492,8 @@ async def manually_sync_vulnerability_status(
     current_user: User = Depends(require_analyst),
 ):
     """Manually trigger a Jira ticket status sync for the current vulnerability status."""
-    resolved = _resolve_org_id(current_user, org_id)
+    resolved, vuln = _resolve_org_for_vulnerability(db, current_user, vulnerability_id, org_id)
     integration = _get_integration(db, resolved)
-
-    vuln = db.query(Vulnerability).filter(Vulnerability.id == vulnerability_id).first()
-    if not vuln:
-        raise HTTPException(status_code=404, detail="Vulnerability not found.")
 
     tickets = _active_tickets_for_vuln(db, integration.id, vulnerability_id)
     if not tickets:

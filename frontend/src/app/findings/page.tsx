@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Header } from '@/components/layout/Header';
 import { Card, CardContent } from '@/components/ui/card';
@@ -49,7 +49,12 @@ import {
   ArrowUpDown,
   RefreshCw,
   Ticket,
+  ShieldCheck,
+  ShieldOff,
+  Bug,
+  Copy,
 } from 'lucide-react';
+import Link from 'next/link';
 import { api, getApiErrorMessage } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { formatDate, downloadCSV, cn } from '@/lib/utils';
@@ -90,12 +95,28 @@ interface DelphiEPSS {
   scoring_note?: string;
 }
 
+/** Exploitation-likelihood factor breakdown (each normalized 0..1). */
+interface DelphiFactors {
+  /** Severity magnitude = cvss_score / 10 */
+  severity?: number;
+  /** Exploitability conditions = AV x AC x AT x PR x UI */
+  exploitability?: number;
+  /** Reachability from asset exposure (internet-facing / live / WAF) */
+  reachability?: number;
+  /** Detection confidence (exploit_confirmed .. version_only) */
+  confidence?: number;
+  cvss_score?: number;
+}
+
 interface DelphiEnrichment {
   kev?: DelphiKEV | null;
   epss?: DelphiEPSS | null;
   priority?: 'critical' | 'high' | 'elevated' | 'moderate' | 'low' | 'none';
+  /** 0-100 exploitation-likelihood score that drives the priority tier. */
+  likelihood_score?: number;
   priority_reason?: string;
   priority_signals?: string[];
+  factors?: DelphiFactors;
   enriched_at?: string;
 }
 
@@ -129,6 +150,7 @@ interface Finding {
   detected_by?: string;
   matcher_name?: string;
   asset_id?: number;
+  organization_id?: number;
   scan_id?: number;
   resolved_at?: string;
   // Delphi (CISA KEV + FIRST EPSS) enrichment
@@ -163,18 +185,21 @@ interface OracleEnrichment {
 
 type SortMode = 'severity' | 'delphi' | 'recent' | 'cvss';
 
+// Matches the backend's TIER_RANK in delphi_enrichment_service.py.
 const delphiPriorityRank: Record<string, number> = {
   critical: 0,
   high: 1,
-  medium: 2,
-  low: 3,
-  none: 4,
+  elevated: 2,
+  moderate: 3,
+  low: 4,
+  none: 5,
 };
 
 const delphiPriorityStyle: Record<string, { label: string; className: string }> = {
   critical: { label: 'Delphi Critical', className: 'bg-red-600/20 text-red-400 border-red-600/40' },
   high: { label: 'Delphi High', className: 'bg-orange-500/20 text-orange-400 border-orange-500/40' },
-  medium: { label: 'Delphi Medium', className: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40' },
+  elevated: { label: 'Delphi Elevated', className: 'bg-amber-500/20 text-amber-400 border-amber-500/40' },
+  moderate: { label: 'Delphi Moderate', className: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40' },
   low: { label: 'Delphi Low', className: 'bg-blue-500/20 text-blue-400 border-blue-500/40' },
 };
 
@@ -388,7 +413,8 @@ function OracleEnrichmentPanel({
 }
 
 function DelphiBadges({ delphi, compact = false }: { delphi?: DelphiEnrichment; compact?: boolean }) {
-  if (!delphi || (!delphi.kev && !delphi.epss)) return null;
+  const hasPriority = !!delphi?.priority && delphi.priority !== 'none';
+  if (!delphi || (!delphi.kev && !delphi.epss && !hasPriority)) return null;
   const ransomware = isRansomwareKev(delphi.kev);
   return (
     <div className={cn('flex items-center gap-1 flex-wrap', compact ? '' : 'mt-1')}>
@@ -422,16 +448,105 @@ function DelphiBadges({ delphi, compact = false }: { delphi?: DelphiEnrichment; 
           <Info className="h-2.5 w-2.5 ml-0.5 opacity-60" />
         </Badge>
       )}
-      {!compact && delphi.priority && delphi.priority !== 'none' && delphiPriorityStyle[delphi.priority] && (
+      {delphi.priority && delphi.priority !== 'none' && delphiPriorityStyle[delphi.priority] && (
         <Badge
           variant="outline"
           className={cn('text-[10px] px-1.5 py-0 h-5 border', delphiPriorityStyle[delphi.priority].className)}
           title={delphi.priority_reason || ''}
         >
           <Sparkles className="h-3 w-3 mr-0.5" />
-          {delphiPriorityStyle[delphi.priority].label}
+          {compact
+            ? delphi.priority.charAt(0).toUpperCase() + delphi.priority.slice(1)
+            : delphiPriorityStyle[delphi.priority].label}
+          {typeof delphi.likelihood_score === 'number' && (
+            <span className="ml-1 font-mono opacity-80">{delphi.likelihood_score}</span>
+          )}
         </Badge>
       )}
+    </div>
+  );
+}
+
+/**
+ * Exploitation-likelihood breakdown for the finding detail panel: the 0-100
+ * score plus the four factors that produced it (severity, exploitability,
+ * reachability, detection confidence). Rendered only when a computed score is
+ * present (KEV/breach findings floored by facts still show it).
+ */
+function DelphiLikelihood({ delphi }: { delphi?: DelphiEnrichment }) {
+  if (!delphi || typeof delphi.likelihood_score !== 'number') return null;
+  const score = delphi.likelihood_score;
+  const f = delphi.factors || {};
+
+  const scoreColor =
+    score >= 80 ? 'text-red-400' :
+    score >= 60 ? 'text-orange-400' :
+    score >= 40 ? 'text-amber-400' :
+    score >= 20 ? 'text-yellow-400' : 'text-blue-400';
+  const barColor =
+    score >= 80 ? 'bg-red-500' :
+    score >= 60 ? 'bg-orange-500' :
+    score >= 40 ? 'bg-amber-500' :
+    score >= 20 ? 'bg-yellow-500' : 'bg-blue-500';
+
+  const factorRows: { label: string; value?: number; hint: string }[] = [
+    { label: 'Severity', value: f.severity, hint: 'CVSS base score / 10' },
+    { label: 'Exploitability', value: f.exploitability, hint: 'Attack vector, complexity, privileges, user interaction' },
+    { label: 'Reachability', value: f.reachability, hint: 'Asset exposure: internet-facing, live, WAF' },
+    { label: 'Detection confidence', value: f.confidence, hint: 'How confirmed the vulnerable feature is (vs. version-only)' },
+  ];
+
+  return (
+    <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs text-muted-foreground uppercase tracking-wider">Exploitation likelihood</p>
+          <p className="text-[11px] text-muted-foreground">
+            score = severity x exploitability x reachability x confidence
+          </p>
+        </div>
+        <div className="text-right">
+          <span className={cn('text-2xl font-bold font-mono', scoreColor)}>{score}</span>
+          <span className="text-sm text-muted-foreground">/100</span>
+        </div>
+      </div>
+      <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+        <div className={cn('h-full', barColor)} style={{ width: `${Math.min(100, Math.max(0, score))}%` }} />
+      </div>
+      {factorRows.some((r) => typeof r.value === 'number') && (
+        <div className="space-y-1.5 pt-1">
+          {factorRows.map((r) => (
+            <div key={r.label} className="flex items-center gap-2" title={r.hint}>
+              <span className="text-xs text-muted-foreground w-36 shrink-0">{r.label}</span>
+              <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-purple-400/70"
+                  style={{ width: `${Math.round((r.value ?? 0) * 100)}%` }}
+                />
+              </div>
+              <span className="text-[11px] font-mono text-muted-foreground w-9 text-right">
+                {typeof r.value === 'number' ? r.value.toFixed(2) : '—'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {delphi.priority_signals && delphi.priority_signals.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          {delphi.priority_signals.map((sig) => (
+            <span
+              key={sig}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground font-mono"
+            >
+              {sig}
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-muted-foreground pt-0.5">
+        Driven by confirmed exploitation (CISA KEV, breach intel) and the conditions required to
+        exploit. EPSS is not used in this score.
+      </p>
     </div>
   );
 }
@@ -532,11 +647,24 @@ export default function FindingsPage() {
     setJiraExistingTickets([]);
     setJiraAssociateKey('');
 
+    // Use the finding's org so admin/superuser accounts (often with no
+    // organization_id) load the correct client's Jira integration.
+    const orgId = finding.organization_id;
+    if (!orgId) {
+      toast({
+        title: 'Could not load Jira data',
+        description: 'This finding has no associated organization. Link it to an asset in a client org first.',
+        variant: 'destructive',
+      });
+      setJiraDialogOpen(false);
+      return;
+    }
+
     try {
       const [integrationData, projectsData, ticketsData] = await Promise.all([
-        api.getJiraIntegration().catch(() => null),
-        api.getJiraProjects(),
-        api.getJiraTicketsForVulnerability(finding.id),
+        api.getJiraIntegration(orgId).catch(() => null),
+        api.getJiraProjects(orgId),
+        api.getJiraTicketsForVulnerability(finding.id, orgId),
       ]);
       setJiraHasIntegration(true);
       setJiraProjects(projectsData.projects);
@@ -553,7 +681,7 @@ export default function FindingsPage() {
       setJiraIssueType(savedIssueType);
 
       if (initialKey) {
-        const typesData = await api.getJiraIssueTypes(initialKey);
+        const typesData = await api.getJiraIssueTypes(initialKey, orgId);
         setJiraIssueTypes(typesData.issue_types);
         const typeExists = typesData.issue_types.some((t) => t.name === savedIssueType);
         if (!typeExists && typesData.issue_types.length > 0) {
@@ -574,7 +702,12 @@ export default function FindingsPage() {
     if (!selectedFinding || !jiraAssociateKey.trim()) return;
     setJiraCreating(true);
     try {
-      const ticket = await api.associateJiraTicket(selectedFinding.id, jiraAssociateKey.trim());
+      const ticket = await api.associateJiraTicket(
+        selectedFinding.id,
+        jiraAssociateKey.trim(),
+        undefined,
+        selectedFinding.organization_id,
+      );
       toast({ title: `Ticket ${ticket.jira_issue_key} linked.` });
       setJiraExistingTickets((prev) => [ticket, ...prev]);
       setJiraAssociateKey('');
@@ -588,7 +721,7 @@ export default function FindingsPage() {
   const handleDisconnectJiraTicket = async (ticketId: number, issueKey: string) => {
     setJiraDisconnecting(ticketId);
     try {
-      await api.disconnectJiraTicket(ticketId);
+      await api.disconnectJiraTicket(ticketId, selectedFinding?.organization_id);
       toast({ title: `Ticket ${issueKey} disconnected.` });
       setJiraExistingTickets((prev) => prev.filter((t) => t.id !== ticketId));
     } catch (err) {
@@ -601,7 +734,7 @@ export default function FindingsPage() {
   const handleRefreshJiraTicket = async (ticketId: number) => {
     setJiraRefreshing(ticketId);
     try {
-      const updated = await api.refreshJiraTicketStatus(ticketId);
+      const updated = await api.refreshJiraTicketStatus(ticketId, selectedFinding?.organization_id);
       setJiraExistingTickets((prev) => prev.map((t) => (t.id === ticketId ? updated : t)));
     } catch (err) {
       toast({ title: 'Could not refresh ticket status', description: getApiErrorMessage(err), variant: 'destructive' });
@@ -615,7 +748,7 @@ export default function FindingsPage() {
     setJiraIssueTypes([]);
     if (!key) return;
     try {
-      const data = await api.getJiraIssueTypes(key);
+      const data = await api.getJiraIssueTypes(key, selectedFinding?.organization_id);
       setJiraIssueTypes(data.issue_types);
       if (data.issue_types.length > 0) setJiraIssueType(data.issue_types[0].name);
     } catch {
@@ -633,7 +766,7 @@ export default function FindingsPage() {
         include_evidence: jiraIncludeEvidence,
         include_remediation: jiraIncludeRemediation,
         include_enrichment: jiraIncludeEnrichment,
-      });
+      }, selectedFinding.organization_id);
       toast({
         title: `Jira ticket created: ${ticket.jira_issue_key}`,
         description: `View at ${ticket.jira_issue_url}`,
@@ -707,6 +840,206 @@ export default function FindingsPage() {
       e.stopPropagation();
     }
     await handleStatusChange(findingId, newStatus);
+  };
+
+  // ── Finding validation (NanoClaw validator agent) ────────────────────────
+  const [validationResult, setValidationResult] = useState<any>(null);
+  const [validating, setValidating] = useState(false);
+  const [detectionIssueText, setDetectionIssueText] = useState('');
+  const [loggingIssue, setLoggingIssue] = useState(false);
+  const [detectionFeedback, setDetectionFeedback] = useState<any>(null);
+  const [refiningTemplate, setRefiningTemplate] = useState(false);
+  const [templatePattern, setTemplatePattern] = useState<any>(null);
+  const openFindingIdRef = useRef<number | null>(null);
+
+  // Load the latest validation result whenever a finding is opened.
+  useEffect(() => {
+    openFindingIdRef.current = selectedFinding?.id ?? null;
+    setDetectionIssueText('');
+    setDetectionFeedback(null);
+    setTemplatePattern(null);
+    if (!selectedFinding) {
+      setValidationResult(null);
+      return;
+    }
+    const findingId = selectedFinding.id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getValidationResult(findingId);
+        if (!cancelled) {
+          setValidationResult(res || null);
+          // If a run is still in progress, resume polling.
+          if (res && (res.status === 'queued' || res.status === 'running')) {
+            pollValidation(findingId);
+          }
+        }
+      } catch {
+        if (!cancelled) setValidationResult(null);
+      }
+    })();
+    // Surface any pattern-based suppression recommendation/rule for this template.
+    if (selectedFinding.template_id) {
+      (async () => {
+        try {
+          const rows = await api.getDetectionSuppressions({
+            template_id: selectedFinding.template_id,
+            include_coverage: true,
+            limit: 1,
+          });
+          if (!cancelled) setTemplatePattern(Array.isArray(rows) && rows.length ? rows[0] : null);
+        } catch {
+          if (!cancelled) setTemplatePattern(null);
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFinding?.id]);
+
+  const pollValidation = async (findingId: number) => {
+    // Poll up to ~15 minutes (5s interval) for the agent to finish.
+    for (let i = 0; i < 180; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      if (openFindingIdRef.current !== findingId) return; // user navigated away
+      let res: any;
+      try {
+        res = await api.getValidationResult(findingId);
+      } catch {
+        continue;
+      }
+      if (openFindingIdRef.current !== findingId) return;
+      setValidationResult(res);
+      if (res && (res.status === 'completed' || res.status === 'failed')) {
+        return;
+      }
+    }
+  };
+
+  const handleValidateFinding = async () => {
+    if (!selectedFinding) return;
+    const findingId = selectedFinding.id;
+    setValidating(true);
+    try {
+      const initial = await api.validateFinding(findingId);
+      setValidationResult(initial);
+      toast({
+        title: 'Validation queued',
+        description: 'The validator agent is re-testing the finding against the live target.',
+      });
+      await pollValidation(findingId);
+    } catch (err: any) {
+      toast({
+        title: 'Could not start validation',
+        description: getApiErrorMessage(err),
+        variant: 'destructive',
+      });
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const handleLogDetectionIssue = async () => {
+    if (!selectedFinding) return;
+    const logic =
+      detectionIssueText.trim() ||
+      validationResult?.template_logic_issue ||
+      'Detection template produced a false positive under active re-testing.';
+    setLoggingIssue(true);
+    try {
+      const fb = await api.createDetectionFeedback(selectedFinding.id, {
+        logic_issue: logic,
+        verdict: 'false_positive',
+      });
+      setDetectionFeedback(fb);
+      toast({
+        title: 'Detection issue logged',
+        description: `Recorded a logic issue for template ${fb.template_id}.`,
+      });
+      // A new FP signal may have crossed the pattern threshold — refresh the callout.
+      if (selectedFinding.template_id) {
+        try {
+          const rows = await api.getDetectionSuppressions({
+            template_id: selectedFinding.template_id,
+            include_coverage: true,
+            limit: 1,
+          });
+          setTemplatePattern(Array.isArray(rows) && rows.length ? rows[0] : null);
+        } catch {
+          /* non-fatal */
+        }
+      }
+    } catch (err: any) {
+      toast({
+        title: 'Could not log detection issue',
+        description: getApiErrorMessage(err),
+        variant: 'destructive',
+      });
+    } finally {
+      setLoggingIssue(false);
+    }
+  };
+
+  // Generate a more accurate template from the validated mis-detection.
+  const handleRefineTemplate = async () => {
+    if (!selectedFinding || !firstOrgId) return;
+    const issue =
+      detectionIssueText.trim() || validationResult?.template_logic_issue;
+    if (!issue) {
+      toast({
+        title: 'No detection logic issue to refine from',
+        description: 'Describe the flawed detection logic first.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!selectedFinding.template_id) {
+      toast({
+        title: 'No template on this finding',
+        description: 'Refinement needs the matched template id.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setRefiningTemplate(true);
+    try {
+      const resp = await api.post('/nuclei-templates/refine', {
+        organization_id: firstOrgId,
+        template_id: selectedFinding.template_id,
+        template_logic_issue: issue,
+        target: selectedFinding.matched_at || selectedFinding.host || undefined,
+        evidence: validationResult?.evidence || undefined,
+        reasoning: validationResult?.reasoning || undefined,
+        cve_ids: selectedFinding.cve_id ? [selectedFinding.cve_id] : undefined,
+        vulnerability_id: selectedFinding.id,
+        recheck: true,
+      });
+      toast({
+        title: 'Refined template created',
+        description: `${resp.data?.template_id}: ${resp.data?.refinement_note || 'Saved as draft — review before activating.'}`,
+      });
+    } catch (err: any) {
+      toast({
+        title: 'Refinement failed',
+        description: getApiErrorMessage(err),
+        variant: 'destructive',
+      });
+    } finally {
+      setRefiningTemplate(false);
+    }
+  };
+
+  const copyUpstreamReport = async () => {
+    const report = detectionFeedback?.upstream_report;
+    if (!report) return;
+    try {
+      await navigator.clipboard.writeText(report);
+      toast({ title: 'Copied', description: 'Upstream report copied to clipboard.' });
+    } catch {
+      toast({ title: 'Copy failed', description: 'Could not access clipboard.', variant: 'destructive' });
+    }
   };
 
   // Handle bulk status change
@@ -973,6 +1306,9 @@ export default function FindingsPage() {
         const aRank = delphiPriorityRank[a.delphi?.priority || 'none'] ?? 5;
         const bRank = delphiPriorityRank[b.delphi?.priority || 'none'] ?? 5;
         if (aRank !== bRank) return aRank - bRank;
+        const aScore = a.delphi?.likelihood_score ?? -1;
+        const bScore = b.delphi?.likelihood_score ?? -1;
+        if (aScore !== bScore) return bScore - aScore;
         const aCvss = a.cvss_score ?? 0;
         const bCvss = b.cvss_score ?? 0;
         if (aCvss !== bCvss) return bCvss - aCvss;
@@ -1086,7 +1422,7 @@ export default function FindingsPage() {
                 <SelectItem value="delphi">
                   <span className="flex items-center gap-2">
                     <Sparkles className="h-3.5 w-3.5 text-purple-400" />
-                    Sort: Delphi priority (KEV → CVSS)
+                    Sort: Delphi likelihood
                   </span>
                 </SelectItem>
                 <SelectItem value="cvss">Sort: CVSS score</SelectItem>
@@ -1603,7 +1939,10 @@ export default function FindingsPage() {
               </div>
 
               {/* Delphi enrichment panel */}
-              {selectedFinding?.delphi && (selectedFinding.delphi.kev || selectedFinding.delphi.epss) && (
+              {selectedFinding?.delphi &&
+                (selectedFinding.delphi.kev ||
+                  selectedFinding.delphi.epss ||
+                  (selectedFinding.delphi.priority && selectedFinding.delphi.priority !== 'none')) && (
                 <div className="space-y-2">
                   <p className="text-sm font-medium flex items-center gap-2 text-purple-300">
                     <Sparkles className="h-4 w-4" />
@@ -1621,6 +1960,7 @@ export default function FindingsPage() {
                   {selectedFinding.delphi.priority_reason && (
                     <p className="text-sm text-muted-foreground">{selectedFinding.delphi.priority_reason}</p>
                   )}
+                  <DelphiLikelihood delphi={selectedFinding.delphi} />
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {selectedFinding.delphi.kev && (
                       <div className={cn(
@@ -1890,6 +2230,213 @@ export default function FindingsPage() {
                     False Positive
                   </Button>
                 </div>
+              </div>
+
+              {/* Validate with agent */}
+              <div className="space-y-3 pt-4 border-t border-border">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4" />
+                    Detection Validation
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleValidateFinding}
+                    disabled={
+                      validating ||
+                      validationResult?.status === 'queued' ||
+                      validationResult?.status === 'running'
+                    }
+                  >
+                    {validating ||
+                    validationResult?.status === 'queued' ||
+                    validationResult?.status === 'running' ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        Validating…
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="h-4 w-4 mr-2" />
+                        Validate with agent
+                      </>
+                    )}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  The validator agent actively re-tests this finding against the live
+                  target and returns a verdict. This sends real requests to the host.
+                </p>
+
+                {templatePattern && (
+                  <Link
+                    href="/detection-patterns"
+                    className={cn(
+                      'flex items-start gap-2 rounded-md border p-3 text-sm transition-colors hover:bg-muted/50',
+                      templatePattern.status === 'approved'
+                        ? 'border-red-600/30 bg-red-600/10'
+                        : templatePattern.status === 'recommended'
+                        ? 'border-amber-600/30 bg-amber-600/10'
+                        : 'border-border'
+                    )}
+                  >
+                    <ShieldOff className="h-4 w-4 mt-0.5 shrink-0" />
+                    <div className="space-y-0.5">
+                      {templatePattern.status === 'approved' ? (
+                        <p className="font-medium">
+                          Suppression approved for this template — new matches are auto-marked false positive.
+                        </p>
+                      ) : templatePattern.status === 'recommended' ? (
+                        <p className="font-medium">
+                          False-positive pattern detected across{' '}
+                          {templatePattern.host_count} host(s) — suppression recommended for review.
+                        </p>
+                      ) : (
+                        <p className="font-medium">Suppression recommendation dismissed for this template.</p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        {templatePattern.validation_coverage
+                          ? `${templatePattern.validation_coverage.validated}/${templatePattern.validation_coverage.open} open findings validated. `
+                          : ''}
+                        View in Detection Patterns
+                        <ChevronRight className="inline h-3 w-3" />
+                      </p>
+                    </div>
+                  </Link>
+                )}
+
+                {(validationResult?.status === 'queued' ||
+                  validationResult?.status === 'running') && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Agent is re-testing the target…
+                  </div>
+                )}
+
+                {validationResult?.status === 'failed' && (
+                  <div className="text-sm text-red-400">
+                    Validation failed{validationResult?.error ? `: ${validationResult.error}` : '.'}
+                  </div>
+                )}
+
+                {validationResult?.status === 'completed' && validationResult?.verdict && (
+                  <div className="space-y-2 rounded-md border border-border p-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {validationResult.verdict === 'confirmed' && (
+                        <Badge className="bg-red-600/20 text-red-400 border-red-600/30">
+                          <CheckCircle className="h-3 w-3 mr-1" /> Confirmed
+                        </Badge>
+                      )}
+                      {validationResult.verdict === 'false_positive' && (
+                        <Badge className="bg-gray-600/20 text-gray-400 border-gray-600/30">
+                          <XCircle className="h-3 w-3 mr-1" /> False Positive
+                        </Badge>
+                      )}
+                      {validationResult.verdict === 'needs_more_evidence' && (
+                        <Badge className="bg-yellow-600/20 text-yellow-400 border-yellow-600/30">
+                          <AlertCircle className="h-3 w-3 mr-1" /> Needs More Evidence
+                        </Badge>
+                      )}
+                      {validationResult.confidence && (
+                        <span className="text-xs text-muted-foreground">
+                          confidence: {validationResult.confidence}
+                        </span>
+                      )}
+                      {validationResult.recommended_severity && (
+                        <span className="text-xs text-muted-foreground">
+                          recommended severity: {validationResult.recommended_severity}
+                        </span>
+                      )}
+                    </div>
+                    {validationResult.reasoning && (
+                      <p className="text-sm">{validationResult.reasoning}</p>
+                    )}
+                    {validationResult.evidence && (
+                      <pre className="text-xs bg-muted/50 rounded p-2 whitespace-pre-wrap break-words max-h-48 overflow-auto">
+                        {validationResult.evidence}
+                      </pre>
+                    )}
+
+                    {validationResult.verdict === 'false_positive' && (
+                      <div className="space-y-2 pt-2 border-t border-border">
+                        <p className="text-sm font-medium flex items-center gap-2">
+                          <Bug className="h-4 w-4" />
+                          Log detection logic issue
+                        </p>
+                        <textarea
+                          className="w-full text-sm rounded-md border border-border bg-background p-2 min-h-[72px]"
+                          placeholder="Describe the flawed detection logic (prefilled from the agent when available)…"
+                          value={
+                            detectionIssueText ||
+                            validationResult.template_logic_issue ||
+                            ''
+                          }
+                          onChange={(e) => setDetectionIssueText(e.target.value)}
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleLogDetectionIssue}
+                            disabled={loggingIssue}
+                          >
+                            {loggingIssue ? (
+                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                            ) : (
+                              <Bug className="h-4 w-4 mr-2" />
+                            )}
+                            Log detection issue
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleRefineTemplate}
+                            disabled={refiningTemplate || !selectedFinding?.template_id}
+                            className="border-purple-600/30 hover:bg-purple-600/20"
+                          >
+                            {refiningTemplate ? (
+                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                            ) : (
+                              <Sparkles className="h-4 w-4 mr-2" />
+                            )}
+                            Generate refined template
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              selectedFinding &&
+                              handleStatusChange(selectedFinding.id, 'false_positive')
+                            }
+                            disabled={
+                              updatingStatus || selectedFinding?.status === 'false_positive'
+                            }
+                            className="border-gray-600/30 hover:bg-gray-600/20"
+                          >
+                            Mark finding false positive
+                          </Button>
+                        </div>
+
+                        {detectionFeedback?.upstream_report && (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-medium text-muted-foreground">
+                                Upstream Nuclei report
+                              </p>
+                              <Button size="sm" variant="ghost" onClick={copyUpstreamReport}>
+                                <Copy className="h-3 w-3 mr-1" /> Copy
+                              </Button>
+                            </div>
+                            <pre className="text-xs bg-muted/50 rounded p-2 whitespace-pre-wrap break-words max-h-64 overflow-auto">
+                              {detectionFeedback.upstream_report}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Tags */}
@@ -2212,25 +2759,38 @@ export default function FindingsPage() {
                     toast({ title: 'No organization found', variant: 'destructive' });
                     return;
                   }
-                  setGeneratingTemplate(true);
-                  try {
-                    const resp = await api.post('/nuclei-templates/generate', {
-                      organization_id: firstOrgId,
-                      cve_id: generateTemplateCveId.trim() || undefined,
-                      vulnerability_description: selectedFinding?.description || undefined,
-                      affected_url: generateTemplateEvidence.trim() || undefined,
-                      affected_product: selectedFinding?.detected_by || undefined,
-                    });
-                    toast({
-                      title: 'Template generated',
-                      description: `Saved as draft: ${resp.data.template_id} — view in Nuclei Templates`,
-                    });
-                    setGenerateTemplateOpen(false);
-                  } catch (err: any) {
-                    toast({ title: 'Generation failed', description: err?.response?.data?.detail || err.message, variant: 'destructive' });
-                  } finally {
-                    setGeneratingTemplate(false);
-                  }
+                  const runGenerate = async (force: boolean) => {
+                    setGeneratingTemplate(true);
+                    try {
+                      const resp = await api.post('/nuclei-templates/generate', {
+                        organization_id: firstOrgId,
+                        cve_id: generateTemplateCveId.trim() || undefined,
+                        vulnerability_description: selectedFinding?.description || undefined,
+                        affected_url: generateTemplateEvidence.trim() || undefined,
+                        affected_product: selectedFinding?.detected_by || undefined,
+                        force,
+                      });
+                      toast({
+                        title: 'Template generated',
+                        description: `Saved as draft: ${resp.data.template_id} — view in Nuclei Templates`,
+                      });
+                      setGenerateTemplateOpen(false);
+                    } catch (err: any) {
+                      const detail = err?.response?.data?.detail;
+                      if (err?.response?.status === 409 && detail?.error === 'template_already_exists') {
+                        setGeneratingTemplate(false);
+                        const proceed = window.confirm(`${detail.message}\n\nGenerate a custom (secondary) template anyway?`);
+                        if (proceed) return runGenerate(true);
+                        toast({ title: 'Template already exists', description: detail.message });
+                        return;
+                      }
+                      const msg = typeof detail === 'string' ? detail : (detail?.message || err.message);
+                      toast({ title: 'Generation failed', description: msg, variant: 'destructive' });
+                    } finally {
+                      setGeneratingTemplate(false);
+                    }
+                  };
+                  await runGenerate(false);
                 }}
                 disabled={generatingTemplate || (!generateTemplateCveId.trim() && !selectedFinding?.description)}
                 className="gap-1.5 bg-purple-600 hover:bg-purple-700"
