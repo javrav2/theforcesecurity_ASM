@@ -67,6 +67,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { JiraProjectPicker } from '@/components/integrations/JiraProjectPicker';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -661,27 +662,22 @@ export default function FindingsPage() {
     }
 
     try {
-      const [integrationData, projectsData, ticketsData] = await Promise.all([
+      const [integrationData, ticketsData] = await Promise.all([
         api.getJiraIntegration(orgId).catch(() => null),
-        api.getJiraProjects(orgId),
         api.getJiraTicketsForVulnerability(finding.id, orgId),
       ]);
-      setJiraHasIntegration(true);
-      setJiraProjects(projectsData.projects);
+      // Integration endpoint 404 means not configured; other errors still mean
+      // we may have tickets but no usable integration for create.
+      setJiraHasIntegration(integrationData !== null);
       setJiraExistingTickets(ticketsData);
 
-      const savedProject = integrationData?.default_project_key;
+      const savedProject = integrationData?.default_project_key || '';
       const savedIssueType = integrationData?.default_issue_type || 'Bug';
-      const initialKey =
-        savedProject && projectsData.projects.some((p) => p.key === savedProject)
-          ? savedProject
-          : projectsData.projects[0]?.key ?? '';
-
-      setJiraProjectKey(initialKey);
+      setJiraProjectKey(savedProject);
       setJiraIssueType(savedIssueType);
 
-      if (initialKey) {
-        const typesData = await api.getJiraIssueTypes(initialKey, orgId);
+      if (savedProject) {
+        const typesData = await api.getJiraIssueTypes(savedProject, orgId);
         setJiraIssueTypes(typesData.issue_types);
         const typeExists = typesData.issue_types.some((t) => t.name === savedIssueType);
         if (!typeExists && typesData.issue_types.length > 0) {
@@ -2631,18 +2627,16 @@ export default function FindingsPage() {
                     <>
                       <div className="space-y-1.5">
                         <label className="text-sm font-medium">Project</label>
-                        {jiraProjects.length > 0 ? (
-                          <Select value={jiraProjectKey} onValueChange={handleJiraProjectChange}>
-                            <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
-                            <SelectContent>
-                              {jiraProjects.map((p) => (
-                                <SelectItem key={p.key} value={p.key}>{p.key} — {p.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <Input placeholder="e.g. SEC" value={jiraProjectKey} onChange={(e) => setJiraProjectKey(e.target.value.toUpperCase())} />
-                        )}
+                        <JiraProjectPicker
+                          orgId={selectedFinding?.organization_id}
+                          value={jiraProjectKey}
+                          enabled={jiraHasIntegration === true}
+                          onChange={(key) => handleJiraProjectChange(key)}
+                          placeholder="Search e.g. ITVM or Vulnerability Management…"
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          Tip: search by key (<span className="font-mono">ITVM</span>) or name (Vulnerability Management).
+                        </p>
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-sm font-medium">Issue type</label>

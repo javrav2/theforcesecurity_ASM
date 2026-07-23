@@ -230,13 +230,16 @@ async def test_jira_connection(
 @router.get("/jira/projects", response_model=JiraProjectsResponse)
 async def list_jira_projects(
     org_id: Optional[int] = Query(None),
+    query: Optional[str] = Query(None, description="Filter by project name or key (e.g. ITVM)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
     resolved = _resolve_org_id(current_user, org_id)
     integration = _get_integration(db, resolved)
     try:
-        projects = await jira_service.get_projects(integration.hostname, integration.email, integration.api_token)
+        projects = await jira_service.get_projects(
+            integration.hostname, integration.email, integration.api_token, query=query
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Jira API error: {exc}")
     return JiraProjectsResponse(projects=projects)

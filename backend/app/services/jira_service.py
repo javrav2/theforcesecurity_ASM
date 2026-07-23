@@ -66,15 +66,48 @@ async def test_connection(hostname: str, email: str, api_token: str) -> Dict[str
         return {"ok": False, "message": str(exc), "display_name": None}
 
 
-async def get_projects(hostname: str, email: str, api_token: str) -> List[Dict[str, Any]]:
-    url = f"{_base_url(hostname)}/project/search?maxResults=100&orderBy=name"
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(url, headers=_headers(email, api_token, content_type=False))
-    resp.raise_for_status()
-    return [
-        {"key": p["key"], "name": p["name"], "project_type": p.get("projectTypeKey")}
-        for p in resp.json().get("values", [])
-    ]
+async def get_projects(
+    hostname: str,
+    email: str,
+    api_token: str,
+    query: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    List Jira projects the authenticated user can see.
+
+    Paginates through all pages (Jira caps each page at 100). Optional ``query``
+    filters by project name or key server-side so large instances (hundreds of
+    projects) can still find e.g. "IT: Vulnerability Management" / ITVM.
+    """
+    from urllib.parse import quote
+
+    projects: List[Dict[str, Any]] = []
+    start_at = 0
+    page_size = 100
+    # Safety cap — unlikely for a single Jira site, prevents runaway loops
+    max_total = 2000
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while start_at < max_total:
+            params = f"maxResults={page_size}&startAt={start_at}&orderBy=name"
+            if query and query.strip():
+                params += f"&query={quote(query.strip())}"
+            url = f"{_base_url(hostname)}/project/search?{params}"
+            resp = await client.get(url, headers=_headers(email, api_token, content_type=False))
+            resp.raise_for_status()
+            data = resp.json()
+            values = data.get("values", []) or []
+            for p in values:
+                projects.append({
+                    "key": p["key"],
+                    "name": p["name"],
+                    "project_type": p.get("projectTypeKey"),
+                })
+            if data.get("isLast", True) or not values:
+                break
+            start_at += len(values)
+
+    return projects
 
 
 async def get_issue_types(hostname: str, email: str, api_token: str, project_key: str) -> List[Dict[str, Any]]:

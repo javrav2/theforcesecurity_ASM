@@ -45,6 +45,7 @@ import {
 import { api, getApiErrorMessage, type JiraIntegration, type CensysIntegration } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import { JiraProjectPicker } from '@/components/integrations/JiraProjectPicker';
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
@@ -911,22 +912,31 @@ export default function IntegrationsPage() {
                     Create API token <ExternalLink className="h-3 w-3" />
                   </a>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Default project key</label>
-                    <Input placeholder="e.g. SEC" value={form.default_project_key} onChange={(e) => setForm(f => ({ ...f, default_project_key: e.target.value.toUpperCase() }))} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Default issue type</label>
-                    <Select value={form.default_issue_type} onValueChange={(v) => setForm(f => ({ ...f, default_issue_type: v }))}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {['Bug', 'Task', 'Story', 'Epic', 'Vulnerability', 'Security'].map(t => (
-                          <SelectItem key={t} value={t}>{t}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Default project</label>
+                  <JiraProjectPicker
+                    orgId={selectedOrgId}
+                    value={form.default_project_key}
+                    enabled={!!integration}
+                    onChange={(key) => setForm((f) => ({ ...f, default_project_key: key }))}
+                    placeholder={integration ? 'Search e.g. ITVM or Vulnerability Management…' : 'Save credentials first to search projects'}
+                  />
+                  {!integration && (
+                    <p className="text-xs text-muted-foreground">
+                      Save hostname / email / API token first, then reopen to search and select the project (e.g. ITVM).
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Default issue type</label>
+                  <Select value={form.default_issue_type} onValueChange={(v) => setForm(f => ({ ...f, default_issue_type: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {['Bug', 'Task', 'Story', 'Epic', 'Vulnerability', 'Security'].map(t => (
+                        <SelectItem key={t} value={t}>{t}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             )}

@@ -1916,8 +1916,10 @@ class ApiClient {
     return response.data;
   }
 
-  async getJiraProjects(orgId?: number): Promise<{ projects: JiraProject[] }> {
-    const params = orgId ? { org_id: orgId } : {};
+  async getJiraProjects(orgId?: number, query?: string): Promise<{ projects: JiraProject[] }> {
+    const params: Record<string, string | number> = {};
+    if (orgId) params.org_id = orgId;
+    if (query && query.trim()) params.query = query.trim();
     const response = await this.client.get('/integrations/jira/projects', { params });
     return response.data;
   }
