@@ -625,7 +625,6 @@ export default function FindingsPage() {
   // Jira ticket state
   const [jiraDialogOpen, setJiraDialogOpen] = useState(false);
   const [jiraDialogMode, setJiraDialogMode] = useState<'create' | 'associate'>('create');
-  const [jiraProjects, setJiraProjects] = useState<{ key: string; name: string }[]>([]);
   const [jiraIssueTypes, setJiraIssueTypes] = useState<{ id: string; name: string }[]>([]);
   const [jiraHasIntegration, setJiraHasIntegration] = useState<boolean | null>(null);
   const [jiraProjectKey, setJiraProjectKey] = useState('');
