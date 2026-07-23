@@ -1269,8 +1269,8 @@ class ApiClient {
     return this.client.get(url, { params });
   }
 
-  async post(url: string, data?: any) {
-    return this.client.post(url, data);
+  async post(url: string, data?: any, config?: { params?: any; headers?: Record<string, string> }) {
+    return this.client.post(url, data, config);
   }
 
   async put(url: string, data?: any) {
