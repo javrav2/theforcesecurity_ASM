@@ -28,6 +28,14 @@ from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.netblock import Netblock
 from app.models.vulnerability import Vulnerability
+# Must import FindingValidation so SQLAlchemy can resolve
+# Vulnerability.validations (order_by=FindingValidation.created_at.desc()).
+# Also required by poll_database_for_validations().
+from app.models.finding_validation import (
+    FindingValidation,
+    ValidationStatus,
+    ValidationVerdict,
+)
 from app.models.project_settings import ProjectSettings, MODULE_SCAN_TOGGLES, MODULE_SECURITY_CHECKS
 from app.models.port_service import PortService, PortState, Protocol
 from app.services.nuclei_service import NucleiService

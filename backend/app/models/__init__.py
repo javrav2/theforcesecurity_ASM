@@ -5,6 +5,11 @@ from app.models.netblock import Netblock  # Must be imported BEFORE Asset due to
 from app.models.asset import Asset, AssetType, AssetStatus
 from app.models.finding_exception import FindingException, ExceptionType, ExceptionStatus
 from app.models.vulnerability import Vulnerability, Severity, VulnerabilityStatus
+from app.models.finding_validation import (
+    FindingValidation,
+    ValidationStatus,
+    ValidationVerdict,
+)
 from app.models.scan import Scan, ScanType, ScanStatus
 from app.models.technology import Technology, asset_technologies, WAPPALYZER_CATEGORIES
 from app.models.scan_profile import ScanProfile, ProfileType, DEFAULT_PROFILES
@@ -49,6 +54,9 @@ __all__ = [
     "Vulnerability",
     "Severity",
     "VulnerabilityStatus",
+    "FindingValidation",
+    "ValidationStatus",
+    "ValidationVerdict",
     "Scan",
     "ScanType",
     "ScanStatus",
